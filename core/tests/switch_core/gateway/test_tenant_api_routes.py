@@ -45,7 +45,7 @@ from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
-from switch_core.gateway.auth import create_jwt
+from switch_core.gateway.auth import create_jwt, decode_jwt
 from switch_core.gateway.tenants import router as tenants_router
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
@@ -79,6 +79,7 @@ def _app(
     *,
     client_lifecycle: object | None = None,
     max_workspaces_per_user: int = 3,
+    signup_mode: str = "default_tenant",
 ) -> FastAPI:
     async def _session_dep():
         async with session_factory() as session:
@@ -104,6 +105,7 @@ def _app(
         gateway_cookie_secure=False,
         gateway_tenant_choice_enabled=False,
         gateway_max_workspaces_per_user=max_workspaces_per_user,
+        gateway_signup_mode=signup_mode,
     )
     return app
 
@@ -148,8 +150,34 @@ async def _make_member(
         return user.id
 
 
-def _token(user_id: str, email: str, tenant_id: str) -> str:
+def _token(user_id: str, email: str, tenant_id: str | None) -> str:
     return create_jwt(user_id, email, "user", _SECRET, tenant_id)
+
+
+def _tenant_claim(response: httpx.Response) -> str | None:
+    token = response.cookies.get("switch_auth")
+    assert token is not None, "no session cookie was minted"
+    claim: str | None = decode_jwt(token, _SECRET).get("tenant_id")
+    return claim
+
+
+async def _make_unaffiliated_user(
+    session_factory: async_sessionmaker[AsyncSession], *, name: str, role: str
+) -> str:
+    async with session_factory() as session:
+        user = User(name=name, email=f"{name}@example.invalid", role=role)
+        session.add(user)
+        await session.commit()
+        return user.id
+
+
+async def _last_tenant_id(
+    session_factory: async_sessionmaker[AsyncSession], user_id: str
+) -> str | None:
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+        assert user is not None
+        return UserStore().last_tenant_id(user)
 
 
 async def _make_api_key(
@@ -251,9 +279,44 @@ class TestCreateTenant:
             assert membership is not None
             assert membership.role == "owner"
 
-    async def test_a_taken_slug_is_409_not_a_silent_suffix(
+    async def test_creating_a_tenant_switches_the_caller_into_it(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name="mover", tenant_id=TENANT_A, role="member"
+        )
+        token = _token(user_id, "mover@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.post("/tenants", json={"name": "Moving Co"})
+
+        assert response.status_code == 201, response.text
+        new_id = response.json()["id"]
+        assert _tenant_claim(response) == new_id
+        assert await _last_tenant_id(session_factory, user_id) == new_id
+
+    async def test_a_caller_with_no_workspace_can_create_their_first(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        user_id = await _make_unaffiliated_user(
+            session_factory, name="newcomer", role="user"
+        )
+        token = _token(user_id, "newcomer@example.invalid", None)
+
+        async with _client(_app(session_factory, signup_mode="open"), token) as client:
+            response = await client.post("/tenants", json={"name": "First Light"})
+
+        assert response.status_code == 201, response.text
+        assert response.json()["role"] == "owner"
+        assert _tenant_claim(response) == response.json()["id"]
+
+    async def test_a_taken_slug_gets_a_suffix_rather_than_a_409(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A 409 would tell the caller that a workspace of that name exists
+        somewhere on the server. Nobody types the slug, so a suffixed one costs
+        them nothing."""
         await _make_tenant(session_factory, TENANT_A)
         user_id = await _make_member(
             session_factory, name="second-founder", tenant_id=TENANT_A, role="member"
@@ -265,7 +328,45 @@ class TestCreateTenant:
             assert first.status_code == 201, first.text
             second = await client.post("/tenants", json={"name": "Widgets Inc"})
 
-        assert second.status_code == 409
+        assert second.status_code == 201, second.text
+        assert first.json()["slug"] == "widgets-inc"
+        assert second.json()["slug"].startswith("widgets-inc-")
+        assert second.json()["id"] != first.json()["id"]
+
+    async def test_invite_only_refuses_a_non_operator(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        user_id = await _make_unaffiliated_user(
+            session_factory, name="hopeful", role="user"
+        )
+        token = _token(user_id, "hopeful@example.invalid", None)
+
+        app = _app(session_factory, signup_mode="invite_only")
+        async with _client(app, token) as client:
+            response = await client.post("/tenants", json={"name": "Hopeful Ltd"})
+
+        assert response.status_code == 403
+        assert "invitation" in response.json()["detail"]
+        async with session_factory() as session:
+            assert (
+                await session.execute(
+                    select(Tenant).where(Tenant.name == "Hopeful Ltd")
+                )
+            ).first() is None
+
+    async def test_invite_only_still_lets_an_operator_create(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        user_id = await _make_unaffiliated_user(
+            session_factory, name="operator", role="admin"
+        )
+        token = create_jwt(user_id, "operator@example.invalid", "admin", _SECRET, None)
+
+        app = _app(session_factory, signup_mode="invite_only")
+        async with _client(app, token) as client:
+            response = await client.post("/tenants", json={"name": "Ops Co"})
+
+        assert response.status_code == 201, response.text
 
     async def test_a_name_with_no_slug_characters_is_400(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -737,6 +838,8 @@ class TestInvitationLifecycle:
         body = response.json()
         assert body["id"] == TENANT_A
         assert body["role"] == "admin"
+        assert _tenant_claim(response) == TENANT_A
+        assert await _last_tenant_id(session_factory, invitee_id) == TENANT_A
 
         async with session_factory() as session:
             membership = await session.get(TenantMember, (TENANT_A, invitee_id))
