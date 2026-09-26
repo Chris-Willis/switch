@@ -34,6 +34,7 @@ from switch_core.db.stores.invitation_store import (
     InvitationNotUsableError,
     InvitationStore,
 )
+from switch_core.db.stores.tenant_store import TenantSlugTaken
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
@@ -106,7 +107,7 @@ def _derive_slug(name: str) -> str:
 
     The slug is an identifier, not the name: the workspace keeps the name its
     creator typed exactly, and a slug that is already taken gets a short
-    random suffix (`create_tenant` below). Refusing instead would tell anyone
+    random suffix (`_provision_workspace` below). Refusing instead would tell anyone
     who can sign up which workspace names exist on this server.
     """
     slug = _SLUG_INVALID_CHARS.sub("-", name.strip().lower()).strip("-")
@@ -325,7 +326,7 @@ async def _provision_workspace(
         slug = base_slug if attempt == 0 else f"{base_slug}-{secrets.token_hex(2)}"
         try:
             tenant = await client_lifecycle.create_tenant(name, slug)
-        except IntegrityError:
+        except TenantSlugTaken:
             continue
         break
     if tenant is None:
