@@ -265,6 +265,32 @@ class RoomStore:
             for room_id, name, archived_at in result.all()
         ]
 
+    async def get_memberships_by_agent(
+        self, session: AsyncSession
+    ) -> dict[str, list[tuple[str, str, bool]]]:
+        """`{agent_id: [(room_id, name, archived)]}` for the bound tenant.
+
+        Every membership in one read. The per-agent form of this question,
+        asked once per agent, is what Switch Console's sidebar refresh was
+        doing — seventy requests every twenty seconds, each assembling a full
+        agent detail to have three fields taken off it.
+
+        Only agents that are in at least one room appear. The endpoint fills
+        in the empty ones, because "in no rooms" and "not in the answer" are
+        different things to a caller and the join cannot tell them apart.
+        """
+        result = await session.execute(
+            select(room_agents.c.agent_id, Room.id, Room.name, Room.archived_at).join(
+                Room, Room.id == room_agents.c.room_id
+            )
+        )
+        out: dict[str, list[tuple[str, str, bool]]] = {}
+        for agent_id, room_id, name, archived_at in result.all():
+            out.setdefault(agent_id, []).append(
+                (room_id, name, archived_at is not None)
+            )
+        return out
+
     async def get_agent_ids(self, session: AsyncSession, room_id: str) -> list[str]:
         result = await session.execute(
             select(room_agents.c.agent_id).where(room_agents.c.room_id == room_id)
