@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -60,6 +61,53 @@ it('resolves an agent’s watcher root past launches that were abandoned beside 
   await saved(join(watchers, 'launch-legacy'), '{"session":');
 
   expect(await run(dir, RESOLVE_STATE_ROOT, ['c'.repeat(64), 'sdk-watchers', 'agent'])).toBe(root);
+});
+
+const keyedName = (identity: string) => createHash('sha256').update(identity).digest('hex');
+
+it('reads only the agent’s own root while it holds a configuration', async () => {
+  const dir = await home();
+  const watchers = join(dir, '.local/state/switch/sdk-watchers');
+  const root = join(watchers, keyedName('agent'));
+  await saved(root, agentConfig('agent'));
+  // Either neighbour would fail a listing: one is unreadable, the other claims
+  // the same agent. Neither is looked at.
+  await saved(join(watchers, 'a'.repeat(64)), '{"session":');
+  await saved(join(watchers, 'b'.repeat(64)), agentConfig('agent'));
+
+  expect(await run(dir, RESOLVE_STATE_ROOT, [keyedName('agent'), 'sdk-watchers', 'agent'])).toBe(
+    root
+  );
+});
+
+it('adopts a watcher saved under an earlier key when the agent’s own root has none', async () => {
+  const dir = await home();
+  const watchers = join(dir, '.local/state/switch/sdk-watchers');
+  const earlier = join(watchers, 'c'.repeat(64));
+  await saved(earlier, agentConfig('agent'));
+  await saved(join(watchers, 'd'.repeat(64)), agentConfig('another-agent'));
+
+  expect(await run(dir, RESOLVE_STATE_ROOT, [keyedName('agent'), 'sdk-watchers', 'agent'])).toBe(
+    earlier
+  );
+});
+
+it('gives an agent that never had a watcher its own root', async () => {
+  const dir = await home();
+  await saved(join(dir, '.local/state/switch/sdk-watchers', 'e'.repeat(64)), agentConfig('other'));
+
+  expect(await run(dir, RESOLVE_STATE_ROOT, [keyedName('agent'), 'sdk-watchers', 'agent'])).toBe(
+    join(dir, '.local/state/switch/sdk-watchers', keyedName('agent'))
+  );
+});
+
+it('keys a session’s root by its id without listing anything', async () => {
+  const dir = await home();
+  await saved(join(dir, '.local/state/switch/sdk-sessions', 'f'.repeat(64)), '{"session":');
+
+  expect(await run(dir, RESOLVE_STATE_ROOT, ['0'.repeat(64), 'sdk-sessions', 'agent'])).toBe(
+    join(dir, '.local/state/switch/sdk-sessions', '0'.repeat(64))
+  );
 });
 
 it('still refuses two genuine roots claiming one agent', async () => {

@@ -1,8 +1,7 @@
-import { READ_JSON } from './remote-json';
-import { IS_STATE_ROOT } from './state-roots';
+import { IS_STATE_ROOT, WATCHER_ROOT } from './state-roots';
 
 /** Runs on the execution host; paths are resolved there and never supplied by the renderer. */
-export const inspectWatchers = String.raw`${READ_JSON}${IS_STATE_ROOT}
+export const inspectWatchers = String.raw`${WATCHER_ROOT}
 const fs=require('node:fs'), path=require('node:path'), cp=require('node:child_process');
 const directory=path.join(require('node:os').homedir(),'.local','state','switch','sdk-watchers');
 const read=p=>{try{return readJson(p)}catch(e){if(e.code==='ENOENT')return null;throw e}};
@@ -18,8 +17,8 @@ const tail=p=>{
  }catch(e){if(e.code==='ENOENT')return '';throw e}finally{if(fd!==undefined)fs.closeSync(fd)}
 };
 const result=[], logs=[];
-if(fs.existsSync(directory))for(const name of fs.readdirSync(directory).filter(isStateRoot)){
- const root=path.join(directory,name),config=read(path.join(root,'config.json'));
+for(const root of [watcherRoot(directory,process.argv[1])]){
+ const config=read(path.join(root,'config.json'));
  if(config?.session.agentId!==process.argv[1])continue;
  if(process.argv[2]==='logs'){
   for(const file of ['supervisor.log','supervisor/worker.log']){
@@ -41,7 +40,6 @@ if(fs.existsSync(directory))for(const name of fs.readdirSync(directory).filter(i
  pid,supervisorPid,buildHash,takenOver:read(path.join(root,'taken-over.json')),
  failure:pid?null:read(path.join(root,'supervisor','failure.json'))?.message??null});
 }
-if(result.length>1)throw new Error('Competing saved watchers require explicit cleanup.');
 console.log(JSON.stringify(process.argv[2]==='logs'?logs.join('\n\n'):result));
 `;
 

@@ -65,25 +65,38 @@ console.log(fs.mkdtempSync(path.join(staging, 'launch-')));
 `;
 
 /**
- * Prints the state root for a key, under `sdk-watchers` or `sdk-sessions`. A
- * watcher saved under an earlier key is adopted rather than stranded, which is
- * why the watchers directory is listed; two roots claiming one agent are an
- * error rather than a guess.
+ * `watcherRoot(base, identity)` for scripts run with `node -e`: an agent's
+ * watcher state root under `base`, the `sdk-watchers` directory.
  *
- * Arguments: the root's key, the directory kind, and the agent identity.
+ * The root is named by a hash of the agent's identity, so that one directory
+ * is read and no other. Only when it holds no configuration is the directory
+ * listed, to adopt a watcher saved under an earlier key rather than strand its
+ * journal; two such roots claiming one agent are an error rather than a guess.
+ * An agent that has never had a watcher gets the keyed path.
  */
-export const RESOLVE_STATE_ROOT = String.raw`${READ_JSON}${IS_STATE_ROOT}
-const fs = require('node:fs'), path = require('node:path');
-const [key, kind, identity] = process.argv.slice(1);
-const base = path.join(require('node:os').homedir(), '.local', 'state', 'switch', kind);
-let root = path.join(base, key);
-if (kind === 'sdk-watchers' && fs.existsSync(base)) {
-  const matches = fs.readdirSync(base).filter(isStateRoot).filter((name) => {
+export const WATCHER_ROOT = String.raw`${READ_JSON}${IS_STATE_ROOT}
+const watcherRoot = (base, identity) => {
+  const fs = require('node:fs'), path = require('node:path');
+  const keyed = path.join(base, require('node:crypto').createHash('sha256').update(identity).digest('hex'));
+  if (fs.existsSync(path.join(keyed, 'config.json')) || !fs.existsSync(base)) return keyed;
+  const saved = fs.readdirSync(base).filter(isStateRoot).filter((name) => {
     try { return readJson(path.join(base, name, 'config.json')).session.agentId === identity; }
     catch (e) { if (e.code === 'ENOENT') return false; throw e; }
   });
-  if (matches.length > 1) throw new Error('Competing saved watchers require explicit cleanup.');
-  if (matches.length) root = path.join(base, matches[0]);
-}
-console.log(root);
+  if (saved.length > 1) throw new Error('Competing saved watchers require explicit cleanup.');
+  return saved.length ? path.join(base, saved[0]) : keyed;
+};
+`;
+
+/**
+ * Prints the state root for a launch: a session's is keyed by its id, and a
+ * watcher's is found by `watcherRoot`.
+ *
+ * Arguments: the root's key, the directory kind, and the agent identity.
+ */
+export const RESOLVE_STATE_ROOT = String.raw`${WATCHER_ROOT}
+const path = require('node:path');
+const [key, kind, identity] = process.argv.slice(1);
+const base = path.join(require('node:os').homedir(), '.local', 'state', 'switch', kind);
+console.log(kind === 'sdk-watchers' ? watcherRoot(base, identity) : path.join(base, key));
 `;

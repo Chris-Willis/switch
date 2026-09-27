@@ -1345,6 +1345,14 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Changed
+- **Checking a remote agent's watcher reads only that agent's own state.** The
+  watcher panel, session start and the sidecar connection used to read every
+  agent's watcher configuration on the host to find one, so any other agent's
+  broken or duplicated state could fail them. The agent's directory is named
+  from its identity, so it is now read directly; the others are only looked at
+  when it has none, to adopt a watcher saved under an earlier name.
+
 #### Fixed
 - **A remote agent's room watcher no longer fails with "Competing saved
   watchers require explicit cleanup" or an unreadable-config error after a

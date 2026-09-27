@@ -60,13 +60,15 @@ export function savedAgentId(root: string): string | null {
 }
 
 /**
- * Resolves the watcher state root for an agent, adopting a directory saved
- * under an earlier key so a rename does not strand its journal.
+ * Resolves the watcher state root for an agent: the directory keyed by its
+ * identity, and no other is read while that one holds a configuration.
+ * Otherwise a directory saved under an earlier key is adopted, so a rename
+ * does not strand its journal. The same rule as `WATCHER_ROOT` on a host.
  */
 export function localWatcherRoot(identity: string): string {
   const base = localStateBase('sdk-watchers');
   const keyed = join(base, createHash('sha256').update(identity).digest('hex'));
-  if (!existsSync(base)) return keyed;
+  if (existsSync(join(keyed, 'config.json')) || !existsSync(base)) return keyed;
   const matches = readdirSync(base)
     .filter(isStateRootName)
     .filter((name) => savedAgentId(join(base, name)) === identity);
