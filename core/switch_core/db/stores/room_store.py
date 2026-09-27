@@ -1,3 +1,4 @@
+from collections.abc import Collection
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, insert, or_, select, update
@@ -14,6 +15,7 @@ from switch_core.db.models import (
     require_tenant_id,
     room_agents,
 )
+from switch_core.db.sql import any_of
 
 
 class RoomStore:
@@ -241,11 +243,58 @@ class RoomStore:
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
+    async def get_agent_room_memberships(
+        self, session: AsyncSession, agent_id: str
+    ) -> list[tuple[str, str, bool]]:
+        """`[(room_id, name, archived)]` for every room the agent is in.
+
+        The three columns the agent-detail view actually renders, as plain
+        values. `get_rooms_for_agent` answers the same question with mapped
+        `Room` objects, which for this caller means SQLAlchemy building a full
+        entity — identity map, attribute state, change tracking — per row, to
+        read a name off it and discard the rest. Archived rooms are included:
+        the view lists them, marked.
+        """
+        result = await session.execute(
+            select(Room.id, Room.name, Room.archived_at)
+            .join(room_agents, Room.id == room_agents.c.room_id)
+            .where(room_agents.c.agent_id == agent_id)
+        )
+        return [
+            (room_id, name, archived_at is not None)
+            for room_id, name, archived_at in result.all()
+        ]
+
     async def get_agent_ids(self, session: AsyncSession, room_id: str) -> list[str]:
         result = await session.execute(
             select(room_agents.c.agent_id).where(room_agents.c.room_id == room_id)
         )
         return list(result.scalars().all())
+
+    async def get_agent_ids_for_rooms(
+        self, session: AsyncSession, room_ids: Collection[str]
+    ) -> dict[str, list[str]]:
+        """`{room_id: [agent_id]}` for several rooms in one read.
+
+        Every room asked about gets an entry, empty ones included, so a caller
+        can index it directly rather than guarding each lookup.
+
+        For the room list, which needs this for every room it returns and was
+        asking one room at a time — fifty rooms, fifty round trips, each
+        paying the async-bridge toll that dominates our per-query cost far
+        more than the query itself does.
+        """
+        if not room_ids:
+            return {}
+        result = await session.execute(
+            select(room_agents.c.room_id, room_agents.c.agent_id).where(
+                any_of(room_agents.c.room_id, room_ids)
+            )
+        )
+        out: dict[str, list[str]] = {room_id: [] for room_id in room_ids}
+        for room_id, agent_id in result.all():
+            out[room_id].append(agent_id)
+        return out
 
     async def get_alias(
         self, session: AsyncSession, room_id: str, agent_id: str
@@ -358,6 +407,27 @@ class RoomStore:
             select(ClientRoom.client_id).where(ClientRoom.room_id == room_id)
         )
         return list(result.scalars().all())
+
+    async def get_client_ids_for_rooms(
+        self, session: AsyncSession, room_ids: Collection[str]
+    ) -> dict[str, list[str]]:
+        """`{room_id: [client_id]}` for several rooms in one read.
+
+        The companion to `get_agent_ids_for_rooms`, and for the same caller:
+        the room list needed both per room, so it was making two round trips
+        per row it rendered. Rooms with no clients get an empty list.
+        """
+        if not room_ids:
+            return {}
+        result = await session.execute(
+            select(ClientRoom.room_id, ClientRoom.client_id).where(
+                any_of(ClientRoom.room_id, room_ids)
+            )
+        )
+        out: dict[str, list[str]] = {room_id: [] for room_id in room_ids}
+        for room_id, client_id in result.all():
+            out[room_id].append(client_id)
+        return out
 
     async def get_member_agent_clients(
         self, session: AsyncSession, room_id: str
