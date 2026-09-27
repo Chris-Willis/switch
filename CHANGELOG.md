@@ -1345,6 +1345,8 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.37.2] - 2026-09-27
+
 #### Changed
 - **Checking a remote agent's watcher reads only that agent's own state.** The
   watcher panel, session start and the sidecar connection used to read every
@@ -1366,6 +1368,9 @@ version of their own to them without also giving them a release of their own.
   the readers skip any scratch directory an earlier version left, and each
   launch removes staged configurations abandoned more than an hour ago, since
   they carry the agent's credentials.
+- **Agent discovery failures no longer dump a raw error into the sidebar.** A
+  failed discovery now shows a compact discovery-failure indicator instead of
+  the raw error text (#565).
 
 ### [0.37.1] - 2026-09-26
 
