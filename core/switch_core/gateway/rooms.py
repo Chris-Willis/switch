@@ -938,40 +938,46 @@ async def archive_room(
 @router.post("/{room_id}/unarchive")
 async def unarchive_room(
     room_id: str,
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     room_service: Annotated[RoomService, Depends(get_room_service)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
     """: restore it to the active list."""
     return await _set_archived(
         room_id,
         False,
-        session,
+        session_factory,
         room_service,
         room_store,
         bridge_store,
         external_user_store,
         protocol,
+        user_store,
         user,
-        is_admin,
     )
 
 
 @router.delete("/{room_id}")
 async def delete_room(
     room_id: str,
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     room_service: Annotated[RoomService, Depends(get_room_service)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> dict[str, bool]:
-    await _require_room(session, room_store, room_id, user, "delete", is_admin)
+    await _authorize_room_action(
+        session_factory, room_store, user_store, room_id, user, "delete"
+    )
     try:
         await room_service.delete_room(room_id)
     except ValueError:
