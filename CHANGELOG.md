@@ -1345,6 +1345,20 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+- **A remote agent's room watcher no longer fails with "Competing saved
+  watchers require explicit cleanup" or an unreadable-config error after a
+  launch was interrupted.** Each launch staged the agent's configuration in a
+  scratch directory beside every agent's watcher state, and the watcher status
+  check, session start and session listing all read that directory in full. A
+  scratch directory left behind by a dropped SSH connection held either a
+  half-written file, which broke the check for every agent on the host, or a
+  complete copy of one agent's configuration, which made that agent look like
+  it had two watchers. Launches now stage in a separate `sdk-launch` directory,
+  the readers skip any scratch directory an earlier version left, and each
+  launch removes staged configurations abandoned more than an hour ago, since
+  they carry the agent's credentials.
+
 ### [0.37.1] - 2026-09-26
 
 #### Fixed

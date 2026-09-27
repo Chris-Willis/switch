@@ -69,6 +69,18 @@ it('reports a watcher standing down rather than leaving it to read as a crash', 
     },
   });
 });
+it('reports the one watcher past launches that were abandoned beside it', async () => {
+  const { home } = await fixture('agent');
+  const watchers = join(home, '.local/state/switch/sdk-watchers');
+  await mkdir(join(watchers, '.launch-copy'));
+  await writeFile(
+    join(watchers, '.launch-copy/config.json'),
+    JSON.stringify({ session: { agentId: 'agent' } })
+  );
+  await mkdir(join(watchers, 'launch-empty'));
+  await writeFile(join(watchers, 'launch-empty/config.json'), '');
+  expect(await inspect(home, 'status')).toHaveLength(1);
+});
 it('does not expose another agent’s status or logs', async () => {
   const { home, root } = await fixture('another-agent');
   await writeFile(join(root, 'supervisor/worker.log'), 'Other agent log');

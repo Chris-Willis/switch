@@ -4,6 +4,7 @@ import { connectRemoteAgent } from '@main/core/agents/connect-remote-agent';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { log } from '@main/lib/logger';
 import { READ_JSON } from './remote-json';
+import { IS_STATE_ROOT } from './state-roots';
 
 /**
  * Console's connection to an agent's sidecar on its SSH host.
@@ -15,13 +16,13 @@ import { READ_JSON } from './remote-json';
  * on first use and again after it drops.
  */
 
-const WATCHER_ROOT_SCRIPT = String.raw`${READ_JSON}
+const WATCHER_ROOT_SCRIPT = String.raw`${READ_JSON}${IS_STATE_ROOT}
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
 const [identity, file] = process.argv.slice(1);
 const base = path.join(require('node:os').homedir(), '.local', 'state', 'switch', 'sdk-watchers');
 let root = path.join(base, crypto.createHash('sha256').update(identity).digest('hex'));
 if (fs.existsSync(base)) {
-  const matches = fs.readdirSync(base).filter((name) => {
+  const matches = fs.readdirSync(base).filter(isStateRoot).filter((name) => {
     try { return readJson(path.join(base, name, 'config.json')).session.agentId === identity; }
     catch (e) { if (e.code === 'ENOENT') return false; throw e; }
   });
