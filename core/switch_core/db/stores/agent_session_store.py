@@ -5,6 +5,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import AgentSession
+from switch_core.db.sql import any_of
 
 _CONFLICT_TARGET = [
     AgentSession.agent_id,
@@ -231,7 +232,7 @@ class AgentSessionStore:
         )
         result = await session.execute(
             select(AgentSession.agent_id)
-            .where(AgentSession.agent_id.in_(agent_ids))
+            .where(any_of(AgentSession.agent_id, agent_ids))
             .where(room_pred)
             .where(AgentSession.lifecycle == "heartbeat")
             .where(AgentSession.last_seen_at > cutoff)

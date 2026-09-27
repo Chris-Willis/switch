@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from switch_core.db.models import RoleLease, RoomRole
+from switch_core.db.sql import any_of
 
 
 class RoomRoleStore:
@@ -136,7 +137,7 @@ class RoomRoleStore:
         within seconds today, would have been held forever.
         """
         holder_connection_live = (
-            RoleLease.transport_session_id.in_(live_connection_ids)
+            any_of(RoleLease.transport_session_id, live_connection_ids)
             if live_connection_ids
             else false()
         )
