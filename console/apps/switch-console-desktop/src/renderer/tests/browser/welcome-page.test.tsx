@@ -1,11 +1,11 @@
 /**
  * The first page of a fresh install.
  *
- * Its whole job is to say where Switch can run and get on with the one place it
- * can. So what matters is that the place nobody can use yet — Switch Cloud has
- * no endpoint behind it — says so in words rather than only in grey, that
- * nothing on the page pretends to be a choice, and that the place that does
- * work leads somewhere rather than sitting there.
+ * Its whole job is to say where Switch can run and get on with a place it can.
+ * Switch Cloud is only a place when this build or run names a deployment for
+ * it. When none is named it has to say so in words rather than only in grey,
+ * and nothing on the page may pretend to be a choice. When one is named it is
+ * a real second way on, and the unlabelled pager must not pick between the two.
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -21,7 +21,7 @@ vi.hoisted(() => {
   } as unknown as typeof window.electronAPI;
 });
 
-import { WelcomePage } from '@renderer/features/onboarding/welcome-page';
+import { type WelcomeCloud, WelcomePage } from '@renderer/features/onboarding/welcome-page';
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -37,11 +37,11 @@ afterEach(async () => {
   root = null;
 });
 
-async function renderPage(): Promise<HTMLDivElement> {
+async function renderPage(cloud: WelcomeCloud = { kind: 'closed' }): Promise<HTMLDivElement> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  await act(async () => root!.render(<WelcomePage onContinue={onContinue} />));
+  await act(async () => root!.render(<WelcomePage cloud={cloud} onContinue={onContinue} />));
   return container;
 }
 
@@ -61,7 +61,7 @@ function button(el: HTMLElement, label: string): HTMLButtonElement {
   return found!;
 }
 
-describe('the welcome page', () => {
+describe('the welcome page with no Switch Cloud named', () => {
   it('asks where Switch should run and offers both places', async () => {
     const el = await renderPage();
 
@@ -72,9 +72,9 @@ describe('the welcome page', () => {
   });
 
   it('says in words that Switch Cloud is not ready, not only in grey', async () => {
-    // Nothing hosts it yet. Shown anyway, because "where should it run" has two
-    // answers and one of them is not ready — but the reason has to be legible
-    // to someone who cannot see the card is dimmed.
+    // Shown anyway, because "where should it run" has two answers and one of
+    // them is not ready — but the reason has to be legible to someone who
+    // cannot see the card is dimmed.
     const el = await renderPage();
     const cloud = choice(el, 'Switch Cloud');
 
@@ -110,5 +110,79 @@ describe('the welcome page', () => {
     await act(async () => el.querySelector<HTMLButtonElement>('[aria-label="Next page"]')!.click());
 
     expect(onContinue).toHaveBeenCalled();
+  });
+});
+
+function openCloud(overrides: Partial<Extract<WelcomeCloud, { kind: 'open' }>> = {}): WelcomeCloud {
+  return {
+    kind: 'open',
+    url: 'https://cloud.example.com',
+    connecting: false,
+    error: null,
+    onConnect: vi.fn(),
+    ...overrides,
+  };
+}
+
+describe('the welcome page with Switch Cloud named', () => {
+  it('names where the Cloud is and does not call it coming soon', async () => {
+    const el = await renderPage(openCloud());
+    const cloud = choice(el, 'Switch Cloud');
+
+    expect(cloud.textContent).toContain('cloud.example.com');
+    expect(cloud.textContent).not.toContain('Coming soon');
+  });
+
+  it('connects to the Cloud from its own button', async () => {
+    const onConnect = vi.fn();
+    const el = await renderPage(openCloud({ onConnect }));
+
+    await act(async () => button(el, 'Continue with Switch Cloud').click());
+
+    expect(onConnect).toHaveBeenCalled();
+    expect(onContinue).not.toHaveBeenCalled();
+  });
+
+  it('still offers your own server', async () => {
+    const el = await renderPage(openCloud());
+
+    await act(async () => button(el, 'Continue with your own server').click());
+
+    expect(onContinue).toHaveBeenCalled();
+  });
+
+  it('gives the pager no forward move, since there are two to choose between', async () => {
+    const el = await renderPage(openCloud());
+
+    const next = el.querySelector<HTMLButtonElement>('[aria-label="Next page"]');
+    if (next) {
+      await act(async () => next.click());
+    }
+    expect(onContinue).not.toHaveBeenCalled();
+  });
+
+  it('shows why connecting failed', async () => {
+    const el = await renderPage(openCloud({ error: 'Could not reach Switch Cloud' }));
+
+    expect(el.querySelector('[role="alert"]')?.textContent).toContain(
+      'Could not reach Switch Cloud'
+    );
+  });
+});
+
+describe('the welcome page when the Cloud setting is broken', () => {
+  it('says the Cloud is unavailable and why, and offers no way into it', async () => {
+    const el = await renderPage({
+      kind: 'failed',
+      headline: 'Switch Cloud is misconfigured',
+      detail: 'SWITCH_CLOUD_URL must be an https URL',
+    });
+    const cloud = choice(el, 'Switch Cloud');
+
+    expect(cloud.textContent).toContain('Unavailable');
+    expect(cloud.textContent).toContain('SWITCH_CLOUD_URL must be an https URL');
+    expect(
+      [...el.querySelectorAll('button')].some((b) => b.textContent?.includes('Switch Cloud'))
+    ).toBe(false);
   });
 });

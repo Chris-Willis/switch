@@ -25,7 +25,7 @@ vi.hoisted(() => {
 });
 
 vi.mock('@renderer/lib/ipc', () => ({
-  rpc: { switchServers: { resolveWorkspaces } },
+  rpc: { switchServers: { resolveWorkspaces, switchCloud: () => Promise.resolve(null) } },
   events: { on: () => () => {}, emit: () => {} },
 }));
 
@@ -111,7 +111,7 @@ afterEach(async () => {
 
 /** The flow, opened at the page that follows a successful sign-in. */
 async function renderAtPickWorkspace(): Promise<HTMLDivElement> {
-  onboardingStore.connected(SERVER as never);
+  onboardingStore.connected(SERVER as never, 'external');
   onboardingStore.goTo('pickWorkspace');
 
   container = document.createElement('div');

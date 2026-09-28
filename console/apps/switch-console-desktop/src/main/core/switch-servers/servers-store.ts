@@ -181,6 +181,11 @@ export async function ensureManagedServer(
   return server;
 }
 
+/** The server registered at a gateway URL, compared the way it was stored. */
+export async function findServerByGatewayUrl(gatewayUrl: string): Promise<SwitchServer | null> {
+  return getServerByGatewayUrl(normaliseUrl(gatewayUrl));
+}
+
 async function getServerByGatewayUrl(gatewayUrl: string): Promise<SwitchServer | null> {
   const [row] = await db
     .select()

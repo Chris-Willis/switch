@@ -1,7 +1,8 @@
-import { CircleCheck, Globe, Info, Laptop, Server, TriangleAlert } from 'lucide-react';
+import { CircleCheck, Cloud, Globe, Info, Laptop, Server, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
+import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
@@ -28,6 +29,7 @@ import { LogTail } from './log-tail';
 import { remoteServerStore } from './remote-server-store';
 import { ServerSignInFields, useServerSignIn } from './server-sign-in';
 import { switchServersStore } from './switch-servers-store';
+import { useSwitchCloud } from './use-switch-cloud';
 
 /**
  * Turn a server-API-URL cascade into a user-facing toast: confirm how many
@@ -172,6 +174,18 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
    * whatever was behind it left no sign anything had happened. A path that
    * cannot name the server it made lands nowhere rather than guessing.
    */
+  /**
+   * Switch Cloud has no form: its address is the build's. So it goes straight
+   * from the chooser to signing in, and that step's Back returns to the
+   * chooser rather than to a connect-by-URL form it never passed through.
+   */
+  const enterCloud = (server: SwitchServer) => {
+    setConnected(server);
+    setChoice('cloud');
+    setStep('signIn');
+    report('add_server_step', { step: 'signIn', choice: 'cloud', first_run: false });
+  };
+
   const finish = (serverId: string | null) => {
     if (serverId) {
       void switchServersStore.setActive(serverId);
@@ -186,6 +200,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
         onLocal={() => goToStep('local')}
         onRemoteHost={() => goToStep('remoteHost')}
         onExternal={() => goToStep('external')}
+        onCloud={enterCloud}
         onClose={props.onClose}
       />
     );
@@ -216,7 +231,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
     return (
       <SignInStep
         server={connected}
-        onBack={() => goToStep('external')}
+        onBack={() => goToStep(choice === 'cloud' ? 'choose' : 'external')}
         onClose={props.onClose}
         onSignedIn={() => goToStep('linkAccounts')}
       />
@@ -259,13 +274,31 @@ function ChooseStep({
   onLocal,
   onRemoteHost,
   onExternal,
+  onCloud,
   onClose,
 }: {
   onLocal: () => void;
   onRemoteHost: () => void;
   onExternal: () => void;
+  onCloud: (server: SwitchServer) => void;
   onClose: () => void;
 }) {
+  const cloud = useSwitchCloud();
+  const [cloudAttempt, setCloudAttempt] = useState<{ connecting: boolean; error: string | null }>({
+    connecting: false,
+    error: null,
+  });
+  const connectToCloud = () => {
+    setCloudAttempt({ connecting: true, error: null });
+    switchServersStore.connectToSwitchCloud().then(onCloud, (cause) => {
+      const failure = describeFailure(cause, 'Could not connect to Switch Cloud.');
+      setCloudAttempt({
+        connecting: false,
+        error: failure.detail ? `${failure.headline} ${failure.detail}` : failure.headline,
+      });
+    });
+  };
+
   return (
     <WizardFrame
       title="Add a Switch server"
@@ -278,6 +311,37 @@ function ChooseStep({
       }
     >
       <div className="grid gap-3">
+        {/* Offered only when this build knows where the Cloud is. A failed read
+            is shown rather than dropped, since it means the build is broken. */}
+        {cloud.kind === 'open' && (
+          <ChoiceCard
+            icon={
+              cloudAttempt.connecting ? (
+                <Spinner className="size-5" />
+              ) : (
+                <Cloud className="size-5" />
+              )
+            }
+            title="Connect to Switch Cloud"
+            description={`Sign in to the Switch we run for you at ${new URL(cloud.url).host}.`}
+            onClick={connectToCloud}
+            disabled={cloudAttempt.connecting}
+          />
+        )}
+        {cloudAttempt.error && (
+          <Alert variant="destructive">
+            <TriangleAlert className="size-4" />
+            <AlertTitle>Could not connect to Switch Cloud</AlertTitle>
+            <AlertDescription>{cloudAttempt.error}</AlertDescription>
+          </Alert>
+        )}
+        {cloud.kind === 'failed' && (
+          <Alert variant="destructive">
+            <TriangleAlert className="size-4" />
+            <AlertTitle>{cloud.headline}</AlertTitle>
+            {cloud.detail && <AlertDescription>{cloud.detail}</AlertDescription>}
+          </Alert>
+        )}
         <ChoiceCard
           icon={<Laptop className="size-5" />}
           title="Run a server on this computer"
@@ -306,17 +370,21 @@ export function ChoiceCard({
   title,
   description,
   onClick,
+  disabled = false,
 }: {
   icon: React.ReactNode;
   title: string;
   description: string;
   onClick: () => void;
+  /** While the choice is already being acted on. */
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="bg-card hover:border-border-hover flex items-start gap-3 rounded-lg border border-border p-4 text-left hover:bg-background-tertiary-2"
+      disabled={disabled}
+      className="bg-card hover:border-border-hover flex items-start gap-3 rounded-lg border border-border p-4 text-left hover:bg-background-tertiary-2 disabled:pointer-events-none disabled:opacity-60"
     >
       <span className="mt-0.5 text-foreground-muted">{icon}</span>
       <span className="space-y-1">
