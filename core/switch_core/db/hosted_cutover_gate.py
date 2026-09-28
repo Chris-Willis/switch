@@ -176,7 +176,11 @@ def cutover_gate_problems(connection: Connection) -> list[str]:
         for launch_id in connection.scalars(text(RUNNING_LAUNCHES))
     ]
     if not _present(connection, "hosted_cutover_volumes"):
-        return problems
+        return problems + [
+            f"launch {row.launch_id} has hosted state the cutover has not "
+            "captured; run `just hosted-cutover-upgrade prepare`"
+            for row in connection.execute(text(_HOSTED_AGENTS))
+        ]
     gate = _VOLUMES + (_OLD_TABLES if _present(connection, "sdk_sessions") else [])
     for query, message in gate:
         problems += [message.format(row) for row in connection.scalars(text(query))]

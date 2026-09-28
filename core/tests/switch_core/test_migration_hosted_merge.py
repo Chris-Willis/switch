@@ -42,6 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 import switch_core.db.models  # noqa: F401 — registers every table on Base.metadata
 from switch_core.bridges.agent.hosted_cutover import CutoverManifest
 from switch_core.config import SwitchConfig
+from switch_core.db.hosted_cutover_gate import DROP_REVISION
 from switch_core.db.rls_ddl import POLICY_NAME, REQUIRE_TENANT_FUNCTION_NAME
 from switch_core.db.runtime_role import _require_every_policy, grant_runtime_role
 from switch_core.hosted_cutover_upgrade import (
@@ -1048,6 +1049,46 @@ async def test_real_upgrade_refuses_an_incomplete_cutover_before_the_drop(
         await migrate(config)
 
     assert await _head(pilot_url) == ([_MANIFEST_REVISION], True)
+
+
+async def _alembic_upgrade_to_drop(config: SwitchConfig) -> None:
+    await asyncio.to_thread(
+        alembic_command.upgrade, Config(str(_CORE / "alembic.ini")), DROP_REVISION
+    )
+
+
+@pytest.mark.parametrize(
+    "migrate",
+    [_alembic_upgrade_to_drop, _alembic_upgrade_heads, _migrate_and_grant],
+    ids=["alembic-upgrade-drop", "alembic-upgrade-heads", "core-boot"],
+)
+async def test_real_upgrade_refuses_a_cutover_never_prepared(
+    pilot_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    migrate: Callable[[SwitchConfig], Awaitable[None]],
+) -> None:
+    engine = create_async_engine(pilot_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade_to(_PILOT_HEAD))
+            await _seed_tenant_and_user(connection)
+            await connection.execute(
+                text(
+                    "INSERT INTO hosted_launches "
+                    "(tenant_id, id, owner_id, name, spec, agent_id, state, desired_state) "
+                    "VALUES ('t1', 'l1', 'u1', 'pilot-agent', '{}', 'a1', 'stopped', 'stopped')"
+                )
+            )
+            await _seed_sdk_rows(connection)
+    finally:
+        await engine.dispose()
+
+    with pytest.raises(
+        RuntimeError, match=r"launch l1 .*run `just hosted-cutover-upgrade prepare`"
+    ):
+        await migrate(_migration_config(pilot_url, monkeypatch))
+
+    assert await _head(pilot_url) == ([_PILOT_HEAD], True)
 
 
 @_MIGRATE_PATHS
