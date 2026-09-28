@@ -7,6 +7,10 @@ import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { reconcileServerWorkspaces } from '@main/core/workspaces/reconcile-workspaces';
 import { listWorkspacesForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
+import {
+  SWITCH_CLOUD_NAME,
+  type SwitchCloudEndpoint,
+} from '@shared/core/switch-servers/switch-cloud';
 import type {
   AddServerParams,
   BundledChatSignIn,
@@ -28,6 +32,7 @@ import { hostUnreachable, requireReachableServer, requireServer } from './requir
 import {
   addServer,
   deleteSessionCookie,
+  findServerByGatewayUrl,
   getServer,
   listServers,
   removeServer,
@@ -36,6 +41,7 @@ import {
   setActiveServerId,
   updateServer,
 } from './servers-store';
+import { requireSwitchCloudEndpoint, switchCloudEndpoint } from './switch-cloud';
 
 /** A sign-in's own error union, as a reportable code. Never its message. */
 const SIGN_IN_FAILURE: Record<LoginError['kind'], TelemetrySignInFailure> = {
@@ -97,6 +103,32 @@ export const switchServersController = createRPCController({
     let server: SwitchServer;
     try {
       server = await addServer(params);
+    } catch (error) {
+      trackEvent('server_added', { server_kind: 'external', outcome: 'failure' });
+      throw error;
+    }
+    trackEvent('server_added', { server_kind: 'external', outcome: 'success' });
+    return server;
+  },
+
+  /** Where Switch Cloud is, or null when this build or run has not been told. */
+  switchCloud: async (): Promise<SwitchCloudEndpoint | null> => switchCloudEndpoint(),
+
+  /**
+   * Register Switch Cloud as a server, or hand back the one already registered.
+   *
+   * Idempotent because the first-run flow walks back and forth over it: going
+   * back from sign-in and choosing the Cloud again must land on the same row,
+   * and the gateway URL is unique, so a second insert would fail rather than
+   * duplicate. Reported only when a row is actually added.
+   */
+  connectToSwitchCloud: async (): Promise<SwitchServer> => {
+    const { url } = requireSwitchCloudEndpoint();
+    const existing = await findServerByGatewayUrl(url);
+    if (existing) return existing;
+    let server: SwitchServer;
+    try {
+      server = await addServer({ name: SWITCH_CLOUD_NAME, gatewayUrl: url, apiUrl: url });
     } catch (error) {
       trackEvent('server_added', { server_kind: 'external', outcome: 'failure' });
       throw error;

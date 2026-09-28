@@ -8,6 +8,7 @@ const managedServerHostBlocked = vi.hoisted(() => vi.fn((): unknown => null));
 const fetchAuthConfig = vi.hoisted(() => vi.fn());
 const trackEvent = vi.hoisted(() => vi.fn());
 const addServer = vi.hoisted(() => vi.fn());
+const findServerByGatewayUrl = vi.hoisted(() => vi.fn());
 const passwordLogin = vi.hoisted(() => vi.fn());
 const reconcileServerWorkspaces = vi.hoisted(() => vi.fn());
 const listWorkspacesForServer = vi.hoisted(() => vi.fn());
@@ -64,6 +65,7 @@ vi.mock('./gateway-client', () => ({
 vi.mock('./servers-store', () => ({
   getServer,
   addServer,
+  findServerByGatewayUrl,
   deleteSessionCookie: vi.fn(),
   listServers: vi.fn(),
   removeServer: vi.fn(),
@@ -421,5 +423,57 @@ describe('adding a server by URL', () => {
       server_kind: 'external',
       outcome: 'failure',
     });
+  });
+});
+
+describe('connecting to Switch Cloud', () => {
+  const CLOUD = server({
+    id: 'cloud',
+    name: 'Switch Cloud',
+    gatewayUrl: 'https://cloud.example.com',
+  });
+
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+    vi.stubEnv('SWITCH_CLOUD_URL', 'https://cloud.example.com');
+    vi.stubEnv('MAIN_VITE_SWITCH_CLOUD_URL', undefined);
+    addServer.mockReset();
+    findServerByGatewayUrl.mockReset();
+    trackEvent.mockReset();
+  });
+
+  it('registers the Cloud once, on its one origin', async () => {
+    findServerByGatewayUrl.mockResolvedValue(null);
+    addServer.mockResolvedValue(CLOUD);
+
+    await expect(switchServersController.connectToSwitchCloud()).resolves.toBe(CLOUD);
+
+    expect(addServer).toHaveBeenCalledWith({
+      name: 'Switch Cloud',
+      gatewayUrl: 'https://cloud.example.com',
+      apiUrl: 'https://cloud.example.com',
+    });
+    expect(trackEvent).toHaveBeenCalledWith('server_added', {
+      server_kind: 'external',
+      outcome: 'success',
+    });
+  });
+
+  it('hands back the row already registered rather than adding another', async () => {
+    findServerByGatewayUrl.mockResolvedValue(CLOUD);
+
+    await expect(switchServersController.connectToSwitchCloud()).resolves.toBe(CLOUD);
+
+    expect(addServer).not.toHaveBeenCalled();
+    expect(trackEvent).not.toHaveBeenCalled();
+  });
+
+  it('raises when no Cloud is named', async () => {
+    vi.stubEnv('SWITCH_CLOUD_URL', undefined);
+
+    await expect(switchServersController.connectToSwitchCloud()).rejects.toThrow(
+      'Switch Cloud is not configured'
+    );
+    expect(addServer).not.toHaveBeenCalled();
   });
 });

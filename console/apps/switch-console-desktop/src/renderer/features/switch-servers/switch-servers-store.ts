@@ -462,6 +462,27 @@ export class SwitchServersStore {
     }
   }
 
+  /**
+   * Register Switch Cloud, or take the row already registered for it.
+   *
+   * Raises rather than recording a store error like `addServer`: the Cloud is
+   * chosen from a card with no form under it, so the card is where the failure
+   * has to be shown.
+   */
+  async connectToSwitchCloud(): Promise<SwitchServer> {
+    const server = await rpc.switchServers.connectToSwitchCloud();
+    const [servers] = await Promise.all([
+      rpc.switchServers.listServers(),
+      workspacesStore.refresh(),
+    ]);
+    runInAction(() => {
+      this.servers = servers;
+    });
+    await this.ensureActiveServer();
+    await this.refreshStatus(server.id);
+    return server;
+  }
+
   async updateServer(
     id: string,
     name: string,
