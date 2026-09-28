@@ -91,6 +91,11 @@ import type {
 import type { Workspace } from '@shared/core/workspaces/workspaces';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import {
+  createWorkspaceInvitation,
+  listWorkspaceInvitations,
+  revokeWorkspaceInvitation,
+} from './invitations';
+import {
   withReachableWorkspaceSession,
   withWorkspaceSession,
   workspaceServer,
@@ -228,6 +233,13 @@ export const workspacesController = createRPCController({
 
   listRooms: (workspaceId: string): Promise<RemoteRoomSummary[]> =>
     withWorkspaceSession(workspaceId, fetchRooms),
+
+  /** Admins and owners only; the gateway refuses anyone else with a 403. */
+  listInvitations: listWorkspaceInvitations,
+
+  createInvitation: createWorkspaceInvitation,
+
+  revokeInvitation: revokeWorkspaceInvitation,
 
   listBridges: (workspaceId: string): Promise<RemoteBridge[]> =>
     withReachableWorkspaceSession(workspaceId, async (server) =>

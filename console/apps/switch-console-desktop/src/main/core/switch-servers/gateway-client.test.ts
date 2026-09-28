@@ -40,6 +40,9 @@ vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer, extractA
 
 const {
   acceptInvitation,
+  createInvitation,
+  fetchInvitations,
+  fetchInviteEmailEnabled,
   createRoom,
   deleteBridge,
   fetchBridges,
@@ -826,5 +829,96 @@ describe('acceptInvitation', () => {
       status: 403,
       detail: 'This invitation has expired',
     });
+  });
+});
+
+describe('workspace invitations', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function jsonResponse(body: unknown): Response {
+    return {
+      status: 200,
+      ok: true,
+      json: async () => body,
+      headers: { getSetCookie: () => [] },
+      text: async () => '',
+    } as unknown as Response;
+  }
+
+  const ROW = {
+    id: 'inv-1',
+    role: 'admin',
+    email: 'ada@example.com',
+    expires_at: '2026-10-05 12:00:00.123456+00:00',
+    uses_remaining: 1,
+    revoked_at: null,
+    created_by: 'u1',
+    created_at: '2026-09-28 12:00:00+00:00',
+  };
+
+  it("reads the server's timestamps as ISO, whatever separator it writes", async () => {
+    fetchMock.mockResolvedValue(jsonResponse([ROW]) as never);
+
+    const [invitation] = await fetchInvitations(SERVER, 'tenant 1');
+
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/tenants/tenant%201/invitations'
+    );
+    expect(invitation).toEqual({
+      id: 'inv-1',
+      role: 'admin',
+      email: 'ada@example.com',
+      expiresAt: '2026-10-05T12:00:00.123Z',
+      usesRemaining: 1,
+      revokedAt: null,
+      createdAt: '2026-09-28T12:00:00.000Z',
+    });
+  });
+
+  it('raises on a timestamp it cannot read rather than showing an invalid date', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([{ ...ROW, expires_at: 'soon' }]) as never);
+
+    await expect(fetchInvitations(SERVER, 't1')).rejects.toThrow(/unreadable timestamp/);
+  });
+
+  it('posts the invitation and returns the token and what became of the e-mail', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ ...ROW, token: 'tok-1', email_delivery: 'not_configured' }) as never
+    );
+
+    const created = await createInvitation(SERVER, 't1', {
+      role: 'admin',
+      email: 'ada@example.com',
+      expiresInHours: 48,
+      usesRemaining: 1,
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { method: string; body: string },
+    ];
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({
+      role: 'admin',
+      email: 'ada@example.com',
+      expires_in_hours: 48,
+      uses_remaining: 1,
+    });
+    expect(created.token).toBe('tok-1');
+    expect(created.emailDelivery).toBe('not_configured');
+  });
+
+  it('raises when the server does not say whether it e-mails invitations', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ state: 'ready' }) as never);
+
+    await expect(fetchInviteEmailEnabled(SERVER)).rejects.toThrow(/older than this app/);
   });
 });

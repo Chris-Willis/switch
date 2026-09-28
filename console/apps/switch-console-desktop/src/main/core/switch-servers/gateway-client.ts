@@ -27,6 +27,7 @@ import type {
   SwitchServerDeclaration,
   SwitchUser,
 } from '@shared/core/switch-servers/switch-servers';
+import type { Invitation, InvitationEmailDelivery } from '@shared/core/workspaces/invitations';
 import type { WorkspaceRole } from '@shared/core/workspaces/workspaces';
 import { extractAuthCookie, reauthenticateManagedServer, refreshSession } from './auth';
 import { getSessionCookie, setSessionCookie } from './servers-store';
@@ -430,6 +431,127 @@ export async function acceptInvitation(server: SwitchServer, token: string): Pro
   }
   await setSessionCookie(server.id, cookie);
   return { id: json.id, slug: json.slug, name: json.name, role: mapRole(json.role) };
+}
+
+type InvitationJson = {
+  id: string;
+  role: string;
+  email: string | null;
+  expires_at: string;
+  uses_remaining: number;
+  revoked_at: string | null;
+  created_at: string;
+};
+
+/**
+ * A gateway timestamp as ISO 8601.
+ *
+ * The invitation routes write Python's `str(datetime)`, with a space where ISO
+ * has a `T`. Normalised here so every reader downstream can hand it to `Date`;
+ * one that still does not parse is raised, since showing an expiry of "Invalid
+ * Date" would leave an admin unable to tell a live invitation from a dead one.
+ */
+function isoTimestamp(raw: string): string {
+  const parsed = new Date(raw.replace(' ', 'T'));
+  if (Number.isNaN(parsed.getTime())) {
+    throw new GatewayError('http', `Switch server reported an unreadable timestamp: ${raw}`);
+  }
+  return parsed.toISOString();
+}
+
+function mapInvitation(json: InvitationJson): Invitation {
+  return {
+    id: json.id,
+    role: mapRole(json.role),
+    email: json.email,
+    expiresAt: isoTimestamp(json.expires_at),
+    usesRemaining: json.uses_remaining,
+    revokedAt: json.revoked_at === null ? null : isoTimestamp(json.revoked_at),
+    createdAt: isoTimestamp(json.created_at),
+  };
+}
+
+function mapDelivery(raw: unknown): InvitationEmailDelivery {
+  if (raw === 'sent' || raw === 'not_configured' || raw === 'failed' || raw === 'not_requested') {
+    return raw;
+  }
+  throw new GatewayError('http', `Switch server reported an unknown e-mail delivery: ${raw}`);
+}
+
+function invitationsPath(tenantId: string): string {
+  return `/tenants/${encodeURIComponent(tenantId)}/invitations`;
+}
+
+/** Every invitation to a workspace, revoked and spent ones included. Admins and owners only. */
+export async function fetchInvitations(
+  server: SwitchServer,
+  tenantId: string
+): Promise<Invitation[]> {
+  const res = await gatewayFetch(server, invitationsPath(tenantId), { authenticated: true });
+  return ((await res.json()) as InvitationJson[]).map(mapInvitation);
+}
+
+/**
+ * Mint an invitation to a workspace, and e-mail it when it names an address
+ * and the server has mail set up.
+ *
+ * The token comes back once, here, and never again: the server stores a hash.
+ */
+export async function createInvitation(
+  server: SwitchServer,
+  tenantId: string,
+  params: {
+    role: WorkspaceRole;
+    email: string | null;
+    expiresInHours: number;
+    usesRemaining: number;
+  }
+): Promise<{ invitation: Invitation; token: string; emailDelivery: InvitationEmailDelivery }> {
+  const res = await gatewayFetch(server, invitationsPath(tenantId), {
+    authenticated: true,
+    method: 'POST',
+    body: {
+      role: params.role,
+      email: params.email,
+      expires_in_hours: params.expiresInHours,
+      uses_remaining: params.usesRemaining,
+    },
+  });
+  const json = (await res.json()) as InvitationJson & { token: string; email_delivery: string };
+  return {
+    invitation: mapInvitation(json),
+    token: json.token,
+    emailDelivery: mapDelivery(json.email_delivery),
+  };
+}
+
+export async function revokeInvitation(
+  server: SwitchServer,
+  tenantId: string,
+  invitationId: string
+): Promise<Invitation> {
+  const res = await gatewayFetch(
+    server,
+    `${invitationsPath(tenantId)}/${encodeURIComponent(invitationId)}`,
+    { authenticated: true, method: 'DELETE' }
+  );
+  return mapInvitation((await res.json()) as InvitationJson);
+}
+
+/**
+ * Whether this server e-mails an invitation that names an address, or only
+ * mints the link for the admin to send.
+ */
+export async function fetchInviteEmailEnabled(server: SwitchServer): Promise<boolean> {
+  const res = await gatewayFetch(server, '/auth/session', { authenticated: true });
+  const json = (await res.json()) as { invite_email_enabled?: unknown };
+  if (typeof json.invite_email_enabled !== 'boolean') {
+    throw new GatewayError(
+      'http',
+      `${server.name} did not say whether it can e-mail invitations. It may be older than this app.`
+    );
+  }
+  return json.invite_email_enabled;
 }
 
 /** Options for `registerKnownAgent`, matching the gateway's
