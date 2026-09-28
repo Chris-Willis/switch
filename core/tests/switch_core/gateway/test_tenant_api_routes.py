@@ -43,6 +43,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.invitation_store import InvitationStore
+from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
@@ -130,6 +131,7 @@ def _app(
     app.dependency_overrides[gw_deps.get_agent_store] = lambda: AgentStore()
     app.dependency_overrides[gw_deps.get_api_key_store] = lambda: ApiKeyStore()
     app.dependency_overrides[gw_deps.get_invitation_store] = lambda: InvitationStore()
+    app.dependency_overrides[gw_deps.get_join_domain_store] = lambda: JoinDomainStore()
     app.dependency_overrides[gw_deps.get_usage_store] = lambda: UsageStore()
     app.dependency_overrides[gw_deps.get_budget_store] = lambda: BudgetStore()
     app.dependency_overrides[gw_deps.get_protocol] = lambda: _fake_protocol()
@@ -2050,3 +2052,185 @@ class TestInvitationEmail:
         for n in range(2):
             response = await self._invite(app, token, {"email": f"o{n}@example.com"})
             assert response.status_code == 201, response.text
+
+
+class TestJoiningByDomain:
+    async def _admin(
+        self, session_factory: async_sessionmaker[AsyncSession], email: str
+    ) -> tuple[str, str]:
+        """An admin of workspace A, and their cookie."""
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name=email, tenant_id=TENANT_A, role="admin", email=email
+        )
+        return user_id, _token(user_id, email, TENANT_A)
+
+    async def _outsider(
+        self, session_factory: async_sessionmaker[AsyncSession], email: str
+    ) -> tuple[str, str]:
+        """A signed-in person in workspace B, and their cookie."""
+        async with session_factory() as session:
+            if await session.get(Tenant, TENANT_B) is None:
+                session.add(Tenant(id=TENANT_B, slug=TENANT_B, name=TENANT_B))
+                await session.commit()
+        user_id = await _make_member(
+            session_factory, name=email, tenant_id=TENANT_B, role="member", email=email
+        )
+        return user_id, _token(user_id, email, TENANT_B)
+
+    async def test_an_admin_opens_the_workspace_to_their_own_domain(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        admin_id, cookie = await self._admin(session_factory, "ada@Acme.example")
+
+        async with _client(_app(session_factory), cookie) as client:
+            before = await client.get(f"/tenants/{TENANT_A}/join-domains")
+            added = await client.post(
+                f"/tenants/{TENANT_A}/join-domains", json={"domain": " ACME.example "}
+            )
+            again = await client.post(
+                f"/tenants/{TENANT_A}/join-domains", json={"domain": "acme.example"}
+            )
+            after = await client.get(f"/tenants/{TENANT_A}/join-domains")
+
+        assert before.status_code == 200, before.text
+        assert before.json() == {
+            "domains": [],
+            "own_domain": "acme.example",
+            "own_domain_refusal": None,
+        }
+        assert added.status_code == 201, added.text
+        assert added.json()["domain"] == "acme.example"
+        assert added.json()["created_by"] == admin_id
+        assert again.status_code == 409
+        assert [d["domain"] for d in after.json()["domains"]] == ["acme.example"]
+
+    async def test_another_domain_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        _admin_id, cookie = await self._admin(session_factory, "ada@acme.example")
+
+        async with _client(_app(session_factory), cookie) as client:
+            response = await client.post(
+                f"/tenants/{TENANT_A}/join-domains", json={"domain": "rival.example"}
+            )
+
+        assert response.status_code == 400
+        assert "your own address, acme.example" in response.json()["detail"]
+
+    async def test_a_public_e_mail_provider_is_refused_even_as_your_own(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        _admin_id, cookie = await self._admin(session_factory, "ada@gmail.com")
+
+        async with _client(_app(session_factory), cookie) as client:
+            listed = await client.get(f"/tenants/{TENANT_A}/join-domains")
+            response = await client.post(
+                f"/tenants/{TENANT_A}/join-domains", json={"domain": "gmail.com"}
+            )
+
+        assert "public e-mail provider" in listed.json()["own_domain_refusal"]
+        assert response.status_code == 400
+        assert "public e-mail provider" in response.json()["detail"]
+
+    async def test_a_member_cannot_open_the_workspace(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        member_id = await _make_member(
+            session_factory,
+            name="mo",
+            tenant_id=TENANT_A,
+            role="member",
+            email="mo@acme.example",
+        )
+
+        async with _client(
+            _app(session_factory), _token(member_id, "mo@acme.example", TENANT_A)
+        ) as client:
+            response = await client.post(
+                f"/tenants/{TENANT_A}/join-domains", json={"domain": "acme.example"}
+            )
+
+        assert response.status_code == 403
+
+    async def test_someone_at_the_domain_sees_and_joins_it_as_a_member(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        _admin_id, admin_cookie = await self._admin(session_factory, "ada@acme.example")
+        joiner_id, cookie = await self._outsider(session_factory, "bo@ACME.example")
+        _other_id, other_cookie = await self._outsider(
+            session_factory, "cy@elsewhere.example"
+        )
+
+        async with _client(_app(session_factory), admin_cookie) as client:
+            await client.post(
+                f"/tenants/{TENANT_A}/join-domains", json={"domain": "acme.example"}
+            )
+        async with _client(_app(session_factory), other_cookie) as client:
+            not_offered = await client.get("/joinable-tenants")
+            not_joined = await client.post(f"/joinable-tenants/{TENANT_A}/join")
+        async with _client(_app(session_factory), cookie) as client:
+            offered = await client.get("/joinable-tenants")
+            joined = await client.post(f"/joinable-tenants/{TENANT_A}/join")
+            afterwards = await client.get("/joinable-tenants")
+
+        assert not_offered.json() == []
+        assert not_joined.status_code == 404
+        assert offered.status_code == 200, offered.text
+        assert offered.json() == [
+            {
+                "tenant_id": TENANT_A,
+                "tenant_slug": TENANT_A,
+                "tenant_name": TENANT_A,
+                "domain": "acme.example",
+            }
+        ]
+        assert joined.status_code == 200, joined.text
+        assert joined.json()["role"] == "member"
+        assert _tenant_claim(joined) == TENANT_A
+        assert await _last_tenant_id(session_factory, joiner_id) == TENANT_A
+        assert afterwards.json() == []
+        async with tenant_session(session_factory, TENANT_A) as session:
+            membership = await session.get(TenantMember, (TENANT_A, joiner_id))
+            assert membership is not None
+            assert membership.role == "member"
+
+    async def test_joining_again_keeps_the_role_you_have(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        admin_id, cookie = await self._admin(session_factory, "ada@acme.example")
+
+        async with _client(_app(session_factory), cookie) as client:
+            await client.post(
+                f"/tenants/{TENANT_A}/join-domains", json={"domain": "acme.example"}
+            )
+            response = await client.post(f"/joinable-tenants/{TENANT_A}/join")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["role"] == "admin"
+
+    async def test_closing_the_domain_stops_new_joins(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        _admin_id, admin_cookie = await self._admin(session_factory, "ada@acme.example")
+        _joiner_id, cookie = await self._outsider(session_factory, "bo@acme.example")
+
+        async with _client(_app(session_factory), admin_cookie) as client:
+            await client.post(
+                f"/tenants/{TENANT_A}/join-domains", json={"domain": "acme.example"}
+            )
+            removed = await client.delete(
+                f"/tenants/{TENANT_A}/join-domains/acme.example"
+            )
+            missing = await client.delete(
+                f"/tenants/{TENANT_A}/join-domains/acme.example"
+            )
+        async with _client(_app(session_factory), cookie) as client:
+            offered = await client.get("/joinable-tenants")
+            joined = await client.post(f"/joinable-tenants/{TENANT_A}/join")
+
+        assert removed.status_code == 204
+        assert missing.status_code == 404
+        assert offered.json() == []
+        assert joined.status_code == 404

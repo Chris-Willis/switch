@@ -29,10 +29,17 @@ const state = vi.hoisted(() => ({
   unavailable: new Set<string>(),
   listPendingInvitations: vi.fn(),
   acceptPendingInvitation: vi.fn(),
+  listJoinableWorkspaces: vi.fn(),
+  joinByDomain: vi.fn(),
 }));
 
 vi.mock('@renderer/lib/ipc', () => ({
-  rpc: { switchServers: { listPendingInvitations: state.listPendingInvitations } },
+  rpc: {
+    switchServers: {
+      listPendingInvitations: state.listPendingInvitations,
+      listJoinableWorkspaces: state.listJoinableWorkspaces,
+    },
+  },
   events: { on: () => () => {}, emit: () => {} },
 }));
 
@@ -63,6 +70,7 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
     onServer: (serverId: string) => state.workspaces.filter((w) => w.serverId === serverId),
     setActive: state.setActive,
     acceptPendingInvitation: state.acceptPendingInvitation,
+    joinByDomain: state.joinByDomain,
   },
 }));
 
@@ -188,6 +196,8 @@ beforeEach(() => {
   state.unavailable.clear();
   state.listPendingInvitations.mockReset().mockResolvedValue({ kind: 'listed', invitations: [] });
   state.acceptPendingInvitation.mockReset();
+  state.listJoinableWorkspaces.mockReset().mockResolvedValue({ kind: 'listed', workspaces: [] });
+  state.joinByDomain.mockReset();
 });
 
 afterEach(async () => {
@@ -452,5 +462,53 @@ describe('invitations to your address in the switcher', () => {
     );
     expect(state.setActive).not.toHaveBeenCalled();
     expect(state.listPendingInvitations).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('workspaces open to your e-mail domain', () => {
+  function joinableItems(): HTMLElement[] {
+    return [...document.querySelectorAll<HTMLElement>('[data-testid="joinable-workspace-item"]')];
+  }
+
+  it('lists them under their server without counting them as invitations', async () => {
+    state.listJoinableWorkspaces.mockResolvedValue({
+      kind: 'listed',
+      workspaces: [{ tenantId: 't-9', workspaceName: 'Skunkworks', domain: 'acme.example' }],
+    });
+
+    await openSwitcher([server('srv-1', 'Acme')], [workspace('ws-a', 'srv-1')], 'ws-a');
+
+    expect(container!.querySelector('[aria-label$="waiting"]')).toBeNull();
+    expect(joinableItems().map((item) => item.textContent)).toEqual(['SkunkworksJoin']);
+    expect(joinableItems()[0]!.title).toBe('Open to anyone at acme.example');
+  });
+
+  it('joins one, opens it and asks again', async () => {
+    state.listJoinableWorkspaces.mockResolvedValue({
+      kind: 'listed',
+      workspaces: [{ tenantId: 't-9', workspaceName: 'Skunkworks', domain: 'acme.example' }],
+    });
+    state.joinByDomain.mockResolvedValue(workspace('ws-new', 'srv-1'));
+
+    await openSwitcher([server('srv-1', 'Acme')], [workspace('ws-a', 'srv-1')], 'ws-a');
+    await act(async () => joinableItems()[0]!.click());
+    await settle();
+
+    expect(state.joinByDomain).toHaveBeenCalledWith(
+      'srv-1',
+      expect.objectContaining({ tenantId: 't-9' })
+    );
+    expect(state.setActive).toHaveBeenCalledWith('ws-new');
+    expect(state.listJoinableWorkspaces).toHaveBeenCalledTimes(2);
+  });
+
+  it('says so when the server could not be asked', async () => {
+    state.listJoinableWorkspaces.mockRejectedValue(new Error('gateway unreachable'));
+
+    await openSwitcher([server('srv-1', 'Acme')], [workspace('ws-a', 'srv-1')], 'ws-a');
+
+    expect(document.body.textContent).toContain(
+      'Could not check for workspaces open to your e-mail domain.'
+    );
   });
 });

@@ -30,7 +30,9 @@ import type {
 import type {
   Invitation,
   InvitationEmailDelivery,
+  JoinableWorkspaces,
   PendingInvitations,
+  WorkspaceJoinDomains,
 } from '@shared/core/workspaces/invitations';
 import type { WorkspaceRole } from '@shared/core/workspaces/workspaces';
 import { extractAuthCookie, reauthenticateManagedServer, refreshSession } from './auth';
@@ -544,6 +546,98 @@ function mapDelivery(raw: unknown): InvitationEmailDelivery {
     return raw;
   }
   throw new GatewayError('http', `Switch server reported an unknown e-mail delivery: ${raw}`);
+}
+
+/**
+ * The workspaces open to the domain of the signed-in account's address.
+ *
+ * A server without the route answers 404, which is read as unable to say
+ * rather than as none.
+ */
+export async function fetchJoinableWorkspaces(server: SwitchServer): Promise<JoinableWorkspaces> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/joinable-tenants', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return { kind: 'unsupported' };
+    throw cause;
+  }
+  const json = (await res.json()) as { tenant_id: string; tenant_name: string; domain: string }[];
+  return {
+    kind: 'listed',
+    workspaces: json.map((w) => ({
+      tenantId: w.tenant_id,
+      workspaceName: w.tenant_name,
+      domain: w.domain,
+    })),
+  };
+}
+
+/**
+ * Join a workspace open to the account's domain, and switch the session into
+ * it — the same scoped cookie accepting an invitation stores.
+ */
+export async function joinWorkspaceByDomain(
+  server: SwitchServer,
+  tenantId: string
+): Promise<RemoteTenant> {
+  const res = await gatewayFetch(server, `/joinable-tenants/${encodeURIComponent(tenantId)}/join`, {
+    authenticated: true,
+    method: 'POST',
+  });
+  return joinedTenant(server, res);
+}
+
+function joinDomainsPath(tenantId: string): string {
+  return `/tenants/${encodeURIComponent(tenantId)}/join-domains`;
+}
+
+/** The domains a workspace is open to. Admins and owners only. */
+export async function fetchJoinDomains(
+  server: SwitchServer,
+  tenantId: string
+): Promise<WorkspaceJoinDomains> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, joinDomainsPath(tenantId), { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return { kind: 'unsupported' };
+    throw cause;
+  }
+  const json = (await res.json()) as {
+    domains: { domain: string }[];
+    own_domain: string;
+    own_domain_refusal: string | null;
+  };
+  return {
+    kind: 'listed',
+    domains: json.domains.map((d) => d.domain),
+    ownDomain: json.own_domain,
+    ownDomainRefusal: json.own_domain_refusal,
+  };
+}
+
+export async function addJoinDomain(
+  server: SwitchServer,
+  tenantId: string,
+  domain: string
+): Promise<void> {
+  await gatewayFetch(server, joinDomainsPath(tenantId), {
+    authenticated: true,
+    method: 'POST',
+    body: { domain },
+  });
+}
+
+export async function removeJoinDomain(
+  server: SwitchServer,
+  tenantId: string,
+  domain: string
+): Promise<void> {
+  await gatewayFetch(server, `${joinDomainsPath(tenantId)}/${encodeURIComponent(domain)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
 }
 
 function invitationsPath(tenantId: string): string {

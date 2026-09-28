@@ -5,8 +5,12 @@ import { useEffect } from 'react';
 import {
   InvitedBadge,
   invitationSummary,
+  joinableSummary,
+  joinableWorkspacesKey,
   listedInvitations,
+  listedJoinable,
   pendingInvitationsKey,
+  useJoinableWorkspaces,
   usePendingInvitations,
 } from '@renderer/features/workspaces/pending-invitations';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -27,7 +31,7 @@ import {
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
-import type { PendingInvitation } from '@shared/core/workspaces/invitations';
+import type { JoinableWorkspace, PendingInvitation } from '@shared/core/workspaces/invitations';
 import {
   canInvite,
   type Workspace,
@@ -272,7 +276,12 @@ const ServerWorkspaceGroup = observer(function ServerWorkspaceGroup({
           />
         ))
       )}
-      {serverAvailability(server.id) === 'available' && <PendingInvitationItems server={server} />}
+      {serverAvailability(server.id) === 'available' && (
+        <>
+          <PendingInvitationItems server={server} />
+          <JoinableWorkspaceItems server={server} />
+        </>
+      )}
     </DropdownMenuGroup>
   );
 });
@@ -438,6 +447,63 @@ function PendingInvitationMenuItem({
         {invitation.workspaceName}
       </span>
       <InvitedBadge />
+    </DropdownMenuItem>
+  );
+}
+
+/**
+ * Workspaces open to the domain of your address on one server, after its
+ * invitations, on the same terms. Choosing one joins it as a member.
+ */
+function JoinableWorkspaceItems({ server }: { server: SwitchServer }) {
+  const query = useJoinableWorkspaces(server.id);
+  if (query.isError) {
+    return (
+      <div className="px-2 py-1.5 pl-9 text-xs text-foreground-muted">
+        Could not check for workspaces open to your e-mail domain.
+      </div>
+    );
+  }
+  return listedJoinable(query.data).map((offer) => (
+    <JoinableWorkspaceMenuItem key={offer.tenantId} offer={offer} server={server} />
+  ));
+}
+
+function JoinableWorkspaceMenuItem({
+  offer,
+  server,
+}: {
+  offer: JoinableWorkspace;
+  server: SwitchServer;
+}) {
+  const { navigate } = useNavigate();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+
+  return (
+    <DropdownMenuItem
+      className="pl-9"
+      title={joinableSummary(offer)}
+      data-testid="joinable-workspace-item"
+      onClick={() => {
+        void workspacesStore
+          .joinByDomain(server.id, offer)
+          .then((workspace) => workspacesStore.setActive(workspace.id))
+          .then(() => navigate('server', { serverId: server.id }))
+          .catch((cause: unknown) => {
+            toast({
+              title: `Could not join ${offer.workspaceName}`,
+              description: failureText(cause, 'Joining failed.'),
+              variant: 'destructive',
+            });
+          })
+          .finally(
+            () => void queryClient.invalidateQueries({ queryKey: joinableWorkspacesKey(server.id) })
+          );
+      }}
+    >
+      <span className="min-w-0 flex-1 truncate text-sm text-foreground">{offer.workspaceName}</span>
+      <span className="shrink-0 text-xs font-medium text-foreground-muted">Join</span>
     </DropdownMenuItem>
   );
 }

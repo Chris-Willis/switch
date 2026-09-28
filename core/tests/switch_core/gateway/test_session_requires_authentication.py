@@ -101,6 +101,13 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # `accept_my_invitation`.
     ("GET", "/invitations/mine"),
     ("POST", "/invitations/mine/accept"),
+    # Workspaces open to the caller's e-mail domain are ones they are not in
+    # yet, for the same reason. Listing opens a `tenant_session` per tenant
+    # `tenants_open_to` names; joining opens one around the tenant in the path
+    # and finds nothing unless it is open to the caller's domain — see
+    # `list_joinable_tenants` and `join_tenant_by_domain`.
+    ("GET", "/joinable-tenants"),
+    ("POST", "/joinable-tenants/{tenant_id}/join"),
 }
 
 

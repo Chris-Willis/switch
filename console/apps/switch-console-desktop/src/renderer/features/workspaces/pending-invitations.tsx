@@ -1,6 +1,11 @@
 import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 import { rpc } from '@renderer/lib/ipc';
-import type { PendingInvitation, PendingInvitations } from '@shared/core/workspaces/invitations';
+import type {
+  JoinableWorkspace,
+  JoinableWorkspaces,
+  PendingInvitation,
+  PendingInvitations,
+} from '@shared/core/workspaces/invitations';
 
 export function pendingInvitationsKey(serverId: string): readonly unknown[] {
   return ['pending-invitations', serverId];
@@ -41,4 +46,31 @@ export function InvitedBadge() {
       Invited
     </span>
   );
+}
+
+export function joinableWorkspacesKey(serverId: string): readonly unknown[] {
+  return ['joinable-workspaces', serverId];
+}
+
+/**
+ * The workspaces open to the signed-in account's domain on a server, shared
+ * the way {@link usePendingInvitations} is.
+ */
+export function useJoinableWorkspaces(serverId: string): UseQueryResult<JoinableWorkspaces> {
+  return useQuery({
+    queryKey: joinableWorkspacesKey(serverId),
+    queryFn: () => rpc.switchServers.listJoinableWorkspaces(serverId),
+    staleTime: 60_000,
+  });
+}
+
+const NO_JOINABLE: JoinableWorkspace[] = [];
+
+/** The joinable workspaces a server listed, or none, as {@link listedInvitations}. */
+export function listedJoinable(data: JoinableWorkspaces | undefined): JoinableWorkspace[] {
+  return data?.kind === 'listed' ? data.workspaces : NO_JOINABLE;
+}
+
+export function joinableSummary(joinable: JoinableWorkspace): string {
+  return `Open to anyone at ${joinable.domain}`;
 }

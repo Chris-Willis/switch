@@ -1,7 +1,10 @@
 import {
+  addJoinDomain,
   createInvitation,
   fetchInvitations,
   fetchInviteEmailEnabled,
+  fetchJoinDomains,
+  removeJoinDomain,
   revokeInvitation,
 } from '@main/core/switch-servers/gateway-client';
 import {
@@ -10,6 +13,7 @@ import {
   type CreateInvitationParams,
   type Invitation,
   type WorkspaceInvitations,
+  type WorkspaceJoinDomains,
 } from '@shared/core/workspaces/invitations';
 import { withReachableWorkspaceSession } from './workspace-session';
 import { requireWorkspace } from './workspaces-store';
@@ -66,5 +70,36 @@ export async function revokeWorkspaceInvitation({
   const tenantId = await requireTenantId(workspaceId);
   return withReachableWorkspaceSession(workspaceId, (server) =>
     revokeInvitation(server, tenantId, invitationId)
+  );
+}
+
+export async function listWorkspaceJoinDomains(workspaceId: string): Promise<WorkspaceJoinDomains> {
+  const tenantId = await requireTenantId(workspaceId);
+  return withReachableWorkspaceSession(workspaceId, (server) => fetchJoinDomains(server, tenantId));
+}
+
+export async function addWorkspaceJoinDomain({
+  workspaceId,
+  domain,
+}: {
+  workspaceId: string;
+  domain: string;
+}): Promise<void> {
+  const tenantId = await requireTenantId(workspaceId);
+  return withReachableWorkspaceSession(workspaceId, (server) =>
+    addJoinDomain(server, tenantId, domain)
+  );
+}
+
+export async function removeWorkspaceJoinDomain({
+  workspaceId,
+  domain,
+}: {
+  workspaceId: string;
+  domain: string;
+}): Promise<void> {
+  const tenantId = await requireTenantId(workspaceId);
+  return withReachableWorkspaceSession(workspaceId, (server) =>
+    removeJoinDomain(server, tenantId, domain)
   );
 }

@@ -21,6 +21,7 @@ from switch_core.db.tenant_lookup import (
     tenant_of_invitation,
     tenants_inviting_email,
     tenants_of_user,
+    tenants_open_to_domain,
 )
 from switch_core.gateway.dependencies import (
     get_config,
@@ -275,6 +276,18 @@ async def tenants_with_invitations_for(
     caller's own address, never one taken from a request.
     """
     return await tenants_inviting_email(session_factory, email)
+
+
+async def tenants_open_to(
+    session_factory: async_sessionmaker[AsyncSession], domain: str
+) -> list[str]:
+    """Which tenants let anyone at `domain` join them without an invitation.
+
+    A thin wrapper around `db.tenant_lookup.tenants_open_to_domain`, for the
+    same reason as the wrappers above. The only caller passes the domain of
+    the signed-in caller's own address.
+    """
+    return await tenants_open_to_domain(session_factory, domain)
 
 
 async def is_tenant_member(

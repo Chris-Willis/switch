@@ -18,6 +18,7 @@ from switch_core.config import SwitchConfig
 from switch_core.db.models import (
     Invitation,
     Tenant,
+    TenantJoinDomain,
     TenantMember,
     User,
     require_tenant_id,
@@ -34,6 +35,11 @@ from switch_core.db.stores.invitation_store import (
     InvitationNotUsableError,
     InvitationStore,
 )
+from switch_core.db.stores.join_domain_store import (
+    JoinDomainAlreadyAdded,
+    JoinDomainNotFound,
+    JoinDomainStore,
+)
 from switch_core.db.stores.tenant_store import TenantSlugTaken
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
@@ -49,6 +55,7 @@ from switch_core.gateway.auth import (
     require_tenant_admin,
     set_session_cookie,
     tenant_of_invitation_token,
+    tenants_open_to,
     tenants_with_invitations_for,
     workspace_creation_refusal,
 )
@@ -62,6 +69,7 @@ from switch_core.gateway.dependencies import (
     get_config,
     get_invitation_store,
     get_invite_mailer,
+    get_join_domain_store,
     get_protocol,
     get_session,
     get_session_factory,
@@ -69,6 +77,7 @@ from switch_core.gateway.dependencies import (
     get_usage_store,
     get_user_store,
 )
+from switch_core.gateway.email_domains import email_domain, join_domain_refusal
 from switch_core.gateway.invite_mail import (
     InviteEmail,
     InviteEmailFailed,
@@ -86,6 +95,10 @@ from switch_core.gateway.schemas import (
     InvitationCreateRequest,
     InvitationCreateResponse,
     InvitationDetail,
+    JoinableTenant,
+    JoinDomainCreateRequest,
+    JoinDomainDetail,
+    JoinDomainsResponse,
     MemberDetail,
     MemberUpdateRequest,
     SessionUserResponse,
@@ -887,6 +900,21 @@ async def _join_through(
     else:
         role = existing_role
 
+    tenant, user = await _enter(session, tenant_id, caller, user_store)
+    return tenant, user, role
+
+
+async def _enter(
+    session: AsyncSession,
+    tenant_id: str,
+    caller: AuthenticatedCaller,
+    user_store: UserStore,
+) -> tuple[Tenant, User]:
+    """Select the tenant `session` is bound to for `caller`, and commit.
+
+    The last step of every way of joining a workspace, run once the caller is
+    a member of it.
+    """
     tenant = await session.get(Tenant, tenant_id)
     assert tenant is not None
     # `users` is global, so the caller's row is writable from a session
@@ -896,7 +924,7 @@ async def _join_through(
         raise HTTPException(status_code=401, detail="User not found")
     await user_store.record_last_tenant(session, user, tenant_id)
     await session.commit()
-    return tenant, user, role
+    return tenant, user
 
 
 @router.get("/invitations/mine")
@@ -993,6 +1021,170 @@ async def accept_my_invitation(
         config.jwt_secret_key,
         config.gateway_cookie_secure,
         req.tenant_id,
+    )
+    return TenantMembershipResponse(
+        id=tenant.id, slug=tenant.slug, name=tenant.name, role=role
+    )
+
+
+# ── Joining by e-mail domain ──────────────────────────────────────────────────
+
+
+def _join_domain_detail(row: TenantJoinDomain) -> JoinDomainDetail:
+    return JoinDomainDetail(
+        domain=row.domain, created_by=row.created_by, created_at=str(row.created_at)
+    )
+
+
+@router.get("/tenants/{tenant_id}/join-domains")
+async def list_join_domains(
+    tenant_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    join_domain_store: Annotated[JoinDomainStore, Depends(get_join_domain_store)],
+    user: Annotated[User, Depends(require_tenant_admin)],
+) -> JoinDomainsResponse:
+    """The e-mail domains the bound tenant lets people join from, and whether
+    the caller could add their own. `owner`/`admin` only."""
+    _require_bound_tenant(tenant_id)
+    own_domain = email_domain(user.email)
+    rows = await join_domain_store.list_for_tenant(session, tenant_id)
+    return JoinDomainsResponse(
+        domains=[_join_domain_detail(row) for row in rows],
+        own_domain=own_domain,
+        own_domain_refusal=join_domain_refusal(own_domain),
+    )
+
+
+@router.post("/tenants/{tenant_id}/join-domains", status_code=201)
+async def add_join_domain(
+    tenant_id: str,
+    req: JoinDomainCreateRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    join_domain_store: Annotated[JoinDomainStore, Depends(get_join_domain_store)],
+    user: Annotated[User, Depends(require_tenant_admin)],
+) -> JoinDomainDetail:
+    """Let anyone signed in with an address at a domain join the bound tenant
+    as a member, without an invitation. `owner`/`admin` only.
+
+    Only the domain of the admin's own address. That is the proof the domain
+    is theirs to open: their account's address is either asserted verified by
+    the identity provider or set by the operator who created the account. A
+    public e-mail provider's domain is refused even then, since nobody's
+    address there says anything about who else has one.
+    """
+    _require_bound_tenant(tenant_id)
+    domain = req.domain.strip().lower()
+    own_domain = email_domain(user.email)
+    if domain != own_domain:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"You can only open the workspace to the domain of your own "
+                f"address, {own_domain}"
+            ),
+        )
+    refusal = join_domain_refusal(domain)
+    if refusal is not None:
+        raise HTTPException(status_code=400, detail=refusal.capitalize())
+    try:
+        row = await join_domain_store.add(session, domain=domain, created_by=user.id)
+    except JoinDomainAlreadyAdded as exc:
+        raise HTTPException(
+            status_code=409, detail=f"The workspace is already open to {domain}"
+        ) from exc
+    await session.commit()
+    return _join_domain_detail(row)
+
+
+@router.delete("/tenants/{tenant_id}/join-domains/{domain}", status_code=204)
+async def remove_join_domain(
+    tenant_id: str,
+    domain: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    join_domain_store: Annotated[JoinDomainStore, Depends(get_join_domain_store)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
+) -> None:
+    """Stop letting people at a domain join the bound tenant. `owner`/`admin`
+    only, and any domain: closing a workspace needs no proof of anything.
+    Members who already joined stay members."""
+    _require_bound_tenant(tenant_id)
+    try:
+        await join_domain_store.remove(session, tenant_id, domain)
+    except JoinDomainNotFound as exc:
+        raise HTTPException(
+            status_code=404, detail=f"The workspace is not open to {domain}"
+        ) from exc
+    await session.commit()
+
+
+@router.get("/joinable-tenants")
+async def list_joinable_tenants(
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+) -> list[JoinableTenant]:
+    """The workspaces open to the domain of the caller's own address, that
+    they do not already belong to.
+
+    Authenticated without a tenant, like `list_my_invitations` and for the
+    same reason: none of these is a workspace any session of theirs is bound
+    to. `tenants_open_to` names the tenants; each is read on its own bound
+    session.
+    """
+    domain = email_domain(caller.email)
+    found: list[JoinableTenant] = []
+    for tenant_id in await tenants_open_to(session_factory, domain):
+        async with tenant_session(session_factory, tenant_id) as session:
+            if await user_store.tenant_role(session, tenant_id, caller.id) is not None:
+                continue
+            tenant = await session.get(Tenant, tenant_id)
+            assert tenant is not None
+            found.append(
+                JoinableTenant(
+                    tenant_id=tenant.id,
+                    tenant_slug=tenant.slug,
+                    tenant_name=tenant.name,
+                    domain=domain,
+                )
+            )
+    return found
+
+
+@router.post("/joinable-tenants/{tenant_id}/join")
+async def join_tenant_by_domain(
+    tenant_id: str,
+    response: Response,
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    join_domain_store: Annotated[JoinDomainStore, Depends(get_join_domain_store)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> TenantMembershipResponse:
+    """Join a workspace open to the domain of the caller's address, as a
+    member, and switch the caller's session into it.
+
+    A workspace that is not open to that domain is answered as not found, so
+    the route does not confirm that a workspace exists. Joining one you are
+    already in returns your existing role and changes nothing.
+    """
+    domain = email_domain(caller.email)
+    async with tenant_session(session_factory, tenant_id) as session:
+        if not await join_domain_store.is_open_to(session, tenant_id, domain):
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        role = await user_store.tenant_role(session, tenant_id, caller.id)
+        if role is None:
+            role = "member"
+            await user_store.add_membership(
+                session, tenant_id=tenant_id, user_id=caller.id, role=role
+            )
+        tenant, user = await _enter(session, tenant_id, caller, user_store)
+
+    set_session_cookie(
+        response, user, config.jwt_secret_key, config.gateway_cookie_secure, tenant_id
     )
     return TenantMembershipResponse(
         id=tenant.id, slug=tenant.slug, name=tenant.name, role=role

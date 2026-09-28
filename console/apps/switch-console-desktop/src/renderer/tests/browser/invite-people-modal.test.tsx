@@ -15,6 +15,9 @@ const listInvitations = vi.hoisted(() => vi.fn());
 const createInvitation = vi.hoisted(() => vi.fn());
 const revokeInvitation = vi.hoisted(() => vi.fn());
 const byId = vi.hoisted(() => vi.fn());
+const listJoinDomains = vi.hoisted(() => vi.fn());
+const addJoinDomain = vi.hoisted(() => vi.fn());
+const removeJoinDomain = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -25,7 +28,16 @@ vi.hoisted(() => {
 });
 
 vi.mock('@renderer/lib/ipc', () => ({
-  rpc: { workspaces: { listInvitations, createInvitation, revokeInvitation } },
+  rpc: {
+    workspaces: {
+      listInvitations,
+      createInvitation,
+      revokeInvitation,
+      listJoinDomains,
+      addJoinDomain,
+      removeJoinDomain,
+    },
+  },
   events: { on: () => () => {}, emit: () => {} },
 }));
 
@@ -74,6 +86,9 @@ beforeEach(() => {
   createInvitation.mockReset();
   revokeInvitation.mockReset();
   byId.mockReset().mockReturnValue(workspace('admin'));
+  listJoinDomains.mockReset().mockResolvedValue({ kind: 'unsupported' });
+  addJoinDomain.mockReset().mockResolvedValue(undefined);
+  removeJoinDomain.mockReset().mockResolvedValue(undefined);
   onClose.mockReset();
   modalStore.closeGuardActive = false;
 });
@@ -244,5 +259,76 @@ describe('the invite-people modal', () => {
 
     const options = [...document.querySelectorAll('[role="option"]')].map((o) => o.textContent);
     expect(options).toEqual(['Member', 'Admin']);
+  });
+});
+
+describe('joining by e-mail domain', () => {
+  function section(): HTMLElement | null {
+    return document.querySelector<HTMLElement>('[data-testid="join-domains-section"]');
+  }
+
+  it("offers only the admin's own domain, and opens the workspace to it", async () => {
+    listInvitations.mockResolvedValue({ invitations: [], emailEnabled: true });
+    listJoinDomains
+      .mockResolvedValueOnce({
+        kind: 'listed',
+        domains: [],
+        ownDomain: 'acme.example',
+        ownDomainRefusal: null,
+      })
+      .mockResolvedValue({
+        kind: 'listed',
+        domains: ['acme.example'],
+        ownDomain: 'acme.example',
+        ownDomainRefusal: null,
+      });
+    await render();
+
+    expect(section()!.textContent).toContain('Let anyone with an @acme.example address join');
+    await act(async () => button(section()!, 'Allow').click());
+    await settle();
+
+    expect(addJoinDomain).toHaveBeenCalledWith({ workspaceId: 'ws-1', domain: 'acme.example' });
+    const rows = section()!.querySelectorAll('[data-testid="join-domain-row"]');
+    expect(rows).toHaveLength(1);
+    expect(section()!.textContent).not.toContain('Allow');
+  });
+
+  it('removes a domain', async () => {
+    listInvitations.mockResolvedValue({ invitations: [], emailEnabled: true });
+    listJoinDomains.mockResolvedValue({
+      kind: 'listed',
+      domains: ['acme.example'],
+      ownDomain: 'acme.example',
+      ownDomainRefusal: null,
+    });
+    await render();
+
+    await act(async () => button(section()!, 'Remove').click());
+    await settle();
+
+    expect(removeJoinDomain).toHaveBeenCalledWith({ workspaceId: 'ws-1', domain: 'acme.example' });
+  });
+
+  it("shows why a public provider's domain cannot be added", async () => {
+    listInvitations.mockResolvedValue({ invitations: [], emailEnabled: true });
+    listJoinDomains.mockResolvedValue({
+      kind: 'listed',
+      domains: [],
+      ownDomain: 'gmail.com',
+      ownDomainRefusal:
+        'gmail.com is a public e-mail provider, so opening the workspace to it would let anyone with an address there join',
+    });
+    await render();
+
+    expect(section()!.textContent).toContain('gmail.com is a public e-mail provider');
+    expect(section()!.textContent).not.toContain('Allow');
+  });
+
+  it('is left out on a server too old to have it', async () => {
+    listInvitations.mockResolvedValue({ invitations: [], emailEnabled: true });
+    await render();
+
+    expect(section()).toBeNull();
   });
 });

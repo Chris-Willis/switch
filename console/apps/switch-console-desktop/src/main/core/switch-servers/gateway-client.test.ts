@@ -42,6 +42,11 @@ const {
   acceptInvitation,
   acceptPendingInvitation,
   fetchPendingInvitations,
+  fetchJoinableWorkspaces,
+  joinWorkspaceByDomain,
+  fetchJoinDomains,
+  addJoinDomain,
+  removeJoinDomain,
   createInvitation,
   fetchInvitations,
   fetchInviteEmailEnabled,
@@ -913,6 +918,119 @@ describe('invitations addressed to the signed-in account', () => {
     expect(JSON.parse(init.body)).toEqual({ tenant_id: 't1', invitation_id: 'inv-1' });
     expect(setSessionCookie).toHaveBeenCalledExactlyOnceWith('srv-1', 'scoped');
     expect(tenant).toEqual({ id: 't1', slug: 'cryo', name: 'Cryo Team', role: 'member' });
+  });
+});
+
+describe('joining a workspace by e-mail domain', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists the workspaces open to your domain', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          tenant_id: 't9',
+          tenant_slug: 'skunk',
+          tenant_name: 'Skunkworks',
+          domain: 'acme.example',
+        },
+      ]) as never
+    );
+
+    const listed = await fetchJoinableWorkspaces(SERVER);
+
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/joinable-tenants'
+    );
+    expect(listed).toEqual({
+      kind: 'listed',
+      workspaces: [{ tenantId: 't9', workspaceName: 'Skunkworks', domain: 'acme.example' }],
+    });
+  });
+
+  it('reads a server without the route as unable to say, not as none', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+
+    await expect(fetchJoinableWorkspaces(SERVER)).resolves.toEqual({ kind: 'unsupported' });
+    await expect(fetchJoinDomains(SERVER, 't1')).resolves.toEqual({ kind: 'unsupported' });
+  });
+
+  it('joins one and keeps the workspace-scoped cookie', async () => {
+    fetchMock.mockResolvedValue({
+      status: 200,
+      ok: true,
+      json: async () => ({ id: 't9', slug: 'skunk', name: 'Skunkworks', role: 'member' }),
+      headers: { getSetCookie: () => ['switch_auth=scoped; Path=/; HttpOnly'] },
+      text: async () => '',
+    } as never);
+
+    const tenant = await joinWorkspaceByDomain(SERVER, 't9');
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { method: string }];
+    expect(url).toBe('https://switch.example.com/gateway/joinable-tenants/t9/join');
+    expect(init.method).toBe('POST');
+    expect(setSessionCookie).toHaveBeenCalledExactlyOnceWith('srv-1', 'scoped');
+    expect(tenant).toEqual({ id: 't9', slug: 'skunk', name: 'Skunkworks', role: 'member' });
+  });
+
+  it("reads a workspace's domains and the admin's own", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        domains: [
+          { domain: 'acme.example', created_by: 'u1', created_at: '2026-11-24T00:00:00+00:00' },
+        ],
+        own_domain: 'acme.example',
+        own_domain_refusal: null,
+      }) as never
+    );
+
+    await expect(fetchJoinDomains(SERVER, 't1')).resolves.toEqual({
+      kind: 'listed',
+      domains: ['acme.example'],
+      ownDomain: 'acme.example',
+      ownDomainRefusal: null,
+    });
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/tenants/t1/join-domains'
+    );
+  });
+
+  it('adds and removes a domain', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}) as never);
+
+    await addJoinDomain(SERVER, 't1', 'acme.example');
+    await removeJoinDomain(SERVER, 't1', 'acme.example');
+
+    const calls = fetchMock.mock.calls as unknown as [string, { method: string; body?: string }][];
+    expect(calls[0]![0]).toBe('https://switch.example.com/gateway/tenants/t1/join-domains');
+    expect(calls[0]![1].method).toBe('POST');
+    expect(JSON.parse(calls[0]![1].body!)).toEqual({ domain: 'acme.example' });
+    expect(calls[1]![0]).toBe(
+      'https://switch.example.com/gateway/tenants/t1/join-domains/acme.example'
+    );
+    expect(calls[1]![1].method).toBe('DELETE');
+  });
+
+  it("surfaces the server's refusal of another domain", async () => {
+    fetchMock.mockResolvedValue(
+      errorResponse(
+        400,
+        JSON.stringify({
+          detail: 'You can only open the workspace to the domain of your own address, acme.example',
+        })
+      ) as never
+    );
+
+    await expect(addJoinDomain(SERVER, 't1', 'other.example')).rejects.toMatchObject({
+      status: 400,
+    });
   });
 });
 

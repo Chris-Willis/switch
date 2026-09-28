@@ -91,8 +91,11 @@ import type {
 import type { Workspace } from '@shared/core/workspaces/workspaces';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import {
+  addWorkspaceJoinDomain,
   createWorkspaceInvitation,
   listWorkspaceInvitations,
+  listWorkspaceJoinDomains,
+  removeWorkspaceJoinDomain,
   revokeWorkspaceInvitation,
 } from './invitations';
 import {
@@ -240,6 +243,16 @@ export const workspacesController = createRPCController({
   createInvitation: createWorkspaceInvitation,
 
   revokeInvitation: revokeWorkspaceInvitation,
+
+  /**
+   * The e-mail domains anyone may join the workspace from. Admins and owners
+   * only, and an admin may add only the domain of their own address.
+   */
+  listJoinDomains: listWorkspaceJoinDomains,
+
+  addJoinDomain: addWorkspaceJoinDomain,
+
+  removeJoinDomain: removeWorkspaceJoinDomain,
 
   listBridges: (workspaceId: string): Promise<RemoteBridge[]> =>
     withReachableWorkspaceSession(workspaceId, async (server) =>

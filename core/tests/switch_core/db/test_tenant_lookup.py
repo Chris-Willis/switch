@@ -56,6 +56,7 @@ from switch_core.db.models import (
     Room,
     ServerConnector,
     Tenant,
+    TenantJoinDomain,
     TenantMember,
     User,
 )
@@ -75,6 +76,7 @@ from switch_core.db.tenant_lookup import (
     tenant_of_server_connector,
     tenants_inviting_email,
     tenants_of_user,
+    tenants_open_to_domain,
 )
 from switch_core.tenant_context import tenant_scope
 from tests.conftest import RLSHarness
@@ -103,6 +105,7 @@ _ADDED_SINCE = {
     "tenant_of_invitation": "5daaea6b674d",
     "tenant_of_messaging_install": "c8a4e21f6d30",
     "tenants_inviting_email": "4b8e2d61c9f7",
+    "tenants_open_to_domain": "7d3f5a19e2c8",
 }
 
 # A third kind of change, and the quietest: a lookup whose body a later
@@ -528,6 +531,38 @@ class TestWhatTheyAnswer:
         ]
         assert (
             await tenants_inviting_email(rls_harness.restricted, "nobody@example.test")
+            == []
+        )
+
+    async def test_a_domain_resolves_to_the_tenants_open_to_it(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """The domain matches in any case, and only the tenants open to it
+        answer."""
+        fixture = await _two_populated_tenants(rls_harness)
+        domain = f"open-{uuid.uuid4().hex[:8]}.example.test"
+        async with rls_harness.owner() as session:
+            session.add(
+                TenantJoinDomain(
+                    tenant_id=fixture.tenant_a,
+                    domain=domain,
+                    created_by=fixture.user_in_both,
+                )
+            )
+            session.add(
+                TenantJoinDomain(
+                    tenant_id=fixture.tenant_b,
+                    domain=f"other-{domain}",
+                    created_by=fixture.user_in_both,
+                )
+            )
+            await session.commit()
+
+        assert await tenants_open_to_domain(rls_harness.restricted, domain.upper()) == [
+            fixture.tenant_a
+        ]
+        assert (
+            await tenants_open_to_domain(rls_harness.restricted, "nobody.example.test")
             == []
         )
 

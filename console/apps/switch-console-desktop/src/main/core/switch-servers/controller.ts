@@ -23,7 +23,7 @@ import type {
   UpdateServerParams,
   UpdateServerResult,
 } from '@shared/core/switch-servers/switch-servers';
-import type { PendingInvitations } from '@shared/core/workspaces/invitations';
+import type { JoinableWorkspaces, PendingInvitations } from '@shared/core/workspaces/invitations';
 import { isWithdrawnWorkspace, type Workspace } from '@shared/core/workspaces/workspaces';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { type LoginError, oidcLogin, passwordLogin } from './auth';
@@ -31,9 +31,11 @@ import { bundledChatSignInFor } from './bundled-chat-sign-in';
 import {
   acceptInvitation,
   acceptPendingInvitation,
+  joinWorkspaceByDomain,
   createTenant,
   fetchAuthConfig,
   fetchMe,
+  fetchJoinableWorkspaces,
   fetchPendingInvitations,
   GatewayError,
   type RemoteTenant,
@@ -297,6 +299,22 @@ export const switchServersController = createRPCController({
       server,
       await acceptPendingInvitation(server, params.tenantId, params.invitationId)
     );
+  },
+
+  /** The workspaces open to the signed-in account's domain on a server. */
+  listJoinableWorkspaces: async (serverId: string): Promise<JoinableWorkspaces> =>
+    fetchJoinableWorkspaces(await requireReachableServer(serverId)),
+
+  /**
+   * Join a workspace open to the signed-in account's domain, and return the
+   * local row for it.
+   */
+  joinWorkspaceByDomain: async (params: {
+    serverId: string;
+    tenantId: string;
+  }): Promise<Workspace> => {
+    const server = await requireReachableServer(params.serverId);
+    return recordJoined(server, await joinWorkspaceByDomain(server, params.tenantId));
   },
 
   getAuthConfig: async (serverId: string): Promise<SwitchAuthConfig> =>

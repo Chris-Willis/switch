@@ -31,6 +31,7 @@ vi.mock('@renderer/lib/ipc', () => ({
     switchServers: {
       resolveWorkspaces,
       listPendingInvitations: () => Promise.resolve({ kind: 'listed', invitations: [] }),
+      listJoinableWorkspaces: () => Promise.resolve({ kind: 'listed', workspaces: [] }),
       switchCloud: () => Promise.resolve(null),
     },
     remoteHosts: { listHosts: () => Promise.resolve([]) },

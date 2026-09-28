@@ -23,6 +23,7 @@ from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.invitation_store import InvitationStore
+from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
@@ -74,6 +75,7 @@ def create_gateway_app(
     external_user_store: ExternalUserStore,
     api_key_store: ApiKeyStore,
     invitation_store: InvitationStore,
+    join_domain_store: JoinDomainStore,
     template_store: TemplateStore,
     usage_store: UsageStore,
     budget_store: BudgetStore,
@@ -99,6 +101,7 @@ def create_gateway_app(
         external_user_store=external_user_store,
         api_key_store=api_key_store,
         invitation_store=invitation_store,
+        join_domain_store=join_domain_store,
         template_store=template_store,
         usage_store=usage_store,
         budget_store=budget_store,

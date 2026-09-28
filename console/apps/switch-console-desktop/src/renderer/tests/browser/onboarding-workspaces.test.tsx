@@ -17,6 +17,8 @@ const createWorkspace = vi.hoisted(() => vi.fn());
 const setActiveWorkspace = vi.hoisted(() => vi.fn());
 const listPendingInvitations = vi.hoisted(() => vi.fn());
 const acceptPendingInvitation = vi.hoisted(() => vi.fn());
+const listJoinableWorkspaces = vi.hoisted(() => vi.fn());
+const joinByDomain = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -31,6 +33,7 @@ vi.mock('@renderer/lib/ipc', () => ({
     switchServers: {
       resolveWorkspaces,
       listPendingInvitations,
+      listJoinableWorkspaces,
       switchCloud: () => Promise.resolve(null),
     },
   },
@@ -42,6 +45,7 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
     setActive: setActiveWorkspace,
     create: createWorkspace,
     acceptPendingInvitation,
+    joinByDomain,
     idOnServerInScope: () => 'ws-1',
   },
 }));
@@ -121,6 +125,8 @@ beforeEach(() => {
   setActiveWorkspace.mockReset().mockResolvedValue(undefined);
   listPendingInvitations.mockReset().mockResolvedValue({ kind: 'listed', invitations: [] });
   acceptPendingInvitation.mockReset();
+  listJoinableWorkspaces.mockReset().mockResolvedValue({ kind: 'listed', workspaces: [] });
+  joinByDomain.mockReset();
   onboardingStore.reset();
 });
 
@@ -198,15 +204,15 @@ describe('picking a workspace after signing in', () => {
     expect(el.textContent).toContain('Create a new workspace');
   });
 
-  it('leaves out the invite rows on a server too old to list them', async () => {
-    // It cannot say whether anyone invited you, so an empty section would be a
-    // claim it never made. Nor does any server record workspaces open to your
-    // e-mail domain yet.
+  it('leaves out the invite and join rows on a server too old to list them', async () => {
+    // It cannot say whether anyone invited you or which workspaces are open to
+    // your domain, so an empty section would be a claim it never made.
     resolveWorkspaces.mockResolvedValue([
       workspace('ws-1', 'Acme'),
       workspace('ws-2', 'Skunkworks'),
     ]);
     listPendingInvitations.mockResolvedValue({ kind: 'unsupported' });
+    listJoinableWorkspaces.mockResolvedValue({ kind: 'unsupported' });
 
     const el = await renderAtPickWorkspace();
 
@@ -233,7 +239,7 @@ describe('picking a workspace after signing in', () => {
     expect(rows[0]!.textContent).toContain('Skunkworks');
     expect(rows[0]!.textContent).toContain('Ada Lovelace invited you as member');
     expect(rows[0]!.textContent).toContain('Invited');
-    expect(el.textContent).toContain('You’re a member of these, or invited to them.');
+    expect(el.textContent).toContain('You’re a member of these, or can join them.');
   });
 
   it('joins the workspace an invitation is for and opens it', async () => {
@@ -285,6 +291,40 @@ describe('picking a workspace after signing in', () => {
     expect(setActiveWorkspace).not.toHaveBeenCalled();
     expect(el.textContent).toContain('gateway unreachable');
     expect([...el.querySelectorAll('button')].map((b) => b.textContent)).toContain('Retry');
+  });
+
+  it('offers workspaces open to your e-mail domain, and joins one', async () => {
+    resolveWorkspaces.mockResolvedValue([workspace('ws-1', 'Acme')]);
+    listJoinableWorkspaces.mockResolvedValue({
+      kind: 'listed',
+      workspaces: [{ tenantId: 't-9', workspaceName: 'Skunkworks', domain: 'acme.example' }],
+    });
+    joinByDomain.mockResolvedValue(workspace('ws-9', 'Skunkworks'));
+
+    const el = await renderAtPickWorkspace();
+
+    expect(setActiveWorkspace).not.toHaveBeenCalled();
+    const rows = el.querySelectorAll('[data-testid="joinable-workspace-row"]');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.textContent).toContain('Open to anyone at acme.example');
+    await click(el, 'Join');
+
+    expect(joinByDomain).toHaveBeenCalledWith(
+      'srv-1',
+      expect.objectContaining({ tenantId: 't-9' })
+    );
+    expect(setActiveWorkspace).toHaveBeenCalledWith('ws-9');
+    expect(onboardingStore.page).toBe('linkAccounts');
+  });
+
+  it('does not choose for you when the domain check failed', async () => {
+    resolveWorkspaces.mockResolvedValue([workspace('ws-1', 'Acme')]);
+    listJoinableWorkspaces.mockRejectedValue(new Error('gateway unreachable'));
+
+    const el = await renderAtPickWorkspace();
+
+    expect(setActiveWorkspace).not.toHaveBeenCalled();
+    expect(el.textContent).toContain('gateway unreachable');
   });
 
   it('does not ask a question with one answer', async () => {

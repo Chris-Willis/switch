@@ -5,7 +5,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   invitationSummary,
   InvitedBadge,
+  joinableSummary,
   listedInvitations,
+  listedJoinable,
+  useJoinableWorkspaces,
   usePendingInvitations,
 } from '@renderer/features/workspaces/pending-invitations';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -15,7 +18,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { WizardFrame } from '@renderer/lib/ui/wizard-frame';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
-import type { PendingInvitation } from '@shared/core/workspaces/invitations';
+import type { JoinableWorkspace, PendingInvitation } from '@shared/core/workspaces/invitations';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
 import { onboardingStore } from './onboarding-store';
 
@@ -31,9 +34,9 @@ import { onboardingStore } from './onboarding-store';
  * own address, which it accepts here without a link. A server older than the
  * route that lists those leaves the section out rather than showing it empty:
  * it cannot say whether anyone invited you, and an empty "nobody has" would be
- * a claim it never made. The design's third kind of row — workspaces open to
- * your e-mail domain — is absent for the same reason: no Switch server records
- * a domain against a workspace yet.
+ * a claim it never made. The third kind of row, workspaces open to the domain
+ * of the account's address, is joined the same way and left out on the same
+ * terms.
  */
 export const PickWorkspacePage = observer(function PickWorkspacePage({
   server,
@@ -56,6 +59,8 @@ export const PickWorkspacePage = observer(function PickWorkspacePage({
   const workspaces = query.data ?? null;
   const invitationsQuery = usePendingInvitations(server.id);
   const invitations = listedInvitations(invitationsQuery.data);
+  const joinableQuery = useJoinableWorkspaces(server.id);
+  const joinable = listedJoinable(joinableQuery.data);
 
   const open = useCallback(
     async (workspace: Workspace) => {
@@ -88,35 +93,47 @@ export const PickWorkspacePage = observer(function PickWorkspacePage({
     [server.id, onPicked]
   );
 
+  const join = useCallback(
+    async (offer: JoinableWorkspace) => {
+      setOpening(offer.tenantId);
+      setOpenError(null);
+      try {
+        const workspace = await workspacesStore.joinByDomain(server.id, offer);
+        await workspacesStore.setActive(workspace.id);
+        onPicked();
+      } catch (cause) {
+        setOpenError(failureText(cause, `Could not join ${offer.workspaceName}.`));
+        setOpening(null);
+      }
+    },
+    [server.id, onPicked]
+  );
+
   // Once per answer, not once per render: the callbacks are made fresh by the
   // page above, so without the latch a re-render would re-run the choice that
-  // is already under way. Both questions have to be answered first — an
-  // invitation is a choice, so a lone membership beside one is not the only
-  // way forward — and a failed invitation check stops the page here, where it
-  // is shown, rather than skipping past it on a guess.
+  // is already under way. Every question has to be answered first — an
+  // invitation or an open workspace is a choice, so a lone membership beside
+  // one is not the only way forward — and a failed check stops the page here,
+  // where it is shown, rather than skipping past it on a guess.
   const settled = useRef(false);
+  const offers = invitations.length + joinable.length;
+  const offersPending = invitationsQuery.isPending || joinableQuery.isPending;
+  const offersFailed = invitationsQuery.isError || joinableQuery.isError;
   useEffect(() => {
-    if (workspaces === null || invitationsQuery.isPending || settled.current) return;
+    if (workspaces === null || offersPending || settled.current) return;
     settled.current = true;
-    onboardingStore.resolved(workspaces, invitations.length);
-    if (invitationsQuery.isError || invitations.length > 0) return;
+    onboardingStore.resolved(workspaces, offers);
+    if (offersFailed || offers > 0) return;
     // A question with one answer is not a question, and with none there is
     // nothing here to answer it with.
     if (workspaces.length === 0) onCreate();
     else if (workspaces.length === 1) void open(workspaces[0]!);
-  }, [
-    workspaces,
-    invitations,
-    invitationsQuery.isPending,
-    invitationsQuery.isError,
-    open,
-    onCreate,
-  ]);
+  }, [workspaces, offers, offersPending, offersFailed, open, onCreate]);
 
   return (
     <WizardFrame
       title="Pick a workspace"
-      subtitle={`${pickSubtitle(workspaces?.length ?? 0, invitations.length)} A workspace is where your agents, rooms and teammates live.`}
+      subtitle={`${pickSubtitle(workspaces?.length ?? 0, offers)} A workspace is where your agents, rooms and teammates live.`}
       /* The chevron below repeats this. It is unlabelled, so it cannot be the
          only way back from a page whose rows all lead forward. Both are held
          shut while a workspace is being opened, since leaving now would land
@@ -167,6 +184,15 @@ export const PickWorkspacePage = observer(function PickWorkspacePage({
                 onAccept={() => void accept(invitation)}
               />
             ))}
+            {joinable.map((offer) => (
+              <JoinableRow
+                key={offer.tenantId}
+                offer={offer}
+                joining={opening === offer.tenantId}
+                disabled={opening !== null}
+                onJoin={() => void join(offer)}
+              />
+            ))}
           </ul>
 
           {invitationsQuery.isPending && (
@@ -184,6 +210,20 @@ export const PickWorkspacePage = observer(function PickWorkspacePage({
                 )}
               </p>
               <Button variant="outline" size="sm" onClick={() => void invitationsQuery.refetch()}>
+                Retry
+              </Button>
+            </div>
+          )}
+
+          {joinableQuery.isError && (
+            <div className="flex items-center gap-3">
+              <p className="min-w-0 flex-1 text-sm text-destructive">
+                {failureText(
+                  joinableQuery.error,
+                  `Could not ask ${server.name} which workspaces are open to your e-mail domain.`
+                )}
+              </p>
+              <Button variant="outline" size="sm" onClick={() => void joinableQuery.refetch()}>
                 Retry
               </Button>
             </div>
@@ -212,10 +252,51 @@ export const PickWorkspacePage = observer(function PickWorkspacePage({
   );
 });
 
-function pickSubtitle(memberships: number, invitations: number): string {
-  if (invitations === 0) return 'You’re a member of these.';
-  if (memberships === 0) return 'You’ve been invited to these.';
-  return 'You’re a member of these, or invited to them.';
+function pickSubtitle(memberships: number, offers: number): string {
+  if (offers === 0) return 'You’re a member of these.';
+  if (memberships === 0) return 'You can join these.';
+  return 'You’re a member of these, or can join them.';
+}
+
+function JoinableRow({
+  offer,
+  joining,
+  disabled,
+  onJoin,
+}: {
+  offer: JoinableWorkspace;
+  joining: boolean;
+  disabled: boolean;
+  onJoin: () => void;
+}) {
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onJoin}
+        disabled={disabled}
+        data-testid="joinable-workspace-row"
+        className="flex w-full items-center gap-3 rounded-[10px] border border-border bg-[var(--surface-2)] px-3.5 py-3 text-left hover:bg-[var(--sel-soft)] disabled:opacity-60"
+      >
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-background-tertiary text-sm font-semibold text-foreground">
+          {initialOf(offer.workspaceName)}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium text-foreground">
+            {offer.workspaceName}
+          </span>
+          <span className="block truncate text-xs text-foreground-muted">
+            {joinableSummary(offer)}
+          </span>
+        </span>
+        {joining ? (
+          <Spinner className="size-3.5 shrink-0" />
+        ) : (
+          <span className="shrink-0 text-sm font-medium text-foreground">Join</span>
+        )}
+      </button>
+    </li>
+  );
 }
 
 function InvitationRow({
