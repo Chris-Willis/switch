@@ -104,7 +104,7 @@ it('lists cloud agents from the launch list without asking any worker', async ()
   ];
   const agents = await listCloudAgents('server');
   expect(server.relayClients).toBe(0);
-  expect(agents.map((each) => [each.sessions, each.problem?.code ?? null])).toEqual([
+  expect(agents?.map((each) => [each.sessions, each.problem?.code ?? null])).toEqual([
     [null, null],
     [null, 'worker_sleeping'],
   ]);
