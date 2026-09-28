@@ -425,8 +425,8 @@ Slack for the reason given.
 5. **The route checks `claim_of_event` before resolve.** The default is `None`.
    *Slack-neutral:* a `None` falls through to today's path.
 
-Writing this doc surfaced three more. Each is a no-op for Slack by default, and
-none has been agreed yet:
+Three new installer hooks complete the set. Each defaults to a no-op, so
+Slack, which implements none of them, is unaffected:
 
 6. **`migration_of_event`** (decision 6), default `None`.
 7. **An installer hook to release a workspace on disconnect**, default no-op.
