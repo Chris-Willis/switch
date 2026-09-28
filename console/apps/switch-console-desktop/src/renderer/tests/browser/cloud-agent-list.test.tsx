@@ -15,7 +15,7 @@ const sdkHost = vi.hoisted(() => ({
   cloudSessions: vi.fn(),
   cloudSessionOperation: vi.fn(),
 }));
-const expandedGroups = await vi.hoisted(async () => {
+const expandedCloudGroups = await vi.hoisted(async () => {
   const { observable } = await import('mobx');
   return observable.set<string>();
 });
@@ -53,9 +53,9 @@ vi.mock('@renderer/lib/layout/workspace-slots', () => ({
 
 vi.mock('@renderer/lib/stores/app-state', () => ({
   sidebarStore: {
-    isGroupExpanded: (key: string) => expandedGroups.has(key),
-    toggleGroupExpanded: (key: string) =>
-      expandedGroups.has(key) ? expandedGroups.delete(key) : expandedGroups.add(key),
+    isCloudGroupExpanded: (key: string) => expandedCloudGroups.has(key),
+    toggleCloudGroupExpanded: (key: string) =>
+      expandedCloudGroups.has(key) ? expandedCloudGroups.delete(key) : expandedCloudGroups.add(key),
     hideProviderMark: true,
   },
 }));
@@ -104,7 +104,7 @@ beforeEach(() => {
   navigate.mockReset();
   sdkHost.cloudSessionOperation.mockReset();
   sdkHost.cloudSessions.mockReset();
-  expandedGroups.clear();
+  expandedCloudGroups.clear();
   cloudOperationAttempts.settle(startAttemptKey(agentKey));
 });
 
@@ -195,4 +195,23 @@ it('asks no worker while its row is collapsed, and one when that row is expanded
   expect(sdkHost.cloudSessions).toHaveBeenCalledTimes(1);
   expect(sdkHost.cloudSessions).toHaveBeenCalledWith(other);
   expect(el.textContent).toContain('Session s1');
+});
+
+it('keeps a cloud row expanded after remount', async () => {
+  const other = 'cloud:server:other';
+  sdkHost.cloudAgents.mockResolvedValue([agent(), agent(other, 'writer')]);
+  sdkHost.cloudSessions.mockResolvedValue(sessions(['s1']));
+  const el = await render();
+
+  const row = [...el.querySelectorAll('button[aria-expanded]')].find((b) =>
+    b.textContent?.includes('writer')
+  ) as HTMLButtonElement;
+  await act(async () => row.click());
+  await act(async () => await new Promise((resolve) => setTimeout(resolve, 20)));
+
+  await act(async () => root!.unmount());
+  const remounted = await render();
+  await act(async () => await new Promise((resolve) => setTimeout(resolve, 20)));
+  expect(sdkHost.cloudSessions).toHaveBeenCalled();
+  expect(remounted.textContent).toContain('Session s1');
 });

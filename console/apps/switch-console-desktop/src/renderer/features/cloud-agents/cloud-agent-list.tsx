@@ -63,7 +63,7 @@ const CloudAgentRow = observer(function CloudAgentRow({ listed }: { listed: Clou
   const { currentView } = useWorkspaceSlots();
   const { params } = useParams('cloudSession');
   const groupKey = `cloud:${listed.key}`;
-  const expanded = sidebarStore.isGroupExpanded(groupKey);
+  const expanded = sidebarStore.isCloudGroupExpanded(groupKey);
   const attemptKey = startAttemptKey(listed.key);
   const attempt = cloudOperationAttempts.get(attemptKey);
   const agent = useCloudAgentSessions(
@@ -99,7 +99,7 @@ const CloudAgentRow = observer(function CloudAgentRow({ listed }: { listed: Clou
       <div className="group/row flex items-center">
         <SidebarMenuButton
           aria-expanded={expanded}
-          onClick={() => sidebarStore.toggleGroupExpanded(groupKey)}
+          onClick={() => sidebarStore.toggleCloudGroupExpanded(groupKey)}
         >
           <ChevronRight className={`size-3 shrink-0 ${expanded ? 'rotate-90' : ''}`} />
           <Cloud className="size-3.5 shrink-0" />
