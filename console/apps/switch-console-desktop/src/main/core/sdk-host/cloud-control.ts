@@ -6,7 +6,11 @@ import {
 } from '@switch-console/agent-providers';
 import type { Attachment } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
-import { gatewayFetch, gatewayRequest } from '@main/core/switch-servers/gateway-client';
+import {
+  GatewayError,
+  gatewayFetch,
+  gatewayRequest,
+} from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import {
   type CloudAgent,
@@ -74,21 +78,31 @@ export async function cloudControl(agentId: string): Promise<CloudRelayClient> {
   return client;
 }
 
-export async function listCloudLaunches(server: SwitchServer): Promise<CloudLaunch[]> {
-  return z
-    .array(cloudLaunchSchema)
-    .parse(await (await gatewayFetch(server, '/hosted-launches', { authenticated: true })).json());
+/**
+ * The server's launches, or null when it has no launch list at all: a Core
+ * without cloud agents answers the route with 404.
+ */
+export async function listCloudLaunches(server: SwitchServer): Promise<CloudLaunch[] | null> {
+  let response: Response;
+  try {
+    response = await gatewayFetch(server, '/hosted-launches', { authenticated: true });
+  } catch (error) {
+    if (error instanceof GatewayError && error.kind === 'http' && error.status === 404) return null;
+    throw error;
+  }
+  return z.array(cloudLaunchSchema).parse(await response.json());
 }
 
 /**
- * The server's cloud agents with their workers' sessions. A worker that
- * cannot be asked is reported with the relay's code rather than left out, so
- * a sleeping or detached launch reads as such.
+ * The server's cloud agents with their workers' sessions, or null when the
+ * server has no cloud agents. A worker that cannot be asked is reported with
+ * the relay's code rather than left out, so a sleeping or detached launch
+ * reads as such.
  */
-export async function listCloudAgents(serverId: string): Promise<CloudAgent[]> {
-  const launches = (await listCloudLaunches(await serverOf(serverId))).filter(
-    (launch) => launch.agent_id && launch.desired_state !== 'deleted'
-  );
+export async function listCloudAgents(serverId: string): Promise<CloudAgent[] | null> {
+  const listed = await listCloudLaunches(await serverOf(serverId));
+  if (listed === null) return null;
+  const launches = listed.filter((launch) => launch.agent_id && launch.desired_state !== 'deleted');
   return Promise.all(
     launches.map(async (launch): Promise<CloudAgent> => {
       const key = cloudAgentKey(serverId, launch.request_id);
