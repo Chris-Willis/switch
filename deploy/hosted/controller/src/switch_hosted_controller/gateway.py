@@ -221,7 +221,7 @@ class Gateway:
 
     def report_observations(self) -> None:
         for job in self.request(""):
-            if job["state"] == "error":
+            if job["state"] == "error" and job["desired_state"] != "deleted":
                 continue
             try:
                 agent = self.store.get(job["agent_id"])

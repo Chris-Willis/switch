@@ -873,6 +873,47 @@ async def test_removed_worker_releases_name_and_revokes_switch_key(
     assert result.agent_id != agent_id
 
 
+async def test_errored_removal_completes_and_deleted_is_terminal(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        launch.desired_state = "deleted"
+        launch.state = "error"
+        launch.error_code = "worker_needs_attention"
+        launch.error = "The cloud worker needs repair."
+        await session.commit()
+    deleted = await client.post(
+        f"/hosted-controller/{request_id}/observation",
+        headers={"Authorization": "Bearer " + TOKEN},
+        json={"state": "deleted", "revision": 1},
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["state"] == "deleted"
+    assert deleted.json()["error_code"] is None
+    for body in [
+        {
+            "state": "error",
+            "revision": 1,
+            "error": "The cloud worker needs repair.",
+            "error_code": "worker_needs_attention",
+        },
+        {"state": "running", "revision": 1},
+    ]:
+        later = await client.post(
+            f"/hosted-controller/{request_id}/observation",
+            headers={"Authorization": "Bearer " + TOKEN},
+            json=body,
+        )
+        assert later.status_code == 200, later.text
+        assert later.json()["state"] == "deleted"
+        assert later.json()["error"] is None
+        assert later.json()["error_code"] is None
+    async with factory() as session:
+        row = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        assert row.state == "deleted"
+        assert row.name == "removed:" + request_id
+
+
 @pytest.mark.parametrize("cause", ["stop", "owner_loss", "disconnect", "expired"])
 async def test_repository_tokens_are_revoked_after_access_commit(
     controller_app, monkeypatch, cause

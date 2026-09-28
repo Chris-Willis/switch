@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from botocore.stub import Stubber
-from test_controller import config, ec2_client, store_and_agent
+from test_controller import config, ec2_client, store_and_agent, volume
 
 from switch_hosted_controller.cloud import CloudResourceError, Ec2Cloud
 from switch_hosted_controller.model import DesiredState, ObservedState
@@ -306,3 +306,96 @@ def test_migrated_stopped_observation_requires_refresh_before_delete(tmp_path: P
         is DesiredState.DELETED
     )
     migrated.close()
+
+
+def test_purged_recorded_instance_reads_as_not_found(tmp_path: Path):
+    cfg = config(tmp_path)
+    store, agent = store_and_agent(cfg)
+    agent = store.record_instance(agent.agent_id, "i-0123456789abcdef0")
+    client = ec2_client()
+    cloud = Ec2Cloud(client, cfg)
+    terminated = terminal_instance(cloud, agent)
+
+    with Stubber(client) as stubber:
+        stubber.add_response(
+            "describe_instances", {"Reservations": []}, {"InstanceIds": [agent.instance_id]}
+        )
+        stubber.add_response(
+            "describe_instances",
+            {"Reservations": [{"Instances": [terminated, terminated]}]},
+            {"InstanceIds": [agent.instance_id]},
+        )
+        assert cloud.get_instance(agent) is None
+        with pytest.raises(CloudResourceError, match="exactly one instance"):
+            cloud.get_instance(agent)
+    store.close()
+
+
+def stuck_purged_deletion(tmp_path: Path, *, terminal_observed: bool):
+    cfg = config(tmp_path)
+    store, agent = store_and_agent(cfg)
+    agent = record_compute(store, agent, cfg.availability_zone)
+    claim = accept_delete(store, agent, delete_volume=False)
+    if terminal_observed:
+        store.mark_instance_terminal_observed(agent.agent_id, agent.instance_id)
+    store.set_observed(
+        claim,
+        ObservedState.NEEDS_ATTENTION,
+        "recorded instance lookup did not return exactly one instance",
+    )
+    return cfg, store, store.get(agent.agent_id)
+
+
+def test_deletion_completes_after_terminated_instance_is_purged(tmp_path: Path):
+    cfg, store, agent = stuck_purged_deletion(tmp_path, terminal_observed=True)
+    client = ec2_client()
+    cloud = Ec2Cloud(client, cfg)
+
+    with Stubber(client) as stubber:
+        stubber.add_response(
+            "describe_instances", {"Reservations": []}, {"InstanceIds": [agent.instance_id]}
+        )
+        stubber.add_response(
+            "describe_volumes",
+            {"Volumes": [volume(cfg, agent)]},
+            {"VolumeIds": [agent.volume_id]},
+        )
+        deleted = Reconciler(store, cloud).reconcile(agent.agent_id)
+        stubber.assert_no_pending_responses()
+    assert deleted.observed_state is ObservedState.DELETED
+    assert deleted.last_error is None
+
+    with Stubber(client):
+        again = Reconciler(store, cloud).reconcile(agent.agent_id)
+    assert again.observed_state is ObservedState.DELETED
+    store.close()
+
+
+def test_purged_instance_without_terminal_evidence_needs_attention(tmp_path: Path):
+    cfg, store, agent = stuck_purged_deletion(tmp_path, terminal_observed=False)
+    client = ec2_client()
+    cloud = Ec2Cloud(client, cfg)
+
+    with Stubber(client) as stubber:
+        stubber.add_response(
+            "describe_instances", {"Reservations": []}, {"InstanceIds": [agent.instance_id]}
+        )
+        result = Reconciler(store, cloud).reconcile(agent.agent_id)
+    assert result.observed_state is ObservedState.NEEDS_ATTENTION
+    assert result.last_error == "recorded instance state is unknown during deletion"
+    store.close()
+
+
+def test_completed_deletion_is_not_reconciled_again(tmp_path: Path):
+    cfg = config(tmp_path)
+    store, agent = store_and_agent(cfg)
+    agent = record_compute(store, agent, cfg.availability_zone)
+    accept_delete(store, agent, delete_volume=False)
+    cloud = DeletionCloud(["terminated"])
+    reconciler = Reconciler(store, cloud)
+    assert reconciler.reconcile(agent.agent_id).observed_state is ObservedState.DELETED
+    calls = list(cloud.calls)
+
+    assert reconciler.reconcile(agent.agent_id).observed_state is ObservedState.DELETED
+    assert cloud.calls == calls
+    store.close()
