@@ -94,20 +94,32 @@ describe('buildEnvFile', () => {
     // An entry here must say why the stack is correct without it — leaving a
     // var unset is a decision, not a default.
     const intentionallyUnset = new Set<string>([
-      // The four below configure switch-core as a distributed messaging app —
-      // one app we own, installed by a customer into their own workspace, with
-      // the platform posting events to URLs declared once in the app manifest.
-      // A managed stack cannot be one of those and is not meant to be: it binds
-      // to loopback, so no platform can reach its callback or event URLs, and
-      // the credentials are the app owner's rather than anything this machine
-      // could hold. switch-core registers no installer without them and the
-      // operator UI says so rather than offering a button that would fail at
-      // Slack. Connecting a workspace from here is the other path — an operator
-      // registering a bridge with their own app's token.
+      // The vars below configure switch-core as a distributed messaging app —
+      // one app we own, installed by a customer into their own workspace. A
+      // managed stack cannot be one of those and is not meant to be: it binds
+      // to loopback, so no platform can reach the OAuth redirect the install
+      // needs (and switch-core makes MESSAGING_PUBLIC_URL a startup requirement
+      // the moment a distributed app is configured, so setting the credentials
+      // without it would fail boot), and the credentials are the app owner's
+      // rather than anything this machine could hold. switch-core registers no
+      // installer without them and the operator UI says so rather than offering
+      // a button that would fail at the platform. Connecting a workspace from
+      // here is the other path — an operator registering a bridge with their
+      // own app's token.
       'MESSAGING_PUBLIC_URL',
       'SLACK_APP_CLIENT_ID',
       'SLACK_APP_CLIENT_SECRET',
       'SLACK_APP_SIGNING_SECRET',
+      // Discord grants no per-install token, so its four are deployment config
+      // rather than per-workspace secrets; the two intents are privileged flags
+      // that only matter once an app is configured. None can be held by a
+      // loopback stack (see above), so all are unset here.
+      'DISCORD_APP_CLIENT_ID',
+      'DISCORD_APP_CLIENT_SECRET',
+      'DISCORD_APP_BOT_TOKEN',
+      'DISCORD_APP_APPLICATION_ID',
+      'DISCORD_APP_MESSAGE_CONTENT',
+      'DISCORD_APP_MEMBERS',
     ]);
 
     const missing = [...interpolated]
