@@ -13,6 +13,7 @@ const passwordLogin = vi.hoisted(() => vi.fn());
 const reconcileServerWorkspaces = vi.hoisted(() => vi.fn());
 const listWorkspacesForServer = vi.hoisted(() => vi.fn());
 const createTenant = vi.hoisted(() => vi.fn());
+const acceptInvitation = vi.hoisted(() => vi.fn());
 // Stubbed rather than reimplemented: what the tests below assert is that the
 // kind reaches the event, not how a row is read as one.
 const serverKindOf = vi.hoisted(() => vi.fn(() => 'remote_managed'));
@@ -57,6 +58,7 @@ vi.mock('./gateway-client', () => ({
   fetchAgents: vi.fn(),
   fetchAuthConfig,
   createTenant,
+  acceptInvitation,
   fetchRoomRoles: vi.fn(),
   fetchRooms: vi.fn(),
   registerKnownAgent: vi.fn(),
@@ -396,6 +398,50 @@ describe('createWorkspace', () => {
   });
 });
 
+describe('acceptInvitation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    reconcileServerWorkspaces.mockReset().mockResolvedValue(undefined);
+    getServer.mockResolvedValue(server({}));
+    managedServerHostBlocked.mockReturnValue(null);
+  });
+
+  it('returns the local row for the workspace the invitation joined', async () => {
+    acceptInvitation.mockResolvedValue({ id: 't5', slug: 'cryo', name: 'Cryo', role: 'member' });
+    listWorkspacesForServer.mockResolvedValue([
+      workspaceRow({ id: 'ws-1', tenantId: 't1' }),
+      workspaceRow({ id: 'ws-5', tenantId: 't5', name: 'Cryo', role: 'member' }),
+    ]);
+
+    const joined = await switchServersController.acceptInvitation({
+      serverId: 'srv',
+      token: 'tok',
+    });
+
+    expect(acceptInvitation).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), 'tok');
+    expect(reconcileServerWorkspaces).toHaveBeenCalledWith('srv');
+    expect(joined.id).toBe('ws-5');
+  });
+
+  it('raises when the joined workspace did not land locally', async () => {
+    acceptInvitation.mockResolvedValue({ id: 't5', slug: 'cryo', name: 'Cryo', role: 'member' });
+    listWorkspacesForServer.mockResolvedValue([workspaceRow({ id: 'ws-1', tenantId: 't1' })]);
+
+    await expect(
+      switchServersController.acceptInvitation({ serverId: 'srv', token: 'tok' })
+    ).rejects.toThrow('did not record it');
+  });
+
+  it('passes a refusal through untouched', async () => {
+    acceptInvitation.mockRejectedValue(new Error('This invitation has expired'));
+
+    await expect(
+      switchServersController.acceptInvitation({ serverId: 'srv', token: 'tok' })
+    ).rejects.toThrow('This invitation has expired');
+    expect(reconcileServerWorkspaces).not.toHaveBeenCalled();
+  });
+});
+
 describe('adding a server by URL', () => {
   const params = { name: 'S', gatewayUrl: 'http://gateway', apiUrl: 'http://api' };
 
@@ -475,5 +521,59 @@ describe('connecting to Switch Cloud', () => {
       'Switch Cloud is not configured'
     );
     expect(addServer).not.toHaveBeenCalled();
+  });
+});
+
+describe('finding the server an invite link is for', () => {
+  const CLOUD = server({
+    id: 'cloud',
+    name: 'Switch Cloud',
+    gatewayUrl: 'https://cloud.example.com',
+  });
+  const OWN = server({ id: 'own', gatewayUrl: 'https://switch.example.org' });
+
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+    vi.stubEnv('SWITCH_CLOUD_URL', 'https://cloud.example.com');
+    vi.stubEnv('MAIN_VITE_SWITCH_CLOUD_URL', undefined);
+    addServer.mockReset();
+    findServerByGatewayUrl.mockReset();
+  });
+
+  it('registers Switch Cloud when the link is for it', async () => {
+    findServerByGatewayUrl.mockResolvedValue(null);
+    addServer.mockResolvedValue(CLOUD);
+
+    await expect(
+      switchServersController.serverForInvite('https://cloud.example.com')
+    ).resolves.toEqual({ kind: 'known', server: CLOUD, via: 'cloud' });
+    expect(addServer).toHaveBeenCalledOnce();
+  });
+
+  it('hands back a server already registered here', async () => {
+    findServerByGatewayUrl.mockResolvedValue(OWN);
+
+    await expect(
+      switchServersController.serverForInvite('https://switch.example.org')
+    ).resolves.toEqual({ kind: 'known', server: OWN, via: 'external' });
+    expect(addServer).not.toHaveBeenCalled();
+  });
+
+  it('says a server it has never heard of is unknown, and registers nothing', async () => {
+    findServerByGatewayUrl.mockResolvedValue(null);
+
+    await expect(
+      switchServersController.serverForInvite('https://switch.example.org')
+    ).resolves.toEqual({ kind: 'unknown', origin: 'https://switch.example.org' });
+    expect(addServer).not.toHaveBeenCalled();
+  });
+
+  it('does not treat a link as the Cloud when this build names none', async () => {
+    vi.stubEnv('SWITCH_CLOUD_URL', undefined);
+    findServerByGatewayUrl.mockResolvedValue(null);
+
+    await expect(
+      switchServersController.serverForInvite('https://cloud.example.com')
+    ).resolves.toEqual({ kind: 'unknown', origin: 'https://cloud.example.com' });
   });
 });

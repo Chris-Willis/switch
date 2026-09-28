@@ -1,10 +1,12 @@
 import { makeAutoObservable } from 'mobx';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import type { InviteLink } from '@shared/core/workspaces/invite-link';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
 
 /** Where a fresh install is in getting its first server. */
 export type OnboardingPage =
   | 'welcome'
+  | 'invite'
   | 'whoRuns'
   | 'local'
   | 'remoteHost'
@@ -12,6 +14,7 @@ export type OnboardingPage =
   | 'signIn'
   | 'pickWorkspace'
   | 'createWorkspace'
+  | 'acceptInvite'
   | 'linkAccounts';
 
 /**
@@ -50,6 +53,13 @@ class OnboardingStore {
    * offered to it would take the user somewhere they did not set up.
    */
   registeredOn: { page: OnboardingPage; serverId: string } | null = null;
+  /**
+   * The invite link the user pasted, until it has been accepted or given up on.
+   *
+   * Held across the connect and sign-in pages because accepting needs an
+   * account on the server, and the link arrives before there is one.
+   */
+  invite: InviteLink | null = null;
 
   constructor() {
     makeAutoObservable(this);
@@ -77,6 +87,7 @@ class OnboardingStore {
       this.via = 'external';
       this.serverWorkspaces = null;
       this.registeredOn = null;
+      this.invite = null;
     }
     this.page = page;
   }
@@ -110,12 +121,22 @@ class OnboardingStore {
     this.serverWorkspaces = workspaces;
   }
 
+  holdInvite(invite: InviteLink): void {
+    this.invite = invite;
+  }
+
+  /** The invitation was accepted, or the user went on without it. */
+  dropInvite(): void {
+    this.invite = null;
+  }
+
   reset(): void {
     this.page = 'welcome';
     this.server = null;
     this.via = 'external';
     this.serverWorkspaces = null;
     this.registeredOn = null;
+    this.invite = null;
   }
 }
 

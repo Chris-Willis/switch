@@ -403,6 +403,35 @@ export async function switchTenant(server: SwitchServer, tenantId: string): Prom
   await setSessionCookie(server.id, cookie);
 }
 
+/**
+ * Accept an invitation to a workspace, joining it.
+ *
+ * The token goes in the body, never the path: it is a bearer credential. The
+ * gateway answers with a session cookie scoped to the workspace joined, which
+ * is kept for the same reason `switchTenant` keeps its own — the next call made
+ * for that workspace has to reach it, not whichever one was selected before.
+ *
+ * Accepting an invitation to a workspace the account is already in is not an
+ * error: the gateway returns the existing membership and spends nothing.
+ */
+export async function acceptInvitation(server: SwitchServer, token: string): Promise<RemoteTenant> {
+  const res = await gatewayFetch(server, '/invitations/accept', {
+    authenticated: true,
+    method: 'POST',
+    body: { token },
+  });
+  const json = (await res.json()) as { id: string; slug: string; name: string; role: string };
+  const cookie = extractAuthCookie(res.headers.getSetCookie());
+  if (!cookie) {
+    throw new GatewayError(
+      'http',
+      `${server.name} accepted the invitation but returned no session cookie.`
+    );
+  }
+  await setSessionCookie(server.id, cookie);
+  return { id: json.id, slug: json.slug, name: json.name, role: mapRole(json.role) };
+}
+
 /** Options for `registerKnownAgent`, matching the gateway's
  * `RegisterKnownAgentRequest.options`. The gateway validates these against the
  * options schema of the `agent_type` being registered and ignores keys that type

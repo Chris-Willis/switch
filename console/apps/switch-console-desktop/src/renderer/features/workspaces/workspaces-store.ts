@@ -89,6 +89,17 @@ export class WorkspacesStore {
     return workspace;
   }
 
+  /**
+   * Accept an invitation on a server and return the workspace it admits to.
+   *
+   * Refreshes before returning, for the same reason as {@link create}.
+   */
+  async acceptInvitation(serverId: string, token: string): Promise<Workspace> {
+    const workspace = await rpc.switchServers.acceptInvitation({ serverId, token });
+    await this.refresh();
+    return workspace;
+  }
+
   async refresh(): Promise<void> {
     const [workspaces, activeId] = await Promise.all([
       rpc.workspaces.list(),
