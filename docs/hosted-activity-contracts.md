@@ -1088,7 +1088,7 @@ drops (checked by grep). Never edit or re-parent them.
    room_id, message_id, thread_id, disposition, payload JSONB NULL,
    notice_posted_at)`, with RLS.
 2. `<rev>_merge_hosted_and_session_activity`: `down_revision =
-   ("<cutover_manifest>", "e3b7c9d2a415")`, with empty upgrade and downgrade.
+   ("<cutover_manifest>", "c4e9a1f7b203")`, with empty upgrade and downgrade.
 3. `<rev>_hosted_activity`: `hosted_wake_mailbox` (RLS, grants as
    `545f80e11f13`). `hosted_launches.worker_capability_hash`,
    `worker_capability_encrypted`, `worker_capability_revision`, `relay_seq`. `hosted_operations.claimed_by`,
@@ -1104,7 +1104,7 @@ PostgreSQL:
   launches, operations, `sdk_*` rows, room-failure receipts and cutover items;
   `alembic upgrade heads`. Launches and operations are intact, `import` items
   are in the mailbox, the `sdk_*` tables are gone.
-- `test_upgrade_from_main_head`: seed at `e3b7c9d2a415` (a main deployment
+- `test_upgrade_from_main_head`: seed at `c4e9a1f7b203` (a main deployment
   that never had hosted agents) and upgrade. The hosted tables are created
   empty and nothing else changes.
 - `alembic heads` is one head; `test_frozen_ddl_matches_create_all.py` still
@@ -1246,7 +1246,7 @@ deployment.
 
 ### Pilot order
 
-The pilot sits on our head; main's `a7e1c4b90d23 … e3b7c9d2a415` are not
+The pilot sits on our head; main's `a7e1c4b90d23 … c4e9a1f7b203` are not
 applied. Among them `b9e4d2a71c05` drops `sdk_sessions`, `sdk_session_events`,
 `sdk_session_commands`, `sdk_room_admissions` and `session_request_posts`,
 and deletes blobs tied to them. Its downgrade raises.
