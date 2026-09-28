@@ -157,3 +157,22 @@ it('refuses a journal that is not there or skips an event', async () => {
   );
   await expect(readJournalSnapshot('gap')).rejects.toThrow(/skipped from event 1 to 3/);
 });
+
+it('skips launch staging directories beside the state roots', async () => {
+  await record('real', 'agent', [], {});
+  const staged = path.join(paths.base, '.launch-abc');
+  await mkdir(staged, { recursive: true });
+  await writeFile(
+    path.join(staged, 'config.json'),
+    JSON.stringify({ session: session('staged', 'agent') })
+  );
+  const halfWritten = path.join(paths.base, 'launch-def');
+  await mkdir(halfWritten, { recursive: true });
+  await writeFile(path.join(halfWritten, 'config.json'), '{"session":');
+
+  const scripted = JSON.parse(
+    execFileSync(process.execPath, ['-e', LIST_SCRIPT, 'agent', paths.base], { encoding: 'utf8' })
+  );
+  expect(readHostSessions(fs, path, 'agent', paths.base)).toEqual(scripted);
+  expect(hostSessions(scripted).map((s) => s.sessionId)).toEqual(['real']);
+});

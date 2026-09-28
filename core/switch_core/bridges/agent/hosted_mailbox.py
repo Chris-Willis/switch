@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.api.hosted_worker_routes import post_mailbox_notices
@@ -24,7 +24,8 @@ from switch_core.bridges.agent.protocol.hosted_workers import (
     offer_key,
 )
 from switch_core.bridges.agent.protocol.service import ProtocolService
-from switch_core.db.models import HostedLaunch, require_tenant_id
+from switch_core.config import hosted_configured
+from switch_core.db.models import HostedLaunch, HostedWakeMailbox, require_tenant_id
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.hosted_mailbox_store import (
@@ -117,8 +118,33 @@ async def deliver_on_attach(
     )
 
 
+async def retains_hosted_work(session: AsyncSession) -> bool:
+    """Whether the bound tenant has a hosted launch or a wake mailbox row."""
+    tenant_id = require_tenant_id()
+    return bool(
+        await session.scalar(
+            select(
+                or_(
+                    exists().where(HostedLaunch.tenant_id == tenant_id),
+                    exists().where(HostedWakeMailbox.tenant_id == tenant_id),
+                )
+            )
+        )
+    )
+
+
 async def mailbox_upkeep(protocol: ProtocolService, since: datetime) -> None:
-    """One pass over the bound tenant: reclaim, expire, prune, re-offer and log the backlog."""
+    """One pass over the bound tenant: reclaim, expire, prune, re-offer and log the backlog.
+
+    Skipped on a server that does not run cloud agents, unless the tenant still
+    holds hosted work from when it did.
+    """
+    if not hosted_configured(protocol.config):
+        async with tenant_session(
+            protocol.session_factory, require_tenant_id()
+        ) as session:
+            if not await retains_hosted_work(session):
+                return
     store = HostedMailboxStore()
     registry = protocol.connections
     boot = protocol.event_buffer.boot
