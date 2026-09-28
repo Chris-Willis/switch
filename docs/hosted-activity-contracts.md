@@ -1306,8 +1306,9 @@ import attachment needs a `media_blobs` row no session owns.
 stopped and that the `sdk_*` rows still match what `prepare` captured (the
 old Core did not run again), and refuses with one line per problem, naming
 the launch. The conditions are one set of plain-SQL queries in
-`switch_core/db/hosted_cutover_gate.py`, which the wrapper, `env.py` and the
-merge revision all run.
+`switch_core/db/hosted_cutover_gate.py`, which the wrapper and `env.py` run;
+the merge revision carries a frozen copy of the checks that still apply after
+the drop.
 
 `alembic upgrade heads` orders `b9e4d2a71c05` freely between the branches (on
 a fresh database it runs the drop before the manifest revision), and Core
