@@ -65,7 +65,10 @@ Telegram bridge looks: one bot, many groups.
 Direct messages with the bot stay what they are on the self-hosted bridge: a
 lobby that gets a guidance reply and no room (`TELEGRAM_SETUP.md`, "Not a
 private chat with the bot"). A DM carries no chat a tenant has claimed, so it
-cannot be attributed to anyone.
+cannot be attributed to anyone. On the shared bot the reply cannot come from a
+tenant's adapter, because a DM resolves to no tenant. It is sent by the
+`TelegramAppClient` from the unowned-chat hook (change 8, stage 5). Until that
+lands, a DM is dropped with no reply.
 
 ## Decisions
 
@@ -503,13 +506,19 @@ commit that can be tested on its own.
     Postgres; a second tenant claiming the same chat refused; two concurrent
     first claims producing one bridge.
 - **Stage 3 — the installer, ingress and config.**
-  - Work: `TelegramAppInstaller`'s webhook half; `TELEGRAM_APP_*` validation;
-    `setWebhook` at boot; Helm `telegramApp`, compose and `.env.example`.
+  - Work: `TelegramAppInstaller`'s webhook half and claim reading;
+    `TELEGRAM_APP_*` validation; the first part of `TelegramAppClient`
+    (`getMe`, then `setWebhook`, supervised in the background with retry, so an
+    unreachable Telegram never blocks boot); the install route answering 503
+    when an installer cannot read an event yet; Helm `telegramApp`, compose and
+    `.env.example`.
   - Tests: secret refused and accepted, `update_id` deduped, the workspace and
-    revocation extraction for each update type, config all-or-none, and the
-    port and secret-alphabet rules.
+    revocation extraction for each update type, claims read from the right
+    messages only, config all-or-none, the port and secret-alphabet rules, and
+    a claim before the bot has connected answered with a 503.
 - **Stage 4 — shared delivery.**
-  - Work: `TelegramAppClient`; the `event_delivery` discriminator; the adapter's
+  - Work: the rest of `TelegramAppClient` (sending, the shared cooldown,
+    `setMyCommands`); the `event_delivery` discriminator; the adapter's
     shared mode (no polling, no commands, the deployment-wide cooldown, claims
     as joins, channel `/connect`); a histogram of how long each send waits on
     the shared cooldown.
@@ -520,7 +529,7 @@ commit that can be tested on its own.
     `leaveChat`; migration re-keying the install row; `exclusive_resource`; the
     deployment-token refusal; the unclaimed notice with its grace period; the
     ignored-event counter, the recently-dropped list and the `getWebhookInfo`
-    check.
+    check; the DM guidance reply from the unowned-chat hook.
   - Tests: a message dropped before a migration re-key produces the error with
     its count; a failed `leaveChat` is an error and is retried; unclaimed-chat
     traffic produces no per-event log.
