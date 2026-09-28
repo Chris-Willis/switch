@@ -38,7 +38,7 @@ from switch_core.bridges.agent.protocol.stream import KEEPALIVE_INTERVAL_SECONDS
 from switch_core.db.models import HostedLaunch, User, require_tenant_id
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore, is_waking
-from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.auth import get_current_user, get_current_user_in_transaction
 from switch_core.gateway.dependencies import get_protocol, get_session
 
 logger = logging.getLogger(__name__)
@@ -196,15 +196,24 @@ async def owned_launch(
     return launch
 
 
+async def request_body(request: Request) -> bytes:
+    """The body, read ahead of the caller's user.
+
+    `relay` takes the user with its transaction left open, so the body has to
+    be in hand before that transaction starts: from the user read to the
+    rollback nothing waits on the client.
+    """
+    return await request.body()
+
+
 @router.post("/{request_id}/relay", response_model=None)
 async def relay(
     request_id: UUID,
-    request: Request,
-    user: Annotated[User, Depends(get_current_user)],
+    raw: Annotated[bytes, Depends(request_body)],
+    user: Annotated[User, Depends(get_current_user_in_transaction)],
     session: Annotated[AsyncSession, Depends(get_session)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
 ) -> JSONResponse:
-    raw = await request.body()
     if len(raw) > RELAY_REQUEST_LIMIT_BYTES:
         return relay_error(
             RelayError("too_large", "A relay request is at most 2 MiB.", 413), None

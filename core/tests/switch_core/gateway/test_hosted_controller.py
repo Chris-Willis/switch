@@ -46,7 +46,7 @@ from switch_core.db.models import (
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
-from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.auth import get_current_user, get_current_user_in_transaction
 from switch_core.gateway.dependencies import (
     get_config,
     get_protocol,
@@ -166,6 +166,7 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
             return await session.get(User, owner)
 
     app.dependency_overrides[get_current_user] = current_user
+    app.dependency_overrides[get_current_user_in_transaction] = current_user
     app.dependency_overrides[get_session] = worker_session
 
     async def worker_agent():

@@ -34,6 +34,7 @@ from switch_core.gateway.auth import (
     get_authenticated_caller,
     get_authenticated_user_id,
     get_current_user,
+    get_current_user_in_transaction,
     require_admin,
 )
 from switch_core.gateway.dependencies import get_session, get_system_session
@@ -108,6 +109,13 @@ class _Route:
         return f"{self.module}: {self.method} {self.path}"
 
     @property
+    def binds_a_tenant(self) -> bool:
+        return (
+            get_current_user in self.calls
+            or get_current_user_in_transaction in self.calls
+        )
+
+    @property
     def key(self) -> tuple[str, str]:
         return (self.method, self.path)
 
@@ -156,7 +164,7 @@ def test_every_route_taking_the_session_also_authenticates() -> None:
         for route in ROUTES
         if get_session in route.calls
         and route.key not in _ROUTES_WITH_NO_TENANT_BOUND
-        and get_current_user not in route.calls
+        and not route.binds_a_tenant
         and require_admin not in route.calls
     )
     assert not unauthenticated, (
@@ -183,7 +191,7 @@ def test_the_routes_that_never_bind_a_tenant_are_exactly_these() -> None:
     assert {
         route.key
         for route in ROUTES
-        if get_current_user not in route.calls
+        if not route.binds_a_tenant
         and controller_session not in route.calls
         and worker_session not in route.calls
     } == _ROUTES_THAT_NEVER_BIND_A_TENANT
@@ -237,7 +245,7 @@ def test_no_route_both_resolves_a_tenant_and_skips_resolving_one() -> None:
     assert not [
         str(route)
         for route in ROUTES
-        if get_authenticated_user_id in route.calls and get_current_user in route.calls
+        if get_authenticated_user_id in route.calls and route.binds_a_tenant
     ]
 
 

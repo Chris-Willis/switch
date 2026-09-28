@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import event as orm_event
 from sqlalchemy import select
 
 from switch_core.bridges.agent.api.handlers import connection_placements, poll_events
@@ -25,8 +26,14 @@ from switch_core.db.models import (
     Room,
     require_tenant_id,
 )
+from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import hosted_relay
-from switch_core.gateway.dependencies import get_session
+from switch_core.gateway.auth import (
+    create_jwt,
+    get_current_user,
+    get_current_user_in_transaction,
+)
+from switch_core.gateway.dependencies import get_session, get_user_store
 from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
     TOKEN,
     controller_app,
@@ -772,3 +779,43 @@ async def test_worker_attaches_answers_a_relay_and_reports_idle_over_the_wire(
     assert set(idle.json()) >= {"queued_operations", "credential_revision"}
     assert idle.json()["credential_revision"] == attached["credential_revision"]
     assert service.connections.fresh_idle_report(agent_id, request_id, 1) is not None
+
+
+async def test_relay_with_real_auth_opens_two_transactions(worker_app):
+    """Tenant resolution, then the user and the launch on one transaction."""
+    client, request_id, _, service, factory, _ = worker_app
+    await _ready_worker(worker_app)
+    app = client._transport.app
+    del app.dependency_overrides[get_current_user]
+    del app.dependency_overrides[get_current_user_in_transaction]
+    app.dependency_overrides[get_user_store] = UserStore
+    service.config.gateway_tenant_choice_enabled = False
+    owner = (await _launch(factory, request_id)).owner_id
+    client.cookies.set(
+        "switch_auth", create_jwt(owner, "owner@test", "user", "test-secret", None)
+    )
+    begins: list[object] = []
+    engine = factory.kw["bind"].sync_engine
+    listener = begins.append
+    orm_event.listen(engine, "begin", listener)
+    try:
+        response = await client.post(
+            f"/hosted-launches/{request_id}/relay",
+            json={"message": {"health": True}, "timeout_ms": 50},
+        )
+    finally:
+        orm_event.remove(engine, "begin", listener)
+    assert response.status_code == 504, response.text
+    assert len(begins) == 2
+    stranger = await client.post(
+        f"/hosted-launches/{uuid4()}/relay",
+        json={"message": {"health": True}, "timeout_ms": 50},
+    )
+    assert stranger.status_code == 404
+    client.cookies.clear()
+    assert (
+        await client.post(
+            f"/hosted-launches/{request_id}/relay",
+            json={"message": {"health": True}, "timeout_ms": 50},
+        )
+    ).status_code == 401
