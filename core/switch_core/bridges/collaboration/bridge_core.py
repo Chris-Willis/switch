@@ -811,7 +811,6 @@ class BridgeCore:
                 content,
                 format="markdown",
                 thread_root_id=thread_root_id,
-                metered=True,
             )
             if event_id is None:
                 logger.error(
@@ -861,7 +860,6 @@ class BridgeCore:
                     if group_id is not None
                     else None
                 ),
-                metered=True,
             )
             if event_id is None:
                 logger.error(
