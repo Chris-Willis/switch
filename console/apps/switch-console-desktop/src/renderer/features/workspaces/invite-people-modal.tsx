@@ -91,6 +91,16 @@ function deliveryNotice(
         tone: 'destructive',
         text: `Sending the e-mail to ${email} failed. The invitation was created: send this link yourself; it is shown only once.`,
       };
+    case 'unsupported':
+      return email === null
+        ? {
+            tone: 'default',
+            text: 'Send this link to the person you are inviting. It is shown only once.',
+          }
+        : {
+            tone: 'warning',
+            text: `No e-mail was sent — this server does not e-mail invitations. Send this link to ${email} yourself; it is shown only once.`,
+          };
     case 'not_requested':
       return {
         tone: 'default',
@@ -122,7 +132,7 @@ export const InvitePeopleModal = observer(function InvitePeopleModal({
     queryKey,
     queryFn: () => rpc.workspaces.listInvitations(workspaceId),
   });
-  const emailEnabled = query.data?.emailEnabled ?? null;
+  const emailEnabled = query.data?.emailEnabled;
 
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<WorkspaceRole>('member');
@@ -271,9 +281,11 @@ export const InvitePeopleModal = observer(function InvitePeopleModal({
               <FieldDescription>
                 {emailEnabled === false
                   ? 'This server has no e-mail set up, so you’ll get a link to send yourself. '
-                  : emailEnabled === true
-                    ? 'We’ll e-mail them the link. '
-                    : ''}
+                  : emailEnabled === null
+                    ? 'This server does not e-mail invitations, so you’ll get a link to send yourself. '
+                    : emailEnabled === true
+                      ? 'We’ll e-mail them the link. '
+                      : ''}
                 Only someone signed in with this address can accept. Leave it empty for a link
                 anyone can use.
               </FieldDescription>

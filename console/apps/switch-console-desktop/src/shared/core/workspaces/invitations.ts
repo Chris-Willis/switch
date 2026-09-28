@@ -19,9 +19,15 @@ export type Invitation = {
  *
  * `not_requested` is an invitation that named no address; `not_configured` a
  * server with no mail relay; `failed` a relay that refused or could not be
- * reached. The invitation stands in every case, and its link is the way in.
+ * reached; `unsupported` a server older than e-mailed invitations, which never
+ * sends one. The invitation stands in every case, and its link is the way in.
  */
-export type InvitationEmailDelivery = 'sent' | 'not_configured' | 'failed' | 'not_requested';
+export type InvitationEmailDelivery =
+  | 'sent'
+  | 'not_configured'
+  | 'failed'
+  | 'not_requested'
+  | 'unsupported';
 
 export type CreateInvitationParams = {
   workspaceId: string;
@@ -43,10 +49,15 @@ export type CreatedInvitation = {
   emailDelivery: InvitationEmailDelivery;
 };
 
-/** A workspace's invitations, and whether an addressed one is e-mailed. */
+/**
+ * A workspace's invitations, and whether an addressed one is e-mailed.
+ *
+ * `emailEnabled` is null on a server older than e-mailed invitations: it never
+ * sends one, but "no e-mail set up" would name a setting it does not have.
+ */
 export type WorkspaceInvitations = {
   invitations: Invitation[];
-  emailEnabled: boolean;
+  emailEnabled: boolean | null;
 };
 
 export type InvitationStatus = 'active' | 'revoked' | 'expired' | 'used';

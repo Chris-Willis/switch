@@ -1118,9 +1118,25 @@ describe('workspace invitations', () => {
     expect(created.emailDelivery).toBe('not_configured');
   });
 
-  it('raises when the server does not say whether it e-mails invitations', async () => {
+  it('reads a server older than e-mailed invitations as not sending them', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ state: 'ready' }) as never);
+    await expect(fetchInviteEmailEnabled(SERVER)).resolves.toBeNull();
 
-    await expect(fetchInviteEmailEnabled(SERVER)).rejects.toThrow(/older than this app/);
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+    await expect(fetchInviteEmailEnabled(SERVER)).resolves.toBeNull();
+  });
+
+  it('keeps the link when an older server says nothing about the e-mail', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ...ROW, token: 'tok-1' }) as never);
+
+    const created = await createInvitation(SERVER, 't1', {
+      role: 'member',
+      email: 'ada@example.com',
+      expiresInHours: 48,
+      usesRemaining: 1,
+    });
+
+    expect(created.token).toBe('tok-1');
+    expect(created.emailDelivery).toBe('unsupported');
   });
 });

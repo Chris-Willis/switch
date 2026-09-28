@@ -189,6 +189,26 @@ describe('the invite-people modal', () => {
     expect(el.querySelector<HTMLInputElement>('#invite-people-link')!.value).toContain('tok-1');
   });
 
+  it('works against a server older than e-mailed invitations', async () => {
+    listInvitations.mockResolvedValue({ invitations: [], emailEnabled: null });
+    createInvitation.mockResolvedValue({
+      invitation: invitation({ email: 'ada@example.com' }),
+      link: 'https://switch.example.com/invite#token=tok-1',
+      emailDelivery: 'unsupported',
+    });
+    const el = await render();
+
+    expect(el.textContent).toContain('This server does not e-mail invitations');
+    await type(el.querySelector<HTMLInputElement>('#invite-people-email')!, 'ada@example.com');
+    await act(async () => button(el, 'Create link').click());
+    await settle();
+
+    expect(el.textContent).toContain(
+      'No e-mail was sent — this server does not e-mail invitations'
+    );
+    expect(el.querySelector<HTMLInputElement>('#invite-people-link')!.value).toContain('tok-1');
+  });
+
   it('makes a link for anyone when no address is given', async () => {
     listInvitations.mockResolvedValue({ invitations: [], emailEnabled: true });
     createInvitation.mockResolvedValue({

@@ -542,6 +542,9 @@ function mapInvitation(json: InvitationJson): Invitation {
 }
 
 function mapDelivery(raw: unknown): InvitationEmailDelivery {
+  // A server older than e-mailed invitations leaves the field out. Refusing it
+  // would lose the link of an invitation the server has already made.
+  if (raw === undefined) return 'unsupported';
   if (raw === 'sent' || raw === 'not_configured' || raw === 'failed' || raw === 'not_requested') {
     return raw;
   }
@@ -679,7 +682,7 @@ export async function createInvitation(
       uses_remaining: params.usesRemaining,
     },
   });
-  const json = (await res.json()) as InvitationJson & { token: string; email_delivery: string };
+  const json = (await res.json()) as InvitationJson & { token: string; email_delivery?: string };
   return {
     invitation: mapInvitation(json),
     token: json.token,
@@ -703,14 +706,25 @@ export async function revokeInvitation(
 /**
  * Whether this server e-mails an invitation that names an address, or only
  * mints the link for the admin to send.
+ *
+ * Null on a server older than e-mailed invitations: one without the session
+ * route answers 404, and one with it but without the field predates the
+ * feature. Neither sends an e-mail.
  */
-export async function fetchInviteEmailEnabled(server: SwitchServer): Promise<boolean> {
-  const res = await gatewayFetch(server, '/auth/session', { authenticated: true });
+export async function fetchInviteEmailEnabled(server: SwitchServer): Promise<boolean | null> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/auth/session', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return null;
+    throw cause;
+  }
   const json = (await res.json()) as { invite_email_enabled?: unknown };
+  if (json.invite_email_enabled === undefined) return null;
   if (typeof json.invite_email_enabled !== 'boolean') {
     throw new GatewayError(
       'http',
-      `${server.name} did not say whether it can e-mail invitations. It may be older than this app.`
+      `${server.name} reported an unreadable invite_email_enabled: ${String(json.invite_email_enabled)}`
     );
   }
   return json.invite_email_enabled;
