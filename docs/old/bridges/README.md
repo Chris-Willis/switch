@@ -24,6 +24,9 @@ supplies the credentials for. Slack additionally has a **distributed** app —
 one we register and a customer installs by clicking a button, receiving events
 over HTTPS rather than Socket Mode. It is a separate Slack app with different
 requirements: see [`SLACK_DISTRIBUTED_APP.md`](SLACK_DISTRIBUTED_APP.md).
+The Telegram counterpart — one deployment bot whose groups a customer claims
+with a link — is designed but not built: see
+[`TELEGRAM_DISTRIBUTED_APP.md`](TELEGRAM_DISTRIBUTED_APP.md).
 
 ## The onboarding model (same for every bridge)
 
