@@ -45,6 +45,9 @@ from switch_core.bridges.agent.protocol.types import (
     RegistrationResult,
     TaskProtocolConfig,
 )
+from switch_core.bridges.collaboration.lifecycle_service import (
+    CollaborationBridgeLifecycleService,
+)
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.agent_client import AgentClient
 from switch_core.clients.client_base import ClientBase
@@ -62,6 +65,7 @@ from switch_core.db.runtime_role import grant_runtime_role, verify_restricted_ro
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
@@ -83,6 +87,9 @@ from switch_core.messages.notify import MessageListener
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
+from switch_core.session_activity.listener import SessionActivityListener
+from switch_core.session_activity.outcomes import ApprovalOutcomes
+from switch_core.session_activity.service import SessionActivityService
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
@@ -255,8 +262,12 @@ class Harness:
         event_buffer: EventBuffer,
         owner_id: str,
         session_factory: object,
+        collab_lifecycle: object,
     ) -> None:
         self.protocol = protocol
+        # The real lifecycle under the `collaboration_bridges` marker, the
+        # no-bridges stand-in otherwise.
+        self.collab_lifecycle = collab_lifecycle
         self.room_service = room_service
         self.client_lifecycle = client_lifecycle
         self.room_store = room_store
@@ -484,7 +495,9 @@ async def session_env(switch_stack: StackInfo) -> AsyncIterator[SessionEnv]:
 
 
 @pytest_asyncio.fixture(loop_scope="session")
-async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
+async def harness(
+    session_env: SessionEnv, request: pytest.FixtureRequest
+) -> AsyncIterator[Harness]:
     # Truncation is DDL-adjacent and crosses every tenant, so it runs as
     # the owner. Nothing the application does goes through this engine.
     await _truncate_all(session_env.owner_engine)
@@ -526,7 +539,13 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
         # events and client registrations never leak across tests.
         event_buffer = EventBuffer()
         connections = ConnectionRegistry()
-        collab_lifecycle = _NoBridges()
+        collab_lifecycle: object = _NoBridges()
+        real_bridges = (
+            request.node.get_closest_marker("collaboration_bridges") is not None
+        )
+        session_activity_listener = SessionActivityListener(
+            lambda: create_unpooled_engine(config)
+        )
 
         # The transport's wake-up path: rows are announced over LISTEN/NOTIFY, so
         # nothing is delivered to a client until this connection is up.
@@ -591,6 +610,25 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             config=config,
         )
 
+        if real_bridges:
+            collab_lifecycle = CollaborationBridgeLifecycleService(
+                bridge_store=session_env.bridge_store,
+                external_user_store=session_env.external_user_store,
+                bridge_message_map_store=BridgeMessageMapStore(),
+                room_store=session_env.room_store,
+                agent_store=session_env.agent_store,
+                client_store=session_env.client_store,
+                client_lifecycle=client_lifecycle,
+                room_service=None,  # type: ignore[arg-type]  # set below
+                matrix_admin=provisioning,
+                session_factory=session_factory,
+                config=config,
+                client_factory=client_factory,
+                session_activity_listener=session_activity_listener,
+                session_activity_service=SessionActivityService(session_factory),
+                connections=connections,
+            )
+
         room_service = RoomService(
             matrix_admin=provisioning,
             room_store=session_env.room_store,
@@ -601,6 +639,8 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             resource_service=resource_service,
             session_factory=session_factory,
         )
+        if isinstance(collab_lifecycle, CollaborationBridgeLifecycleService):
+            collab_lifecycle._room_service = room_service
 
         protocol = ProtocolService(
             agent_store=session_env.agent_store,
@@ -621,6 +661,9 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             bridge_store=session_env.bridge_store,
             session_factory=session_factory,
             config=config,
+            approval_outcomes=ApprovalOutcomes(
+                session_activity_listener, SessionActivityService(session_factory)
+            ),
             connections=connections,
         )
 
@@ -632,10 +675,13 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             event_buffer=event_buffer,
             owner_id=owner_id,
             session_factory=session_factory,
+            collab_lifecycle=collab_lifecycle,
         )
         try:
             yield h
         finally:
+            if isinstance(collab_lifecycle, CollaborationBridgeLifecycleService):
+                await collab_lifecycle.stop_all()
             # Stop the agents' receive loops before the next test truncates, so none
             # is mid-query against a table being cleared.
             await client_lifecycle.stop_all()
