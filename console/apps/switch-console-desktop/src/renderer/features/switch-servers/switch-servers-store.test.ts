@@ -10,6 +10,7 @@ const setActiveServer = vi.hoisted(() => vi.fn());
 const selection = vi.hoisted(() => ({ serverId: null as string | null }));
 const removeServer = vi.hoisted(() => vi.fn());
 const addServer = vi.hoisted(() => vi.fn());
+const connectToSwitchCloud = vi.hoisted(() => vi.fn());
 /** SSH hosts the reachability manager currently considers down. */
 const blockedHosts = vi.hoisted(() => new Set<string>());
 
@@ -23,6 +24,7 @@ vi.mock('@renderer/lib/ipc', () => ({
       setActiveServer,
       removeServer,
       addServer,
+      connectToSwitchCloud,
     },
     onboarding: { installIsEmpty },
   },
@@ -367,6 +369,39 @@ describe('reading the server list', () => {
 
     expect(store.error).not.toBeNull();
     expect(store.listError).toBeNull();
+  });
+});
+
+describe('adding the first server', () => {
+  // The shell draws the first-run page while the install is empty, and the
+  // flow hands the window back only by finishing. An answer read at startup
+  // and never again would send a finished flow straight back to its welcome.
+  it('stops calling the install empty once a server is added', async () => {
+    listServers.mockResolvedValue([]);
+    const store = new SwitchServersStore();
+    await store.init();
+    expect(store.installIsEmpty).toBe(true);
+
+    addServer.mockResolvedValue(server('a'));
+    listServers.mockResolvedValue([server('a')]);
+    installIsEmpty.mockResolvedValue(false);
+    await store.addServer('a', 'https://a.example.com', 'https://a.example.com');
+
+    expect(store.installIsEmpty).toBe(false);
+  });
+
+  it('stops calling the install empty once Switch Cloud is registered', async () => {
+    listServers.mockResolvedValue([]);
+    const store = new SwitchServersStore();
+    await store.init();
+    expect(store.installIsEmpty).toBe(true);
+
+    connectToSwitchCloud.mockResolvedValue(server('cloud'));
+    listServers.mockResolvedValue([server('cloud')]);
+    installIsEmpty.mockResolvedValue(false);
+    await store.connectToSwitchCloud();
+
+    expect(store.installIsEmpty).toBe(false);
   });
 });
 
