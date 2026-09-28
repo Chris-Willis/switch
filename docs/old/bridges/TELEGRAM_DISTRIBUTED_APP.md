@@ -630,6 +630,25 @@ commit that can be tested on its own.
   with `delivery=shared` (stage 4) is how it will be seen. Adapters send
   through the shared bot directly today, so per-tenant queues would route
   their sends through `TelegramAppClient` first.
+- **Connecting a channel from Telegram's chat picker.** An option, not
+  adopted. A channel needs its admin to add the bot by hand (searching for its
+  full `@username`) and then post `/connect <code>`, which stays visible to
+  subscribers. Instead, the dashboard's channel link would open a direct chat
+  with the bot, `t.me/<bot>?start=<code>`. The bot answers with a
+  `request_chat` button, and Telegram's own picker lists the channels the
+  person can post in and adds the bot to the one picked. The pick comes back as
+  `chat_shared` in the direct chat and claims that channel with the code.
+  - Tried against a real bot. The picker adds the bot with exactly the rights
+    requested, but only in the phone apps: Telegram Web cannot show the button,
+    so `/connect` stays as the fallback.
+  - A spike exists, parked on a local branch. It changes one shared thing:
+    an accepted claim's event is resolved to the workspace it claimed rather
+    than the chat it came from. For `/start` and `/connect` the two are the
+    same chat. It also means a direct chat can start a claim, which reverses
+    "a DM never claims anything".
+  - Before adopting it: the code waits for its pick in process memory, so it
+    has to be stored before it works across replicas. The first live run spent
+    its code and saved nothing, and why has not been found.
 - **A shared bridge restarted at runtime has no bot until its next update.**
   Bridges running at boot are attached when the bot connects, and one created
   by a claim is attached before its first update. One restarted while the
