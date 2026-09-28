@@ -50,9 +50,12 @@ export type WelcomeCloud =
 export function WelcomePage({
   cloud,
   onContinue,
+  onInvite,
 }: {
   cloud: WelcomeCloud;
   onContinue: () => void;
+  /** Join a workspace someone else set up, from the link they sent. */
+  onInvite: () => void;
 }) {
   const cloudOpen = cloud.kind === 'open';
   return (
@@ -94,6 +97,17 @@ export function WelcomePage({
                 Continue with your own server
               </Button>
             </div>
+            <p className="text-xs text-foreground-muted">
+              Invited to a workspace?{' '}
+              <button
+                type="button"
+                className="text-foreground underline underline-offset-2 disabled:opacity-50"
+                onClick={onInvite}
+                disabled={cloudOpen && cloud.connecting}
+              >
+                Paste your invite link
+              </button>
+            </p>
           </div>
         </div>
       </div>

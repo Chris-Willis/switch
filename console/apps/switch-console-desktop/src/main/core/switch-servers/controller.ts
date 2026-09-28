@@ -8,6 +8,7 @@ import { reconcileServerWorkspaces } from '@main/core/workspaces/reconcile-works
 import { listWorkspacesForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
 import {
+  type InviteServer,
   SWITCH_CLOUD_NAME,
   type SwitchCloudEndpoint,
 } from '@shared/core/switch-servers/switch-cloud';
@@ -26,7 +27,13 @@ import { isWithdrawnWorkspace, type Workspace } from '@shared/core/workspaces/wo
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { type LoginError, oidcLogin, passwordLogin } from './auth';
 import { bundledChatSignInFor } from './bundled-chat-sign-in';
-import { createTenant, fetchAuthConfig, fetchMe, GatewayError } from './gateway-client';
+import {
+  acceptInvitation,
+  createTenant,
+  fetchAuthConfig,
+  fetchMe,
+  GatewayError,
+} from './gateway-client';
 import { openAuthenticatedGatewayPage } from './gateway-web';
 import { hostUnreachable, requireReachableServer, requireServer } from './require-server';
 import {
@@ -92,6 +99,28 @@ function reportSignIn(
   });
 }
 
+/**
+ * Register Switch Cloud as a server, or hand back the one already registered.
+ *
+ * Idempotent because the first-run flow walks back and forth over it: going
+ * back from sign-in and choosing the Cloud again must land on the same row,
+ * and the gateway URL is unique, so a second insert would fail rather than
+ * duplicate. Reported only when a row is actually added.
+ */
+async function registerSwitchCloud({ url }: SwitchCloudEndpoint): Promise<SwitchServer> {
+  const existing = await findServerByGatewayUrl(url);
+  if (existing) return existing;
+  let server: SwitchServer;
+  try {
+    server = await addServer({ name: SWITCH_CLOUD_NAME, gatewayUrl: url, apiUrl: url });
+  } catch (error) {
+    trackEvent('server_added', { server_kind: 'external', outcome: 'failure' });
+    throw error;
+  }
+  trackEvent('server_added', { server_kind: 'external', outcome: 'success' });
+  return server;
+}
+
 export const switchServersController = createRPCController({
   listServers: (): Promise<SwitchServer[]> => listServers(),
 
@@ -114,27 +143,27 @@ export const switchServersController = createRPCController({
   /** Where Switch Cloud is, or null when this build or run has not been told. */
   switchCloud: async (): Promise<SwitchCloudEndpoint | null> => switchCloudEndpoint(),
 
+  /** Register Switch Cloud as a server, or hand back the one already registered. */
+  connectToSwitchCloud: async (): Promise<SwitchServer> =>
+    registerSwitchCloud(requireSwitchCloudEndpoint()),
+
   /**
-   * Register Switch Cloud as a server, or hand back the one already registered.
+   * The server an invite link points at, as far as this install can reach it.
    *
-   * Idempotent because the first-run flow walks back and forth over it: going
-   * back from sign-in and choosing the Cloud again must land on the same row,
-   * and the gateway URL is unique, so a second insert would fail rather than
-   * duplicate. Reported only when a row is actually added.
+   * A server already registered here is handed back as it is. Switch Cloud is
+   * registered on the spot when the link is for it, since its addresses are the
+   * build's and there is nothing to ask. Any other server is unknown: an invite
+   * link names the server's web address and nothing else, and where its agents
+   * connect is not something to guess, so the caller has to ask.
    */
-  connectToSwitchCloud: async (): Promise<SwitchServer> => {
-    const { url } = requireSwitchCloudEndpoint();
-    const existing = await findServerByGatewayUrl(url);
-    if (existing) return existing;
-    let server: SwitchServer;
-    try {
-      server = await addServer({ name: SWITCH_CLOUD_NAME, gatewayUrl: url, apiUrl: url });
-    } catch (error) {
-      trackEvent('server_added', { server_kind: 'external', outcome: 'failure' });
-      throw error;
+  serverForInvite: async (origin: string): Promise<InviteServer> => {
+    const cloud = switchCloudEndpoint();
+    if (cloud && new URL(cloud.url).origin === new URL(origin).origin) {
+      return { kind: 'known', server: await registerSwitchCloud(cloud), via: 'cloud' };
     }
-    trackEvent('server_added', { server_kind: 'external', outcome: 'success' });
-    return server;
+    const existing = await findServerByGatewayUrl(origin);
+    if (existing) return { kind: 'known', server: existing, via: 'external' };
+    return { kind: 'unknown', origin };
   },
 
   updateServer: async (params: UpdateServerParams): Promise<UpdateServerResult> => {
@@ -216,6 +245,28 @@ export const switchServersController = createRPCController({
       );
     }
     return created;
+  },
+
+  /**
+   * Accept an invitation on a server, and return the local row for the
+   * workspace it joined.
+   *
+   * Reconciled the same way as `createWorkspace` and for the same reason: which
+   * local row a membership belongs to is decided in one place.
+   */
+  acceptInvitation: async (params: { serverId: string; token: string }): Promise<Workspace> => {
+    const server = await requireReachableServer(params.serverId);
+    const tenant = await acceptInvitation(server, params.token);
+    await reconcileServerWorkspaces(params.serverId);
+
+    const workspaces = await listWorkspacesForServer(params.serverId);
+    const joined = workspaces.find((workspace) => workspace.tenantId === tenant.id);
+    if (!joined) {
+      throw new Error(
+        `${server.name} added you to ${tenant.name}, but this install did not record it.`
+      );
+    }
+    return joined;
   },
 
   getAuthConfig: async (serverId: string): Promise<SwitchAuthConfig> =>

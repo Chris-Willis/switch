@@ -13,6 +13,17 @@ import { ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 const getSessionCookie = vi.hoisted(() => vi.fn());
 const refreshSession = vi.hoisted(() => vi.fn());
 const reauthenticateManagedServer = vi.hoisted(() => vi.fn());
+const setSessionCookie = vi.hoisted(() => vi.fn());
+/** The real cookie parse, so a missing cookie is read the way the client reads it. */
+const extractAuthCookie = vi.hoisted(() =>
+  vi.fn((setCookies: string[]) => {
+    for (const raw of setCookies) {
+      const [pair] = raw.split(';');
+      if (pair?.startsWith('switch_auth=')) return pair.slice('switch_auth='.length);
+    }
+    return null;
+  })
+);
 
 const managedServerHostBlocked = vi.hoisted(() => vi.fn<() => HostReachability | null>(() => null));
 const managedServerStoppedPhase = vi.hoisted(() =>
@@ -24,10 +35,11 @@ vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
   managedServerStoppedPhase,
 }));
 
-vi.mock('./servers-store', () => ({ getSessionCookie }));
-vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer }));
+vi.mock('./servers-store', () => ({ getSessionCookie, setSessionCookie }));
+vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer, extractAuthCookie }));
 
 const {
+  acceptInvitation,
   createRoom,
   deleteBridge,
   fetchBridges,
@@ -756,5 +768,63 @@ describe('deleteBridge', () => {
     fetchMock.mockResolvedValue(errorResponse(500, 'adapter shutdown failed') as never);
 
     await expect(deleteBridge(SERVER, 'b1')).rejects.toMatchObject({ status: 500 });
+  });
+});
+
+describe('acceptInvitation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function acceptedResponse(setCookies: string[]): Response {
+    return {
+      status: 200,
+      ok: true,
+      json: async () => ({ id: 't1', slug: 'cryo', name: 'Cryo Team', role: 'member' }),
+      headers: { getSetCookie: () => setCookies },
+      text: async () => '',
+    } as unknown as Response;
+  }
+
+  it('sends the token in the body and keeps the workspace-scoped cookie', async () => {
+    fetchMock.mockResolvedValue(
+      acceptedResponse(['switch_auth=scoped; Path=/; HttpOnly']) as never
+    );
+
+    const tenant = await acceptInvitation(SERVER, 'tok-1');
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { method: string; body: string },
+    ];
+    expect(url).toBe('https://switch.example.com/gateway/invitations/accept');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ token: 'tok-1' });
+    expect(setSessionCookie).toHaveBeenCalledExactlyOnceWith('srv-1', 'scoped');
+    expect(tenant).toEqual({ id: 't1', slug: 'cryo', name: 'Cryo Team', role: 'member' });
+  });
+
+  it('raises when the server joins the workspace but sends no cookie', async () => {
+    fetchMock.mockResolvedValue(acceptedResponse([]) as never);
+
+    await expect(acceptInvitation(SERVER, 'tok-1')).rejects.toThrow(/no session cookie/);
+    expect(setSessionCookie).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the server's reason for refusing", async () => {
+    fetchMock.mockResolvedValue(
+      errorResponse(403, JSON.stringify({ detail: 'This invitation has expired' })) as never
+    );
+
+    await expect(acceptInvitation(SERVER, 'tok-1')).rejects.toMatchObject({
+      status: 403,
+      detail: 'This invitation has expired',
+    });
   });
 });

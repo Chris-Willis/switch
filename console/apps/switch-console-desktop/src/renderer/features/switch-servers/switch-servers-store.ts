@@ -4,6 +4,7 @@ import { workspacesStore } from '@renderer/features/workspaces/workspaces-store'
 import { describeFailure, type FailureDescription } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
+import type { InviteServer } from '@shared/core/switch-servers/switch-cloud';
 import type {
   ServerConnectionStatus,
   SwitchAuthConfig,
@@ -485,6 +486,29 @@ export class SwitchServersStore {
     await this.ensureActiveServer();
     await this.refreshStatus(server.id);
     return server;
+  }
+
+  /**
+   * The server an invite link names, registering Switch Cloud when that is it.
+   *
+   * Refreshes like {@link connectToSwitchCloud} when a row was added, so the
+   * sign-in page that follows finds the server in the list it reads.
+   */
+  async serverForInvite(origin: string): Promise<InviteServer> {
+    const found = await rpc.switchServers.serverForInvite(origin);
+    if (found.kind === 'unknown') return found;
+    const [servers, installIsEmpty] = await Promise.all([
+      rpc.switchServers.listServers(),
+      rpc.onboarding.installIsEmpty(),
+      workspacesStore.refresh(),
+    ]);
+    runInAction(() => {
+      this.servers = servers;
+      this.installIsEmpty = installIsEmpty;
+    });
+    await this.ensureActiveServer();
+    await this.refreshStatus(found.server.id);
+    return found;
   }
 
   async updateServer(
