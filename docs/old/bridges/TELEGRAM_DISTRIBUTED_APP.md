@@ -517,13 +517,26 @@ commit that can be tested on its own.
     messages only, config all-or-none, the port and secret-alphabet rules, and
     a claim before the bot has connected answered with a 503.
 - **Stage 4 — shared delivery.**
-  - Work: the rest of `TelegramAppClient` (sending, the shared cooldown,
-    `setMyCommands`); the `event_delivery` discriminator; the adapter's
+  - Work: the rest of `TelegramAppClient` (the shared cooldown, the command
+    menu published once for the deployment, handing the bot to running bridges
+    once it connects); the `event_delivery` discriminator, with the
+    registration form still requiring a token and username; the adapter's
     shared mode (no polling, no commands, the deployment-wide cooldown, claims
-    as joins, channel `/connect`); a histogram of how long each send waits on
-    the shared cooldown.
-  - Tests: a 429 for one tenant pauses sends for another, no polling task
-    starts in shared mode, and a send held by the cooldown records its wait.
+    as joins including a channel's `/connect`, no unsigned add link); an
+    installer `shared_connection()` hook (default `None`) that the service
+    attaches to a bridge before its first delivered event, so a bridge created
+    by a claim at runtime has a bot; `switch.bridge.throttle.held`, a histogram
+    of how long the cooldown held a publication back, by `platform` and
+    `delivery`, with a dashboard panel. The cooldown refuses rather than
+    sleeps, and the publisher retries, so what it measures is a hold-back and
+    not a blocked call.
+  - Discord's boot-time attach loop is narrowed to Discord's adapter. It
+    matched on the shared-connection protocol alone, which Telegram's shared
+    bridges now implement too.
+  - Tests: a 429 for one tenant holds back another, no polling in shared mode,
+    a hold-back recorded with its delivery mode, claims as joins in a group
+    and a channel, a wrong connection type refused, attach on first delivery,
+    and a 503 while the bot has not connected.
 - **Stage 5 — lifecycle.**
   - Work: per-chat ending with last-install bridge removal; the release hook and
     `leaveChat`; migration re-keying the install row; `exclusive_resource`; the
@@ -559,9 +572,17 @@ commit that can be tested on its own.
   would itself signal a fault. It would re-check ownership before leaving, so
   a chat that has just migrated is never abandoned.
 - **Fair sending between tenants.** One tenant's burst can take the whole
-  global send rate. Deferred until it is observed. The cooldown-wait histogram
-  (stage 4) is how it will be seen. Per-tenant queues can then be added inside
-  `TelegramAppClient` without touching the adapters.
+  global send rate. Deferred until it is observed. `switch.bridge.throttle.held`
+  with `delivery=shared` (stage 4) is how it will be seen. Adapters send
+  through the shared bot directly today, so per-tenant queues would route
+  their sends through `TelegramAppClient` first.
+- **A shared bridge restarted at runtime has no bot until its next update.**
+  Bridges running at boot are attached when the bot connects, and one created
+  by a claim is attached before its first update. One restarted while the
+  server runs (a config change, say) is not, so a reply sent before anyone
+  writes in that chat fails. Discord's shared bridges have the same gap.
+  Closing it needs the lifecycle to tell the app client when a bridge
+  starts.
 
 ## Testing
 
