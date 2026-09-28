@@ -27,7 +27,11 @@ import type {
   SwitchServerDeclaration,
   SwitchUser,
 } from '@shared/core/switch-servers/switch-servers';
-import type { Invitation, InvitationEmailDelivery } from '@shared/core/workspaces/invitations';
+import type {
+  Invitation,
+  InvitationEmailDelivery,
+  PendingInvitations,
+} from '@shared/core/workspaces/invitations';
 import type { WorkspaceRole } from '@shared/core/workspaces/workspaces';
 import { extractAuthCookie, reauthenticateManagedServer, refreshSession } from './auth';
 import { getSessionCookie, setSessionCookie } from './servers-store';
@@ -421,6 +425,70 @@ export async function acceptInvitation(server: SwitchServer, token: string): Pro
     method: 'POST',
     body: { token },
   });
+  return joinedTenant(server, res);
+}
+
+/**
+ * Accept an invitation addressed to the signed-in account, by id.
+ *
+ * Answers exactly as {@link acceptInvitation} does, session cookie included:
+ * the server switches the session into the workspace it joined.
+ */
+export async function acceptPendingInvitation(
+  server: SwitchServer,
+  tenantId: string,
+  invitationId: string
+): Promise<RemoteTenant> {
+  const res = await gatewayFetch(server, '/invitations/mine/accept', {
+    authenticated: true,
+    method: 'POST',
+    body: { tenant_id: tenantId, invitation_id: invitationId },
+  });
+  return joinedTenant(server, res);
+}
+
+type PendingInvitationJson = {
+  id: string;
+  tenant_id: string;
+  tenant_slug: string;
+  tenant_name: string;
+  role: string;
+  expires_at: string;
+  invited_by: string;
+  created_at: string;
+};
+
+/**
+ * The invitations addressed to the signed-in account, in workspaces it is not in.
+ *
+ * A 404 is a server from before the route existed, and is answered as
+ * `unsupported` rather than raised: the account is signed in and the rest of
+ * the server works, so it is a feature the server lacks, not a failure. Every
+ * other refusal is raised.
+ */
+export async function fetchPendingInvitations(server: SwitchServer): Promise<PendingInvitations> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/invitations/mine', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return { kind: 'unsupported' };
+    throw cause;
+  }
+  const json = (await res.json()) as PendingInvitationJson[];
+  return {
+    kind: 'listed',
+    invitations: json.map((i) => ({
+      id: i.id,
+      tenantId: i.tenant_id,
+      workspaceName: i.tenant_name,
+      role: mapRole(i.role),
+      expiresAt: isoTimestamp(i.expires_at),
+      invitedBy: i.invited_by,
+    })),
+  };
+}
+
+async function joinedTenant(server: SwitchServer, res: Response): Promise<RemoteTenant> {
   const json = (await res.json()) as { id: string; slug: string; name: string; role: string };
   const cookie = extractAuthCookie(res.headers.getSetCookie());
   if (!cookie) {

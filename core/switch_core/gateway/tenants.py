@@ -49,6 +49,7 @@ from switch_core.gateway.auth import (
     require_tenant_admin,
     set_session_cookie,
     tenant_of_invitation_token,
+    tenants_with_invitations_for,
     workspace_creation_refusal,
 )
 from switch_core.gateway.auth_routes import _session_response
@@ -75,6 +76,8 @@ from switch_core.gateway.invite_mail import (
     invite_link,
 )
 from switch_core.gateway.schemas import (
+    AddressedInvitation,
+    AddressedInvitationAcceptRequest,
     BudgetCreateRequest,
     BudgetResponse,
     BudgetUpdateRequest,
@@ -832,42 +835,164 @@ async def accept_invitation(
             raise HTTPException(status_code=404, detail="Invitation not found")
         _require_invitation_usable(invitation, caller.email)
 
-        existing_role = await user_store.tenant_role(session, tenant_id, caller.id)
-        if existing_role is None:
-            try:
-                await invitation_store.consume(session, invitation.id)
-            except InvitationNotUsableError as exc:
-                raise HTTPException(
-                    status_code=403, detail="This invitation has already been used"
-                ) from exc
-            role = invitation.role
-            await user_store.add_membership(
-                session, tenant_id=tenant_id, user_id=caller.id, role=role
-            )
-            # Only on the branch that actually joined someone. A caller who
-            # was already a member takes the `else` below and has accepted
-            # nothing — reporting it there would count re-clicking a link as
-            # onboarding.
-            emit_safely(
-                current_telemetry(),
-                "invitation_accepted",
-                {"age_hours": age_hours(invitation.created_at)},
-            )
-        else:
-            role = existing_role
-
-        tenant = await session.get(Tenant, tenant_id)
-        assert tenant is not None
-        # `users` is global, so the caller's row is writable from a session
-        # bound to any tenant — this one included.
-        user = await user_store.get(session, caller.id)
-        if user is None:
-            raise HTTPException(status_code=401, detail="User not found")
-        await user_store.record_last_tenant(session, user, tenant_id)
-        await session.commit()
+        tenant, user, role = await _join_through(
+            session, invitation, caller, user_store, invitation_store
+        )
 
     set_session_cookie(
         response, user, config.jwt_secret_key, config.gateway_cookie_secure, tenant_id
+    )
+    return TenantMembershipResponse(
+        id=tenant.id, slug=tenant.slug, name=tenant.name, role=role
+    )
+
+
+async def _join_through(
+    session: AsyncSession,
+    invitation: Invitation,
+    caller: AuthenticatedCaller,
+    user_store: UserStore,
+    invitation_store: InvitationStore,
+) -> tuple[Tenant, User, str]:
+    """Make `caller` a member of the invitation's tenant, spending one use,
+    select that tenant for them, and commit.
+
+    `session` is bound to the invitation's tenant, and `invitation` has
+    already passed `_require_invitation_usable` for this caller. Both ways of
+    accepting — with the token, or by id for an invitation addressed to the
+    caller — end here, so they grant membership identically.
+    """
+    tenant_id = invitation.tenant_id
+    existing_role = await user_store.tenant_role(session, tenant_id, caller.id)
+    if existing_role is None:
+        try:
+            await invitation_store.consume(session, invitation.id)
+        except InvitationNotUsableError as exc:
+            raise HTTPException(
+                status_code=403, detail="This invitation has already been used"
+            ) from exc
+        role = invitation.role
+        await user_store.add_membership(
+            session, tenant_id=tenant_id, user_id=caller.id, role=role
+        )
+        # Only on the branch that actually joined someone. A caller who
+        # was already a member takes the `else` below and has accepted
+        # nothing — reporting it there would count re-clicking a link as
+        # onboarding.
+        emit_safely(
+            current_telemetry(),
+            "invitation_accepted",
+            {"age_hours": age_hours(invitation.created_at)},
+        )
+    else:
+        role = existing_role
+
+    tenant = await session.get(Tenant, tenant_id)
+    assert tenant is not None
+    # `users` is global, so the caller's row is writable from a session
+    # bound to any tenant — this one included.
+    user = await user_store.get(session, caller.id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    await user_store.record_last_tenant(session, user, tenant_id)
+    await session.commit()
+    return tenant, user, role
+
+
+@router.get("/invitations/mine")
+async def list_my_invitations(
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    invitation_store: Annotated[InvitationStore, Depends(get_invitation_store)],
+) -> list[AddressedInvitation]:
+    """The live invitations addressed to the caller's own e-mail, in
+    workspaces they do not already belong to.
+
+    Authenticated without a tenant, like `accept_invitation`: these are
+    invitations to workspaces the caller is not in, so no session they could
+    hold is bound to them. `tenants_with_invitations_for` names the tenants;
+    each is then read on its own bound session, one after another.
+
+    The address is the caller's, as their account holds it. An account's
+    address is either asserted verified by the identity provider or set by
+    the operator who created it (`gateway_oidc_require_email_verified`), so
+    an invitation addressed to it is theirs to see.
+    """
+    found: list[AddressedInvitation] = []
+    for tenant_id in await tenants_with_invitations_for(session_factory, caller.email):
+        async with tenant_session(session_factory, tenant_id) as session:
+            if await user_store.tenant_role(session, tenant_id, caller.id) is not None:
+                continue
+            invitations = await invitation_store.list_live_addressed_to(
+                session, tenant_id, caller.email
+            )
+            if not invitations:
+                continue
+            tenant = await session.get(Tenant, tenant_id)
+            assert tenant is not None
+            for invitation in invitations:
+                inviter = await user_store.get(session, invitation.created_by)
+                assert inviter is not None
+                found.append(
+                    AddressedInvitation(
+                        id=invitation.id,
+                        tenant_id=tenant.id,
+                        tenant_slug=tenant.slug,
+                        tenant_name=tenant.name,
+                        role=invitation.role,
+                        expires_at=str(invitation.expires_at),
+                        invited_by=inviter.name,
+                        created_at=str(invitation.created_at),
+                    )
+                )
+    return found
+
+
+@router.post("/invitations/mine/accept")
+async def accept_my_invitation(
+    req: AddressedInvitationAcceptRequest,
+    response: Response,
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    invitation_store: Annotated[InvitationStore, Depends(get_invitation_store)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> TenantMembershipResponse:
+    """Accept an invitation addressed to the caller, by id, without its token,
+    and switch the caller's session into its workspace.
+
+    Only for an invitation that names the caller's address: that address is
+    what stands in for the token. A shareable link names no one, so its id
+    alone grants nothing, and it is answered as not found — as is an
+    invitation addressed to someone else, so an id does not confirm that an
+    invitation exists. Everything past that is `accept_invitation`'s.
+    """
+    async with tenant_session(session_factory, req.tenant_id) as session:
+        invitation = await invitation_store.get_in_tenant(
+            session, req.tenant_id, req.invitation_id
+        )
+        if (
+            invitation is None
+            or invitation.email is None
+            or invitation.email.lower() != caller.email.lower()
+        ):
+            raise HTTPException(status_code=404, detail="Invitation not found")
+        _require_invitation_usable(invitation, caller.email)
+        tenant, user, role = await _join_through(
+            session, invitation, caller, user_store, invitation_store
+        )
+
+    set_session_cookie(
+        response,
+        user,
+        config.jwt_secret_key,
+        config.gateway_cookie_secure,
+        req.tenant_id,
     )
     return TenantMembershipResponse(
         id=tenant.id, slug=tenant.slug, name=tenant.name, role=role

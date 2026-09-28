@@ -765,6 +765,28 @@ class InvitationAcceptRequest(BaseModel):
     token: str
 
 
+class AddressedInvitation(BaseModel):
+    """An invitation waiting for the signed-in caller, as they are shown it.
+
+    What an invitee needs to decide, and no more: the workspace, the role it
+    would grant, until when, and who sent it. Never the token.
+    """
+
+    id: str
+    tenant_id: str
+    tenant_slug: str
+    tenant_name: str
+    role: str
+    expires_at: str
+    invited_by: str
+    created_at: str
+
+
+class AddressedInvitationAcceptRequest(BaseModel):
+    tenant_id: str
+    invitation_id: str
+
+
 class InvitationDetail(BaseModel):
     id: str
     role: str

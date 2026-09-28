@@ -40,6 +40,8 @@ vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer, extractA
 
 const {
   acceptInvitation,
+  acceptPendingInvitation,
+  fetchPendingInvitations,
   createInvitation,
   fetchInvitations,
   fetchInviteEmailEnabled,
@@ -829,6 +831,88 @@ describe('acceptInvitation', () => {
       status: 403,
       detail: 'This invitation has expired',
     });
+  });
+});
+
+describe('invitations addressed to the signed-in account', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists them with the workspace and who invited you', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          id: 'inv-1',
+          tenant_id: 't1',
+          tenant_slug: 'cryo',
+          tenant_name: 'Cryo Team',
+          role: 'admin',
+          expires_at: '2026-12-01T00:00:00+00:00',
+          invited_by: 'Ada',
+          created_at: '2026-11-24T00:00:00+00:00',
+        },
+      ]) as never
+    );
+
+    const listed = await fetchPendingInvitations(SERVER);
+
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/invitations/mine'
+    );
+    expect(listed).toEqual({
+      kind: 'listed',
+      invitations: [
+        {
+          id: 'inv-1',
+          tenantId: 't1',
+          workspaceName: 'Cryo Team',
+          role: 'admin',
+          expiresAt: '2026-12-01T00:00:00.000Z',
+          invitedBy: 'Ada',
+        },
+      ],
+    });
+  });
+
+  it('reads a server without the route as unable to say, not as none', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+
+    await expect(fetchPendingInvitations(SERVER)).resolves.toEqual({ kind: 'unsupported' });
+  });
+
+  it('raises on any other failure', async () => {
+    fetchMock.mockResolvedValue(errorResponse(500, 'boom') as never);
+
+    await expect(fetchPendingInvitations(SERVER)).rejects.toMatchObject({ status: 500 });
+  });
+
+  it('accepts one by its workspace and id and keeps the workspace-scoped cookie', async () => {
+    fetchMock.mockResolvedValue({
+      status: 200,
+      ok: true,
+      json: async () => ({ id: 't1', slug: 'cryo', name: 'Cryo Team', role: 'member' }),
+      headers: { getSetCookie: () => ['switch_auth=scoped; Path=/; HttpOnly'] },
+      text: async () => '',
+    } as never);
+
+    const tenant = await acceptPendingInvitation(SERVER, 't1', 'inv-1');
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { method: string; body: string },
+    ];
+    expect(url).toBe('https://switch.example.com/gateway/invitations/mine/accept');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ tenant_id: 't1', invitation_id: 'inv-1' });
+    expect(setSessionCookie).toHaveBeenCalledExactlyOnceWith('srv-1', 'scoped');
+    expect(tenant).toEqual({ id: 't1', slug: 'cryo', name: 'Cryo Team', role: 'member' });
   });
 });
 

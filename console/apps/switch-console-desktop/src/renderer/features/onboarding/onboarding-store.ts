@@ -44,6 +44,8 @@ class OnboardingStore {
   via: 'external' | 'cloud' = 'external';
   /** The workspaces that server said the account is in, once it has been asked. */
   serverWorkspaces: Workspace[] | null = null;
+  /** How many invitations to the account's address that server listed alongside. */
+  pendingInvitationCount = 0;
   /**
    * The server a managed path brought up, and the page that brought it up.
    *
@@ -86,6 +88,7 @@ class OnboardingStore {
       this.server = null;
       this.via = 'external';
       this.serverWorkspaces = null;
+      this.pendingInvitationCount = 0;
       this.registeredOn = null;
       this.invite = null;
     }
@@ -117,8 +120,14 @@ class OnboardingStore {
    * an account with no membership is sent straight to the form, and offering it
    * a Back to a list of nothing would be a door onto a blank wall.
    */
-  resolved(workspaces: Workspace[]): void {
+  resolved(workspaces: Workspace[], pendingInvitationCount: number): void {
     this.serverWorkspaces = workspaces;
+    this.pendingInvitationCount = pendingInvitationCount;
+  }
+
+  /** Whether Pick a workspace had anything to offer: a membership or an invitation. */
+  get pickerHasChoices(): boolean {
+    return (this.serverWorkspaces?.length ?? 0) > 0 || this.pendingInvitationCount > 0;
   }
 
   holdInvite(invite: InviteLink): void {
@@ -135,6 +144,7 @@ class OnboardingStore {
     this.server = null;
     this.via = 'external';
     this.serverWorkspaces = null;
+    this.pendingInvitationCount = 0;
     this.registeredOn = null;
     this.invite = null;
   }

@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -24,6 +25,20 @@ const state = vi.hoisted(() => ({
   activeId: null as string | null,
   setActive: vi.fn(),
   navigate: vi.fn(),
+  toast: vi.fn(),
+  unavailable: new Set<string>(),
+  listPendingInvitations: vi.fn(),
+  acceptPendingInvitation: vi.fn(),
+}));
+
+vi.mock('@renderer/lib/ipc', () => ({
+  rpc: { switchServers: { listPendingInvitations: state.listPendingInvitations } },
+  events: { on: () => () => {}, emit: () => {} },
+}));
+
+vi.mock('@renderer/features/switch-servers/server-availability', () => ({
+  serverAvailability: (serverId: string) =>
+    state.unavailable.has(serverId) ? 'signed-out' : 'available',
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
@@ -47,6 +62,7 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
     },
     onServer: (serverId: string) => state.workspaces.filter((w) => w.serverId === serverId),
     setActive: state.setActive,
+    acceptPendingInvitation: state.acceptPendingInvitation,
   },
 }));
 
@@ -84,7 +100,7 @@ vi.mock('@renderer/lib/modal/modal-provider', () => ({
 }));
 
 vi.mock('@renderer/lib/hooks/use-toast', () => ({
-  useToast: () => ({ toast: () => {} }),
+  useToast: () => ({ toast: state.toast }),
 }));
 
 import { WorkspaceSwitcher } from '@renderer/features/switch-servers/workspace-switcher';
@@ -137,11 +153,23 @@ async function openSwitcher(
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  await act(async () => root!.render(<WorkspaceSwitcher />));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  await act(async () =>
+    root!.render(
+      <QueryClientProvider client={client}>
+        <WorkspaceSwitcher />
+      </QueryClientProvider>
+    )
+  );
+  await settle();
 
   const trigger = container.querySelector<HTMLElement>('[aria-label="Switch workspace"]');
   expect(trigger, 'the switcher did not render its trigger').not.toBeNull();
   await act(async () => trigger!.click());
+}
+
+async function settle(): Promise<void> {
+  for (let i = 0; i < 8; i++) await act(async () => await Promise.resolve());
 }
 
 /** The menu row offering a workspace, by the name shown on it. */
@@ -156,6 +184,10 @@ function row(name: string): HTMLElement {
 beforeEach(() => {
   state.setActive.mockReset().mockResolvedValue(undefined);
   state.navigate.mockReset();
+  state.toast.mockReset();
+  state.unavailable.clear();
+  state.listPendingInvitations.mockReset().mockResolvedValue({ kind: 'listed', invitations: [] });
+  state.acceptPendingInvitation.mockReset();
 });
 
 afterEach(async () => {
@@ -315,5 +347,110 @@ describe('inviting people from the switcher', () => {
     await openSwitcher([server('srv-1', 'Acme')], [workspace('ws-a', 'srv-1')], 'ws-a');
 
     expect(inviteItem()).toBeUndefined();
+  });
+});
+
+describe('invitations to your address in the switcher', () => {
+  function invitation(id: string, workspaceName: string) {
+    return {
+      id,
+      tenantId: `tenant-${id}`,
+      workspaceName,
+      role: 'member',
+      expiresAt: '2026-12-01T00:00:00Z',
+      invitedBy: 'Ada Lovelace',
+    };
+  }
+
+  function invitationItems(): HTMLElement[] {
+    return [...document.querySelectorAll<HTMLElement>('[data-testid="pending-invitation-item"]')];
+  }
+
+  it('counts them on the button and lists them under their server', async () => {
+    state.listPendingInvitations.mockResolvedValue({
+      kind: 'listed',
+      invitations: [invitation('inv-1', 'Skunkworks'), invitation('inv-2', 'Labs')],
+    });
+
+    await openSwitcher([server('srv-1', 'Acme')], [workspace('ws-a', 'srv-1')], 'ws-a');
+
+    expect(container!.querySelector('[aria-label="2 invitations waiting"]')).not.toBeNull();
+    expect(invitationItems().map((item) => item.textContent)).toEqual([
+      'SkunkworksInvited',
+      'LabsInvited',
+    ]);
+    expect(invitationItems()[0]!.title).toBe('Ada Lovelace invited you as member');
+  });
+
+  it('shows nothing on a server too old to list them', async () => {
+    state.listPendingInvitations.mockResolvedValue({ kind: 'unsupported' });
+
+    await openSwitcher([server('srv-1', 'Acme')], [workspace('ws-a', 'srv-1')], 'ws-a');
+
+    expect(container!.querySelector('[aria-label$="waiting"]')).toBeNull();
+    expect(invitationItems()).toHaveLength(0);
+    expect(document.body.textContent).not.toContain('invitations to your address');
+  });
+
+  it('says so when the server could not be asked', async () => {
+    state.listPendingInvitations.mockRejectedValue(new Error('gateway unreachable'));
+
+    await openSwitcher([server('srv-1', 'Acme')], [workspace('ws-a', 'srv-1')], 'ws-a');
+
+    expect(document.body.textContent).toContain('Could not check for invitations to your address.');
+  });
+
+  it('does not ask a server you are not signed in to', async () => {
+    state.unavailable.add('srv-2');
+
+    await openSwitcher(
+      [server('srv-1', 'Acme'), server('srv-2', 'Local dev')],
+      [workspace('ws-a', 'srv-1'), workspace('ws-c', 'srv-2')],
+      'ws-a'
+    );
+
+    expect(state.listPendingInvitations).toHaveBeenCalledWith('srv-1');
+    expect(state.listPendingInvitations).not.toHaveBeenCalledWith('srv-2');
+  });
+
+  it('accepts one, opens the workspace it joins and asks again', async () => {
+    state.listPendingInvitations.mockResolvedValue({
+      kind: 'listed',
+      invitations: [invitation('inv-1', 'Skunkworks')],
+    });
+    state.acceptPendingInvitation.mockResolvedValue(workspace('ws-new', 'srv-1'));
+
+    await openSwitcher([server('srv-1', 'Acme')], [workspace('ws-a', 'srv-1')], 'ws-a');
+    await act(async () => invitationItems()[0]!.click());
+    await settle();
+
+    expect(state.acceptPendingInvitation).toHaveBeenCalledWith(
+      'srv-1',
+      expect.objectContaining({ id: 'inv-1' })
+    );
+    expect(state.setActive).toHaveBeenCalledWith('ws-new');
+    expect(state.navigate).toHaveBeenCalledWith('server', { serverId: 'srv-1' });
+    expect(state.listPendingInvitations).toHaveBeenCalledTimes(2);
+  });
+
+  it('says why when accepting fails, and asks again', async () => {
+    state.listPendingInvitations.mockResolvedValue({
+      kind: 'listed',
+      invitations: [invitation('inv-1', 'Skunkworks')],
+    });
+    state.acceptPendingInvitation.mockRejectedValue(new Error('This invitation has been revoked'));
+
+    await openSwitcher([server('srv-1', 'Acme')], [workspace('ws-a', 'srv-1')], 'ws-a');
+    await act(async () => invitationItems()[0]!.click());
+    await settle();
+
+    expect(state.toast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Could not join Skunkworks',
+        description: expect.stringContaining('This invitation has been revoked'),
+      })
+    );
+    expect(state.setActive).not.toHaveBeenCalled();
+    expect(state.listPendingInvitations).toHaveBeenCalledTimes(2);
   });
 });

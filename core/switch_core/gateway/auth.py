@@ -17,7 +17,11 @@ from switch_core.db.models import Room, Tenant, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.db.tenant_lookup import tenant_of_invitation, tenants_of_user
+from switch_core.db.tenant_lookup import (
+    tenant_of_invitation,
+    tenants_inviting_email,
+    tenants_of_user,
+)
 from switch_core.gateway.dependencies import (
     get_config,
     get_session,
@@ -258,6 +262,19 @@ async def tenant_of_invitation_token(
     than being called from the gateway directly.
     """
     return await tenant_of_invitation(session_factory, token_hash)
+
+
+async def tenants_with_invitations_for(
+    session_factory: async_sessionmaker[AsyncSession], email: str
+) -> list[str]:
+    """Which tenants hold a live invitation addressed to `email`.
+
+    A thin wrapper around `db.tenant_lookup.tenants_inviting_email`, here for
+    the same reason as `tenant_of_invitation_token` above: the exemption is
+    reached through this one module. The only caller passes the signed-in
+    caller's own address, never one taken from a request.
+    """
+    return await tenants_inviting_email(session_factory, email)
 
 
 async def is_tenant_member(

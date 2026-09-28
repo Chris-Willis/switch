@@ -70,3 +70,32 @@ export function invitationStatus(invitation: Invitation, now: number): Invitatio
 export function inviteLink(gatewayUrl: string, token: string): string {
   return `${gatewayUrl.replace(/\/+$/, '')}/invite#token=${encodeURIComponent(token)}`;
 }
+
+/**
+ * An invitation addressed to the signed-in account, in a workspace it is not a
+ * member of yet. Accepted by id: the account's own address stands in for the
+ * link, so there is no token to hold.
+ */
+export type PendingInvitation = {
+  id: string;
+  /** The gateway's id for the workspace it would join. */
+  tenantId: string;
+  workspaceName: string;
+  role: WorkspaceRole;
+  /** ISO 8601. */
+  expiresAt: string;
+  /** The inviter's name, as the server has it. */
+  invitedBy: string;
+};
+
+/**
+ * The invitations waiting for the signed-in account on one server.
+ *
+ * `unsupported` is a server older than the route that lists them. It is not the
+ * same answer as an empty list — that server cannot say whether anyone invited
+ * you — so it is kept apart for the views to leave the section out rather than
+ * claim there is nothing in it.
+ */
+export type PendingInvitations =
+  | { kind: 'listed'; invitations: PendingInvitation[] }
+  | { kind: 'unsupported' };

@@ -304,10 +304,10 @@ function currentPage(
       return (
         <CreateWorkspacePage
           server={server}
-          // Nothing to go back to when the account is in no workspace: the
-          // picker sent the user straight here, and returning to it would be a
-          // door onto the list it had nothing to show.
-          onBack={onboardingStore.serverWorkspaces?.length ? () => goTo('pickWorkspace') : null}
+          // Nothing to go back to when the account is in no workspace and has
+          // no invitation: the picker sent the user straight here, and
+          // returning to it would be a door onto a list with nothing in it.
+          onBack={onboardingStore.pickerHasChoices ? () => goTo('pickWorkspace') : null}
           onCreated={() => goTo('linkAccounts')}
         />
       );

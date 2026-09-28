@@ -15,6 +15,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const resolveWorkspaces = vi.hoisted(() => vi.fn());
 const createWorkspace = vi.hoisted(() => vi.fn());
 const setActiveWorkspace = vi.hoisted(() => vi.fn());
+const listPendingInvitations = vi.hoisted(() => vi.fn());
+const acceptPendingInvitation = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -25,7 +27,13 @@ vi.hoisted(() => {
 });
 
 vi.mock('@renderer/lib/ipc', () => ({
-  rpc: { switchServers: { resolveWorkspaces, switchCloud: () => Promise.resolve(null) } },
+  rpc: {
+    switchServers: {
+      resolveWorkspaces,
+      listPendingInvitations,
+      switchCloud: () => Promise.resolve(null),
+    },
+  },
   events: { on: () => () => {}, emit: () => {} },
 }));
 
@@ -33,6 +41,7 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: {
     setActive: setActiveWorkspace,
     create: createWorkspace,
+    acceptPendingInvitation,
     idOnServerInScope: () => 'ws-1',
   },
 }));
@@ -92,6 +101,17 @@ function workspace(id: string, name: string) {
   };
 }
 
+function invitation(id: string, workspaceName: string) {
+  return {
+    id,
+    tenantId: `tenant-${id}`,
+    workspaceName,
+    role: 'member' as const,
+    expiresAt: '2026-12-01T00:00:00Z',
+    invitedBy: 'Ada Lovelace',
+  };
+}
+
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
@@ -99,6 +119,8 @@ beforeEach(() => {
   resolveWorkspaces.mockReset();
   createWorkspace.mockReset();
   setActiveWorkspace.mockReset().mockResolvedValue(undefined);
+  listPendingInvitations.mockReset().mockResolvedValue({ kind: 'listed', invitations: [] });
+  acceptPendingInvitation.mockReset();
   onboardingStore.reset();
 });
 
@@ -176,14 +198,15 @@ describe('picking a workspace after signing in', () => {
     expect(el.textContent).toContain('Create a new workspace');
   });
 
-  it('leaves out the join and invite rows the server cannot answer for', async () => {
-    // The design offers workspaces open to you by email domain, and invitations
-    // waiting for your address. A Switch server records neither, so an empty
-    // section would be a claim it never made.
+  it('leaves out the invite rows on a server too old to list them', async () => {
+    // It cannot say whether anyone invited you, so an empty section would be a
+    // claim it never made. Nor does any server record workspaces open to your
+    // e-mail domain yet.
     resolveWorkspaces.mockResolvedValue([
       workspace('ws-1', 'Acme'),
       workspace('ws-2', 'Skunkworks'),
     ]);
+    listPendingInvitations.mockResolvedValue({ kind: 'unsupported' });
 
     const el = await renderAtPickWorkspace();
 
@@ -191,6 +214,77 @@ describe('picking a workspace after signing in', () => {
     expect(el.textContent).not.toContain('Accept');
     expect(el.textContent).not.toContain('invited you');
     expect(el.textContent).not.toContain('domain');
+  });
+
+  it('offers invitations to your address beside your memberships', async () => {
+    resolveWorkspaces.mockResolvedValue([workspace('ws-1', 'Acme')]);
+    listPendingInvitations.mockResolvedValue({
+      kind: 'listed',
+      invitations: [invitation('inv-1', 'Skunkworks')],
+    });
+
+    const el = await renderAtPickWorkspace();
+
+    // One membership is no longer the only way forward, so nothing is chosen.
+    expect(setActiveWorkspace).not.toHaveBeenCalled();
+    expect(onboardingStore.page).toBe('pickWorkspace');
+    const rows = el.querySelectorAll('[data-testid="pending-invitation-row"]');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.textContent).toContain('Skunkworks');
+    expect(rows[0]!.textContent).toContain('Ada Lovelace invited you as member');
+    expect(rows[0]!.textContent).toContain('Invited');
+    expect(el.textContent).toContain('You’re a member of these, or invited to them.');
+  });
+
+  it('joins the workspace an invitation is for and opens it', async () => {
+    resolveWorkspaces.mockResolvedValue([]);
+    listPendingInvitations.mockResolvedValue({
+      kind: 'listed',
+      invitations: [invitation('inv-1', 'Skunkworks')],
+    });
+    acceptPendingInvitation.mockResolvedValue(workspace('ws-9', 'Skunkworks'));
+
+    const el = await renderAtPickWorkspace();
+    // With an invitation waiting, having no memberships is not a reason to
+    // skip ahead to creating one.
+    expect(onboardingStore.page).toBe('pickWorkspace');
+    await click(el, 'Accept');
+
+    expect(acceptPendingInvitation).toHaveBeenCalledWith(
+      'srv-1',
+      expect.objectContaining({ id: 'inv-1' })
+    );
+    expect(setActiveWorkspace).toHaveBeenCalledWith('ws-9');
+    expect(onboardingStore.page).toBe('linkAccounts');
+  });
+
+  it('stays on the picker with the error when accepting fails', async () => {
+    resolveWorkspaces.mockResolvedValue([]);
+    listPendingInvitations.mockResolvedValue({
+      kind: 'listed',
+      invitations: [invitation('inv-1', 'Skunkworks')],
+    });
+    acceptPendingInvitation.mockRejectedValue(new Error('This invitation has been revoked'));
+
+    const el = await renderAtPickWorkspace();
+    await click(el, 'Accept');
+
+    expect(onboardingStore.page).toBe('pickWorkspace');
+    expect(el.textContent).toContain('This invitation has been revoked');
+    expect(setActiveWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('does not choose for you when the invitation check failed', async () => {
+    // Skipping ahead on one membership would hide an invitation the page could
+    // not rule out.
+    resolveWorkspaces.mockResolvedValue([workspace('ws-1', 'Acme')]);
+    listPendingInvitations.mockRejectedValue(new Error('gateway unreachable'));
+
+    const el = await renderAtPickWorkspace();
+
+    expect(setActiveWorkspace).not.toHaveBeenCalled();
+    expect(el.textContent).toContain('gateway unreachable');
+    expect([...el.querySelectorAll('button')].map((b) => b.textContent)).toContain('Retry');
   });
 
   it('does not ask a question with one answer', async () => {

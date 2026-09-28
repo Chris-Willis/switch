@@ -28,7 +28,11 @@ vi.hoisted(() => {
 
 vi.mock('@renderer/lib/ipc', () => ({
   rpc: {
-    switchServers: { resolveWorkspaces, switchCloud: () => Promise.resolve(null) },
+    switchServers: {
+      resolveWorkspaces,
+      listPendingInvitations: () => Promise.resolve({ kind: 'listed', invitations: [] }),
+      switchCloud: () => Promise.resolve(null),
+    },
     remoteHosts: { listHosts: () => Promise.resolve([]) },
   },
   events: { on: () => () => {}, emit: () => {} },

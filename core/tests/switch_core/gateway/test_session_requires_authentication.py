@@ -93,6 +93,14 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # neither the one on the caller's session nor one they belong to yet. It
     # opens its own `tenant_session` around that id — see `accept_invitation`.
     ("POST", "/invitations/accept"),
+    # Invitations addressed to the caller are in workspaces they are not in, so
+    # no session of theirs is bound to one. Listing opens a `tenant_session`
+    # per tenant `tenants_with_invitations_for` names; accepting opens one
+    # around the tenant the request names, and finds nothing if the
+    # invitation is not there — see `list_my_invitations` and
+    # `accept_my_invitation`.
+    ("GET", "/invitations/mine"),
+    ("POST", "/invitations/mine/accept"),
 }
 
 

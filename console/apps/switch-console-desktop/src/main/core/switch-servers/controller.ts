@@ -23,16 +23,20 @@ import type {
   UpdateServerParams,
   UpdateServerResult,
 } from '@shared/core/switch-servers/switch-servers';
+import type { PendingInvitations } from '@shared/core/workspaces/invitations';
 import { isWithdrawnWorkspace, type Workspace } from '@shared/core/workspaces/workspaces';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { type LoginError, oidcLogin, passwordLogin } from './auth';
 import { bundledChatSignInFor } from './bundled-chat-sign-in';
 import {
   acceptInvitation,
+  acceptPendingInvitation,
   createTenant,
   fetchAuthConfig,
   fetchMe,
+  fetchPendingInvitations,
   GatewayError,
+  type RemoteTenant,
 } from './gateway-client';
 import { openAuthenticatedGatewayPage } from './gateway-web';
 import { hostUnreachable, requireReachableServer, requireServer } from './require-server';
@@ -86,6 +90,24 @@ async function adoptWorkspaces(server: SwitchServer): Promise<void> {
  * sign-in that never left this machine — the server's host is down — has a
  * reason of its own but no result to read one from.
  */
+/**
+ * The local row for a workspace a server has just added the account to.
+ *
+ * Reconciled rather than inserted here, the same as `createWorkspace`: which
+ * local row a membership belongs to is decided in one place.
+ */
+async function recordJoined(server: SwitchServer, tenant: RemoteTenant): Promise<Workspace> {
+  await reconcileServerWorkspaces(server.id);
+  const workspaces = await listWorkspacesForServer(server.id);
+  const joined = workspaces.find((workspace) => workspace.tenantId === tenant.id);
+  if (!joined) {
+    throw new Error(
+      `${server.name} added you to ${tenant.name}, but this install did not record it.`
+    );
+  }
+  return joined;
+}
+
 function reportSignIn(
   method: TelemetryAuthMethod,
   server: SwitchServer,
@@ -250,23 +272,31 @@ export const switchServersController = createRPCController({
   /**
    * Accept an invitation on a server, and return the local row for the
    * workspace it joined.
-   *
-   * Reconciled the same way as `createWorkspace` and for the same reason: which
-   * local row a membership belongs to is decided in one place.
    */
   acceptInvitation: async (params: { serverId: string; token: string }): Promise<Workspace> => {
     const server = await requireReachableServer(params.serverId);
-    const tenant = await acceptInvitation(server, params.token);
-    await reconcileServerWorkspaces(params.serverId);
+    return recordJoined(server, await acceptInvitation(server, params.token));
+  },
 
-    const workspaces = await listWorkspacesForServer(params.serverId);
-    const joined = workspaces.find((workspace) => workspace.tenantId === tenant.id);
-    if (!joined) {
-      throw new Error(
-        `${server.name} added you to ${tenant.name}, but this install did not record it.`
-      );
-    }
-    return joined;
+  /** The invitations waiting for the signed-in account on a server. */
+  listPendingInvitations: async (serverId: string): Promise<PendingInvitations> =>
+    fetchPendingInvitations(await requireReachableServer(serverId)),
+
+  /**
+   * Accept an invitation addressed to the signed-in account, and return the
+   * local row for the workspace it joined — the same as `acceptInvitation`,
+   * with the account's address in place of the link.
+   */
+  acceptPendingInvitation: async (params: {
+    serverId: string;
+    tenantId: string;
+    invitationId: string;
+  }): Promise<Workspace> => {
+    const server = await requireReachableServer(params.serverId);
+    return recordJoined(
+      server,
+      await acceptPendingInvitation(server, params.tenantId, params.invitationId)
+    );
   },
 
   getAuthConfig: async (serverId: string): Promise<SwitchAuthConfig> =>

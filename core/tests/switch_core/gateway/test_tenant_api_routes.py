@@ -1102,6 +1102,214 @@ class TestInvitationLifecycle:
         assert response.status_code == 200, response.text
 
 
+TENANT_C = "tenant-api-routes-c"
+
+
+class TestInvitationsAddressedToMe:
+    _mint = TestInvitationLifecycle._mint
+
+    async def _invitee(
+        self, session_factory: async_sessionmaker[AsyncSession], name: str
+    ) -> tuple[str, str]:
+        """A signed-in person with a workspace of their own, and their cookie."""
+        await _make_tenant(session_factory, TENANT_B)
+        email = f"{name}@example.invalid"
+        user_id = await _make_member(
+            session_factory, name=name, tenant_id=TENANT_B, role="member", email=email
+        )
+        return user_id, _token(user_id, email, TENANT_B)
+
+    async def test_lists_live_invitations_to_my_address_in_workspaces_i_am_not_in(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        invitee_id, cookie = await self._invitee(session_factory, "sought-after")
+        for tenant_id in (TENANT_A, TENANT_C):
+            await _make_tenant(session_factory, tenant_id)
+        inviter_a = await _make_member(
+            session_factory, name="Ada", tenant_id=TENANT_A, role="owner"
+        )
+        inviter_c = await _make_member(
+            session_factory, name="Cy", tenant_id=TENANT_C, role="owner"
+        )
+        wanted_a, _ = await self._mint(
+            session_factory,
+            tenant_id=TENANT_A,
+            admin_id=inviter_a,
+            role="admin",
+            email="Sought-After@example.invalid",
+        )
+        wanted_c, _ = await self._mint(
+            session_factory,
+            tenant_id=TENANT_C,
+            admin_id=inviter_c,
+            email="sought-after@example.invalid",
+        )
+        await self._mint(session_factory, tenant_id=TENANT_A, admin_id=inviter_a)
+        await self._mint(
+            session_factory,
+            tenant_id=TENANT_A,
+            admin_id=inviter_a,
+            email="someone-else@example.invalid",
+        )
+        inviter_b = await _make_member(
+            session_factory, name="Bo", tenant_id=TENANT_B, role="owner"
+        )
+        await self._mint(
+            session_factory,
+            tenant_id=TENANT_B,
+            admin_id=inviter_b,
+            email="sought-after@example.invalid",
+        )
+
+        async with _client(_app(session_factory), cookie) as client:
+            response = await client.get("/invitations/mine")
+
+        assert response.status_code == 200, response.text
+        found = {i["id"]: i for i in response.json()}
+        assert set(found) == {wanted_a, wanted_c}
+        assert found[wanted_a]["tenant_id"] == TENANT_A
+        assert found[wanted_a]["tenant_name"] == TENANT_A
+        assert found[wanted_a]["role"] == "admin"
+        assert found[wanted_a]["invited_by"] == "Ada"
+        assert "token" not in found[wanted_a]
+
+    async def test_accepting_by_id_joins_switches_and_spends_a_use(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        invitee_id, cookie = await self._invitee(session_factory, "joiner")
+        await _make_tenant(session_factory, TENANT_A)
+        inviter = await _make_member(
+            session_factory, name="inviter", tenant_id=TENANT_A, role="owner"
+        )
+        invitation_id, _ = await self._mint(
+            session_factory,
+            tenant_id=TENANT_A,
+            admin_id=inviter,
+            email="joiner@example.invalid",
+        )
+
+        async with _client(_app(session_factory), cookie) as client:
+            response = await client.post(
+                "/invitations/mine/accept",
+                json={"tenant_id": TENANT_A, "invitation_id": invitation_id},
+            )
+            after = await client.get("/invitations/mine")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["id"] == TENANT_A
+        assert response.json()["role"] == "member"
+        assert _tenant_claim(response) == TENANT_A
+        assert await _last_tenant_id(session_factory, invitee_id) == TENANT_A
+        assert after.json() == []
+        async with tenant_session(session_factory, TENANT_A) as session:
+            invitation = await session.get(Invitation, invitation_id)
+            assert invitation is not None
+            assert invitation.uses_remaining == 0
+            assert await session.get(TenantMember, (TENANT_A, invitee_id)) is not None
+
+    async def test_a_shareable_link_is_not_accepted_by_its_id(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Without an address the token is the only credential; its id is
+        not one."""
+        _invitee_id, cookie = await self._invitee(session_factory, "id-guesser")
+        await _make_tenant(session_factory, TENANT_A)
+        inviter = await _make_member(
+            session_factory, name="inviter", tenant_id=TENANT_A, role="owner"
+        )
+        invitation_id, _ = await self._mint(
+            session_factory, tenant_id=TENANT_A, admin_id=inviter
+        )
+
+        async with _client(_app(session_factory), cookie) as client:
+            response = await client.post(
+                "/invitations/mine/accept",
+                json={"tenant_id": TENANT_A, "invitation_id": invitation_id},
+            )
+
+        assert response.status_code == 404
+        async with tenant_session(session_factory, TENANT_A) as session:
+            invitation = await session.get(Invitation, invitation_id)
+            assert invitation is not None
+            assert invitation.uses_remaining == 1
+
+    async def test_someone_elses_invitation_is_not_found(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        _invitee_id, cookie = await self._invitee(session_factory, "not-them")
+        await _make_tenant(session_factory, TENANT_A)
+        inviter = await _make_member(
+            session_factory, name="inviter", tenant_id=TENANT_A, role="owner"
+        )
+        invitation_id, _ = await self._mint(
+            session_factory,
+            tenant_id=TENANT_A,
+            admin_id=inviter,
+            email="them@example.invalid",
+        )
+
+        async with _client(_app(session_factory), cookie) as client:
+            response = await client.post(
+                "/invitations/mine/accept",
+                json={"tenant_id": TENANT_A, "invitation_id": invitation_id},
+            )
+
+        assert response.status_code == 404
+
+    async def test_an_invitation_named_under_the_wrong_workspace_is_not_found(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        _invitee_id, cookie = await self._invitee(session_factory, "misdirected")
+        for tenant_id in (TENANT_A, TENANT_C):
+            await _make_tenant(session_factory, tenant_id)
+        inviter = await _make_member(
+            session_factory, name="inviter", tenant_id=TENANT_A, role="owner"
+        )
+        invitation_id, _ = await self._mint(
+            session_factory,
+            tenant_id=TENANT_A,
+            admin_id=inviter,
+            email="misdirected@example.invalid",
+        )
+
+        async with _client(_app(session_factory), cookie) as client:
+            response = await client.post(
+                "/invitations/mine/accept",
+                json={"tenant_id": TENANT_C, "invitation_id": invitation_id},
+            )
+
+        assert response.status_code == 404
+        async with session_factory() as session:
+            assert await session.get(TenantMember, (TENANT_C, _invitee_id)) is None
+
+    async def test_a_revoked_invitation_says_so(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        _invitee_id, cookie = await self._invitee(session_factory, "too-late")
+        await _make_tenant(session_factory, TENANT_A)
+        inviter = await _make_member(
+            session_factory, name="inviter", tenant_id=TENANT_A, role="owner"
+        )
+        invitation_id, _ = await self._mint(
+            session_factory,
+            tenant_id=TENANT_A,
+            admin_id=inviter,
+            email="too-late@example.invalid",
+        )
+        async with tenant_session(session_factory, TENANT_A) as session:
+            await InvitationStore().revoke(session, invitation_id)
+            await session.commit()
+
+        async with _client(_app(session_factory), cookie) as client:
+            response = await client.post(
+                "/invitations/mine/accept",
+                json={"tenant_id": TENANT_A, "invitation_id": invitation_id},
+            )
+
+        assert response.status_code == 403
+        assert "revoked" in response.json()["detail"]
+
+
 class TestMemberRoutes:
     async def test_listing_shows_every_member_and_their_role(
         self, session_factory: async_sessionmaker[AsyncSession]

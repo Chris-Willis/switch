@@ -2,6 +2,12 @@ import { useQuery } from '@tanstack/react-query';
 import { Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  invitationSummary,
+  InvitedBadge,
+  listedInvitations,
+  usePendingInvitations,
+} from '@renderer/features/workspaces/pending-invitations';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
@@ -9,6 +15,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { WizardFrame } from '@renderer/lib/ui/wizard-frame';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import type { PendingInvitation } from '@shared/core/workspaces/invitations';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
 import { onboardingStore } from './onboarding-store';
 
@@ -20,13 +27,13 @@ import { onboardingStore } from './onboarding-store';
  * member of, and an install that has been sitting on the sign-in form is
  * answering from before that.
  *
- * Only memberships are offered. The design also shows workspaces open to you
- * because your email domain matches, and invitations waiting for your address —
- * both are **absent here rather than empty**, because a Switch server cannot
- * answer for either yet: it records no email domain against a workspace and has
- * no way to list the invitations sent to an address. An empty "nobody has
- * invited you" section would be a claim the server never made, and one that
- * will read as false to the first person who was in fact invited.
+ * Memberships are offered, and so are invitations addressed to the account's
+ * own address, which it accepts here without a link. A server older than the
+ * route that lists those leaves the section out rather than showing it empty:
+ * it cannot say whether anyone invited you, and an empty "nobody has" would be
+ * a claim it never made. The design's third kind of row — workspaces open to
+ * your e-mail domain — is absent for the same reason: no Switch server records
+ * a domain against a workspace yet.
  */
 export const PickWorkspacePage = observer(function PickWorkspacePage({
   server,
@@ -47,6 +54,8 @@ export const PickWorkspacePage = observer(function PickWorkspacePage({
     queryFn: () => rpc.switchServers.resolveWorkspaces(server.id),
   });
   const workspaces = query.data ?? null;
+  const invitationsQuery = usePendingInvitations(server.id);
+  const invitations = listedInvitations(invitationsQuery.data);
 
   const open = useCallback(
     async (workspace: Workspace) => {
@@ -63,24 +72,51 @@ export const PickWorkspacePage = observer(function PickWorkspacePage({
     [onPicked]
   );
 
+  const accept = useCallback(
+    async (invitation: PendingInvitation) => {
+      setOpening(invitation.id);
+      setOpenError(null);
+      try {
+        const workspace = await workspacesStore.acceptPendingInvitation(server.id, invitation);
+        await workspacesStore.setActive(workspace.id);
+        onPicked();
+      } catch (cause) {
+        setOpenError(failureText(cause, `Could not join ${invitation.workspaceName}.`));
+        setOpening(null);
+      }
+    },
+    [server.id, onPicked]
+  );
+
   // Once per answer, not once per render: the callbacks are made fresh by the
   // page above, so without the latch a re-render would re-run the choice that
-  // is already under way.
+  // is already under way. Both questions have to be answered first — an
+  // invitation is a choice, so a lone membership beside one is not the only
+  // way forward — and a failed invitation check stops the page here, where it
+  // is shown, rather than skipping past it on a guess.
   const settled = useRef(false);
   useEffect(() => {
-    if (workspaces === null || settled.current) return;
+    if (workspaces === null || invitationsQuery.isPending || settled.current) return;
     settled.current = true;
-    onboardingStore.resolved(workspaces);
+    onboardingStore.resolved(workspaces, invitations.length);
+    if (invitationsQuery.isError || invitations.length > 0) return;
     // A question with one answer is not a question, and with none there is
     // nothing here to answer it with.
     if (workspaces.length === 0) onCreate();
     else if (workspaces.length === 1) void open(workspaces[0]!);
-  }, [workspaces, open, onCreate]);
+  }, [
+    workspaces,
+    invitations,
+    invitationsQuery.isPending,
+    invitationsQuery.isError,
+    open,
+    onCreate,
+  ]);
 
   return (
     <WizardFrame
       title="Pick a workspace"
-      subtitle="You’re a member of these. A workspace is where your agents, rooms and teammates live."
+      subtitle={`${pickSubtitle(workspaces?.length ?? 0, invitations.length)} A workspace is where your agents, rooms and teammates live.`}
       /* The chevron below repeats this. It is unlabelled, so it cannot be the
          only way back from a page whose rows all lead forward. Both are held
          shut while a workspace is being opened, since leaving now would land
@@ -122,7 +158,36 @@ export const PickWorkspacePage = observer(function PickWorkspacePage({
                 onOpen={() => void open(workspace)}
               />
             ))}
+            {invitations.map((invitation) => (
+              <InvitationRow
+                key={invitation.id}
+                invitation={invitation}
+                accepting={opening === invitation.id}
+                disabled={opening !== null}
+                onAccept={() => void accept(invitation)}
+              />
+            ))}
           </ul>
+
+          {invitationsQuery.isPending && (
+            <p className="flex items-center gap-2 text-xs text-foreground-muted">
+              <Spinner className="size-3" />
+              Checking for invitations to your address…
+            </p>
+          )}
+          {invitationsQuery.isError && (
+            <div className="flex items-center gap-3">
+              <p className="min-w-0 flex-1 text-sm text-destructive">
+                {failureText(
+                  invitationsQuery.error,
+                  `Could not ask ${server.name} for invitations to your address.`
+                )}
+              </p>
+              <Button variant="outline" size="sm" onClick={() => void invitationsQuery.refetch()}>
+                Retry
+              </Button>
+            </div>
+          )}
 
           {openError && <p className="text-sm text-destructive">{openError}</p>}
 
@@ -146,6 +211,54 @@ export const PickWorkspacePage = observer(function PickWorkspacePage({
     </WizardFrame>
   );
 });
+
+function pickSubtitle(memberships: number, invitations: number): string {
+  if (invitations === 0) return 'You’re a member of these.';
+  if (memberships === 0) return 'You’ve been invited to these.';
+  return 'You’re a member of these, or invited to them.';
+}
+
+function InvitationRow({
+  invitation,
+  accepting,
+  disabled,
+  onAccept,
+}: {
+  invitation: PendingInvitation;
+  accepting: boolean;
+  disabled: boolean;
+  onAccept: () => void;
+}) {
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onAccept}
+        disabled={disabled}
+        data-testid="pending-invitation-row"
+        className="flex w-full items-center gap-3 rounded-[10px] border border-border bg-[var(--surface-2)] px-3.5 py-3 text-left hover:bg-[var(--sel-soft)] disabled:opacity-60"
+      >
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-background-tertiary text-sm font-semibold text-foreground">
+          {initialOf(invitation.workspaceName)}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium text-foreground">
+            {invitation.workspaceName}
+          </span>
+          <span className="block truncate text-xs text-foreground-muted">
+            {invitationSummary(invitation)}
+          </span>
+        </span>
+        <InvitedBadge />
+        {accepting ? (
+          <Spinner className="size-3.5 shrink-0" />
+        ) : (
+          <span className="shrink-0 text-sm font-medium text-foreground">Accept</span>
+        )}
+      </button>
+    </li>
+  );
+}
 
 function WorkspaceRow({
   workspace,
