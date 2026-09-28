@@ -145,8 +145,10 @@ cannot be attributed to anyone.
    - `revocation_of_event`: a `my_chat_member` update whose new status is
      `left` or `kicked` for the bot. It is checked before resolve, as for Slack
      (`install_routes.py:260`).
-   - `claim_of_event` (new, decision 3): the token in `/start@<bot> <token>` or
-     `/connect <token>`. It is checked before resolve too, because the chat it
+   - `claim_of_event` (new, decision 3): an `InstallClaim` holding the token
+     from `/start@<bot> <token>` or `/connect <token>`, and the grant the event
+     amounts to (the chat id, and the name the tenant's bridge gets if this
+     claim creates it). It is checked before resolve too, because the chat it
      arrives from is not owned yet.
 
    Main's status codes already say the right thing to Telegram:
@@ -403,23 +405,29 @@ an unclaimed chat outlives the process.
 
 All of these are in the platform-generic install layer. None is under `slack/`.
 Slack's existing tests (`test_install_service.py`, `test_install_webhook.py`,
-`test_bridge_delete_guard.py`) pass unmodified. Each change is neutral for
-Slack for the reason given.
+`test_bridge_delete_guard.py`) pass with no assertion changed. The only edit
+is one constructor argument, because the service now takes a `UserStore` for
+the admin check in `claim()`. Each change is neutral for Slack for the reason
+given.
 
 1. **`disconnect` and `revoked` remove the bridge only on its last active
    install.** Otherwise they detach that chat's room. Today they call
    `lifecycle.remove(bridge_id)` unconditionally (`install_service.py:332,396`).
    *Slack-neutral:* a Slack bridge has exactly one install, which is always the
    last.
-2. **`get_for_bridge` returns a list.** Today it is `one_or_none`
-   (`messaging_install_store.py:184`). Its one caller, the delete guard
+2. **`get_for_bridge` becomes `list_for_bridge` and returns a list.** Today it
+   is `one_or_none` (`messaging_install_store.py:184`). Its one caller, the
+   delete guard
    (`gateway/collaborations.py:700`), refuses when the list is non-empty.
    *Slack-neutral:* a one-element list refuses exactly as the one row did.
-3. **`complete()` and the new `claim()` share their steps.** The verify-and-burn
-   steps and the record-and-attach steps move into private helpers.
-   `complete()` runs redeem between them. `claim()` has no redeem, and attaches
-   to an existing bridge when the tenant has one. *Slack-neutral:* the same
-   calls, in the same order, with the same sessions.
+3. **`complete()` and the new `claim()` share their first steps.** Burning the
+   state and encrypting a grant's token move into private helpers that both
+   call. After that they differ: `claim()` has no redeem, and it looks up the
+   tenant's bridge, records the install, registers the bridge if there is none,
+   and attaches, all in **one transaction** under the advisory lock below. A
+   failed registration therefore rolls the install back instead of leaving it
+   behind. *Slack-neutral:* `complete()` makes the same calls, in the same
+   order, with the same sessions.
 4. **`begin()` mints the token format the installer names.** The default is v1.
    Telegram names the compact format. *Slack-neutral:* Slack keeps the default.
 5. **The route checks `claim_of_event` before resolve.** The default is `None`.
@@ -441,8 +449,9 @@ Slack, which implements none of them, is unaffected:
    For Slack, the per-event warning stays as it is.
 
 The first bridge for a tenant has a race: two first claims landing together
-could each register a bridge. `claim()` takes a transaction-scoped advisory lock
-on `(tenant, platform)` around looking up and registering the bridge.
+could each register a bridge. `claim()`'s transaction takes an advisory lock on
+`(tenant, platform)` before looking up the bridge, so the second claim waits and
+then finds the bridge the first one made.
 
 ## What is reused, and what is new
 
@@ -488,8 +497,7 @@ commit that can be tested on its own.
 - **Stage 2 — the claim protocol.**
   - Work: the compact token with its own label; `begin()` choosing the format;
     `claim_of_event`; `service.claim()` with the shared helpers and the
-    advisory lock; `get_for_bridge` returning a list and the delete guard
-    following it.
+    advisory lock; `list_for_bridge` and the delete guard following it.
   - Tests: token round trip, the 64-character and alphabet bound, a v1 token
     refused as compact and vice versa, expiry, single use; a claim against real
     Postgres; a second tenant claiming the same chat refused; two concurrent
@@ -591,9 +599,10 @@ Three gaps on main this design inherits and has to close rather than copy:
   undoes the row if registration fails. For Telegram this is worse than for
   Slack. The chat stays claimed by the tenant, so another claim is refused by
   the unique index, and every update resolves to `WebhookBridgeUnavailable`, a
-  503 that Telegram retries. `claim()` shares that step (change 3), so the fix
-  lands there: a failed registration ends the install row it just wrote, and
-  the failure is reported in the chat.
+  503 that Telegram retries. `claim()` does not inherit it: it registers inside
+  the transaction that records the install (change 3), so a failed
+  registration leaves no row. Reporting the failure in the chat is stage 4.
+  `complete()` keeps the gap for Slack.
 - **Bridge `PATCH` has no install guard.** It merges any `connection_config`
   the payload carries and only re-validates the shape
   (`gateway/collaborations.py:289-297`). On the tenant's shared-delivery
