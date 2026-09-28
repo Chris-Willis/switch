@@ -209,6 +209,11 @@ just local-cloud-console # the Console, with Switch Cloud at http://localhost:80
   its Switch Cloud entry by address, so an install that has signed in to the
   real Cloud gets a second "Switch Cloud" server for the local one rather
   than reusing it.
+- **The Console's data** (servers, sign-ins, its database) lives in its own
+  directory, `switchdash-local-cloud` under the system's app-data folder,
+  rather than the one every other dev build shares. Branches that number
+  their migrations differently cannot break each other's database this
+  way. Delete that directory to start the Console from scratch.
 
 ## Other useful recipes
 
