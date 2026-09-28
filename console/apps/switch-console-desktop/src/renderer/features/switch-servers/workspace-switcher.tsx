@@ -1,4 +1,4 @@
-import { ChevronsUpDown, Plus, Server } from 'lucide-react';
+import { ChevronsUpDown, Plus, Server, UserPlus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -19,6 +19,7 @@ import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import {
+  canInvite,
   type Workspace,
   type WorkspaceUnavailability,
   workspaceUnavailability,
@@ -71,6 +72,7 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher() {
   const { navigate } = useNavigate();
   const showAddServerModal = useShowModal('addServerModal');
   const showCreateWorkspaceModal = useShowModal('createWorkspaceModal');
+  const showInvitePeopleModal = useShowModal('invitePeopleModal');
 
   useEffect(() => {
     void store.init();
@@ -140,6 +142,14 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher() {
             <ServerWorkspaceGroup key={server.id} server={server} />
           ))}
           <DropdownMenuSeparator />
+          {/* Offered only where the gateway would take it: it refuses members,
+              and a menu item that always ends in a 403 is a trap. */}
+          {canInvite(active) && (
+            <DropdownMenuItem onClick={() => showInvitePeopleModal({ workspaceId: active.id })}>
+              <UserPlus className="size-4" />
+              Invite people to {active.name}
+            </DropdownMenuItem>
+          )}
           {/* Above Add server because it is the commoner errand by far: you add
               a server once and make workspaces on it for as long as you use
               it. It opens on the server you are already in — the modal asks

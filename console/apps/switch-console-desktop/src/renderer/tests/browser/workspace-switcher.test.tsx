@@ -293,3 +293,27 @@ describe('a workspace that cannot be opened', () => {
     expect(reason).not.toMatch(/sign in/i);
   });
 });
+
+describe('inviting people from the switcher', () => {
+  function inviteItem(): HTMLElement | undefined {
+    return [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((item) =>
+      item.textContent?.startsWith('Invite people')
+    );
+  }
+
+  it('is offered in a workspace the account administers', async () => {
+    await openSwitcher(
+      [server('srv-1', 'Acme')],
+      [workspace('ws-a', 'srv-1', { role: 'admin' })],
+      'ws-a'
+    );
+
+    expect(inviteItem()?.textContent).toBe('Invite people to ws-a');
+  });
+
+  it('is not offered to a member, whom the server would refuse', async () => {
+    await openSwitcher([server('srv-1', 'Acme')], [workspace('ws-a', 'srv-1')], 'ws-a');
+
+    expect(inviteItem()).toBeUndefined();
+  });
+});

@@ -21,6 +21,7 @@ import { DisconnectMessagingAppModal } from '@renderer/features/switch-servers/D
 import { RenameServerModal } from '@renderer/features/switch-servers/RenameServerModal';
 import { SaveTemplateModal } from '@renderer/features/templates/save-template-modal';
 import { CreateWorkspaceModal } from '@renderer/features/workspaces/create-workspace-modal';
+import { InvitePeopleModal } from '@renderer/features/workspaces/invite-people-modal';
 import { ConfirmActionDialog } from '@renderer/lib/components/confirm-action-dialog';
 import { ExternalLinkChoiceDialog } from '@renderer/lib/components/external-link-choice-dialog';
 import { UnsavedChangesDialog } from '@renderer/lib/components/unsaved-changes-dialog';
@@ -68,6 +69,10 @@ export const modalRegistry = {
   addServerModal: createModal(AddServerModal, { size: 'md', dismissOnOutsideClick: false }),
   createWorkspaceModal: createModal(CreateWorkspaceModal, {
     size: 'md',
+    dismissOnOutsideClick: false,
+  }),
+  invitePeopleModal: createModal(InvitePeopleModal, {
+    size: 'lg',
     dismissOnOutsideClick: false,
   }),
   addHostModal: createModal(AddHostModal, { size: 'md', dismissOnOutsideClick: false }),
