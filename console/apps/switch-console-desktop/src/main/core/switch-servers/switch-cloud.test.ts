@@ -48,6 +48,20 @@ describe('switchCloudEndpoint', () => {
     expect(() => switchCloudEndpoint()).toThrow('must be an https URL');
   });
 
+  it('accepts plain http to this machine, for a local stand-in', () => {
+    runWith('http://localhost:8000');
+    expect(switchCloudEndpoint()).toEqual({ url: 'http://localhost:8000' });
+    runWith('http://127.0.0.1:8000');
+    expect(switchCloudEndpoint()).toEqual({ url: 'http://127.0.0.1:8000' });
+    runWith('http://[::1]:8000');
+    expect(switchCloudEndpoint()).toEqual({ url: 'http://[::1]:8000' });
+  });
+
+  it('does not take a host that only starts like localhost', () => {
+    runWith('http://localhost.example.com');
+    expect(() => switchCloudEndpoint()).toThrow('must be an https URL');
+  });
+
   it('raises on a URL with a path', () => {
     runWith('https://cloud.example.com/gateway');
     expect(() => switchCloudEndpoint()).toThrow('must be an origin with no path');
