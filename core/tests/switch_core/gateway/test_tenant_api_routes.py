@@ -25,6 +25,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import (
@@ -42,10 +43,16 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.invitation_store import InvitationStore
+from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
-from switch_core.gateway.auth import create_jwt
+from switch_core.gateway.auth import create_jwt, decode_jwt
+from switch_core.gateway.invite_mail import (
+    InviteEmail,
+    InviteEmailFailed,
+    InviteMailer,
+)
 from switch_core.gateway.tenants import router as tenants_router
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
@@ -60,9 +67,36 @@ class _FakeClientLifecycle:
     async def create_tenant(self, name: str, slug: str) -> Tenant:
         tenant = Tenant(id=str(uuid.uuid4()), name=name, slug=slug)
         async with tenant_session(self._session_factory, tenant.id) as session:
-            session.add(tenant)
+            await TenantStore().create(session, tenant)
             await session.commit()
         return tenant
+
+
+class _ProvisioningFailsLifecycle(_FakeClientLifecycle):
+    """Commits the tenant, then fails the way a concurrent admin-client insert
+    does — an integrity error that has nothing to do with the slug."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        super().__init__(session_factory)
+        self.calls = 0
+
+    async def create_tenant(self, name: str, slug: str) -> Tenant:
+        self.calls += 1
+        await super().create_tenant(name, slug)
+        raise IntegrityError("INSERT INTO clients ...", None, Exception("duplicate"))
+
+
+class _RecordingMailer:
+    def __init__(self) -> None:
+        self.sent: list[InviteEmail] = []
+
+    async def send_invitation(self, invite: InviteEmail) -> None:
+        self.sent.append(invite)
+
+
+class _FailingMailer:
+    async def send_invitation(self, invite: InviteEmail) -> None:
+        raise InviteEmailFailed("relay refused the message")
 
 
 def _fake_protocol() -> SimpleNamespace:
@@ -79,6 +113,9 @@ def _app(
     *,
     client_lifecycle: object | None = None,
     max_workspaces_per_user: int = 3,
+    signup_mode: str = "default_tenant",
+    mailer: InviteMailer | None = None,
+    invite_emails_per_day: int = 50,
 ) -> FastAPI:
     async def _session_dep():
         async with session_factory() as session:
@@ -96,6 +133,7 @@ def _app(
     app.dependency_overrides[gw_deps.get_usage_store] = lambda: UsageStore()
     app.dependency_overrides[gw_deps.get_budget_store] = lambda: BudgetStore()
     app.dependency_overrides[gw_deps.get_protocol] = lambda: _fake_protocol()
+    app.dependency_overrides[gw_deps.get_invite_mailer] = lambda: mailer
     app.dependency_overrides[gw_deps.get_client_lifecycle] = lambda: (
         client_lifecycle or _FakeClientLifecycle(session_factory)
     )
@@ -104,6 +142,9 @@ def _app(
         gateway_cookie_secure=False,
         gateway_tenant_choice_enabled=False,
         gateway_max_workspaces_per_user=max_workspaces_per_user,
+        gateway_signup_mode=signup_mode,
+        gateway_invite_emails_per_day=invite_emails_per_day,
+        frontend_base_url="https://switch.example.com/",
     )
     return app
 
@@ -148,8 +189,34 @@ async def _make_member(
         return user.id
 
 
-def _token(user_id: str, email: str, tenant_id: str) -> str:
+def _token(user_id: str, email: str, tenant_id: str | None) -> str:
     return create_jwt(user_id, email, "user", _SECRET, tenant_id)
+
+
+def _tenant_claim(response: httpx.Response) -> str | None:
+    token = response.cookies.get("switch_auth")
+    assert token is not None, "no session cookie was minted"
+    claim: str | None = decode_jwt(token, _SECRET).get("tenant_id")
+    return claim
+
+
+async def _make_unaffiliated_user(
+    session_factory: async_sessionmaker[AsyncSession], *, name: str, role: str
+) -> str:
+    async with session_factory() as session:
+        user = User(name=name, email=f"{name}@example.invalid", role=role)
+        session.add(user)
+        await session.commit()
+        return user.id
+
+
+async def _last_tenant_id(
+    session_factory: async_sessionmaker[AsyncSession], user_id: str
+) -> str | None:
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+        assert user is not None
+        return UserStore().last_tenant_id(user)
 
 
 async def _make_api_key(
@@ -251,9 +318,44 @@ class TestCreateTenant:
             assert membership is not None
             assert membership.role == "owner"
 
-    async def test_a_taken_slug_is_409_not_a_silent_suffix(
+    async def test_creating_a_tenant_switches_the_caller_into_it(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name="mover", tenant_id=TENANT_A, role="member"
+        )
+        token = _token(user_id, "mover@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.post("/tenants", json={"name": "Moving Co"})
+
+        assert response.status_code == 201, response.text
+        new_id = response.json()["id"]
+        assert _tenant_claim(response) == new_id
+        assert await _last_tenant_id(session_factory, user_id) == new_id
+
+    async def test_a_caller_with_no_workspace_can_create_their_first(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        user_id = await _make_unaffiliated_user(
+            session_factory, name="newcomer", role="user"
+        )
+        token = _token(user_id, "newcomer@example.invalid", None)
+
+        async with _client(_app(session_factory, signup_mode="open"), token) as client:
+            response = await client.post("/tenants", json={"name": "First Light"})
+
+        assert response.status_code == 201, response.text
+        assert response.json()["role"] == "owner"
+        assert _tenant_claim(response) == response.json()["id"]
+
+    async def test_a_taken_slug_gets_a_suffix_rather_than_a_409(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A 409 would tell the caller that a workspace of that name exists
+        somewhere on the server. Nobody types the slug, so a suffixed one costs
+        them nothing."""
         await _make_tenant(session_factory, TENANT_A)
         user_id = await _make_member(
             session_factory, name="second-founder", tenant_id=TENANT_A, role="member"
@@ -265,7 +367,63 @@ class TestCreateTenant:
             assert first.status_code == 201, first.text
             second = await client.post("/tenants", json={"name": "Widgets Inc"})
 
-        assert second.status_code == 409
+        assert second.status_code == 201, second.text
+        assert first.json()["slug"] == "widgets-inc"
+        assert second.json()["slug"].startswith("widgets-inc-")
+        assert second.json()["id"] != first.json()["id"]
+
+    async def test_invite_only_refuses_a_non_operator(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        user_id = await _make_unaffiliated_user(
+            session_factory, name="hopeful", role="user"
+        )
+        token = _token(user_id, "hopeful@example.invalid", None)
+
+        app = _app(session_factory, signup_mode="invite_only")
+        async with _client(app, token) as client:
+            response = await client.post("/tenants", json={"name": "Hopeful Ltd"})
+
+        assert response.status_code == 403
+        assert "invitation" in response.json()["detail"]
+        async with session_factory() as session:
+            assert (
+                await session.execute(
+                    select(Tenant).where(Tenant.name == "Hopeful Ltd")
+                )
+            ).first() is None
+
+    async def test_invite_only_still_lets_an_operator_create(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        user_id = await _make_unaffiliated_user(
+            session_factory, name="operator", role="admin"
+        )
+        token = create_jwt(user_id, "operator@example.invalid", "admin", _SECRET, None)
+
+        app = _app(session_factory, signup_mode="invite_only")
+        async with _client(app, token) as client:
+            response = await client.post("/tenants", json={"name": "Ops Co"})
+
+        assert response.status_code == 201, response.text
+
+    async def test_a_failure_other_than_a_taken_slug_is_not_retried(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Retrying would leave the committed workspace behind, ownerless, and
+        make another one."""
+        user_id = await _make_unaffiliated_user(
+            session_factory, name="unlucky", role="user"
+        )
+        token = _token(user_id, "unlucky@example.invalid", None)
+        lifecycle = _ProvisioningFailsLifecycle(session_factory)
+
+        app = _app(session_factory, client_lifecycle=lifecycle, signup_mode="open")
+        async with _client(app, token) as client:
+            with pytest.raises(IntegrityError):
+                await client.post("/tenants", json={"name": "Unlucky Co"})
+
+        assert lifecycle.calls == 1
 
     async def test_a_name_with_no_slug_characters_is_400(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -737,6 +895,8 @@ class TestInvitationLifecycle:
         body = response.json()
         assert body["id"] == TENANT_A
         assert body["role"] == "admin"
+        assert _tenant_claim(response) == TENANT_A
+        assert await _last_tenant_id(session_factory, invitee_id) == TENANT_A
 
         async with session_factory() as session:
             membership = await session.get(TenantMember, (TENANT_A, invitee_id))
@@ -1528,3 +1688,157 @@ class TestBudgetRoutes:
             response = await client.get(f"/tenants/{TENANT_B}/budgets")
 
         assert response.status_code == 403
+
+
+class TestInvitationEmail:
+    """An invitation naming an address is e-mailed there when a relay is
+    configured, and stands whether or not the e-mail goes out — the response
+    says which, so the admin knows when to share the link themselves."""
+
+    async def _owner(
+        self, session_factory: async_sessionmaker[AsyncSession], name: str
+    ) -> str:
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name=name, tenant_id=TENANT_A, role="owner"
+        )
+        return _token(user_id, f"{name}@example.invalid", TENANT_A)
+
+    async def _invite(self, app: FastAPI, token: str, body: dict) -> httpx.Response:
+        async with _client(app, token) as client:
+            return await client.post(f"/tenants/{TENANT_A}/invitations", json=body)
+
+    async def test_an_addressed_invitation_is_e_mailed_with_its_link(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        token = await self._owner(session_factory, "sender")
+        mailer = _RecordingMailer()
+
+        response = await self._invite(
+            _app(session_factory, mailer=mailer),
+            token,
+            {"role": "admin", "email": "  New.Person@Example.com "},
+        )
+
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert body["email_delivery"] == "sent"
+        assert body["email"] == "new.person@example.com"
+        [sent] = mailer.sent
+        assert sent.to == "new.person@example.com"
+        assert sent.link == f"https://switch.example.com/invite#token={body['token']}"
+        assert sent.workspace_name == TENANT_A
+        assert sent.inviter_name == "sender"
+        assert sent.role == "admin"
+
+    async def test_without_a_relay_the_invitation_stands_and_says_so(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        token = await self._owner(session_factory, "no-relay")
+
+        with caplog.at_level("WARNING", logger="switch_core.gateway.tenants"):
+            response = await self._invite(
+                _app(session_factory), token, {"email": "someone@example.com"}
+            )
+
+        assert response.status_code == 201, response.text
+        assert response.json()["email_delivery"] == "not_configured"
+        assert "no SMTP relay is configured" in caplog.text
+        async with tenant_session(session_factory, TENANT_A) as scoped:
+            [invitation] = await InvitationStore().list_for_tenant(scoped)
+            assert invitation.email == "someone@example.com"
+
+    async def test_a_failed_send_still_leaves_a_usable_invitation(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        token = await self._owner(session_factory, "unlucky")
+        app = _app(session_factory, mailer=_FailingMailer())
+
+        response = await self._invite(app, token, {"email": "invitee@example.invalid"})
+
+        assert response.status_code == 201, response.text
+        assert response.json()["email_delivery"] == "failed"
+
+        await _make_tenant(session_factory, TENANT_B)
+        invitee_id = await _make_member(
+            session_factory, name="invitee", tenant_id=TENANT_B, role="member"
+        )
+        async with _client(
+            app, _token(invitee_id, "invitee@example.invalid", TENANT_B)
+        ) as client:
+            accepted = await client.post(
+                "/invitations/accept", json={"token": response.json()["token"]}
+            )
+        assert accepted.status_code == 200, accepted.text
+
+    async def test_a_link_invitation_sends_nothing(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        token = await self._owner(session_factory, "linker")
+        mailer = _RecordingMailer()
+
+        response = await self._invite(
+            _app(session_factory, mailer=mailer), token, {"role": "member"}
+        )
+
+        assert response.status_code == 201, response.text
+        assert response.json()["email_delivery"] == "not_requested"
+        assert mailer.sent == []
+
+    @pytest.mark.parametrize(
+        "email", ["not-an-address", "a@b", "two@@example.com", "sp ace@example.com"]
+    )
+    async def test_something_that_is_not_an_address_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession], email: str
+    ) -> None:
+        token = await self._owner(session_factory, "typist")
+
+        response = await self._invite(
+            _app(session_factory, mailer=_RecordingMailer()), token, {"email": email}
+        )
+
+        assert response.status_code == 422
+
+    async def test_the_daily_cap_refuses_before_minting_anything(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        token = await self._owner(session_factory, "prolific")
+        mailer = _RecordingMailer()
+        app = _app(session_factory, mailer=mailer, invite_emails_per_day=2)
+
+        for n in range(2):
+            ok = await self._invite(app, token, {"email": f"p{n}@example.com"})
+            assert ok.status_code == 201, ok.text
+        link = await self._invite(app, token, {"role": "member"})
+        over = await self._invite(app, token, {"email": "p2@example.com"})
+
+        assert link.status_code == 201, "link invitations are not capped"
+        assert over.status_code == 429
+        assert "daily limit" in over.json()["detail"]
+        assert len(mailer.sent) == 2
+        async with tenant_session(session_factory, TENANT_A) as scoped:
+            assert len(await InvitationStore().list_for_tenant(scoped)) == 3
+
+    async def test_an_operator_is_not_capped(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        async with session_factory() as session:
+            operator = User(
+                name="operator", email="operator@example.invalid", role="admin"
+            )
+            session.add(operator)
+            await session.flush()
+            session.add(
+                TenantMember(tenant_id=TENANT_A, user_id=operator.id, role="owner")
+            )
+            await session.commit()
+            operator_id = operator.id
+        token = _token(operator_id, "operator@example.invalid", TENANT_A)
+        app = _app(session_factory, mailer=_RecordingMailer(), invite_emails_per_day=1)
+
+        for n in range(2):
+            response = await self._invite(app, token, {"email": f"o{n}@example.com"})
+            assert response.status_code == 201, response.text
