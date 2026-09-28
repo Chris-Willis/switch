@@ -320,6 +320,21 @@ lock per channel and returns early when the channel already has a room
 (`bridge_core.py:1002-1011`). Whichever update gets there first creates the
 room, and the other does nothing.
 
+**The claim must not reach a bridge that has not finished starting.** A bridge
+is launched before it is started: `lifecycle.register` returns once the
+bridge's task is running, and the adapter is given the callbacks that
+provision a room in that task, a few database reads later. A claim handed over
+in between reaches an adapter with nothing to provision the chat's room with,
+and the room is lost, because nothing delivers the claim again. The gap is open
+in three cases: the claim that just registered the bridge, Telegram's retry of
+that claim while the bridge is still coming up, and a claim that lands on a
+bridge that is restarting. So the route holds any event that carries a claim
+until its bridge has started (`lifecycle.is_connected`), for up to two seconds,
+and then answers 503 so Telegram retries. The retry is a repeated claim and
+waits the same way. Events that carry no claim are routed exactly as before,
+so Slack's traffic is untouched. The adapter raises rather than absorb a claim
+it cannot provision, so a bypassed wait is loud rather than a missing room.
+
 A channel is the same from step 4, triggered by `/connect <token>` as a
 `channel_post`. Main drops channel posts before `_handle_start` because they
 have no sender. The shared-delivery adapter must recognise a claim before that
@@ -575,7 +590,22 @@ commit that can be tested on its own.
     member-level per-chat disconnect and an admin-only full removal;
     `REMOVAL_COPY['telegram']`; the operator page on registering the
     deployment bot (Group Privacy off first).
+  - Built with the permission split carried by an installer flag,
+    `installs_by_claim`, so every check for an OAuth platform stays the
+    operator check it was. New routes: `POST /messaging-apps/{platform}/claim`
+    returns the link and the bare code, and
+    `DELETE /messaging-apps/{platform}/installs` disconnects every chat.
+    `GET /messaging-apps` says what the caller may do with each claim-based
+    platform, because the dashboard knows only the operator bit. The operator
+    page lands in the implementation at this path, and this design doc stays
+    in its draft PR.
 - **Stage 7 — the cross-tenant test** (below).
+  - Built in the integration suite (`just test-integration`), behind a new
+    `collaboration_bridges` marker that gives the harness the real bridge
+    lifecycle. It found two problems: the harness itself was broken on main
+    (`ProtocolService` had gained a required `approval_outcomes` argument it
+    never passed, failing every integration test at setup), and the claim's
+    race with its bridge's start, described in "A claim, end to end".
 
 ## Open questions
 
@@ -622,9 +652,14 @@ restricted role:
 - A DM reaches no tenant (G4).
 - A wrong lookup answer becomes a scoped miss.
 
+It is `core/tests/integration/test_telegram_isolation_e2e.py`. Only Telegram is
+faked; the route, the installer, the claim, the bridge lifecycle, the shared
+adapter and `BridgeCore` are all real, down to the rows a bridged message
+writes.
+
 Beyond that, each stage carries the tests listed with it. A doc-vs-code test,
-like `test_slack_distributed_app.py`, compares the `allowed_updates` and
-command set named here against what the client sends at boot.
+`test_telegram_distributed_app.py`, compares the webhook URL and the
+`allowed_updates` on the operator page against what the client sends at boot.
 
 ## Left out on purpose
 
