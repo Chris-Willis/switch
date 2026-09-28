@@ -325,12 +325,18 @@ A channel is the same from step 4, triggered by `/connect <token>` as a
 have no sender. The shared-delivery adapter must recognise a claim before that
 drop.
 
-A claim that fails should send one reply into the chat saying why, with no
-detail about any tenant. The possible reasons are: expired, already used, chat
-already connected to another Switch account, or not permitted. **Not built
-yet:** today a refused claim is logged as a warning and the event is then routed
-as normal, so the person who tapped the link sees nothing. It needs an installer
-hook on a refused claim, the same shape as `on_unowned_event`.
+A claim that fails sends one reply into the chat saying why, with no detail
+about any tenant. The route logs the refusal, answers Telegram, and then calls
+the installer's `on_claim_refused` with one of four reasons: `expired` (which
+also covers a link already used, since the store cannot tell them apart),
+`unrecognised`, `already_connected` or `not_permitted`. The event is then routed
+as normal.
+
+A retry of a claim that already worked is not a refusal. Telegram re-sends an
+update it thinks went unanswered, and the retried `/start` finds its state
+burnt. When the chat already belongs to the claim's own tenant, the service
+raises `InstallClaimRepeated`, and the route stays quiet rather than telling a
+chat it has just connected that its link expired.
 
 ### Ending a chat
 
@@ -561,6 +567,9 @@ commit that can be tested on its own.
     count; unclaimed traffic counted, answered and never logged; the notice's
     grace; the delivery-health warnings; the reserved bot refused at
     registration and on edit.
+  - After stage 5: `on_claim_refused`, the reply that tells a chat why its
+    claim did not connect it, and `InstallClaimRepeated`, which keeps a retry
+    of a claim that worked from being told its link expired.
 - **Stage 6 — gateway and docs.**
   - Work: **Add to a Telegram group** as a link to show; the per-chat list; a
     member-level per-chat disconnect and an admin-only full removal;
@@ -646,8 +655,9 @@ Three gaps on main this design inherits and has to close rather than copy:
   the unique index, and every update resolves to `WebhookBridgeUnavailable`, a
   503 that Telegram retries. `claim()` does not inherit it: it registers inside
   the transaction that records the install (change 3), so a failed
-  registration leaves no row. Reporting the failure in the chat is not built
-  yet (see "A claim, end to end"). `complete()` keeps the gap for Slack.
+  registration leaves no row. The claim answers 500, so Telegram retries it,
+  and the retry finds its link used and is told it expired, which is the
+  honest outcome: a new link is needed. `complete()` keeps the gap for Slack.
 - **Bridge `PATCH` had no install guard.** It merged any `connection_config`
   and only re-validated the shape, so an admin could switch a shared bridge to
   `own_connection` with a token, including the deployment bot's. Closed in
