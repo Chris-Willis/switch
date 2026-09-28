@@ -854,3 +854,11 @@ class SwitchConfig(BaseSettings):
         # additionally proves it was issued for the host we asked for.
         context.check_hostname = self.db_ssl_mode == "verify-full"
         return {"ssl": context}
+
+
+def hosted_configured(config: SwitchConfig) -> bool:
+    """Whether this server runs cloud agents: it has a hosted controller or launch capacity."""
+    return (
+        config.hosted_controller_config_path is not None
+        or config.hosted_launch_capacity > 0
+    )

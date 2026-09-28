@@ -113,7 +113,6 @@ from switch_core.bridges.agent.registration_bootstrap import (
     REGISTRATION_KEY_TYPES,
     resolve_registration_owner_id,
 )
-from switch_core.budgets import BudgetExceeded
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Agent, HostedLaunch, Task, require_tenant_id
 from switch_core.db.session_scope import tenant_session
@@ -474,8 +473,6 @@ async def send_message(
     logger.debug("Recieved message from agent %s: %s", agent.name, req.content)
     try:
         event_id = await protocol.send_message(agent.id, req.room_id, req.content)
-    except BudgetExceeded as e:
-        raise HTTPException(status_code=429, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except PermissionError as e:
@@ -562,8 +559,6 @@ async def upload_media(
             caption=caption,
             thread_id=thread_id,
         )
-    except BudgetExceeded as e:
-        raise HTTPException(status_code=429, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except PermissionError as e:
@@ -1393,8 +1388,6 @@ async def delegate_task(
             description=req.description,
         )
         task = await protocol.get_task(agent.id, result.task_id)
-    except BudgetExceeded as e:
-        raise HTTPException(status_code=429, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except PermissionError as e:

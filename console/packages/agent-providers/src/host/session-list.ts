@@ -63,7 +63,9 @@ export function readHostSessions(
   };
   let names: string[] = [];
   try {
-    names = nodeFs.readdirSync(base);
+    names = nodeFs
+      .readdirSync(base)
+      .filter((name) => !name.startsWith('.') && !name.startsWith('launch-'));
   } catch {}
   const found: ListedSession[] = [];
   for (const name of names) {
