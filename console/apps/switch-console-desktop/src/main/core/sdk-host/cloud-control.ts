@@ -80,21 +80,31 @@ export async function cloudControl(agentId: string): Promise<CloudRelayClient> {
   return client;
 }
 
-export async function listCloudLaunches(server: SwitchServer): Promise<CloudLaunch[]> {
-  return z
-    .array(cloudLaunchSchema)
-    .parse(await (await gatewayFetch(server, '/hosted-launches', { authenticated: true })).json());
+/**
+ * The server's launches, or null when it has no launch list at all: a Core
+ * without cloud agents answers the route with 404.
+ */
+export async function listCloudLaunches(server: SwitchServer): Promise<CloudLaunch[] | null> {
+  let response: Response;
+  try {
+    response = await gatewayFetch(server, '/hosted-launches', { authenticated: true });
+  } catch (error) {
+    if (error instanceof GatewayError && error.kind === 'http' && error.status === 404) return null;
+    throw error;
+  }
+  return z.array(cloudLaunchSchema).parse(await response.json());
 }
 
 /**
- * The server's cloud agents, read from the launch list alone. A launch whose
+ * The server's cloud agents, read from the launch list alone, or null when the
+ * server has no cloud agents. A launch whose
  * worker cannot be asked says why; the sessions of one that can are asked of
  * its worker by `listCloudSessions`, only for the agents being looked at.
  */
-export async function listCloudAgents(serverId: string): Promise<CloudAgent[]> {
-  const launches = (await listCloudLaunches(await serverOf(serverId))).filter(
-    (launch) => launch.agent_id && launch.desired_state !== 'deleted'
-  );
+export async function listCloudAgents(serverId: string): Promise<CloudAgent[] | null> {
+  const listed = await listCloudLaunches(await serverOf(serverId));
+  if (listed === null) return null;
+  const launches = listed.filter((launch) => launch.agent_id && launch.desired_state !== 'deleted');
   return launches.map((launch): CloudAgent => {
     const key = cloudAgentKey(serverId, launch.request_id);
     if (launch.sleeping)

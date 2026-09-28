@@ -1,19 +1,24 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { rpc } from '@renderer/lib/ipc';
 import { type CloudAgent, parseCloudAgentKey } from '@shared/core/cloud-agents/cloud-agents';
 
 /**
  * The server's cloud agents, from its launch list; no worker is asked. Not
  * asked while signed out: the sidebar already says to sign in.
+ *
+ * `null` means the server has no cloud agents. It is not asked again until its
+ * session or declared version changes, which is when it may have gained them.
  */
 export function useCloudAgents(serverId: string | null) {
   const signedOut = switchRoomsStore.serversNotSignedIn.some((server) => server.id === serverId);
+  const user = serverId === null ? null : (switchServersStore.statusFor(serverId)?.user ?? null);
   return useQuery({
-    queryKey: ['cloud-agents', serverId],
+    queryKey: ['cloud-agents', serverId, user?.id ?? null, user?.server?.version ?? null],
     queryFn: () => rpc.sdkHost.cloudAgents(serverId!),
     enabled: serverId !== null && !signedOut,
-    refetchInterval: 5000,
+    refetchInterval: (query) => (query.state.data === null ? false : 5000),
     retry: false,
   });
 }

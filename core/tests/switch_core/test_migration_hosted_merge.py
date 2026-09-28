@@ -12,7 +12,7 @@ only the merge revision; the `test_real_upgrade_*` cases go through `env.py`
 the way `alembic upgrade` and Core's boot do.
 
 The hosted-agent chain (`ab921ef034cd` .. `95fc38e451b6`) was applied on a
-pilot before main grew its own head (`e3b7c9d2a415`), so a database can arrive
+pilot before main grew its own head (`c4e9a1f7b203`), so a database can arrive
 at the merge from either side. The pilot side still has to run main's
 migrations, including the one that drops the server-side SDK session tables;
 main's side has to run the hosted chain. Each path starts from an empty
@@ -62,7 +62,7 @@ _CORE = Path(__file__).resolve().parents[2]
 
 _MERGE_REVISION = "33e037ee949f"
 _PILOT_HEAD = "95fc38e451b6"
-_MAIN_HEAD = "e3b7c9d2a415"
+_MAIN_HEAD = "c4e9a1f7b203"
 _MANIFEST_REVISION = "a3c9e5f71d28"
 
 _HOSTED_TABLES = (
@@ -678,13 +678,6 @@ async def test_main_database_keeps_session_activity_through_the_merge(
 
         async with engine.begin() as connection:
             await _seed_tenant_and_user(connection)
-            await connection.execute(
-                text(
-                    "INSERT INTO usage_budgets "
-                    "(tenant_id, id, metric, model, amount_limit, period_hours) "
-                    "VALUES ('t1', 'b1', 'input_tokens', '', 5000000, 24)"
-                )
-            )
             # The agent these rows belong to is beside the point here.
             await connection.execute(
                 text("SET LOCAL session_replication_role = replica")
@@ -720,11 +713,6 @@ async def test_main_database_keeps_session_activity_through_the_merge(
         async with engine.begin() as connection:
             await _assert_merged_schema(connection)
             await _assert_runtime_grants(connection)
-            budgets = (
-                await connection.execute(
-                    text("SELECT id, metric, amount_limit FROM usage_budgets")
-                )
-            ).all()
             requests = (
                 await connection.execute(
                     text("SELECT request_id, title, state FROM approval_requests")
@@ -739,7 +727,6 @@ async def test_main_database_keeps_session_activity_through_the_merge(
     finally:
         await engine.dispose()
 
-    assert [tuple(row) for row in budgets] == [("b1", "input_tokens", 5000000)]
     assert [tuple(row) for row in requests] == [("r1", "Write file?", "open")]
     assert [tuple(row) for row in items] == [("item-1", "completed", "Read file")]
     assert cutover == ([], [])

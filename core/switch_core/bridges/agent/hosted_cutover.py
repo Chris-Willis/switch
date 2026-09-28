@@ -20,7 +20,7 @@ from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import distinct, or_, select, update
+from sqlalchemy import ColumnElement, distinct, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.attachments import parse_attachment_group
@@ -719,17 +719,24 @@ async def post_cutover_notices(
     return unposted
 
 
+def cutover_notice_candidates() -> tuple[ColumnElement[bool], ...]:
+    """The bound tenant's cutover items that may still owe a room notice."""
+    return (
+        HostedCutoverItem.tenant_id == require_tenant_id(),
+        HostedCutoverItem.notice_posted_at.is_(None),
+        HostedCutoverItem.notice_dropped.is_(None),
+        HostedCutoverItem.room_id.is_not(None),
+        HostedCutoverItem.disposition.in_(_NOTICE_REASONS),
+    )
+
+
 async def post_owed_cutover_notices(protocol: ProtocolService) -> int:
     """Post every cutover notice the bound tenant still owes; returns how many stay owed."""
     async with tenant_session(protocol.session_factory, require_tenant_id()) as db:
         agent_ids = list(
             await db.scalars(
                 select(distinct(HostedCutoverItem.agent_id)).where(
-                    HostedCutoverItem.tenant_id == require_tenant_id(),
-                    HostedCutoverItem.notice_posted_at.is_(None),
-                    HostedCutoverItem.notice_dropped.is_(None),
-                    HostedCutoverItem.room_id.is_not(None),
-                    HostedCutoverItem.disposition.in_(_NOTICE_REASONS),
+                    *cutover_notice_candidates()
                 )
             )
         )

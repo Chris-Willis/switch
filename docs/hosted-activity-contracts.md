@@ -1117,7 +1117,7 @@ drops (checked by grep). Never edit or re-parent them.
    the `sdk_*` tables and queued `hosted_operations` hold for hosted agents
    into items; and makes one `pending` volume per hosted agent's latest
    launch. It refuses a database whose launches outlived `sdk_sessions`.
-2. `33e037ee949f` merges it with `e3b7c9d2a415`. It runs after
+2. `33e037ee949f` merges it with `c4e9a1f7b203`. It runs after
    `b9e4d2a71c05`, in the same transaction, and raises unless every volume of
    a non-deleted launch is `complete`, every item of one is decided, and every
    `import` attachment still has its `media_blobs` row. The raise rolls the
@@ -1146,7 +1146,7 @@ real upgrades with data, against PostgreSQL:
   in each of those states rolls back with the drop undone;
 - once recorded, the upgrade keeps exactly the session blob an import needs,
   drops the others, and queues the import once;
-- a main database at `e3b7c9d2a415` upgrades with the hosted tables empty;
+- a main database at `c4e9a1f7b203` upgrades with the hosted tables empty;
 - `alembic heads` is one head; `test_frozen_ddl_matches_create_all.py` still
   passes (no new NOTIFY DDL: mailbox delivery is offer-on-attach plus live
   buffer).
@@ -1357,7 +1357,7 @@ lossless design:
 
 ### Pilot order
 
-The pilot sits on our head; main's `a7e1c4b90d23 … e3b7c9d2a415` are not
+The pilot sits on our head; main's `a7e1c4b90d23 … c4e9a1f7b203` are not
 applied. Among them `b9e4d2a71c05` drops `sdk_sessions`, `sdk_session_events`,
 `sdk_session_commands`, `sdk_room_admissions` and `session_request_posts`,
 and deletes blobs tied to them. Its downgrade raises.
