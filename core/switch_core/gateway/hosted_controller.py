@@ -294,6 +294,8 @@ async def observe(
     launch = await launch_by_id(session, request_id)
     if body.revision != launch.revision:
         return summary(launch)
+    if launch.state == "deleted":
+        return summary(launch)
     if launch.state == "error" and launch.desired_state == "running":
         return summary(launch)
     if launch.desired_state == "running" and body.state in {"stopping", "stopped"}:

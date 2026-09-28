@@ -17,6 +17,7 @@ from switch_hosted_controller.gateway import (
     GatewayError,
     worker_attach_fields,
 )
+from switch_hosted_controller.model import DesiredState, ObservedState
 from switch_hosted_controller.store import AgentStore
 
 
@@ -265,3 +266,47 @@ def test_worker_accepts_the_bundle_and_materializes_its_capability_path(tmp_path
         worker.RUNTIME_DIRECTORY / "secrets" / "worker-capability"
     )
     gateway.store.close()
+
+
+def test_error_launch_being_deleted_is_still_reported(tmp_path):
+    cfg = config(tmp_path)
+    store = AgentStore(cfg.state_db_path, cfg.fingerprint())
+    assignment = cfg.assignment("agent-1")
+    store.reserve_create(
+        agent_id="agent-1",
+        instance_type="m6i.large",
+        image_id=cfg.image_id,
+        assignment_secret_arn=assignment.assignment_secret_arn,
+        instance_profile_arn=assignment.instance_profile_arn,
+        max_agents=cfg.max_agents,
+    )
+    stopped = store.set_desired("agent-1", DesiredState.STOPPED)
+    store.set_observed(stopped, ObservedState.STOPPED)
+    claim = store.set_desired("agent-1", DesiredState.DELETED)
+    store.set_observed(claim, ObservedState.DELETED)
+    gateway = Gateway(
+        GatewayConfig("https://switch.example.test", "SYNTHETIC", "m6i.large"),
+        cfg,
+        store,
+        Mock(),
+    )
+    deleting = {
+        "request_id": str(uuid4()),
+        "agent_id": "agent-1",
+        "state": "error",
+        "desired_state": "deleted",
+        "revision": 4,
+    }
+    failed = {**deleting, "request_id": str(uuid4()), "desired_state": "running"}
+    gateway.request = Mock(
+        side_effect=lambda path, body=None: [deleting, failed] if path == "" else {}
+    )
+    gateway.report_observations()
+    reports = [call.args for call in gateway.request.call_args_list if call.args[0]]
+    assert reports == [
+        (
+            f"/{deleting['request_id']}/observation",
+            {"state": "deleted", "revision": 4, "error": None, "error_code": None},
+        )
+    ]
+    store.close()

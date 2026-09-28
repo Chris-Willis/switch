@@ -108,6 +108,8 @@ class Ec2Cloud:
             if _error_code(exc) == "InvalidInstanceID.NotFound":
                 return None
             raise
+        if not instances:
+            return None
         if len(instances) != 1:
             raise CloudResourceError("recorded instance lookup did not return exactly one instance")
         self._validate_instance(instances[0], agent)

@@ -171,6 +171,12 @@ class Reconciler:
 
     def _deleted(self, claim: Agent) -> Agent:
         agent = claim
+        if (
+            agent.observed_state is ObservedState.DELETED
+            and agent.observed_revision == agent.desired_revision
+            and agent.observed_operation_id == agent.operation_id
+        ):
+            return agent
         if agent.instance_id is None and agent.instance_launch_issued:
             instance = self._cloud.discover_instance(agent)
             if instance is None:
