@@ -20,6 +20,7 @@ import {
   type CloudOperation,
   type CloudOperationOutcome,
   cloudOperationSchema,
+  type CloudSessions,
   parseCloudAgentKey,
 } from '@shared/core/cloud-agents/cloud-agents';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
@@ -86,62 +87,66 @@ export async function listCloudLaunches(server: SwitchServer): Promise<CloudLaun
 }
 
 /**
- * The server's cloud agents with their workers' sessions. A worker that
- * cannot be asked is reported with the relay's code rather than left out, so
- * a sleeping or detached launch reads as such.
+ * The server's cloud agents, read from the launch list alone. A launch whose
+ * worker cannot be asked says why; the sessions of one that can are asked of
+ * its worker by `listCloudSessions`, only for the agents being looked at.
  */
 export async function listCloudAgents(serverId: string): Promise<CloudAgent[]> {
   const launches = (await listCloudLaunches(await serverOf(serverId))).filter(
     (launch) => launch.agent_id && launch.desired_state !== 'deleted'
   );
-  return Promise.all(
-    launches.map(async (launch): Promise<CloudAgent> => {
-      const key = cloudAgentKey(serverId, launch.request_id);
-      if (launch.sleeping)
-        return {
-          key,
-          launch,
-          sessions: null,
-          problem: {
-            code: 'worker_sleeping',
-            message: 'The cloud worker is asleep.',
-            wakeAvailable: true,
-          },
-        };
-      if (launch.state !== 'ready' && launch.state !== 'running')
-        return {
-          key,
-          launch,
-          sessions: null,
-          problem: {
-            code: 'worker_not_attached',
-            message: `The cloud worker is ${launch.state}${launch.error ? `: ${launch.error}` : '.'}`,
-            wakeAvailable: launch.state === 'stopped',
-          },
-        };
-      try {
-        return { key, launch, sessions: await (await cloudControl(key)).list(), problem: null };
-      } catch (error) {
-        return {
-          key,
-          launch,
-          sessions: null,
-          problem:
-            error instanceof CloudRelayError
-              ? {
-                  code: error.relayCode,
-                  message: error.message,
-                  wakeAvailable: error.wakeAvailable,
-                }
-              : {
-                  code: 'failed',
-                  message: error instanceof Error ? error.message : String(error),
-                  wakeAvailable: false,
-                },
-        };
-      }
-    })
-  );
+  return launches.map((launch): CloudAgent => {
+    const key = cloudAgentKey(serverId, launch.request_id);
+    if (launch.sleeping)
+      return {
+        key,
+        launch,
+        sessions: null,
+        problem: {
+          code: 'worker_sleeping',
+          message: 'The cloud worker is asleep.',
+          wakeAvailable: true,
+        },
+      };
+    if (launch.state !== 'ready' && launch.state !== 'running')
+      return {
+        key,
+        launch,
+        sessions: null,
+        problem: {
+          code: 'worker_not_attached',
+          message: `The cloud worker is ${launch.state}${launch.error ? `: ${launch.error}` : '.'}`,
+          wakeAvailable: launch.state === 'stopped',
+        },
+      };
+    return { key, launch, sessions: null, problem: null };
+  });
+}
+
+/**
+ * A cloud agent's sessions, asked of its worker over the relay. A worker that
+ * cannot be asked is reported with the relay's code rather than as no sessions.
+ */
+export async function listCloudSessions(agentId: string): Promise<CloudSessions> {
+  try {
+    return { sessions: await (await cloudControl(agentId)).list(), problem: null };
+  } catch (error) {
+    return {
+      sessions: null,
+      problem:
+        error instanceof CloudRelayError
+          ? {
+              code: error.relayCode,
+              message: error.message,
+              wakeAvailable: error.wakeAvailable,
+            }
+          : {
+              code: 'failed',
+              message: error instanceof Error ? error.message : String(error),
+              wakeAvailable: false,
+            },
+    };
+  }
 }
 
 /** Start a sleeping or stopped launch's worker again. */

@@ -6,6 +6,8 @@ const server = vi.hoisted(() => ({
   restarts: 0,
   loseNextResponse: false,
   refuseNext: null as { status: number; detail: string } | null,
+  launches: [] as unknown[],
+  relayClients: 0,
 }));
 
 const { FakeGatewayError } = vi.hoisted(() => ({
@@ -22,7 +24,11 @@ const { FakeGatewayError } = vi.hoisted(() => ({
 }));
 
 vi.mock('@switch-console/agent-providers', () => ({
-  CloudRelayClient: class {},
+  CloudRelayClient: class {
+    constructor() {
+      server.relayClients += 1;
+    }
+  },
   CloudRelayError: class extends Error {},
   RELAY_TIMEOUT_MS: 1000,
 }));
@@ -35,7 +41,8 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   GatewayError: FakeGatewayError,
   gatewayRequest: vi.fn(),
   gatewayFetch: vi.fn(
-    async (_server: unknown, _path: string, init: { method?: string; body?: unknown }) => {
+    async (_server: unknown, path: string, init: { method?: string; body?: unknown }) => {
+      if (path === '/hosted-launches') return { json: async () => server.launches };
       if (server.refuseNext) {
         const { status, detail } = server.refuseNext;
         server.refuseNext = null;
@@ -58,7 +65,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   ),
 }));
 
-const { runCloudSessionOperation } = await import('./cloud-control');
+const { listCloudAgents, runCloudSessionOperation } = await import('./cloud-control');
 
 const agent = 'cloud:server:00000000-0000-4000-8000-000000000001';
 const sessionId = '00000000-0000-4000-8000-0000000000aa';
@@ -70,6 +77,37 @@ beforeEach(() => {
   server.restarts = 0;
   server.loseNextResponse = false;
   server.refuseNext = null;
+  server.launches = [];
+  server.relayClients = 0;
+});
+
+function launch(requestId: string, overrides: Record<string, unknown>) {
+  return {
+    request_id: requestId,
+    name: 'reviewer',
+    provider: 'claude',
+    state: 'ready',
+    desired_state: 'running',
+    revision: 1,
+    agent_id: 'agent',
+    error: null,
+    error_code: null,
+    sleeping: false,
+    ...overrides,
+  };
+}
+
+it('lists cloud agents from the launch list without asking any worker', async () => {
+  server.launches = [
+    launch('00000000-0000-4000-8000-000000000001', {}),
+    launch('00000000-0000-4000-8000-000000000002', { sleeping: true, state: 'stopped' }),
+  ];
+  const agents = await listCloudAgents('server');
+  expect(server.relayClients).toBe(0);
+  expect(agents.map((each) => [each.sessions, each.problem?.code ?? null])).toEqual([
+    [null, null],
+    [null, 'worker_sleeping'],
+  ]);
 });
 
 it('reports a start whose response was lost as unknown, and the same id again starts one session', async () => {

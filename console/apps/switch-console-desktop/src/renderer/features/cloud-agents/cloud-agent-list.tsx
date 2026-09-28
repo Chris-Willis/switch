@@ -2,7 +2,7 @@ import type { Session } from '@switch-console/shared/session-v1';
 import { useQueryClient } from '@tanstack/react-query';
 import { ChevronRight, Cloud, MessageSquare, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
@@ -14,7 +14,7 @@ import { SidebarMenuButton } from '../sidebar/sidebar-primitives';
 import { cloudAgentState } from './cloud-agent-state';
 import { cloudOperationAttempts, startAttemptKey } from './cloud-operation-attempts';
 import { CloudProblem } from './cloud-problem';
-import { useCloudAgents } from './use-cloud-agents';
+import { useCloudAgentSessions, useCloudAgents } from './use-cloud-agents';
 
 export function cloudSessionName(session: Session): string {
   const room = session.roomIds?.[0];
@@ -29,11 +29,18 @@ function sessionLabel(session: Session): string {
 /**
  * The active server's cloud agents under the local and SSH ones: each launch,
  * and beneath it the sessions its worker reports. A launch whose worker cannot
- * be asked says why in place of its sessions.
+ * be asked says why in place of its sessions. A worker is asked for its
+ * sessions only while its row is expanded or one of its sessions is open.
  */
 export const CloudAgentList = observer(function CloudAgentList() {
   const serverId = switchServersStore.activeServerId;
   const agents = useCloudAgents(serverId);
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    const onFocus = () => void queryClient.invalidateQueries({ queryKey: ['cloud-agents'] });
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [queryClient]);
   if (switchRoomsStore.serversNotSignedIn.some((server) => server.id === serverId)) return null;
   if (agents.error)
     return (
@@ -45,23 +52,29 @@ export const CloudAgentList = observer(function CloudAgentList() {
   return (
     <div className="mt-2 flex flex-col gap-[2px]" aria-label="Cloud agents">
       {agents.data.map((agent) => (
-        <CloudAgentRow key={agent.key} agent={agent} />
+        <CloudAgentRow key={agent.key} listed={agent} />
       ))}
     </div>
   );
 });
 
-const CloudAgentRow = observer(function CloudAgentRow({ agent }: { agent: CloudAgent }) {
+const CloudAgentRow = observer(function CloudAgentRow({ listed }: { listed: CloudAgent }) {
   const { navigate } = useNavigate();
   const { currentView } = useWorkspaceSlots();
   const { params } = useParams('cloudSession');
-  const groupKey = `cloud:${agent.key}`;
+  const groupKey = `cloud:${listed.key}`;
   const expanded = sidebarStore.isGroupExpanded(groupKey);
+  const attemptKey = startAttemptKey(listed.key);
+  const attempt = cloudOperationAttempts.get(attemptKey);
+  const agent = useCloudAgentSessions(
+    listed,
+    expanded ||
+      (currentView === 'cloudSession' && params.agentKey === listed.key) ||
+      attempt?.status === 'unknown'
+  );
   const label = cloudAgentState(agent)?.label;
   const queryClient = useQueryClient();
   const [startError, setStartError] = useState<string | null>(null);
-  const attemptKey = startAttemptKey(agent.key);
-  const attempt = cloudOperationAttempts.get(attemptKey);
   const openSession = (sessionId: string) =>
     navigate('cloudSession', {
       agentKey: agent.key,
@@ -100,7 +113,7 @@ const CloudAgentRow = observer(function CloudAgentRow({ agent }: { agent: CloudA
             <span className="ml-auto text-xs text-foreground-muted capitalize">{label}</span>
           )}
         </SidebarMenuButton>
-        {agent.sessions && (
+        {!agent.problem && (
           <button
             type="button"
             aria-label={`New session on ${agent.launch.name}`}

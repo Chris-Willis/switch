@@ -63,12 +63,19 @@ export type CloudRelayProblem = {
   wakeAvailable: boolean;
 };
 
-/** A launch with its worker's sessions, or why they could not be read. */
-export type CloudAgent = {
-  key: string;
-  launch: CloudLaunch;
+/** A worker's sessions, or why they could not be read. */
+export type CloudSessions = {
   sessions: Session[] | null;
   problem: CloudRelayProblem | null;
+};
+
+/**
+ * A launch with its worker's sessions, or why they could not be read.
+ * `sessions` is null until the worker has been asked.
+ */
+export type CloudAgent = CloudSessions & {
+  key: string;
+  launch: CloudLaunch;
 };
 
 /** Whether the launch is asleep, and whether a wake has been asked for. */

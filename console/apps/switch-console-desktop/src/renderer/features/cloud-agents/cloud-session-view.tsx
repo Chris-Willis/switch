@@ -12,11 +12,11 @@ import {
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
-import { parseCloudAgentKey } from '@shared/core/cloud-agents/cloud-agents';
+import { type CloudAgent, parseCloudAgentKey } from '@shared/core/cloud-agents/cloud-agents';
 import { cloudAgentState } from './cloud-agent-state';
 import { cloudOperationAttempts, restartAttemptKey } from './cloud-operation-attempts';
 import { CloudProblem } from './cloud-problem';
-import { useCloudAgents } from './use-cloud-agents';
+import { useCloudAgentSessions, useCloudAgents } from './use-cloud-agents';
 
 type CloudSessionParams = { agentKey: string; sessionId: string; name: string };
 
@@ -37,9 +37,14 @@ function CloudSessionTitlebar() {
 }
 
 /** The launch's state over the transcript while its worker cannot be asked. */
-const CloudWorkerStatus = observer(function CloudWorkerStatus({ agentKey }: { agentKey: string }) {
+const CloudWorkerStatus = observer(function CloudWorkerStatus({
+  agentKey,
+  agent,
+}: {
+  agentKey: string;
+  agent: CloudAgent | undefined;
+}) {
   const agents = useCloudAgents(parseCloudAgentKey(agentKey)?.serverId ?? null);
-  const agent = agents.data?.find((each) => each.key === agentKey);
   if (agents.error)
     return (
       <div role="alert" className="px-5 pt-3 text-xs text-foreground-destructive">
@@ -67,14 +72,17 @@ const CloudWorkerStatus = observer(function CloudWorkerStatus({ agentKey }: { ag
 const CloudSessionPanel = observer(function CloudSessionPanel() {
   const { params } = useParams('cloudSession');
   const agents = useCloudAgents(parseCloudAgentKey(params.agentKey)?.serverId ?? null);
-  const agent = agents.data?.find((each) => each.key === params.agentKey);
+  const agent = useCloudAgentSessions(
+    agents.data?.find((each) => each.key === params.agentKey),
+    true
+  );
   const client = useMemo(
     () => new SessionChatClient(params.sessionId, cloudSessionTransport(params.agentKey)),
     [params.agentKey, params.sessionId]
   );
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <CloudWorkerStatus agentKey={params.agentKey} />
+      <CloudWorkerStatus agentKey={params.agentKey} agent={agent} />
       <SessionV1Chat
         key={`${params.agentKey}:${params.sessionId}`}
         client={client}

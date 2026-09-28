@@ -1,7 +1,8 @@
 /**
  * A new cloud session whose start was never confirmed is not shown as a
  * failure: once the session appears, the row offers to open it, and until
- * then it asks again for the same session rather than a new one.
+ * then it asks again for the same session rather than a new one. A worker is
+ * asked for its sessions only while its row is expanded.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
@@ -11,8 +12,13 @@ import type { CloudAgent } from '@shared/core/cloud-agents/cloud-agents';
 
 const sdkHost = vi.hoisted(() => ({
   cloudAgents: vi.fn(),
+  cloudSessions: vi.fn(),
   cloudSessionOperation: vi.fn(),
 }));
+const expandedGroups = await vi.hoisted(async () => {
+  const { observable } = await import('mobx');
+  return observable.set<string>();
+});
 const navigate = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
@@ -47,8 +53,9 @@ vi.mock('@renderer/lib/layout/workspace-slots', () => ({
 
 vi.mock('@renderer/lib/stores/app-state', () => ({
   sidebarStore: {
-    isGroupExpanded: () => false,
-    toggleGroupExpanded: () => {},
+    isGroupExpanded: (key: string) => expandedGroups.has(key),
+    toggleGroupExpanded: (key: string) =>
+      expandedGroups.has(key) ? expandedGroups.delete(key) : expandedGroups.add(key),
     hideProviderMark: true,
   },
 }));
@@ -61,12 +68,12 @@ import {
 
 const agentKey = 'cloud:server:launch';
 
-function agent(sessionIds: string[]): CloudAgent {
+function agent(key = agentKey, name = 'reviewer'): CloudAgent {
   return {
-    key: agentKey,
+    key,
     launch: {
       request_id: '00000000-0000-4000-8000-000000000001',
-      name: 'reviewer',
+      name,
       provider: 'claude',
       state: 'ready',
       desired_state: 'running',
@@ -76,6 +83,13 @@ function agent(sessionIds: string[]): CloudAgent {
       error_code: null,
       sleeping: false,
     },
+    sessions: null,
+    problem: null,
+  };
+}
+
+function sessions(sessionIds: string[]) {
+  return {
     sessions: sessionIds.map(
       (sessionId) => ({ sessionId, status: 'ready', connectivity: 'online' }) as never
     ),
@@ -89,6 +103,8 @@ let root: Root | null = null;
 beforeEach(() => {
   navigate.mockReset();
   sdkHost.cloudSessionOperation.mockReset();
+  sdkHost.cloudSessions.mockReset();
+  expandedGroups.clear();
   cloudOperationAttempts.settle(startAttemptKey(agentKey));
 });
 
@@ -127,13 +143,14 @@ it('offers Open for an unconfirmed start whose session exists, not an error', as
     started = sessionId;
     return { state: 'unknown', message: 'The server did not confirm the session start.' };
   });
-  sdkHost.cloudAgents.mockResolvedValue([agent([])]);
+  sdkHost.cloudAgents.mockResolvedValue([agent()]);
+  sdkHost.cloudSessions.mockResolvedValue(sessions([]));
   const el = await render();
   await act(async () => button(el, /new session/i)!.click());
   expect(el.querySelector('[role="alert"]')).toBeNull();
   expect(button(el, /check again/i)).toBeDefined();
 
-  sdkHost.cloudAgents.mockResolvedValue([agent([started])]);
+  sdkHost.cloudSessions.mockResolvedValue(sessions([started]));
   await act(async () => root!.unmount());
   const remounted = await render();
   const open = button(remounted, /^open$/i);
@@ -149,7 +166,8 @@ it('offers Open for an unconfirmed start whose session exists, not an error', as
 it('asks again for the same session from Check again', async () => {
   sdkHost.cloudSessionOperation.mockResolvedValueOnce({ state: 'unknown', message: 'lost' });
   sdkHost.cloudSessionOperation.mockResolvedValueOnce({ state: 'applied' });
-  sdkHost.cloudAgents.mockResolvedValue([agent([])]);
+  sdkHost.cloudAgents.mockResolvedValue([agent()]);
+  sdkHost.cloudSessions.mockResolvedValue(sessions([]));
   const el = await render();
   await act(async () => button(el, /new session/i)!.click());
   await act(async () => button(el, /check again/i)!.click());
@@ -159,4 +177,22 @@ it('asks again for the same session from Check again', async () => {
     'cloudSession',
     expect.objectContaining({ sessionId: first[1] })
   );
+});
+
+it('asks no worker while its row is collapsed, and one when that row is expanded', async () => {
+  const other = 'cloud:server:other';
+  sdkHost.cloudAgents.mockResolvedValue([agent(), agent(other, 'writer')]);
+  sdkHost.cloudSessions.mockResolvedValue(sessions(['s1']));
+  const el = await render();
+  expect(sdkHost.cloudAgents).toHaveBeenCalled();
+  expect(sdkHost.cloudSessions).not.toHaveBeenCalled();
+
+  const row = [...el.querySelectorAll('button[aria-expanded]')].find((b) =>
+    b.textContent?.includes('writer')
+  ) as HTMLButtonElement;
+  await act(async () => row.click());
+  await act(async () => await new Promise((resolve) => setTimeout(resolve, 20)));
+  expect(sdkHost.cloudSessions).toHaveBeenCalledTimes(1);
+  expect(sdkHost.cloudSessions).toHaveBeenCalledWith(other);
+  expect(el.textContent).toContain('Session s1');
 });

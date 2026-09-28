@@ -7,10 +7,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
-import type { CloudAgent } from '@shared/core/cloud-agents/cloud-agents';
+import type { CloudAgent, CloudSessions } from '@shared/core/cloud-agents/cloud-agents';
 
 const sdkHost = vi.hoisted(() => ({
   cloudAgents: vi.fn(),
+  cloudSessions: vi.fn(),
   cloudWake: vi.fn(),
   transcriptOpen: vi.fn(),
   transcriptClose: vi.fn(),
@@ -90,7 +91,7 @@ function agent(overrides: Partial<CloudAgent>): CloudAgent {
       error_code: null,
       sleeping: false,
     },
-    sessions: [],
+    sessions: null,
     problem: null,
     ...overrides,
   };
@@ -106,8 +107,12 @@ afterEach(async () => {
   root = null;
 });
 
-async function headerStatus(cloudAgent: CloudAgent): Promise<string | null | undefined> {
+async function headerStatus(
+  cloudAgent: CloudAgent,
+  relayed: CloudSessions
+): Promise<string | null | undefined> {
   sdkHost.cloudAgents.mockResolvedValue([cloudAgent]);
+  sdkHost.cloudSessions.mockResolvedValue(relayed);
   sdkHost.transcriptOpen.mockResolvedValue(snapshot);
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -135,7 +140,7 @@ async function headerStatus(cloudAgent: CloudAgent): Promise<string | null | und
 }
 
 it('reads ready while the worker answers', async () => {
-  expect(await headerStatus(agent({}))).toBe('ready');
+  expect(await headerStatus(agent({}), { sessions: [], problem: null })).toBe('ready');
 });
 
 it('reads sleeping, not ready, while the launch is asleep', async () => {
@@ -148,17 +153,16 @@ it('reads sleeping, not ready, while the launch is asleep', async () => {
         message: 'The cloud worker is asleep.',
         wakeAvailable: true,
       },
-    })
+    }),
+    { sessions: [], problem: null }
   );
   expect(status).toBe('sleeping');
 });
 
 it('reads unreachable when the relay refuses the worker', async () => {
-  const status = await headerStatus(
-    agent({
-      sessions: null,
-      problem: { code: 'worker_busy', message: 'Too many requests.', wakeAvailable: false },
-    })
-  );
+  const status = await headerStatus(agent({}), {
+    sessions: null,
+    problem: { code: 'worker_busy', message: 'Too many requests.', wakeAvailable: false },
+  });
   expect(status).toBe('unreachable');
 });
