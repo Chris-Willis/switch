@@ -325,9 +325,12 @@ A channel is the same from step 4, triggered by `/connect <token>` as a
 have no sender. The shared-delivery adapter must recognise a claim before that
 drop.
 
-A claim that fails sends one reply into the chat saying why, with no detail
-about any tenant. The possible reasons are: expired, already used, chat already
-connected to another Switch account, or not permitted.
+A claim that fails should send one reply into the chat saying why, with no
+detail about any tenant. The possible reasons are: expired, already used, chat
+already connected to another Switch account, or not permitted. **Not built
+yet:** today a refused claim is logged as a warning and the event is then routed
+as normal, so the person who tapped the link sees nothing. It needs an installer
+hook on a refused claim, the same shape as `on_unowned_event`.
 
 ### Ending a chat
 
@@ -395,9 +398,9 @@ known:
 
 | Case | Lost? | How it is surfaced |
 | --- | --- | --- |
-| A chat nobody claimed | No | A counter, `reason=unclaimed`, with no chat id label. No log per event. The notice (decision 9) is logged once. |
-| A claimed chat whose bridge is not running | Yes, once Telegram stops retrying | An error and a 503, as on main. The `TelegramAppClient` also reads `getWebhookInfo` periodically and warns when `pending_update_count` grows or `last_error_message` changes. That is the only view of what Telegram has given up on. |
-| A disconnected chat the bot is still in | A leak rather than a loss | Detected at disconnect, not from the drops that would follow: a failed `leaveChat` is an error, and it is retried. |
+| A chat nobody claimed | No | The counter `switch.messaging.events_ignored`, `reason=unowned`, with no chat id label. No log per event. The installer's `expects_unowned_events` is what switches the route from warning to counting, so Slack keeps its per-event warning. |
+| A claimed chat whose bridge is not running | Yes, once Telegram stops retrying | An error and a 503, as on main. The `TelegramAppClient` also reads `getWebhookInfo` every five minutes and warns on a new delivery error, or when the backlog grows past 50. That is the only view of what Telegram has given up on. |
+| A disconnected chat the bot is still in | A leak rather than a loss | Detected at disconnect, not from the drops that would follow: `leaveChat` runs before the install ends, and a failure fails the disconnect with a 502 and leaves the chat connected, so disconnecting again retries it. |
 | A migrated chat's messages before the install row is re-keyed | Yes | The service keeps a short in-memory list of recently dropped chat ids: ids and counts only, never content, a few minutes long. When a migration re-keys an install to a new id, it checks the list. A hit is an error naming the chat and how many messages were lost. |
 
 So every real loss produces an error that says which case it is, and the
@@ -538,14 +541,26 @@ commit that can be tested on its own.
     and a channel, a wrong connection type refused, attach on first delivery,
     and a 503 while the bot has not connected.
 - **Stage 5 — lifecycle.**
-  - Work: per-chat ending with last-install bridge removal; the release hook and
-    `leaveChat`; migration re-keying the install row; `exclusive_resource`; the
-    deployment-token refusal; the unclaimed notice with its grace period; the
-    ignored-event counter, the recently-dropped list and the `getWebhookInfo`
-    check; the DM guidance reply from the unowned-chat hook.
-  - Tests: a message dropped before a migration re-key produces the error with
-    its count; a failed `leaveChat` is an error and is retried; unclaimed-chat
-    traffic produces no per-event log.
+  - Work: per-chat ending, removing the bridge only with its last install and
+    otherwise detaching the chat's room (`RoomService.unlink_bridge_channel`),
+    under the claim's advisory lock; the release hook and `leaveChat`; the
+    install row following a migration inline before delivery; the
+    recently-dropped list; `WebhookWorkspaceUnowned`, split from a scoped
+    re-read missing; `switch.messaging.events_ignored`, with a dashboard panel;
+    the unclaimed notice after a 10-second grace period and the DM reply, from
+    `on_unowned_event`; the `getWebhookInfo` watch; `exclusive_resource` for a
+    self-registered bot and the app bot reserved in the lifecycle
+    (`reserve_resource`), refused at registration, start and edit.
+  - `PATCH` now refuses an explicit `event_delivery` change and runs the
+    resource-conflict check registration runs. That is generic gateway code,
+    so it reaches Slack too: flipping a Slack bridge between Socket Mode and
+    webhooks on the edit form is refused.
+  - Tests: one chat ending versus the last; revocation; two chats leaving at
+    once, made deterministic with two barriers; a failed `leaveChat` keeping
+    the chat connected; migration, the duplicate notice and the lost-message
+    count; unclaimed traffic counted, answered and never logged; the notice's
+    grace; the delivery-health warnings; the reserved bot refused at
+    registration and on edit.
 - **Stage 6 — gateway and docs.**
   - Work: **Add to a Telegram group** as a link to show; the per-chat list; a
     member-level per-chat disconnect and an admin-only full removal;
@@ -631,17 +646,11 @@ Three gaps on main this design inherits and has to close rather than copy:
   the unique index, and every update resolves to `WebhookBridgeUnavailable`, a
   503 that Telegram retries. `claim()` does not inherit it: it registers inside
   the transaction that records the install (change 3), so a failed
-  registration leaves no row. Reporting the failure in the chat is stage 4.
-  `complete()` keeps the gap for Slack.
-- **Bridge `PATCH` has no install guard.** It merges any `connection_config`
-  the payload carries and only re-validates the shape
-  (`gateway/collaborations.py:289-297`). On the tenant's shared-delivery
-  bridge, an admin could switch `event_delivery` to `own_connection` and supply
-  a token, including the deployment bot's. The `exclusive_resource` check and
-  the deployment-token refusal (decision 7) must therefore run on `PATCH` as
-  well as on registration. Delivery mode must not be patchable on an
-  install-created bridge.
-- **`_handle_start`'s docstring is stale about DMs.** It says a bare `/start`
-  in a private chat is let through so the DM is not "left unbridged", but DMs
-  are a lobby and are never bridged. Stage 4 rewrites this function and should
-  correct the docstring.
+  registration leaves no row. Reporting the failure in the chat is not built
+  yet (see "A claim, end to end"). `complete()` keeps the gap for Slack.
+- **Bridge `PATCH` had no install guard.** It merged any `connection_config`
+  and only re-validated the shape, so an admin could switch a shared bridge to
+  `own_connection` with a token, including the deployment bot's. Closed in
+  stage 5: an explicit `event_delivery` change is refused, and the
+  resource-conflict check, including the reserved app bot, runs on edit.
+- **`_handle_start`'s docstring was stale about DMs.** Corrected after stage 5.
