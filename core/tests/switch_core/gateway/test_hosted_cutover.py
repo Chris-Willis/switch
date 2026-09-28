@@ -18,6 +18,8 @@ from switch_core.bridges.agent.hosted_cutover import (
     apply_manifest,
     decide_room_message,
     merge_worker,
+    owed_notices,
+    post_owed_cutover_notices,
     record_blocked,
 )
 from switch_core.bridges.agent.hosted_mailbox import mailbox_upkeep
@@ -27,11 +29,13 @@ from switch_core.db.models import (
     HostedWakeMailbox,
     require_tenant_id,
 )
+from switch_core.db.stores.agent_store import AgentStore
 from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
     controller_app,
 )
 from tests.switch_core.gateway.test_hosted_mailbox import (  # noqa: F401
     attach,
+    fail_first_send,
     mailbox_app,
     set_launch,
 )
@@ -465,6 +469,71 @@ async def test_upkeep_posts_the_notices_a_recorded_volume_owes(mailbox_app):  # 
     assert item.notice_posted_at is not None
     await mailbox_upkeep(app.service, datetime.now(UTC))
     assert len(app.sent) == 1
+
+
+async def notice_dropped(app) -> list[str | None]:
+    async with app.factory() as session:
+        return list(
+            await session.scalars(
+                select(HostedCutoverItem.notice_dropped).where(
+                    HostedCutoverItem.tenant_id == require_tenant_id()
+                )
+            )
+        )
+
+
+async def owe_one_notice(app) -> None:
+    await record(
+        app,
+        [
+            room_record(
+                app.rooms[0],
+                "$m2",
+                room_pending=False,
+                host="dispatched",
+                failure_notified=False,
+            )
+        ],
+    )
+
+
+async def test_upkeep_retries_a_cutover_notice_whose_send_failed(mailbox_app):  # noqa: F811
+    app = mailbox_app
+    await owe_one_notice(app)
+    fail_first_send(app)
+    await mailbox_upkeep(app.service, datetime.now(UTC))
+    assert app.sent == []
+    (item,) = await items(app)
+    assert item.notice_posted_at is None
+    assert await notice_dropped(app) == [None]
+    await mailbox_upkeep(app.service, datetime.now(UTC))
+    assert len(app.sent) == 1
+    (item,) = await items(app)
+    assert item.notice_posted_at is not None
+
+
+async def test_a_deleted_agents_cutover_notice_is_dropped_not_posted(
+    mailbox_app,  # noqa: F811
+    caplog,
+):
+    app = mailbox_app
+    await owe_one_notice(app)
+    async with app.factory() as session:
+        await AgentStore().delete(session, app.agent_id)
+        await session.commit()
+
+    assert await post_owed_cutover_notices(app.service) == 0
+
+    assert app.sent == []
+    (item,) = await items(app)
+    assert item.notice_posted_at is None
+    assert await notice_dropped(app) == ["agent_deleted"]
+    async with app.factory() as session:
+        assert await owed_notices(session, app.agent_id) == []
+    assert any("was deleted" in record.message for record in caplog.records)
+    caplog.clear()
+    assert await post_owed_cutover_notices(app.service) == 0
+    assert not any("was deleted" in record.message for record in caplog.records)
 
 
 def test_decide_room_message_prefers_the_strongest_evidence():

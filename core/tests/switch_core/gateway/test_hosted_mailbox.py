@@ -10,6 +10,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import insert, select
 
+from switch_core.bridges.agent.api.hosted_worker_routes import post_mailbox_notices
 from switch_core.bridges.agent.hosted_mailbox import mailbox_upkeep
 from switch_core.bridges.agent.protocol.connections import (
     TAKEN_OVER,
@@ -32,8 +33,9 @@ from switch_core.db.models import (
     Room,
     require_tenant_id,
 )
+from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
-from switch_core.db.stores.hosted_mailbox_store import MAILBOX_LIMIT
+from switch_core.db.stores.hosted_mailbox_store import MAILBOX_LIMIT, HostedMailboxStore
 from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
     controller_app,
 )
@@ -772,3 +774,29 @@ async def test_expiry_notice_failed_send_is_retried_by_upkeep(mailbox_app):
     assert await rows(app) == {key: "expired"}
     assert await owed(app) == {key: "expired"}
     await assert_retried_once(app, key, "could not process this message in time")
+
+
+async def test_a_deleted_agents_notice_is_dropped_not_posted(mailbox_app, caplog):
+    app = mailbox_app
+    await add_row(app, "$m1", state="cancelled", notice_owed="stopped")
+    async with app.factory() as session:
+        await AgentStore().delete(session, app.agent_id)
+        await session.commit()
+    store = HostedMailboxStore()
+    async with app.factory() as session:
+        notices = await store.owed_notices(session, 10)
+    assert len(notices) == 1
+
+    await post_mailbox_notices(app.service, notices)
+
+    key = (app.rooms[0], "$m1")
+    assert app.sent == []
+    assert await owed(app) == {key: "stopped"}
+    async with app.factory() as session:
+        row = await session.get(
+            HostedWakeMailbox, (require_tenant_id(), app.agent_id, *key)
+        )
+        assert row is not None
+        assert row.notice_dropped == "agent_deleted"
+        assert await store.owed_notices(session, 10) == []
+    assert any("was deleted" in record.message for record in caplog.records)

@@ -20,7 +20,7 @@ from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import distinct, or_, select
+from sqlalchemy import distinct, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.attachments import parse_attachment_group
@@ -620,6 +620,7 @@ async def owed_notices(session: AsyncSession, agent_id: str) -> list[CutoverNoti
             HostedCutoverItem.tenant_id == require_tenant_id(),
             HostedCutoverItem.agent_id == agent_id,
             HostedCutoverItem.notice_posted_at.is_(None),
+            HostedCutoverItem.notice_dropped.is_(None),
             HostedCutoverItem.room_id.is_not(None),
             or_(
                 HostedCutoverItem.disposition.in_(
@@ -663,6 +664,22 @@ async def mark_notice_posted(session: AsyncSession, item_id: str) -> None:
     item = await session.get(HostedCutoverItem, (require_tenant_id(), item_id))
     assert item is not None
     item.notice_posted_at = datetime.now(UTC)
+
+
+async def drop_notices(
+    session: AsyncSession, item_ids: Iterable[str], reason: str
+) -> None:
+    """These items' notices will never be posted, for `reason`; nothing retries them."""
+    await session.execute(
+        update(HostedCutoverItem)
+        .where(
+            HostedCutoverItem.tenant_id == require_tenant_id(),
+            HostedCutoverItem.id.in_(list(item_ids)),
+            HostedCutoverItem.notice_posted_at.is_(None),
+        )
+        .values(notice_dropped=reason)
+        .execution_options(synchronize_session=False)
+    )
 
 
 async def post_cutover_notices(
@@ -710,6 +727,7 @@ async def post_owed_cutover_notices(protocol: ProtocolService) -> int:
                 select(distinct(HostedCutoverItem.agent_id)).where(
                     HostedCutoverItem.tenant_id == require_tenant_id(),
                     HostedCutoverItem.notice_posted_at.is_(None),
+                    HostedCutoverItem.notice_dropped.is_(None),
                     HostedCutoverItem.room_id.is_not(None),
                     HostedCutoverItem.disposition.in_(_NOTICE_REASONS),
                 )
@@ -724,11 +742,17 @@ async def post_owed_cutover_notices(protocol: ProtocolService) -> int:
     for agent, agent_id, notices in owed:
         if agent is None:
             logger.warning(
-                "%d cutover notice(s) for agent %s stay owed: the agent is gone",
+                "%d cutover notice(s) for agent %s dropped: the agent was deleted",
                 len(notices),
                 agent_id,
             )
-            unposted += len(notices)
+            async with tenant_session(
+                protocol.session_factory, require_tenant_id()
+            ) as db:
+                await drop_notices(
+                    db, [notice.item_id for notice in notices], "agent_deleted"
+                )
+                await db.commit()
             continue
         unposted += await post_cutover_notices(protocol, agent, notices)
     return unposted

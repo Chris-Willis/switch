@@ -546,6 +546,7 @@ class HostedMailboxStore:
         owed = (
             HostedWakeMailbox.tenant_id == tenant_id,
             HostedWakeMailbox.notice_owed.is_not(None),
+            HostedWakeMailbox.notice_dropped.is_(None),
         )
         groups = (
             select(
@@ -599,6 +600,29 @@ class HostedMailboxStore:
                 HostedWakeMailbox.notice_owed == reason,
             )
             .values(notice_owed=None)
+            .execution_options(synchronize_session=False)
+        )
+
+    async def notice_dropped(
+        self,
+        session: AsyncSession,
+        agent_id: str,
+        room_id: str,
+        reason: str,
+        message_ids: Sequence[str],
+        dropped: str,
+    ) -> None:
+        """The notice these rows owe under `reason` will never be posted, for `dropped`."""
+        await session.execute(
+            update(HostedWakeMailbox)
+            .where(
+                HostedWakeMailbox.tenant_id == require_tenant_id(),
+                HostedWakeMailbox.agent_id == agent_id,
+                HostedWakeMailbox.room_id == room_id,
+                HostedWakeMailbox.message_id.in_(list(message_ids)),
+                HostedWakeMailbox.notice_owed == reason,
+            )
+            .values(notice_dropped=dropped)
             .execution_options(synchronize_session=False)
         )
 

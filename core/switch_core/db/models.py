@@ -466,6 +466,10 @@ class HostedWakeMailbox(TenantScoped, Base):
             "notice_owed IS NULL OR notice_owed IN ('stopped', 'expired', 'expired_uncertain', 'started_before_stop', 'started_before_expiry')",
             name="ck_hosted_wake_mailbox_notice_owed",
         ),
+        CheckConstraint(
+            "notice_dropped IS NULL OR notice_dropped IN ('agent_deleted')",
+            name="ck_hosted_wake_mailbox_notice_dropped",
+        ),
         Index(
             "ix_hosted_wake_mailbox_agent_state",
             "tenant_id",
@@ -490,6 +494,8 @@ class HostedWakeMailbox(TenantScoped, Base):
     cancel_reason: Mapped[str | None] = mapped_column(Text)
     #: The room notice this row's terminal move owes, until one is posted.
     notice_owed: Mapped[str | None] = mapped_column(Text)
+    #: Why `notice_owed` will never be posted; the upkeep no longer retries it.
+    notice_dropped: Mapped[str | None] = mapped_column(Text)
     ever_offered: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
@@ -556,6 +562,10 @@ class HostedCutoverItem(TenantScoped, Base):
             "kind <> 'room_message' OR (room_id IS NOT NULL AND message_id IS NOT NULL)",
             name="ck_hosted_cutover_items_room_message",
         ),
+        CheckConstraint(
+            "notice_dropped IS NULL OR notice_dropped IN ('agent_deleted')",
+            name="ck_hosted_cutover_items_notice_dropped",
+        ),
         Index(
             "uq_hosted_cutover_items_room_message",
             "tenant_id",
@@ -581,6 +591,10 @@ class HostedCutoverItem(TenantScoped, Base):
     disposition: Mapped[str | None] = mapped_column(Text)
     payload: Mapped[dict | None] = mapped_column(JSONB)
     notice_posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Why the notice will never be posted; nothing retries it. Deferred because
+    #: `hosted-cutover-upgrade record` loads items at `a3c9e5f71d28`, before the
+    #: column exists.
+    notice_dropped: Mapped[str | None] = mapped_column(Text, deferred=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

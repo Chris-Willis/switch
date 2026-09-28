@@ -518,7 +518,8 @@ async def post_mailbox_notices(
 
     Each row keeps its `notice_owed` mark until the room has the notice, so a
     send that fails is logged and left for the upkeep to retry; the per
-    message and reason receipt keeps a retry from posting it twice.
+    message and reason receipt keeps a retry from posting it twice. A notice
+    for a deleted agent can never be posted: it is marked dropped, not posted.
     """
     agents: dict[str, Agent | None] = {}
     store = HostedMailboxStore()
@@ -531,31 +532,43 @@ async def post_mailbox_notices(
         agent = agents[notice.agent_id]
         if agent is None:
             logger.warning(
-                "Mailbox notice %s for room %s dropped: agent %s is gone",
+                "Mailbox notice %s for room %s dropped: agent %s was deleted",
                 notice.reason,
                 notice.room_id,
                 notice.agent_id,
             )
-        else:
-            try:
-                await post_room_notice(
-                    protocol,
-                    agent,
+            async with tenant_session(
+                protocol.session_factory, require_tenant_id()
+            ) as db:
+                await store.notice_dropped(
+                    db,
+                    notice.agent_id,
                     notice.room_id,
-                    notice.message_id,
-                    notice.thread_id,
-                    cast(NoticeReason | CoreNoticeReason, notice.reason),
-                )
-            except Exception:
-                logger.warning(
-                    "Could not post the %s notice for message %s in room %s; "
-                    "the mailbox upkeep retries it",
                     notice.reason,
-                    notice.message_id,
-                    notice.room_id,
-                    exc_info=True,
+                    message_ids,
+                    "agent_deleted",
                 )
-                continue
+                await db.commit()
+            continue
+        try:
+            await post_room_notice(
+                protocol,
+                agent,
+                notice.room_id,
+                notice.message_id,
+                notice.thread_id,
+                cast(NoticeReason | CoreNoticeReason, notice.reason),
+            )
+        except Exception:
+            logger.warning(
+                "Could not post the %s notice for message %s in room %s; "
+                "the mailbox upkeep retries it",
+                notice.reason,
+                notice.message_id,
+                notice.room_id,
+                exc_info=True,
+            )
+            continue
         async with tenant_session(protocol.session_factory, require_tenant_id()) as db:
             await store.notice_posted(
                 db, notice.agent_id, notice.room_id, notice.reason, message_ids
