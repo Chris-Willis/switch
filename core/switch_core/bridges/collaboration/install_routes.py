@@ -462,6 +462,8 @@ def create_messaging_install_router(
                 await _claim(platform, claim, background)
 
             target = await service.resolve(platform=platform, event=event)
+            if claim is not None:
+                await service.await_bridge_start(target)
             await service.follow_migration(
                 platform=platform, event=event, target=target
             )
