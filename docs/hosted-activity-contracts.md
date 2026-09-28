@@ -1305,11 +1305,32 @@ import attachment needs a `media_blobs` row no session owns.
 `hosted-cutover-upgrade` checks all of this, plus that every launch is
 stopped and that the `sdk_*` rows still match what `prepare` captured (the
 old Core did not run again), and refuses with one line per problem, naming
-the launch. `alembic upgrade heads` would order `b9e4d2a71c05` freely between
-the branches, and Core runs it at boot, so the merge revision checks the
-same volumes, decisions and blobs after the drop and rolls it back. A guard
-inside `b9e4d2a71c05` or `env.py` is still rejected; the merge revision is
-ours and is a no-op without cutover volumes.
+the launch. The conditions are one set of plain-SQL queries in
+`switch_core/db/hosted_cutover_gate.py`, which the wrapper, `env.py` and the
+merge revision all run.
+
+`alembic upgrade heads` orders `b9e4d2a71c05` freely between the branches (on
+a fresh database it runs the drop before the manifest revision), and Core
+runs it at boot, so the wrapper alone does not hold the gate. `migrations/env.py`
+therefore checks the whole gate on the migration connection, inside the
+migration transaction, before the first revision of any upgrade plan that
+includes an unapplied `b9e4d2a71c05`, and aborts the upgrade on any problem.
+The merge revision `33e037ee949f` checks it again after the drop and rolls the
+drop back, which also covers a runner that builds its own migration context
+rather than loading `env.py`; there the checks that read the old tables
+(stale capture, an import attachment still owned by a session) cannot run,
+and a lost attachment shows up as a missing blob instead. Both pass a database
+with no hosted launches, which is every fresh and every main-only database.
+
+**Revised: the guard lives in `env.py`.** An earlier revision of this design
+rejected an `env.py` guard and relied on the merge revision alone. That missed
+the stale-capture check: by the time the merge revision runs the old tables are
+gone, so a capture the old Core outran after `prepare` passed a bare
+`upgrade heads`. The only places that can see those tables are `b9e4d2a71c05`,
+a revision ordered before it, or `env.py`; the first two would mean editing or
+re-parenting revisions already on main, whose chain is frozen, so `env.py` it
+is. It inspects the resolved plan rather than the command line, so it runs
+exactly when the drop is about to be applied.
 
 **Revised from the approved design, and why.** The approved design had a
 transitional Core (#538 plus the manifest revision, a manifest route and the

@@ -6,7 +6,10 @@ the manifest is what keeps their pending work.
 
 The manifest only captures; the drop also waits for every retained volume's
 preflight check to be recorded (`hosted-cutover-upgrade record`), which the
-wrapper's gate and the merge revision both enforce.
+wrapper, `migrations/env.py` before the drop and the merge revision after it
+all enforce. `_upgrade_to` builds its own migration context and so exercises
+only the merge revision; the `test_real_upgrade_*` cases go through `env.py`
+the way `alembic upgrade` and Core's boot do.
 
 The hosted-agent chain (`ab921ef034cd` .. `95fc38e451b6`) was applied on a
 pilot before main grew its own head (`e3b7c9d2a415`), so a database can arrive
@@ -19,18 +22,21 @@ rows, the tenant-isolation policies and the runtime grants are all in place.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from alembic import command as alembic_command
 from alembic.config import Config
 from alembic.runtime.environment import EnvironmentContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import Connection, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 import switch_core.db.models  # noqa: F401 — registers every table on Base.metadata
@@ -49,6 +55,7 @@ from switch_core.hosted_cutover_upgrade import (
     running_launches,
     upgrade,
 )
+from switch_core.main import _migrate_and_grant
 
 _CORE = Path(__file__).resolve().parents[2]
 
@@ -748,7 +755,9 @@ async def test_pilot_upgrade_refuses_the_drop_until_every_volume_is_recorded(
     assert any("launch l1 has cutover items no manifest decided" in p for p in problems)
     with pytest.raises(CutoverRefused, match="l1"):
         await upgrade(config)
-    await _ungated_heads_refused(pilot_url, "volume of launch l1 is pending")
+    await _ungated_heads_refused(
+        pilot_url, "the volume of launch l1 has no recorded preflight check"
+    )
 
     await record(
         config,
@@ -770,7 +779,9 @@ async def test_pilot_upgrade_refuses_the_drop_until_every_volume_is_recorded(
     assert "the line is not JSON" in blocked
     with pytest.raises(CutoverRefused, match="events.jsonl:3"):
         await upgrade(config)
-    await _ungated_heads_refused(pilot_url, "volume of launch l1 is blocked")
+    await _ungated_heads_refused(
+        pilot_url, "the preflight check blocked on the volume of launch l1"
+    )
 
     await record(config, "l1", _EMPTY_MANIFEST)
     assert await cutover_problems(config) == []
@@ -788,7 +799,8 @@ async def test_pilot_upgrade_refuses_the_drop_until_every_volume_is_recorded(
             for p in await cutover_problems(config)
         )
         await _ungated_heads_refused(
-            pilot_url, "import attachment mxc://example.invalid/kept is gone"
+            pilot_url,
+            "import for launch l1 mxc://example.invalid/kept is gone",
         )
         await record(config, "l1", _EMPTY_MANIFEST)
         assert await cutover_problems(config) == []
@@ -803,6 +815,7 @@ async def test_pilot_upgrade_refuses_the_drop_until_every_volume_is_recorded(
             "the import l1 r2 m4 has no event" in p
             for p in await cutover_problems(config)
         )
+        await _ungated_heads_refused(pilot_url, "the import l1 r2 m4 has no event")
         async with engine.begin() as connection:
             await connection.execute(
                 text(
@@ -840,6 +853,42 @@ async def test_pilot_upgrade_refuses_a_capture_the_old_core_outran(
         await engine.dispose()
     (stale,) = await cutover_problems(config)
     assert stale.startswith("c1 changed in the old session tables after `prepare`")
+
+
+async def test_pilot_upgrade_refuses_a_launch_restarted_or_added_after_prepare(
+    pilot_url: str,
+) -> None:
+    config = _config(pilot_url)
+    await _pilot_at_manifest(pilot_url, with_import=False)
+    await record(config, "l1", _EMPTY_MANIFEST)
+    assert await cutover_problems(config) == []
+    engine = create_async_engine(pilot_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE hosted_launches SET desired_state = 'running'")
+            )
+        assert await cutover_problems(config) == ["launch l1 is not stopped"]
+        await _ungated_heads_refused(pilot_url, "launch l1 is not stopped")
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE hosted_launches SET desired_state = 'stopped'")
+            )
+            await connection.execute(
+                text("SET LOCAL session_replication_role = replica")
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO hosted_launches "
+                    "(tenant_id, id, owner_id, name, spec, agent_id, state, desired_state) "
+                    "VALUES ('t1', 'l2', 'u1', 'late-agent', '{}', 'a2', 'stopped', 'stopped')"
+                )
+            )
+    finally:
+        await engine.dispose()
+    (missing,) = await cutover_problems(config)
+    assert missing.startswith("launch l2 has no cutover volume")
+    await _ungated_heads_refused(pilot_url, "launch l2 has no cutover volume")
 
 
 async def test_pilot_upgrade_keeps_what_the_recorded_volumes_import(
@@ -882,3 +931,159 @@ async def test_pilot_upgrade_keeps_what_the_recorded_volumes_import(
         ("a1", "r2", "m4", "l1", "pending", "cutover", "mxc://example.invalid/kept")
     ]
     assert queued
+
+
+def _migration_config(url: str, monkeypatch: pytest.MonkeyPatch) -> SwitchConfig:
+    """The environment `migrations/env.py` reads, pointed at `url`."""
+    parts = make_url(url)
+    environment = {
+        "DB_HOST": parts.host,
+        "DB_PORT": str(parts.port),
+        "DB_USER": parts.username,
+        "DB_PASSWORD": parts.password,
+        "DB_NAME": parts.database,
+        "MATRIX_SERVER_NAME": "example.invalid",
+        "AGENT_REGISTRATION_TOKEN": "placeholder-registration-token",
+        "JWT_SECRET_KEY": "placeholder-jwt-secret-0123456789abcdef",
+        "GATEWAY_ADMIN_EMAIL": "admin@example.invalid",
+        "GATEWAY_ADMIN_PASSWORD": "placeholder-password",
+    }
+    for name, value in environment.items():
+        assert value is not None
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("DB_OWNER_USER", raising=False)
+    monkeypatch.delenv("DB_OWNER_PASSWORD", raising=False)
+    return SwitchConfig()  # type: ignore[call-arg]
+
+
+async def _alembic_upgrade_heads(config: SwitchConfig) -> None:
+    await asyncio.to_thread(
+        alembic_command.upgrade, Config(str(_CORE / "alembic.ini")), "heads"
+    )
+
+
+_MIGRATE_PATHS = pytest.mark.parametrize(
+    "migrate",
+    [_alembic_upgrade_heads, _migrate_and_grant],
+    ids=["alembic-upgrade-heads", "core-boot"],
+)
+
+
+async def _head(url: str) -> tuple[list[str], bool]:
+    engine = create_async_engine(url)
+    try:
+        async with engine.connect() as connection:
+            versions = list(
+                await connection.scalars(
+                    text("SELECT version_num FROM alembic_version")
+                )
+            )
+            sessions = await connection.scalar(
+                text("SELECT to_regclass('sdk_sessions') IS NOT NULL")
+            )
+    finally:
+        await engine.dispose()
+    return versions, bool(sessions)
+
+
+@_MIGRATE_PATHS
+@pytest.mark.parametrize(
+    ("with_import", "statements", "match"),
+    [
+        pytest.param(
+            False,
+            [
+                "UPDATE sdk_session_commands SET status = CAST('"
+                + _status("c1", "applied")
+                + "' AS jsonb) WHERE command_id = 'c1'"
+            ],
+            "c1 changed in the old session tables after `prepare`",
+            id="stale-capture",
+        ),
+        pytest.param(
+            False,
+            [
+                "SET LOCAL session_replication_role = replica",
+                "INSERT INTO hosted_launches "
+                "(tenant_id, id, owner_id, name, spec, agent_id, state, desired_state) "
+                "VALUES ('t1', 'l2', 'u1', 'late-agent', '{}', 'a2', 'stopped', 'stopped')",
+            ],
+            "launch l2 has no cutover volume",
+            id="missing-volume",
+        ),
+        pytest.param(
+            True,
+            ["UPDATE hosted_cutover_items SET payload = NULL WHERE message_id = 'm4'"],
+            "the import l1 r2 m4 has no event",
+            id="missing-import-payload",
+        ),
+        pytest.param(
+            False,
+            ["UPDATE hosted_launches SET desired_state = 'running'"],
+            "launch l1 is not stopped",
+            id="launch-running",
+        ),
+    ],
+)
+async def test_real_upgrade_refuses_an_incomplete_cutover_before_the_drop(
+    pilot_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    migrate: Callable[[SwitchConfig], Awaitable[None]],
+    with_import: bool,
+    statements: list[str],
+    match: str,
+) -> None:
+    await _pilot_at_manifest(pilot_url, with_import=with_import)
+    await record(_config(pilot_url), "l1", _EMPTY_MANIFEST)
+    engine = create_async_engine(pilot_url)
+    try:
+        async with engine.begin() as connection:
+            for statement in statements:
+                await connection.execute(text(statement))
+    finally:
+        await engine.dispose()
+    config = _migration_config(pilot_url, monkeypatch)
+
+    with pytest.raises(RuntimeError, match=match):
+        await migrate(config)
+
+    assert await _head(pilot_url) == ([_MANIFEST_REVISION], True)
+
+
+@_MIGRATE_PATHS
+async def test_real_upgrade_completes_a_prepared_cutover(
+    pilot_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    migrate: Callable[[SwitchConfig], Awaitable[None]],
+) -> None:
+    await _pilot_at_manifest(pilot_url, with_import=True)
+    await record(_config(pilot_url), "l1", _EMPTY_MANIFEST)
+
+    await migrate(_migration_config(pilot_url, monkeypatch))
+
+    _, script = _script_directory()
+    assert await _head(pilot_url) == ([script.get_current_head()], False)
+
+
+@_MIGRATE_PATHS
+@pytest.mark.parametrize(
+    "start", [None, "545f80e11f13"], ids=["fresh", "main-before-drop"]
+)
+async def test_real_upgrade_leaves_databases_without_hosted_launches_alone(
+    main_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    migrate: Callable[[SwitchConfig], Awaitable[None]],
+    start: str | None,
+) -> None:
+    if start is not None:
+        engine = create_async_engine(main_url)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(_upgrade_to(start))
+        finally:
+            await engine.dispose()
+
+    await migrate(_migration_config(main_url, monkeypatch))
+
+    _, script = _script_directory()
+    assert await _head(main_url) == ([script.get_current_head()], False)
