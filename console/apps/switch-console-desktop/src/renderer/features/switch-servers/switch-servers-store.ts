@@ -446,12 +446,14 @@ export class SwitchServersStore {
     this.clearError();
     try {
       const created = await rpc.switchServers.addServer({ name, gatewayUrl, apiUrl });
-      const [servers] = await Promise.all([
+      const [servers, installIsEmpty] = await Promise.all([
         rpc.switchServers.listServers(),
+        rpc.onboarding.installIsEmpty(),
         workspacesStore.refresh(),
       ]);
       runInAction(() => {
         this.servers = servers;
+        this.installIsEmpty = installIsEmpty;
       });
       await this.ensureActiveServer();
       await this.refreshStatus(created.id);
@@ -471,12 +473,14 @@ export class SwitchServersStore {
    */
   async connectToSwitchCloud(): Promise<SwitchServer> {
     const server = await rpc.switchServers.connectToSwitchCloud();
-    const [servers] = await Promise.all([
+    const [servers, installIsEmpty] = await Promise.all([
       rpc.switchServers.listServers(),
+      rpc.onboarding.installIsEmpty(),
       workspacesStore.refresh(),
     ]);
     runInAction(() => {
       this.servers = servers;
+      this.installIsEmpty = installIsEmpty;
     });
     await this.ensureActiveServer();
     await this.refreshStatus(server.id);
