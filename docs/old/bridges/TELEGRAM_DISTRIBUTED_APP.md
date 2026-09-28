@@ -503,9 +503,10 @@ commit that can be tested on its own.
 - **Stage 4 — shared delivery.**
   - Work: `TelegramAppClient`; the `event_delivery` discriminator; the adapter's
     shared mode (no polling, no commands, the deployment-wide cooldown, claims
-    as joins, channel `/connect`).
-  - Tests: a 429 for one tenant pauses sends for another, and no polling task
-    starts in shared mode.
+    as joins, channel `/connect`); a histogram of how long each send waits on
+    the shared cooldown.
+  - Tests: a 429 for one tenant pauses sends for another, no polling task
+    starts in shared mode, and a send held by the cooldown records its wait.
 - **Stage 5 — lifecycle.**
   - Work: per-chat ending with last-install bridge removal; the release hook and
     `leaveChat`; migration re-keying the install row; `exclusive_resource`; the
@@ -541,7 +542,9 @@ commit that can be tested on its own.
   would itself signal a fault. It would re-check ownership before leaving, so
   a chat that has just migrated is never abandoned.
 - **Fair sending between tenants.** One tenant's burst can take the whole
-  global send rate. Deferred until it is observed.
+  global send rate. Deferred until it is observed. The cooldown-wait histogram
+  (stage 4) is how it will be seen. Per-tenant queues can then be added inside
+  `TelegramAppClient` without touching the adapters.
 
 ## Testing
 
