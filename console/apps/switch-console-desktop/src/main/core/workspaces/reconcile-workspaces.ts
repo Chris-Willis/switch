@@ -15,6 +15,7 @@ import {
   clearWorkspaceRole,
   createTenantWorkspace,
   discardEmptyWorkspace,
+  leaveUnavailableActiveWorkspace,
   listWorkspacesForServer,
   setWorkspaceTenant,
   workspaceHasAgents,
@@ -125,6 +126,7 @@ export async function reconcileServerWorkspaces(serverId: string): Promise<void>
       () => reconcileOneServer(serverId),
       () => reconcileOneServer(serverId)
     )
+    .then(() => leaveUnavailableActiveWorkspace(serverId))
     // An open window read its list before this ran, and nothing else tells it
     // the list moved. Without this a membership added or withdrawn between
     // launches stays invisible for the session, and a placeholder dropped below

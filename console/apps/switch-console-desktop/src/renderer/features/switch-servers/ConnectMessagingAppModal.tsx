@@ -30,6 +30,7 @@ import {
 import { cn } from '@renderer/utils/utils';
 import type { CreateBridgeResult } from '@shared/core/switch-servers/switch-servers';
 import { switchServersStore } from './switch-servers-store';
+import { administersWorkspaceInScope } from './workspace-admin';
 
 type ConnectMessagingAppModalArgs = {
   /** Attach to this server instead of the active one. */
@@ -58,7 +59,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
   const serverId = overrideServerId ?? switchServersStore.activeServerId ?? '';
   const workspaceId = workspacesStore.idOnServerInScope(serverId || null);
   const server = switchServersStore.servers.find((s) => s.id === serverId) ?? null;
-  const isAdmin = switchServersStore.statusFor(serverId)?.user?.role === 'admin';
+  const isAdmin = administersWorkspaceInScope(serverId);
 
   const [typeKey, setTypeKey] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState('');
@@ -197,8 +198,8 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
 
           {server && !isAdmin && (
             <p className="text-xs text-destructive">
-              Connecting a messaging app requires an admin account on this server. You are signed in
-              without admin rights, so the server would reject this.
+              Connecting a messaging app requires an owner or admin of this workspace. You are a
+              member without admin rights, so the server would reject this.
             </p>
           )}
 
@@ -378,7 +379,7 @@ function messageFor(result: Exclude<CreateBridgeResult, { kind: 'created' }>): s
     case 'unauthenticated':
       return 'Your session for this server expired. Sign in again, then retry.';
     case 'forbidden':
-      return 'Connecting a messaging app requires an admin account on this server.';
+      return 'Connecting a messaging app requires an owner or admin of this workspace.';
     case 'invalid':
       // The gateway validated the credentials against the platform's own config
       // model, so its wording is more specific than anything we could invent.

@@ -37,8 +37,11 @@ export type Workspace = {
   updatedAt: string;
 };
 
-/** Whether this account may invite people to a workspace, which the gateway also enforces. */
-export function canInvite(workspace: Workspace): boolean {
+/**
+ * Whether this account runs a workspace — invites people to it, connects its
+ * messaging apps — which the gateway also enforces.
+ */
+export function administersWorkspace(workspace: Workspace): boolean {
   return workspace.role === 'owner' || workspace.role === 'admin';
 }
 

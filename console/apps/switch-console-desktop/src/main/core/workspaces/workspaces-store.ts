@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { db, type DrizzleTx } from '@main/db/client';
 import { agents, kv, type WorkspaceRow, workspaces } from '@main/db/schema';
-import type { Workspace, WorkspaceRole } from '@shared/core/workspaces/workspaces';
+import {
+  type Workspace,
+  type WorkspaceRole,
+  workspaceUnavailability,
+} from '@shared/core/workspaces/workspaces';
 
 const ACTIVE_WORKSPACE_KV_KEY = 'activeWorkspaceId';
 
@@ -290,6 +294,27 @@ export async function setActiveWorkspaceId(id: string): Promise<void> {
       target: kv.key,
       set: { value: id, updatedAt: sql`CURRENT_TIMESTAMP` },
     });
+}
+
+/**
+ * Move the selection off one of a server's workspaces that can no longer be
+ * opened, onto one of its workspaces that can.
+ *
+ * A reconcile is how a withdrawn membership is found — signing in to a server
+ * as a different account withdraws every workspace the previous one held — and
+ * a window left on such a row is refused on every read it makes. Where the
+ * server holds nothing openable the selection stays: there is nowhere better,
+ * and the views say why.
+ */
+export async function leaveUnavailableActiveWorkspace(serverId: string): Promise<void> {
+  const active = await getActiveWorkspaceId();
+  const onServer = await listWorkspacesForServer(serverId);
+  const current = onServer.find((workspace) => workspace.id === active);
+  if (!current || workspaceUnavailability(current, onServer.length) === null) return;
+  const openable = onServer.find(
+    (workspace) => workspaceUnavailability(workspace, onServer.length) === null
+  );
+  if (openable) await setActiveWorkspaceId(openable.id);
 }
 
 /**

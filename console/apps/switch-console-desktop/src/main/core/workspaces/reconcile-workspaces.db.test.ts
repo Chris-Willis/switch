@@ -41,8 +41,13 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({ getSessionCookie, li
 
 const { reconcileAllWorkspaces, reconcileServerWorkspaces } =
   await import('./reconcile-workspaces');
-const { createTenantWorkspace, ensureServerWorkspace, listWorkspacesForServer } =
-  await import('./workspaces-store');
+const {
+  createTenantWorkspace,
+  ensureServerWorkspace,
+  getActiveWorkspaceId,
+  listWorkspacesForServer,
+  setActiveWorkspaceId,
+} = await import('./workspaces-store');
 
 function tenant(id: string, name: string, role = 'member') {
   return { id, slug: id, name, role };
@@ -361,6 +366,41 @@ describe('reconcile-workspaces', () => {
 
     const back = (await listWorkspacesForServer('srv-1')).find((w) => w.tenantId === 't-back');
     expect(isWithdrawnWorkspace(back!)).toBe(false);
+  });
+
+  /**
+   * Signing in to a server as a different account withdraws every workspace
+   * the previous account held. A window left on one is refused on every read.
+   */
+  it('moves the selection off a withdrawn workspace onto one this account can open', async () => {
+    const previous = await createTenantWorkspace('srv-1', {
+      id: 't-previous',
+      slug: 't-previous',
+      name: 'Previous account’s',
+      role: 'owner',
+    });
+    await setActiveWorkspaceId(previous.id);
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default', 'owner')]);
+
+    await reconcileServerWorkspaces('srv-1');
+
+    const found = await listWorkspacesForServer('srv-1');
+    expect(await getActiveWorkspaceId()).toBe(found.find((w) => w.tenantId === 't-1')!.id);
+  });
+
+  it('leaves the selection on a withdrawn workspace when nothing else can be opened', async () => {
+    const held = await createTenantWorkspace('srv-1', {
+      id: 't-gone',
+      slug: 't-gone',
+      name: 'Research',
+      role: 'member',
+    });
+    await setActiveWorkspaceId(held.id);
+    fetchTenants.mockResolvedValue([]);
+
+    await reconcileServerWorkspaces('srv-1');
+
+    expect(await getActiveWorkspaceId()).toBe(held.id);
   });
 
   // An account in no workspace at all is a server the user cannot use; saying
