@@ -49,10 +49,17 @@ const SERVER = 'srv-1';
 let selected: string | null = null;
 
 /** The rows the seam resolves, keyed by workspace id. */
-const rows = new Map<string, { id: string; serverId: string; tenantId: string | null }>();
+const rows = new Map<
+  string,
+  { id: string; name: string; serverId: string; tenantId: string | null; role: string | null }
+>();
 
-function workspace(id: string, tenantId: string | null) {
-  const row = { id, serverId: SERVER, tenantId };
+function workspace(
+  id: string,
+  tenantId: string | null,
+  role: string | null = tenantId === null ? null : 'member'
+) {
+  const row = { id, name: id, serverId: SERVER, tenantId, role };
   rows.set(id, row);
   return row;
 }
@@ -149,6 +156,22 @@ describe('withWorkspaceSession', () => {
 
     await expect(withWorkspaceSession('ws-stale', ran)).rejects.toThrow(
       /has not been matched to one of the 2/
+    );
+    expect(ran).not.toHaveBeenCalled();
+    expect(switchTenant).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A membership the account signed in here no longer holds. The gateway would
+   * refuse the switch too, but only as "not a member of this tenant", and on
+   * every poll of every view showing the workspace.
+   */
+  it('refuses a withdrawn workspace without asking the server', async () => {
+    workspace('ws-gone', 'tenant-gone', null);
+    const ran = vi.fn();
+
+    await expect(withWorkspaceSession('ws-gone', ran)).rejects.toThrow(
+      /is not a member of ws-gone/
     );
     expect(ran).not.toHaveBeenCalled();
     expect(switchTenant).not.toHaveBeenCalled();

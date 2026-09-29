@@ -130,7 +130,7 @@ function messageFor(result: Exclude<DeleteBridgeResult, { kind: 'deleted' }>): s
     case 'unauthenticated':
       return 'Your session for this server expired. Sign in again, then retry.';
     case 'forbidden':
-      return 'Disconnecting a messaging app requires an admin account on this server.';
+      return 'Disconnecting a messaging app requires an owner or admin of this workspace.';
     case 'not-found':
       return 'That messaging app is no longer connected to this server.';
     case 'error':

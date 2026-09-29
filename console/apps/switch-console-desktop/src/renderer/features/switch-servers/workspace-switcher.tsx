@@ -33,7 +33,7 @@ import { cn } from '@renderer/utils/utils';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import type { JoinableWorkspace, PendingInvitation } from '@shared/core/workspaces/invitations';
 import {
-  canInvite,
+  administersWorkspace,
   type Workspace,
   type WorkspaceUnavailability,
   workspaceUnavailability,
@@ -160,7 +160,7 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher() {
           <DropdownMenuSeparator />
           {/* Offered only where the gateway would take it: it refuses members,
               and a menu item that always ends in a 403 is a trap. */}
-          {canInvite(active) && (
+          {administersWorkspace(active) && (
             <DropdownMenuItem onClick={() => showInvitePeopleModal({ workspaceId: active.id })}>
               <UserPlus className="size-4" />
               Invite people to {active.name}

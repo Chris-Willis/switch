@@ -47,10 +47,11 @@ import {
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
 import { useMyIdentities } from './use-my-identities';
+import { administersWorkspaceInScope } from './workspace-admin';
 
 /**
  * The messaging apps bridged to a server, which account in each one is the
- * signed-in user, and — for an admin — the way to connect another
+ * signed-in user, and — for a workspace owner or admin — the way to connect another
  * (CHOO-1784, CHOO-2137).
  *
  * One row per app: its name with the account you have claimed on it underneath,
@@ -62,7 +63,7 @@ import { useMyIdentities } from './use-my-identities';
  * Listing is offered on every server type, not just managed ones: a bridge is
  * registered through the server's own admin API, so there is nothing
  * Switch Console has to own locally for this to work. Attaching is gated on the
- * signed-in user being an admin, because the endpoint is; linking an account is
+ * signed-in user administering the workspace, because the endpoint is; linking an account is
  * not, because claiming an identity is something every user does for themselves.
  */
 /** Why a server has messaging apps at all: the agents registered here become
@@ -92,7 +93,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   const showClaimIdentity = useShowModal('claimIdentityModal');
   const showDisconnectMessagingApp = useShowModal('disconnectMessagingAppModal');
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
-  const isAdmin = switchServersStore.statusFor(serverId)?.user?.role === 'admin';
+  const isAdmin = administersWorkspaceInScope(serverId);
   // Only a stack Switch Console runs has a chat whose credentials it generated and
   // can therefore show; anyone else's Mattermost is their own to hand out.
   const isManaged = !!switchServersStore.servers.find((s) => s.id === serverId)?.managed;
@@ -279,7 +280,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
         <p className="mt-3 text-xs text-foreground-muted">
           {isAdmin
             ? 'No messaging app is connected, so rooms created here would be unreachable. Connect one to get started.'
-            : 'No messaging app is connected. An admin on this server can connect one.'}
+            : 'No messaging app is connected. An owner or admin of this workspace can connect one.'}
         </p>
       ) : (
         <div className="mt-2 flex flex-col">
@@ -414,7 +415,7 @@ export function MessagingAppRow({
   const channelsLockedReason = !bridge.channelCreationSupported
     ? `${platform} cannot create channels from Switch. Make the chat in the app and add the bot to it.`
     : !isAdmin
-      ? 'Only an admin on this server can change this.'
+      ? 'Only an owner or admin of this workspace can change this.'
       : null;
 
   return (
@@ -578,7 +579,7 @@ function messageForUpdate(result: { kind: string; message?: string }): string {
     case 'unauthenticated':
       return 'Your session for this server expired. Sign in again, then retry.';
     case 'forbidden':
-      return 'This requires an admin account on this server.';
+      return 'This requires an owner or admin of this workspace.';
     default:
       return result.message ?? 'The server rejected the change.';
   }

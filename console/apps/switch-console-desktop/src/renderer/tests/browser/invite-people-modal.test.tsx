@@ -48,7 +48,7 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
 import { InvitePeopleModal } from '@renderer/features/workspaces/invite-people-modal';
 import { modalStore } from '@renderer/lib/modal/modal-store';
 import { Dialog } from '@renderer/lib/ui/dialog';
-import { canInvite } from '@shared/core/workspaces/workspaces';
+import { administersWorkspace } from '@shared/core/workspaces/workspaces';
 
 const onClose = vi.fn();
 
@@ -140,9 +140,9 @@ async function type(input: HTMLInputElement, value: string): Promise<void> {
 
 describe('the invite-people modal', () => {
   it('is offered to admins and owners, not members', () => {
-    expect(canInvite(workspace('owner') as never)).toBe(true);
-    expect(canInvite(workspace('admin') as never)).toBe(true);
-    expect(canInvite(workspace('member') as never)).toBe(false);
+    expect(administersWorkspace(workspace('owner') as never)).toBe(true);
+    expect(administersWorkspace(workspace('admin') as never)).toBe(true);
+    expect(administersWorkspace(workspace('member') as never)).toBe(false);
   });
 
   it('e-mails an addressed invitation and still shows its link', async () => {

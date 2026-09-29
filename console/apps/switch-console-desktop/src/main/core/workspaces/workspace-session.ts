@@ -2,7 +2,11 @@ import { decodeJwtTenantId, switchTenant } from '@main/core/switch-servers/gatew
 import { hostUnreachable, requireServer } from '@main/core/switch-servers/require-server';
 import { getSessionCookie } from '@main/core/switch-servers/servers-store';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
-import { isUnmatchedWorkspace, type Workspace } from '@shared/core/workspaces/workspaces';
+import {
+  isUnmatchedWorkspace,
+  isWithdrawnWorkspace,
+  type Workspace,
+} from '@shared/core/workspaces/workspaces';
 import { clearAssertedTenant, setAssertedTenant } from './asserted-tenant';
 import { listWorkspacesForServer, requireWorkspace } from './workspaces-store';
 
@@ -114,6 +118,14 @@ async function acquire(server: SwitchServer, tenantId: string | null): Promise<S
  */
 async function requireAddressableWorkspace(workspaceId: string): Promise<Workspace> {
   const workspace = await requireWorkspace(workspaceId);
+  if (isWithdrawnWorkspace(workspace)) {
+    // Refused here rather than sent: the gateway would refuse the switch as
+    // well, but only as "not a member of this tenant", and every view polling
+    // the workspace would ask again.
+    throw new Error(
+      `The account signed in to this Switch server is not a member of ${workspace.name}, so nothing in it can be read or changed. Switch to another workspace, or sign in as an account that belongs to it.`
+    );
+  }
   if (workspace.tenantId) return workspace;
   const onServer = await listWorkspacesForServer(workspace.serverId);
   if (isUnmatchedWorkspace(workspace, onServer.length)) {
