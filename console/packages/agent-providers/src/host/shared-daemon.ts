@@ -2,13 +2,8 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { type EnsureSession, serveControl } from './control';
-import {
-  detachedSupervision,
-  ensureSharedProcess,
-  inProcessSupervision,
-  sharedSessionRoot,
-} from './launch';
+import { ensureSessions, serveControl } from './control';
+import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
 import { replaceOwner } from './ownership-lock';
 import { ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
@@ -92,6 +87,7 @@ async function main(): Promise<void> {
           watcher: mode === '--ensure-watch',
           restart: mode === '--restart',
           supervision: detachedSupervision(process.argv[1]!),
+          startSource: null,
         })
       )
     );
@@ -121,17 +117,7 @@ async function main(): Promise<void> {
     // IPC, and Console reaches them through its control port.
     const links = new SessionLinks();
     const supervision = inProcessSupervision(process.argv[1]!, links);
-    const ensure: EnsureSession = async (input) => {
-      const session = sharedConfigSchema.parse(input.config);
-      return ensureSharedProcess({
-        root: sharedSessionRoot(session.session.sessionId),
-        config: session,
-        resuming: input.resuming,
-        watcher: false,
-        restart: input.restart,
-        supervision,
-      });
-    };
+    const ensure = ensureSessions(supervision);
     // Console's "Reconnect to room" reaches the watcher through the control port.
     const control = new WatcherControl();
     // A watcher that stops (disabled, stood down after a takeover, or

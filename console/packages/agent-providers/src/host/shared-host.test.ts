@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Command, Session } from '@switch-console/shared/session-v1';
@@ -95,12 +95,28 @@ async function start(
     ask?: 'approval' | 'questions';
     parkAfterMs?: number;
     resettable?: boolean;
+    /** What the launcher recorded when it created this session's root, if it did. */
+    owedStart?: string;
+    /** The file's text as written, for one that is not what a launcher writes. */
+    owedStartText?: string;
+    /** Something the host can neither read nor remove where the record goes. */
+    owedStartBlocked?: boolean;
+    startUnknown?: boolean;
+    startRefused?: boolean;
+    unavailable?: boolean;
   } = {}
 ): Promise<Harness> {
   const parent = fakeParent();
   const base = await mkdtemp(join(tmpdir(), 'shared-host-test-'));
   roots.push(base);
   const root = join(base, 'session');
+  const owedText =
+    opts.owedStartText ?? (opts.owedStart ? JSON.stringify({ startSource: opts.owedStart }) : null);
+  if (opts.owedStartBlocked) await mkdir(join(root, 'session-start.json'), { recursive: true });
+  if (owedText !== null) {
+    await mkdir(root, { recursive: true });
+    await writeFile(join(root, 'session-start.json'), owedText);
+  }
   const stop = new AbortController();
   const turns: Harness['turns'] = [];
   let listener: (event: ProviderRuntimeEvent) => void = () => {};
@@ -189,6 +205,9 @@ async function start(
       return new Response('not a route this host should call', { status: 599 });
     })
   );
+  switchCore.state.startUnknown = opts.startUnknown ?? false;
+  switchCore.state.startRefused = opts.startRefused ?? false;
+  switchCore.state.unavailable = opts.unavailable ?? false;
   const session = structuredClone(SESSION);
   if (opts.rooms) session.capabilities.attachmentMimeTypes = ['text/plain'];
   if (opts.resettable) session.capabilities.reset = true;
@@ -752,6 +771,135 @@ it('tells the session to rejoin its room once a reset asked for there has applie
     await host.parent.ask({ type: 'command', command: reset, requesterName: 'louisa' });
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(host.turns).toHaveLength(1);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+const startReports = (host: Harness) =>
+  host.switchCore.calls.filter((c) => c.path.endsWith('/started'));
+const owed = (host: Harness) =>
+  access(join(host.root, 'session-start.json')).then(
+    () => true,
+    () => false
+  );
+
+it('tells Switch once how a new session started, then owes it nothing', async () => {
+  const host = await start({ owedStart: 'room' });
+  try {
+    await vi.waitFor(() => expect(startReports(host)).toHaveLength(1), { timeout: 5000 });
+    expect(startReports(host)[0]).toEqual({
+      method: 'POST',
+      path: '/agent/agent-sessions/session/started',
+      body: { start_source: 'room' },
+    });
+    await vi.waitFor(async () => expect(await owed(host)).toBe(false), { timeout: 3000 });
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
+it('says nothing about starting for a session its launcher did not create', async () => {
+  const host = await start();
+  try {
+    // The reporting loop has gone round at least once.
+    await vi.waitFor(
+      () =>
+        expect(host.switchCore.calls.some((c) => c.path.endsWith('/approvals/outcomes'))).toBe(
+          true
+        ),
+      { timeout: 5000 }
+    );
+    expect(startReports(host)).toEqual([]);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
+it('keeps reporting activity to a server that predates start reports', async () => {
+  const host = await start({ rooms: true, owedStart: 'user', startUnknown: true });
+  try {
+    await vi.waitFor(() => expect(startReports(host)).toHaveLength(1), { timeout: 5000 });
+    await vi.waitFor(async () => expect(await owed(host)).toBe(false), { timeout: 3000 });
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Carry on') });
+    await vi.waitFor(
+      () => expect(host.switchCore.calls.some((c) => c.path.endsWith('/activity'))).toBe(true),
+      { timeout: 5000 }
+    );
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+it('keeps a start owed while Switch is unreachable, and reports it once Switch answers', async () => {
+  const host = await start({ owedStart: 'automation', unavailable: true });
+  try {
+    await vi.waitFor(() => expect(startReports(host).length).toBeGreaterThan(0), {
+      timeout: 5000,
+    });
+    expect(await owed(host)).toBe(true);
+    host.switchCore.state.unavailable = false;
+    await vi.waitFor(async () => expect(await owed(host)).toBe(false), { timeout: 5000 });
+    expect(startReports(host).at(-1)!.body).toEqual({ start_source: 'automation' });
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
+it('still owes a start its host was stopped before Switch answered', async () => {
+  // The next time the session's host runs, it reports it then.
+  const host = await start({ owedStart: 'user', unavailable: true });
+  await vi.waitFor(() => expect(startReports(host).length).toBeGreaterThan(0), {
+    timeout: 5000,
+  });
+
+  expect(await host.stop()).toBeNull();
+
+  expect(await owed(host)).toBe(true);
+});
+
+it('stops owing a start Switch refused, rather than sending it forever', async () => {
+  const host = await start({ owedStart: 'user', startRefused: true });
+  try {
+    await vi.waitFor(() => expect(startReports(host)).toHaveLength(1), { timeout: 5000 });
+    await vi.waitFor(async () => expect(await owed(host)).toBe(false), { timeout: 3000 });
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
+it('drops a start record it cannot read without sending anything or failing', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const host = await start({ owedStartText: '{"startSource":"sometime"}' });
+  try {
+    await vi.waitFor(async () => expect(await owed(host)).toBe(false), { timeout: 5000 });
+    expect(startReports(host)).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Could not read how this session started')
+    );
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
+it('keeps the session running when the start record cannot even be removed', async () => {
+  // Telemetry never takes a session down: the report is lost, the session is not.
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const host = await start({ rooms: true, owedStartBlocked: true });
+  try {
+    await vi.waitFor(
+      () =>
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining('Could not report how this session started')
+        ),
+      { timeout: 5000 }
+    );
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Still here?') });
+    await vi.waitFor(
+      () => expect(host.switchCore.calls.some((c) => c.path.endsWith('/activity'))).toBe(true),
+      { timeout: 5000 }
+    );
+    expect(startReports(host)).toEqual([]);
   } finally {
     expect(await host.stop()).toBeNull();
   }

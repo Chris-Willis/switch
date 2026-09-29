@@ -1,4 +1,5 @@
-"""What an agent's session host reports: turn steps and approval requests.
+"""What an agent's session host reports: that a session started, its turn steps
+and its approval requests.
 
 The host owns the session; these routes take only what a messaging platform
 shows and what the server must check when a person answers. The agent is the
@@ -7,6 +8,7 @@ one the API key belongs to, so a host can only ever write for its own agent.
 
 from datetime import datetime
 from typing import Annotated, Any, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,7 +16,11 @@ from pydantic.alias_generators import to_camel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.auth import get_agent_from_scope
-from switch_core.bridges.agent.dependencies import get_session_factory
+from switch_core.bridges.agent.dependencies import (
+    get_session_factory,
+    get_session_start_limiter,
+    get_telemetry,
+)
 from switch_core.db.models import Agent, ApprovalRequest
 from switch_core.session_activity.service import (
     MAX_DETAIL_CHARS,
@@ -29,10 +35,18 @@ from switch_core.session_activity.service import (
     QuestionOption,
     SessionActivityService,
 )
+from switch_core.telemetry import TelemetryService
+from switch_core.telemetry.session_start import (
+    SessionStartLimiter,
+    StartSource,
+    report_session_started,
+)
 
 router = APIRouter(prefix="/agent-sessions")
 Factory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
 AuthenticatedAgent = Annotated[Agent, Depends(get_agent_from_scope)]
+Telemetry = Annotated[TelemetryService | None, Depends(get_telemetry)]
+Limiter = Annotated[SessionStartLimiter, Depends(get_session_start_limiter)]
 
 _Id = Annotated[str, Field(min_length=1, max_length=200)]
 
@@ -43,6 +57,17 @@ _Id = Annotated[str, Field(min_length=1, max_length=200)]
 _MAX_MODEL_CHARS = 200
 _MAX_MODELS_PER_TURN = 50
 _MAX_TOKENS = 2**53 - 1
+
+
+class SessionStart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    start_source: StartSource
+
+
+class SessionStartReceipt(BaseModel):
+    # False when nothing was sent: telemetry is off, or this session already
+    # reported its start. A host acts on neither; it is here for the logs.
+    reported: bool
 
 
 class TokenUsageIn(BaseModel):
@@ -152,6 +177,26 @@ class ApprovalView(_Response):
             expires_at=row.expires_at,
             delivered_at=row.delivered_at,
         )
+
+
+@router.post("/{session_id}/started")
+async def report_started(
+    session_id: UUID,
+    body: SessionStart,
+    agent: AuthenticatedAgent,
+    factory: Factory,
+    telemetry: Telemetry,
+    limiter: Limiter,
+) -> SessionStartReceipt:
+    """A session host saying, once, that a new session began and how.
+
+    The id must be a UUID, which every launcher mints, so a caller cannot fill
+    the claims with arbitrary strings.
+    """
+    reported = await report_session_started(
+        telemetry, factory, limiter, agent, str(session_id), body.start_source
+    )
+    return SessionStartReceipt(reported=reported)
 
 
 @router.post("/{session_id}/activity", response_model_by_alias=True)

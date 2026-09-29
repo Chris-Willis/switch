@@ -898,11 +898,11 @@ async def _open_event_stream(
     # created instead counted every rejected attempt as a session that began
     # and ended at once, which a retrying client repeats indefinitely.
     #
-    # `stream_generation == 0` keeps a supervisor reattaching to a connection
-    # it already had from reading as a new session: `open()` hands back the
-    # existing Connection and bumps the generation rather than making another.
-    if conn.stream_generation == 0:
-        await protocol.sessions.started(agent, conn)
+    # Every stream, a reattach included. The reporter keys sessions on the
+    # agent, so a stream on a connection the agent already holds continues its
+    # session rather than starting another, and an open that failed after
+    # registering its connection, retried on the same id, is still counted.
+    await protocol.sessions.started(agent, conn)
 
     return StreamingResponse(
         event_stream(
