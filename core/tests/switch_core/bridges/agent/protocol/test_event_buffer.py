@@ -242,3 +242,12 @@ async def test_remove_clears_notification_queue() -> None:
     q.enqueue(AGENT, ROOM, _message(addressed=True))
     q.remove(AGENT)
     assert await q.poll_notifications(AGENT, timeout=0, rooms={ROOM}) == []
+
+
+def test_removing_agent_does_not_reuse_event_sequences():
+    buffer = EventBuffer(sequence_base=1 << 32)
+    first = buffer.enqueue(AGENT, ROOM, _message(True))
+    buffer.remove(AGENT)
+    second = buffer.enqueue(AGENT, ROOM, _message(True))
+    assert second > first
+    assert second < 2**53

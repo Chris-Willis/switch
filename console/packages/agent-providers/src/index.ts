@@ -96,3 +96,4 @@ export {
 } from './host/cloud-relay-client';
 export { hostSessions, LIST_SCRIPT } from './host/session-list';
 export { JournalUnavailableError, replayJournal } from './host/journal-snapshot';
+export { openCodeConsoleCredentialSchema } from './opencode/console-credential';

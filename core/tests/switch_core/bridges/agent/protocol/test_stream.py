@@ -1003,3 +1003,17 @@ async def test_a_delivered_event_names_no_session() -> None:
 
     assert name == "message"
     assert "session_id" not in data
+
+
+async def test_new_boot_reports_gap_and_keeps_messages_when_old_cursor_is_below_head():
+    registry = ConnectionRegistry()
+    buffer = EventBuffer(sequence_base=2 << 32)
+    sequences = [buffer.enqueue(AGENT, ROOM_A, _message(str(i))) for i in range(3)]
+    conn = _open(registry, cursor=(1 << 32) + 2)
+    registry.claim_room(conn, ROOM_A)
+    frames = await _take(
+        event_stream(conn=conn, registry=registry, buffer=buffer, approvals=None), 5
+    )
+    assert frames[1][0] == "gap"
+    assert frames[1][1]["resumed_at"] == 2 << 32
+    assert [frame[1]["sequence"] for frame in frames[2:]] == sequences
