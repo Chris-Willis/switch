@@ -8,7 +8,6 @@ const mocks = vi.hoisted(() => ({
   stopLocal: vi.fn(),
   exec: vi.fn(),
   stopped: vi.fn(),
-  spawning: vi.fn(),
   removeRoots: vi.fn(),
   agentById: vi.fn(),
   ssh: vi.fn(),
@@ -23,7 +22,6 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: mocks.ser
 
 vi.mock('@main/core/switch-rooms/auto-session-store', () => ({
   listStoppedControllerAgentIds: mocks.stopped,
-  listAutoSessionAgentIds: mocks.spawning,
 }));
 
 vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: mocks.agentById }));
@@ -77,7 +75,6 @@ beforeEach(() => {
   });
   mocks.exec.mockResolvedValue({ stdout: '' });
   mocks.stopped.mockResolvedValue([]);
-  mocks.spawning.mockResolvedValue([]);
   mocks.agentById.mockResolvedValue({
     id: 'agent-1',
     name: 'scout',
@@ -169,15 +166,11 @@ it('passes the spawn decision to a local watcher', async () => {
   expect(mocks.startLocal.mock.calls[0][1]).toEqual({ intent: 'explicit', spawning: false });
 });
 
-it.each([true, false])(
-  'connects an agent nobody stopped, spawning only when auto-start is %s',
-  async (autoStart) => {
-    mocks.location.mockResolvedValue({ id: 'local', dir: '/work', sshHost: null });
-    mocks.spawning.mockResolvedValue(autoStart ? ['agent-1'] : []);
-    await applyControllerState('agent-1', 'restore', 'host');
-    expect(mocks.startLocal.mock.calls[0][1]).toEqual({ intent: 'restore', spawning: autoStart });
-  }
-);
+it('connects an agent nobody stopped, and lets it start sessions', async () => {
+  mocks.location.mockResolvedValue({ id: 'local', dir: '/work', sshHost: null });
+  await applyControllerState('agent-1', 'restore', 'host');
+  expect(mocks.startLocal.mock.calls[0][1]).toEqual({ intent: 'restore', spawning: true });
+});
 
 it('discards a local agent’s controller state inside Console', async () => {
   mocks.location.mockResolvedValue({ id: 'local', dir: '/work', sshHost: null });
@@ -207,10 +200,9 @@ it('has no controller state to discard for an agent never linked to Switch', asy
   expect(mocks.location).not.toHaveBeenCalled();
 });
 
-it('leaves a stopped controller off the air however auto-start is set', async () => {
+it('leaves a stopped controller off the air', async () => {
   mocks.location.mockResolvedValue({ id: 'local', dir: '/work', sshHost: null });
   mocks.stopped.mockResolvedValue(['agent-1']);
-  mocks.spawning.mockResolvedValue(['agent-1']);
   await applyControllerState('agent-1', 'restore', 'host');
   expect(mocks.stopLocal).toHaveBeenCalledWith('switch-agent-1');
   expect(mocks.startLocal).not.toHaveBeenCalled();

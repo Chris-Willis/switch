@@ -448,67 +448,6 @@ export async function fetchAgentRooms(
   }));
 }
 
-/** The agent's current known-agent options (the last validated payload) and
- * its derived connection model, from `GET /agents/{id}`. */
-export type RemoteAgentOptions = {
-  options: Record<string, unknown>;
-  connectionModel: string | null;
-};
-
-/**
- * Fetch the agent's current known-agent options and connection model. Returns
- * empty options for agents with no known-agent type. Used to read-modify-write
- * the options payload (the PATCH endpoint is a full replace, not a merge).
- */
-export async function fetchAgentOptions(
-  server: SwitchServer,
-  agentId: string
-): Promise<RemoteAgentOptions> {
-  const res = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}`, {
-    authenticated: true,
-  });
-  const json = (await res.json()) as {
-    known_agent_options?: Record<string, unknown> | null;
-    connection_model?: string | null;
-  };
-  return {
-    options: json.known_agent_options ?? {},
-    connectionModel: json.connection_model ?? null,
-  };
-}
-
-/**
- * Replace a known-agent's options (`PATCH /agents/{id}/options`). The gateway
- * re-derives the `integration_profile` from the new options, so this is the one
- * write path that keeps options and connection model in sync. The body must be
- * the FULL options payload — callers read current options first and merge.
- */
-export async function updateKnownAgentOptions(
-  server: SwitchServer,
-  agentId: string,
-  options: Record<string, unknown>
-): Promise<void> {
-  await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}/options`, {
-    authenticated: true,
-    method: 'PATCH',
-    body: { options },
-  });
-}
-
-/**
- * Toggle the agent's `auto_session` option, preserving all other options.
- * Read-modify-writes through `updateKnownAgentOptions` so the gateway rebuilds
- * the connection model (`auto_session` ⇄ `session_addressable`).
- */
-export async function setAutoSession(
-  server: SwitchServer,
-  agentId: string,
-  enabled: boolean
-): Promise<void> {
-  const { options } = await fetchAgentOptions(server, agentId);
-  await updateKnownAgentOptions(server, agentId, { ...options, auto_session: enabled });
-}
-
 /**
  * Fetch an agent's scoped addressing policy (CHOO-1585) from `GET /agents/{id}`.
  * Returns null when the agent is open (no policy set).
