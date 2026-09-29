@@ -20,7 +20,7 @@ cloned into your workspace, and `git` and `gh` are already signed in for it.
   - **Metadata** read.
 - Nothing else is granted. Issues, Actions, check runs, commit statuses and
   workflow files are out of reach: a push that adds or changes a file under
-  `.github/workflows/` is rejected, and any other API call returns 403 or 404.
+  `.github/workflows/` is rejected, and API operations requiring additional permissions are unavailable.
   Other repositories, organization settings and your owner's personal account
   are out of reach too. That is the scope, not a bug — tell the user what you
   could not do rather than retrying or looking for other credentials.
