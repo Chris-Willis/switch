@@ -47,13 +47,13 @@ written out as the equivalent `fill` attributes and its ids removed.
   https://res.cdn.office.net/files/fabric-cdn-prod_20240129.001/assets/brand-icons/product/svg/m365_48x1.svg
   (byte-identical at
   https://res-1.cdn.office.net/files/fabric-cdn-prod_20230815.002/assets/brand-icons/product/svg/m365_48x1.svg).
-  Fetched 2026-09-29. Used with the owner's approval pending; trademark of its
+  Fetched 2026-09-29. Vendor permission has not been verified; trademark of its
   owner. Terms: Microsoft's Trademark and Brand Guidelines
   (https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks).
 - **Salesforce** (`salesforce.svg`): the Salesforce cloud logo shown in the
   header of https://www.salesforce.com/, served from Salesforce's own asset
   domain at
   https://wp.sfdcdigital.com/en-us/wp-content/uploads/sites/4/2024/11/logo-salesforce.svg.
-  Fetched 2026-09-29. Used with the owner's approval pending; trademark of its
+  Fetched 2026-09-29. Vendor permission has not been verified; trademark of its
   owner. Terms: Salesforce's Trademark & Copyright Usage Guidelines
   (https://www.salesforce.com/company/legal/intellectual/tmcusageguidelines/).
