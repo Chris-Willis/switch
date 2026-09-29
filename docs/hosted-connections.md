@@ -19,7 +19,9 @@ only connection that works; every other service in the catalog is shown as
   boot.
 - **GitHub stays required** for a cloud launch, since the workspace is a
   GitHub repository. Every cloud launch is therefore granted the GitHub
-  connection, and its skill.
+  connection. Claude Code, Codex and OpenCode agents also get its skill.
+  Cursor and Antigravity agents get no connection skills, because they have
+  no skills directory.
 
 ## Catalog
 
@@ -122,6 +124,21 @@ launch data:
    | OpenCode | `$XDG_CONFIG_HOME/opencode/skills/<slug>/` |
 
 `skills` is optional in every layer, so deployments without it keep working.
+
+## Rollout
+
+The worker rejects a deployment key it does not know. A worker built before
+this change therefore rejects a deployment that carries `skills`, and the
+launch fails. That happens when a new Core and a new controller send skills
+to a worker on an older VM image.
+
+- Roll out the new VM image before, or together with, the new Core and
+  controller. A worker must accept `skills` before any launch carries them.
+- Existing workers pick up the new image only when they are replaced. Until
+  then, do not deploy a Core and controller that send skills to them.
+- Images and a VM image built before this change cannot validate skill
+  delivery. Validate it on a build that contains the whole change: Core,
+  controller, worker and bootstrap.
 
 ## Console
 
