@@ -1,7 +1,20 @@
-import { ChevronsUpDown, Plus, Server } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
+import { ChevronsUpDown, Plus, Server, UserPlus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
+import {
+  InvitedBadge,
+  invitationSummary,
+  joinableSummary,
+  joinableWorkspacesKey,
+  listedInvitations,
+  listedJoinable,
+  pendingInvitationsKey,
+  useJoinableWorkspaces,
+  usePendingInvitations,
+} from '@renderer/features/workspaces/pending-invitations';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -18,13 +31,16 @@ import {
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import type { JoinableWorkspace, PendingInvitation } from '@shared/core/workspaces/invitations';
 import {
+  canInvite,
   type Workspace,
   type WorkspaceUnavailability,
   workspaceUnavailability,
 } from '@shared/core/workspaces/workspaces';
 import { localServerStore } from './local-server-store';
 import { remoteServerStore } from './remote-server-store';
+import { serverAvailability } from './server-availability';
 import { serverIcon } from './server-icon';
 import {
   ServerAvatar,
@@ -71,6 +87,7 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher() {
   const { navigate } = useNavigate();
   const showAddServerModal = useShowModal('addServerModal');
   const showCreateWorkspaceModal = useShowModal('createWorkspaceModal');
+  const showInvitePeopleModal = useShowModal('invitePeopleModal');
 
   useEffect(() => {
     void store.init();
@@ -131,6 +148,7 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher() {
                   {drift && <ServerDriftIndicator drift={drift} />}
                 </span>
               </span>
+              <PendingInvitationCount server={activeServer} />
               <ChevronsUpDown className="size-3.5 shrink-0 text-foreground-muted" />
             </button>
           }
@@ -140,6 +158,14 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher() {
             <ServerWorkspaceGroup key={server.id} server={server} />
           ))}
           <DropdownMenuSeparator />
+          {/* Offered only where the gateway would take it: it refuses members,
+              and a menu item that always ends in a 403 is a trap. */}
+          {canInvite(active) && (
+            <DropdownMenuItem onClick={() => showInvitePeopleModal({ workspaceId: active.id })}>
+              <UserPlus className="size-4" />
+              Invite people to {active.name}
+            </DropdownMenuItem>
+          )}
           {/* Above Add server because it is the commoner errand by far: you add
               a server once and make workspaces on it for as long as you use
               it. It opens on the server you are already in — the modal asks
@@ -250,6 +276,12 @@ const ServerWorkspaceGroup = observer(function ServerWorkspaceGroup({
           />
         ))
       )}
+      {serverAvailability(server.id) === 'available' && (
+        <>
+          <PendingInvitationItems server={server} />
+          <JoinableWorkspaceItems server={server} />
+        </>
+      )}
     </DropdownMenuGroup>
   );
 });
@@ -328,3 +360,150 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
     </DropdownMenuItem>
   );
 });
+
+/**
+ * How many invitations are waiting on the server you are in, on the switcher
+ * button itself — the rows are behind the menu, and nothing else would say
+ * they are there.
+ */
+const PendingInvitationCount = observer(function PendingInvitationCount({
+  server,
+}: {
+  server: SwitchServer;
+}) {
+  if (serverAvailability(server.id) !== 'available') return null;
+  return <PendingInvitationCountBadge serverId={server.id} />;
+});
+
+function PendingInvitationCountBadge({ serverId }: { serverId: string }) {
+  const count = listedInvitations(usePendingInvitations(serverId).data).length;
+  if (count === 0) return null;
+  return (
+    <span
+      aria-label={count === 1 ? '1 invitation waiting' : `${count} invitations waiting`}
+      className="bg-primary text-primary-foreground flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full px-1 text-[10px] font-semibold"
+    >
+      {count}
+    </span>
+  );
+}
+
+/**
+ * Invitations addressed to you on one server, under its workspaces. Choosing
+ * one accepts it and opens the workspace it joins.
+ *
+ * A server too old to list them shows nothing, since it cannot say whether
+ * there are any; a server that failed to answer says so, since then there may
+ * be.
+ */
+function PendingInvitationItems({ server }: { server: SwitchServer }) {
+  const query = usePendingInvitations(server.id);
+  if (query.isError) {
+    return (
+      <div className="px-2 py-1.5 pl-9 text-xs text-foreground-muted">
+        Could not check for invitations to your address.
+      </div>
+    );
+  }
+  return listedInvitations(query.data).map((invitation) => (
+    <PendingInvitationMenuItem key={invitation.id} invitation={invitation} server={server} />
+  ));
+}
+
+function PendingInvitationMenuItem({
+  invitation,
+  server,
+}: {
+  invitation: PendingInvitation;
+  server: SwitchServer;
+}) {
+  const { navigate } = useNavigate();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+
+  return (
+    <DropdownMenuItem
+      className="pl-9"
+      title={invitationSummary(invitation)}
+      data-testid="pending-invitation-item"
+      onClick={() => {
+        void workspacesStore
+          .acceptPendingInvitation(server.id, invitation)
+          .then((workspace) => workspacesStore.setActive(workspace.id))
+          .then(() => navigate('server', { serverId: server.id }))
+          .catch((cause: unknown) => {
+            toast({
+              title: `Could not join ${invitation.workspaceName}`,
+              description: failureText(cause, 'The invitation is still waiting.'),
+              variant: 'destructive',
+            });
+          })
+          .finally(
+            () => void queryClient.invalidateQueries({ queryKey: pendingInvitationsKey(server.id) })
+          );
+      }}
+    >
+      <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+        {invitation.workspaceName}
+      </span>
+      <InvitedBadge />
+    </DropdownMenuItem>
+  );
+}
+
+/**
+ * Workspaces open to the domain of your address on one server, after its
+ * invitations, on the same terms. Choosing one joins it as a member.
+ */
+function JoinableWorkspaceItems({ server }: { server: SwitchServer }) {
+  const query = useJoinableWorkspaces(server.id);
+  if (query.isError) {
+    return (
+      <div className="px-2 py-1.5 pl-9 text-xs text-foreground-muted">
+        Could not check for workspaces open to your e-mail domain.
+      </div>
+    );
+  }
+  return listedJoinable(query.data).map((offer) => (
+    <JoinableWorkspaceMenuItem key={offer.tenantId} offer={offer} server={server} />
+  ));
+}
+
+function JoinableWorkspaceMenuItem({
+  offer,
+  server,
+}: {
+  offer: JoinableWorkspace;
+  server: SwitchServer;
+}) {
+  const { navigate } = useNavigate();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+
+  return (
+    <DropdownMenuItem
+      className="pl-9"
+      title={joinableSummary(offer)}
+      data-testid="joinable-workspace-item"
+      onClick={() => {
+        void workspacesStore
+          .joinByDomain(server.id, offer)
+          .then((workspace) => workspacesStore.setActive(workspace.id))
+          .then(() => navigate('server', { serverId: server.id }))
+          .catch((cause: unknown) => {
+            toast({
+              title: `Could not join ${offer.workspaceName}`,
+              description: failureText(cause, 'Joining failed.'),
+              variant: 'destructive',
+            });
+          })
+          .finally(
+            () => void queryClient.invalidateQueries({ queryKey: joinableWorkspacesKey(server.id) })
+          );
+      }}
+    >
+      <span className="min-w-0 flex-1 truncate text-sm text-foreground">{offer.workspaceName}</span>
+      <span className="shrink-0 text-xs font-medium text-foreground-muted">Join</span>
+    </DropdownMenuItem>
+  );
+}

@@ -1,5 +1,6 @@
 import { makeAutoObservable, runInAction } from 'mobx';
 import { events, rpc } from '@renderer/lib/ipc';
+import type { JoinableWorkspace, PendingInvitation } from '@shared/core/workspaces/invitations';
 import { workspacesChangedChannel } from '@shared/core/workspaces/workspaceEvents';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
 
@@ -85,6 +86,48 @@ export class WorkspacesStore {
    */
   async create(serverId: string, name: string): Promise<Workspace> {
     const workspace = await rpc.switchServers.createWorkspace({ serverId, name });
+    await this.refresh();
+    return workspace;
+  }
+
+  /**
+   * Accept an invitation on a server and return the workspace it admits to.
+   *
+   * Refreshes before returning, for the same reason as {@link create}.
+   */
+  async acceptInvitation(serverId: string, token: string): Promise<Workspace> {
+    const workspace = await rpc.switchServers.acceptInvitation({ serverId, token });
+    await this.refresh();
+    return workspace;
+  }
+
+  /**
+   * Accept an invitation addressed to the signed-in account on `serverId`, and
+   * return the workspace it joined. Refreshes before returning, as
+   * {@link acceptInvitation} does.
+   */
+  async acceptPendingInvitation(
+    serverId: string,
+    invitation: PendingInvitation
+  ): Promise<Workspace> {
+    const workspace = await rpc.switchServers.acceptPendingInvitation({
+      serverId,
+      tenantId: invitation.tenantId,
+      invitationId: invitation.id,
+    });
+    await this.refresh();
+    return workspace;
+  }
+
+  /**
+   * Join a workspace open to the signed-in account's domain on `serverId`, and
+   * return it. Refreshes before returning, as {@link acceptInvitation} does.
+   */
+  async joinByDomain(serverId: string, joinable: JoinableWorkspace): Promise<Workspace> {
+    const workspace = await rpc.switchServers.joinWorkspaceByDomain({
+      serverId,
+      tenantId: joinable.tenantId,
+    });
     await this.refresh();
     return workspace;
   }

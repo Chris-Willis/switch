@@ -12,7 +12,9 @@ const BUILD_VARIABLE = 'MAIN_VITE_SWITCH_CLOUD_URL';
  * public and which deployment a build treats as the Cloud is a choice made per
  * build, not part of the source. Unset is a real answer — the Cloud choice then
  * says it is not open yet — but a value that is not an https URL is a broken
- * build or launch, and raised as one rather than treated as unset.
+ * build or launch, and raised as one rather than treated as unset. The one
+ * exception is plain http to this machine, so a server run from a checkout can
+ * stand in for the Cloud while testing (`just local-cloud`).
  */
 export function switchCloudEndpoint(): SwitchCloudEndpoint | null {
   const fromRun = process.env[RUNTIME_VARIABLE]?.trim();
@@ -32,6 +34,8 @@ export function requireSwitchCloudEndpoint(): SwitchCloudEndpoint {
   return endpoint;
 }
 
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
 /** The origin alone: the Console appends `/gateway` itself, so a path would double up. */
 function parseCloudUrl(value: string, variable: string): string {
   let url: URL;
@@ -40,7 +44,10 @@ function parseCloudUrl(value: string, variable: string): string {
   } catch {
     throw new Error(`${variable} is not a URL: ${value}`);
   }
-  if (url.protocol !== 'https:') throw new Error(`${variable} must be an https URL: ${value}`);
+  const loopbackHttp = url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname);
+  if (url.protocol !== 'https:' && !loopbackHttp) {
+    throw new Error(`${variable} must be an https URL, or http to localhost: ${value}`);
+  }
   if (url.pathname !== '/' || url.search || url.hash) {
     throw new Error(`${variable} must be an origin with no path, like https://host: ${value}`);
   }

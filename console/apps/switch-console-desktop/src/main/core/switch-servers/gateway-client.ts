@@ -27,6 +27,13 @@ import type {
   SwitchServerDeclaration,
   SwitchUser,
 } from '@shared/core/switch-servers/switch-servers';
+import type {
+  Invitation,
+  InvitationEmailDelivery,
+  JoinableWorkspaces,
+  PendingInvitations,
+  WorkspaceJoinDomains,
+} from '@shared/core/workspaces/invitations';
 import type { WorkspaceRole } from '@shared/core/workspaces/workspaces';
 import { extractAuthCookie, reauthenticateManagedServer, refreshSession } from './auth';
 import { getSessionCookie, setSessionCookie } from './servers-store';
@@ -401,6 +408,326 @@ export async function switchTenant(server: SwitchServer, tenantId: string): Prom
     );
   }
   await setSessionCookie(server.id, cookie);
+}
+
+/**
+ * Accept an invitation to a workspace, joining it.
+ *
+ * The token goes in the body, never the path: it is a bearer credential. The
+ * gateway answers with a session cookie scoped to the workspace joined, which
+ * is kept for the same reason `switchTenant` keeps its own — the next call made
+ * for that workspace has to reach it, not whichever one was selected before.
+ *
+ * Accepting an invitation to a workspace the account is already in is not an
+ * error: the gateway returns the existing membership and spends nothing.
+ */
+export async function acceptInvitation(server: SwitchServer, token: string): Promise<RemoteTenant> {
+  const res = await gatewayFetch(server, '/invitations/accept', {
+    authenticated: true,
+    method: 'POST',
+    body: { token },
+  });
+  return joinedTenant(server, res);
+}
+
+/**
+ * Accept an invitation addressed to the signed-in account, by id.
+ *
+ * Answers exactly as {@link acceptInvitation} does, session cookie included:
+ * the server switches the session into the workspace it joined.
+ */
+export async function acceptPendingInvitation(
+  server: SwitchServer,
+  tenantId: string,
+  invitationId: string
+): Promise<RemoteTenant> {
+  const res = await gatewayFetch(server, '/invitations/mine/accept', {
+    authenticated: true,
+    method: 'POST',
+    body: { tenant_id: tenantId, invitation_id: invitationId },
+  });
+  return joinedTenant(server, res);
+}
+
+type PendingInvitationJson = {
+  id: string;
+  tenant_id: string;
+  tenant_slug: string;
+  tenant_name: string;
+  role: string;
+  expires_at: string;
+  invited_by: string;
+  created_at: string;
+};
+
+/**
+ * The invitations addressed to the signed-in account, in workspaces it is not in.
+ *
+ * A 404 is a server from before the route existed, and is answered as
+ * `unsupported` rather than raised: the account is signed in and the rest of
+ * the server works, so it is a feature the server lacks, not a failure. Every
+ * other refusal is raised.
+ */
+export async function fetchPendingInvitations(server: SwitchServer): Promise<PendingInvitations> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/invitations/mine', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return { kind: 'unsupported' };
+    throw cause;
+  }
+  const json = (await res.json()) as PendingInvitationJson[];
+  return {
+    kind: 'listed',
+    invitations: json.map((i) => ({
+      id: i.id,
+      tenantId: i.tenant_id,
+      workspaceName: i.tenant_name,
+      role: mapRole(i.role),
+      expiresAt: isoTimestamp(i.expires_at),
+      invitedBy: i.invited_by,
+    })),
+  };
+}
+
+async function joinedTenant(server: SwitchServer, res: Response): Promise<RemoteTenant> {
+  const json = (await res.json()) as { id: string; slug: string; name: string; role: string };
+  const cookie = extractAuthCookie(res.headers.getSetCookie());
+  if (!cookie) {
+    throw new GatewayError(
+      'http',
+      `${server.name} accepted the invitation but returned no session cookie.`
+    );
+  }
+  await setSessionCookie(server.id, cookie);
+  return { id: json.id, slug: json.slug, name: json.name, role: mapRole(json.role) };
+}
+
+type InvitationJson = {
+  id: string;
+  role: string;
+  email: string | null;
+  expires_at: string;
+  uses_remaining: number;
+  revoked_at: string | null;
+  created_at: string;
+};
+
+/**
+ * A gateway timestamp as ISO 8601.
+ *
+ * The invitation routes write Python's `str(datetime)`, with a space where ISO
+ * has a `T`. Normalised here so every reader downstream can hand it to `Date`;
+ * one that still does not parse is raised, since showing an expiry of "Invalid
+ * Date" would leave an admin unable to tell a live invitation from a dead one.
+ */
+function isoTimestamp(raw: string): string {
+  const parsed = new Date(raw.replace(' ', 'T'));
+  if (Number.isNaN(parsed.getTime())) {
+    throw new GatewayError('http', `Switch server reported an unreadable timestamp: ${raw}`);
+  }
+  return parsed.toISOString();
+}
+
+function mapInvitation(json: InvitationJson): Invitation {
+  return {
+    id: json.id,
+    role: mapRole(json.role),
+    email: json.email,
+    expiresAt: isoTimestamp(json.expires_at),
+    usesRemaining: json.uses_remaining,
+    revokedAt: json.revoked_at === null ? null : isoTimestamp(json.revoked_at),
+    createdAt: isoTimestamp(json.created_at),
+  };
+}
+
+function mapDelivery(raw: unknown): InvitationEmailDelivery {
+  // A server older than e-mailed invitations leaves the field out. Refusing it
+  // would lose the link of an invitation the server has already made.
+  if (raw === undefined) return 'unsupported';
+  if (raw === 'sent' || raw === 'not_configured' || raw === 'failed' || raw === 'not_requested') {
+    return raw;
+  }
+  throw new GatewayError('http', `Switch server reported an unknown e-mail delivery: ${raw}`);
+}
+
+/**
+ * The workspaces open to the domain of the signed-in account's address.
+ *
+ * A server without the route answers 404, which is read as unable to say
+ * rather than as none.
+ */
+export async function fetchJoinableWorkspaces(server: SwitchServer): Promise<JoinableWorkspaces> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/joinable-tenants', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return { kind: 'unsupported' };
+    throw cause;
+  }
+  const json = (await res.json()) as { tenant_id: string; tenant_name: string; domain: string }[];
+  return {
+    kind: 'listed',
+    workspaces: json.map((w) => ({
+      tenantId: w.tenant_id,
+      workspaceName: w.tenant_name,
+      domain: w.domain,
+    })),
+  };
+}
+
+/**
+ * Join a workspace open to the account's domain, and switch the session into
+ * it — the same scoped cookie accepting an invitation stores.
+ */
+export async function joinWorkspaceByDomain(
+  server: SwitchServer,
+  tenantId: string
+): Promise<RemoteTenant> {
+  const res = await gatewayFetch(server, `/joinable-tenants/${encodeURIComponent(tenantId)}/join`, {
+    authenticated: true,
+    method: 'POST',
+  });
+  return joinedTenant(server, res);
+}
+
+function joinDomainsPath(tenantId: string): string {
+  return `/tenants/${encodeURIComponent(tenantId)}/join-domains`;
+}
+
+/** The domains a workspace is open to. Admins and owners only. */
+export async function fetchJoinDomains(
+  server: SwitchServer,
+  tenantId: string
+): Promise<WorkspaceJoinDomains> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, joinDomainsPath(tenantId), { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return { kind: 'unsupported' };
+    throw cause;
+  }
+  const json = (await res.json()) as {
+    domains: { domain: string }[];
+    own_domain: string;
+    own_domain_refusal: string | null;
+  };
+  return {
+    kind: 'listed',
+    domains: json.domains.map((d) => d.domain),
+    ownDomain: json.own_domain,
+    ownDomainRefusal: json.own_domain_refusal,
+  };
+}
+
+export async function addJoinDomain(
+  server: SwitchServer,
+  tenantId: string,
+  domain: string
+): Promise<void> {
+  await gatewayFetch(server, joinDomainsPath(tenantId), {
+    authenticated: true,
+    method: 'POST',
+    body: { domain },
+  });
+}
+
+export async function removeJoinDomain(
+  server: SwitchServer,
+  tenantId: string,
+  domain: string
+): Promise<void> {
+  await gatewayFetch(server, `${joinDomainsPath(tenantId)}/${encodeURIComponent(domain)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
+}
+
+function invitationsPath(tenantId: string): string {
+  return `/tenants/${encodeURIComponent(tenantId)}/invitations`;
+}
+
+/** Every invitation to a workspace, revoked and spent ones included. Admins and owners only. */
+export async function fetchInvitations(
+  server: SwitchServer,
+  tenantId: string
+): Promise<Invitation[]> {
+  const res = await gatewayFetch(server, invitationsPath(tenantId), { authenticated: true });
+  return ((await res.json()) as InvitationJson[]).map(mapInvitation);
+}
+
+/**
+ * Mint an invitation to a workspace, and e-mail it when it names an address
+ * and the server has mail set up.
+ *
+ * The token comes back once, here, and never again: the server stores a hash.
+ */
+export async function createInvitation(
+  server: SwitchServer,
+  tenantId: string,
+  params: {
+    role: WorkspaceRole;
+    email: string | null;
+    expiresInHours: number;
+    usesRemaining: number;
+  }
+): Promise<{ invitation: Invitation; token: string; emailDelivery: InvitationEmailDelivery }> {
+  const res = await gatewayFetch(server, invitationsPath(tenantId), {
+    authenticated: true,
+    method: 'POST',
+    body: {
+      role: params.role,
+      email: params.email,
+      expires_in_hours: params.expiresInHours,
+      uses_remaining: params.usesRemaining,
+    },
+  });
+  const json = (await res.json()) as InvitationJson & { token: string; email_delivery?: string };
+  return {
+    invitation: mapInvitation(json),
+    token: json.token,
+    emailDelivery: mapDelivery(json.email_delivery),
+  };
+}
+
+export async function revokeInvitation(
+  server: SwitchServer,
+  tenantId: string,
+  invitationId: string
+): Promise<Invitation> {
+  const res = await gatewayFetch(
+    server,
+    `${invitationsPath(tenantId)}/${encodeURIComponent(invitationId)}`,
+    { authenticated: true, method: 'DELETE' }
+  );
+  return mapInvitation((await res.json()) as InvitationJson);
+}
+
+/**
+ * Whether this server e-mails an invitation that names an address, or only
+ * mints the link for the admin to send.
+ *
+ * Null on a server older than e-mailed invitations: one without the session
+ * route answers 404, and one with it but without the field predates the
+ * feature. Neither sends an e-mail.
+ */
+export async function fetchInviteEmailEnabled(server: SwitchServer): Promise<boolean | null> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/auth/session', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return null;
+    throw cause;
+  }
+  const json = (await res.json()) as { invite_email_enabled?: unknown };
+  if (json.invite_email_enabled === undefined) return null;
+  if (typeof json.invite_email_enabled !== 'boolean') {
+    throw new GatewayError(
+      'http',
+      `${server.name} reported an unreadable invite_email_enabled: ${String(json.invite_email_enabled)}`
+    );
+  }
+  return json.invite_email_enabled;
 }
 
 /** Options for `registerKnownAgent`, matching the gateway's

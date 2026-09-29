@@ -12,6 +12,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const onContinue = vi.hoisted(() => vi.fn());
+const onInvite = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -28,6 +29,7 @@ let root: Root | null = null;
 
 beforeEach(() => {
   onContinue.mockReset();
+  onInvite.mockReset();
 });
 
 afterEach(async () => {
@@ -41,7 +43,9 @@ async function renderPage(cloud: WelcomeCloud = { kind: 'closed' }): Promise<HTM
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  await act(async () => root!.render(<WelcomePage cloud={cloud} onContinue={onContinue} />));
+  await act(async () =>
+    root!.render(<WelcomePage cloud={cloud} onContinue={onContinue} onInvite={onInvite} />)
+  );
   return container;
 }
 
@@ -100,6 +104,15 @@ describe('the welcome page with no Switch Cloud named', () => {
     await act(async () => button(el, 'Continue with your own server').click());
 
     expect(onContinue).toHaveBeenCalled();
+  });
+
+  it('offers joining from an invite link instead', async () => {
+    const el = await renderPage();
+
+    await act(async () => button(el, 'Paste your invite link').click());
+
+    expect(onInvite).toHaveBeenCalled();
+    expect(onContinue).not.toHaveBeenCalled();
   });
 
   it('sends the pager forward to the same place as Continue', async () => {

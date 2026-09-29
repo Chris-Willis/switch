@@ -1,10 +1,12 @@
 import { makeAutoObservable } from 'mobx';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import type { InviteLink } from '@shared/core/workspaces/invite-link';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
 
 /** Where a fresh install is in getting its first server. */
 export type OnboardingPage =
   | 'welcome'
+  | 'invite'
   | 'whoRuns'
   | 'local'
   | 'remoteHost'
@@ -12,6 +14,7 @@ export type OnboardingPage =
   | 'signIn'
   | 'pickWorkspace'
   | 'createWorkspace'
+  | 'acceptInvite'
   | 'linkAccounts';
 
 /**
@@ -42,6 +45,11 @@ class OnboardingStore {
   /** The workspaces that server said the account is in, once it has been asked. */
   serverWorkspaces: Workspace[] | null = null;
   /**
+   * How many other ways in that server listed alongside: invitations to the
+   * account's address, and workspaces open to its domain.
+   */
+  joinOfferCount = 0;
+  /**
    * The server a managed path brought up, and the page that brought it up.
    *
    * The page is kept with it because the two managed paths do not share one:
@@ -50,6 +58,13 @@ class OnboardingStore {
    * offered to it would take the user somewhere they did not set up.
    */
   registeredOn: { page: OnboardingPage; serverId: string } | null = null;
+  /**
+   * The invite link the user pasted, until it has been accepted or given up on.
+   *
+   * Held across the connect and sign-in pages because accepting needs an
+   * account on the server, and the link arrives before there is one.
+   */
+  invite: InviteLink | null = null;
 
   constructor() {
     makeAutoObservable(this);
@@ -76,7 +91,9 @@ class OnboardingStore {
       this.server = null;
       this.via = 'external';
       this.serverWorkspaces = null;
+      this.joinOfferCount = 0;
       this.registeredOn = null;
+      this.invite = null;
     }
     this.page = page;
   }
@@ -106,8 +123,23 @@ class OnboardingStore {
    * an account with no membership is sent straight to the form, and offering it
    * a Back to a list of nothing would be a door onto a blank wall.
    */
-  resolved(workspaces: Workspace[]): void {
+  resolved(workspaces: Workspace[], joinOfferCount: number): void {
     this.serverWorkspaces = workspaces;
+    this.joinOfferCount = joinOfferCount;
+  }
+
+  /** Whether Pick a workspace had anything to offer: a membership, an invitation or an open workspace. */
+  get pickerHasChoices(): boolean {
+    return (this.serverWorkspaces?.length ?? 0) > 0 || this.joinOfferCount > 0;
+  }
+
+  holdInvite(invite: InviteLink): void {
+    this.invite = invite;
+  }
+
+  /** The invitation was accepted, or the user went on without it. */
+  dropInvite(): void {
+    this.invite = null;
   }
 
   reset(): void {
@@ -115,7 +147,9 @@ class OnboardingStore {
     this.server = null;
     this.via = 'external';
     this.serverWorkspaces = null;
+    this.joinOfferCount = 0;
     this.registeredOn = null;
+    this.invite = null;
   }
 }
 

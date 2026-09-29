@@ -25,6 +25,7 @@ import type {
 } from '@shared/core/switch-servers/add-server-steps';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { CreateWorkspacePage } from './create-workspace-page';
+import { AcceptInvitePage, InvitePage } from './invite-pages';
 import { onboardingStore, type OnboardingPage } from './onboarding-store';
 import { PickWorkspacePage } from './pick-workspace-page';
 import { WelcomePage, type WelcomeCloud } from './welcome-page';
@@ -46,6 +47,7 @@ import { WelcomePage, type WelcomeCloud } from './welcome-page';
  */
 const STEP_FOR_PAGE: Record<OnboardingPage, AddServerStepName | null> = {
   welcome: null,
+  invite: null,
   whoRuns: 'choose',
   local: 'local',
   remoteHost: 'remoteHost',
@@ -53,6 +55,7 @@ const STEP_FOR_PAGE: Record<OnboardingPage, AddServerStepName | null> = {
   signIn: 'signIn',
   pickWorkspace: null,
   createWorkspace: null,
+  acceptInvite: null,
   linkAccounts: 'linkAccounts',
 };
 
@@ -66,6 +69,7 @@ const STEP_FOR_PAGE: Record<OnboardingPage, AddServerStepName | null> = {
  */
 const CHOICE_FOR_PAGE: Record<OnboardingPage, AddServerChoiceName> = {
   welcome: 'none',
+  invite: 'none',
   whoRuns: 'none',
   local: 'local',
   remoteHost: 'remoteHost',
@@ -73,6 +77,7 @@ const CHOICE_FOR_PAGE: Record<OnboardingPage, AddServerChoiceName> = {
   signIn: 'external',
   pickWorkspace: 'external',
   createWorkspace: 'external',
+  acceptInvite: 'external',
   linkAccounts: 'external',
 };
 
@@ -209,7 +214,28 @@ function currentPage(
 ) {
   switch (onboardingStore.page) {
     case 'welcome':
-      return <WelcomePage cloud={welcomeCloud} onContinue={() => goTo('whoRuns')} />;
+      return (
+        <WelcomePage
+          cloud={welcomeCloud}
+          onContinue={() => goTo('whoRuns')}
+          onInvite={() => goTo('invite')}
+        />
+      );
+    case 'invite':
+      return (
+        <InvitePage
+          onBack={() => goTo('welcome')}
+          onResolved={(invite, found) => {
+            onboardingStore.holdInvite(invite);
+            if (found.kind === 'known') {
+              onboardingStore.connected(found.server, found.via);
+              reportPage('signIn');
+            } else {
+              goTo('connect');
+            }
+          }}
+        />
+      );
     case 'whoRuns':
       return (
         <WhoRunsPage
@@ -246,10 +272,21 @@ function currentPage(
         <SignInStep
           server={server}
           // The Cloud was chosen on the welcome page, with no form in between
-          // to go back to.
-          onBack={() => goTo(onboardingStore.via === 'cloud' ? 'welcome' : 'connect')}
+          // to go back to. An invite link names its server, so the page it was
+          // pasted on is where a different one is chosen.
+          onBack={() =>
+            goTo(
+              onboardingStore.invite !== null
+                ? 'invite'
+                : onboardingStore.via === 'cloud'
+                  ? 'welcome'
+                  : 'connect'
+            )
+          }
           onClose={null}
-          onSignedIn={() => goTo('pickWorkspace')}
+          onSignedIn={() =>
+            goTo(onboardingStore.invite !== null ? 'acceptInvite' : 'pickWorkspace')
+          }
         />
       );
     case 'pickWorkspace':
@@ -267,13 +304,31 @@ function currentPage(
       return (
         <CreateWorkspacePage
           server={server}
-          // Nothing to go back to when the account is in no workspace: the
-          // picker sent the user straight here, and returning to it would be a
-          // door onto the list it had nothing to show.
-          onBack={onboardingStore.serverWorkspaces?.length ? () => goTo('pickWorkspace') : null}
+          // Nothing to go back to when the account is in no workspace and has
+          // no invitation: the picker sent the user straight here, and
+          // returning to it would be a door onto a list with nothing in it.
+          onBack={onboardingStore.pickerHasChoices ? () => goTo('pickWorkspace') : null}
           onCreated={() => goTo('linkAccounts')}
         />
       );
+    case 'acceptInvite': {
+      const invite = onboardingStore.invite;
+      if (server === null || invite === null) break;
+      return (
+        <AcceptInvitePage
+          server={server}
+          invite={invite}
+          onAccepted={() => {
+            onboardingStore.dropInvite();
+            goTo('linkAccounts');
+          }}
+          onSkip={() => {
+            onboardingStore.dropInvite();
+            goTo('pickWorkspace');
+          }}
+        />
+      );
+    }
     case 'linkAccounts':
       if (server === null) break;
       return (
@@ -287,17 +342,20 @@ function currentPage(
       break;
   }
 
+  // An invite link for a server this install does not know gives its address,
+  // which is the gateway's and usually the API's too. Both stay editable.
+  const inviteOrigin = onboardingStore.invite?.origin ?? null;
   return (
     <ExternalServerStep
-      initialGatewayUrl={null}
-      initialApiUrl={null}
+      initialGatewayUrl={inviteOrigin}
+      initialApiUrl={inviteOrigin}
       initialName={null}
       serverId={null}
       isEdit={false}
       firstRun
       existing={server}
-      onBack={() => goTo('whoRuns')}
-      onClose={() => goTo('whoRuns')}
+      onBack={() => goTo(inviteOrigin === null ? 'whoRuns' : 'invite')}
+      onClose={() => goTo(inviteOrigin === null ? 'whoRuns' : 'invite')}
       onSuccess={() => finish(server?.id ?? null)}
       onConnected={(added) => {
         onboardingStore.connected(added, 'external');

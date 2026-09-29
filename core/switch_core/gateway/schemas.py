@@ -765,6 +765,63 @@ class InvitationAcceptRequest(BaseModel):
     token: str
 
 
+class AddressedInvitation(BaseModel):
+    """An invitation waiting for the signed-in caller, as they are shown it.
+
+    What an invitee needs to decide, and no more: the workspace, the role it
+    would grant, until when, and who sent it. Never the token.
+    """
+
+    id: str
+    tenant_id: str
+    tenant_slug: str
+    tenant_name: str
+    role: str
+    expires_at: str
+    invited_by: str
+    created_at: str
+
+
+class AddressedInvitationAcceptRequest(BaseModel):
+    tenant_id: str
+    invitation_id: str
+
+
+class JoinDomainDetail(BaseModel):
+    domain: str
+    created_by: str
+    created_at: str
+
+
+class JoinDomainsResponse(BaseModel):
+    """The domains a workspace is open to, and whether the caller could add
+    theirs.
+
+    An admin may open a workspace only to the domain of their own address, so
+    `own_domain` is the one domain they could add, and `own_domain_refusal`
+    says why they cannot when they cannot — a public e-mail provider's domain,
+    say. Already being open to it is not a refusal; it is in `domains`.
+    """
+
+    domains: list[JoinDomainDetail]
+    own_domain: str
+    own_domain_refusal: str | None
+
+
+class JoinDomainCreateRequest(BaseModel):
+    domain: str
+
+
+class JoinableTenant(BaseModel):
+    """A workspace the signed-in caller may join because of their address's
+    domain, as they are shown it."""
+
+    tenant_id: str
+    tenant_slug: str
+    tenant_name: str
+    domain: str
+
+
 class InvitationDetail(BaseModel):
     id: str
     role: str

@@ -345,6 +345,46 @@ class Invitation(TenantScoped, Base):
     )
 
 
+class TenantJoinDomain(TenantScoped, Base):
+    """An e-mail domain whose people may join a tenant without an invitation.
+
+    Anyone signed in with an address at `domain` is offered the tenant and
+    joins it as a member. The natural key is `(tenant_id, domain)`, so
+    `tenant_id` joins the primary key directly, as on `reference_types`, and
+    two tenants may each open themselves to the same domain.
+
+    `domain` is stored lower-case, and the constraint is what makes that true
+    rather than a convention: the lookup that finds these rows
+    (`tenants_open_to_domain`, `db/tenant_lookup.py`) compares by equality,
+    and a mixed-case row would be one nobody could ever match.
+
+    Who may add a domain, and which, is the gateway's decision rather than this
+    row's — today an admin may open a tenant only to the domain of their own
+    address, and never to a public e-mail provider's.
+    """
+
+    __tablename__ = "tenant_join_domains"
+    __table_args__ = (
+        CheckConstraint(
+            "domain = lower(domain)", name="ck_tenant_join_domains_lower_case"
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("tenants.id", name="fk_tenant_join_domains_tenant"),
+        primary_key=True,
+        default=require_tenant_id,
+    )
+    domain: Mapped[str] = mapped_column(Text, primary_key=True)
+    created_by: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # ── Clients ────────────────────────────────────────────────────────────────────
 
 
