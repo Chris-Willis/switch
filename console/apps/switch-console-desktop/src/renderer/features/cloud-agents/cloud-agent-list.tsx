@@ -14,6 +14,7 @@ import { SidebarMenuButton } from '../sidebar/sidebar-primitives';
 import { cloudAgentState } from './cloud-agent-state';
 import { cloudOperationAttempts, startAttemptKey } from './cloud-operation-attempts';
 import { CloudProblem } from './cloud-problem';
+import { CloudStartAttemptStatus } from './cloud-start-attempt-status';
 import { useCloudAgentSessions, useCloudAgents } from './use-cloud-agents';
 
 export function cloudSessionName(session: Session): string {
@@ -90,10 +91,6 @@ const CloudAgentRow = observer(function CloudAgentRow({ listed }: { listed: Clou
     else void queryClient.invalidateQueries({ queryKey: ['cloud-agents'] });
   };
   const sessions = (agent.sessions ?? []).filter((session) => !session.retired);
-  const unconfirmed =
-    attempt?.status === 'unknown'
-      ? sessions.find((session) => session.sessionId === attempt.sessionId)
-      : undefined;
   return (
     <div>
       <div className="group/row flex items-center">
@@ -131,39 +128,13 @@ const CloudAgentRow = observer(function CloudAgentRow({ listed }: { listed: Clou
           The session could not be started: {startError}
         </div>
       )}
-      {attempt?.status === 'unknown' && (
-        <div
-          role="status"
-          className="flex items-center gap-2 px-7 py-1 text-xs text-foreground-muted"
-        >
-          <span className="min-w-0">
-            {unconfirmed
-              ? 'The new session was not confirmed, but it exists.'
-              : `Not yet known whether the new session started. ${attempt.message ?? ''}`}
-          </span>
-          {unconfirmed ? (
-            <button
-              type="button"
-              className="shrink-0 underline hover:text-foreground"
-              onClick={() => {
-                cloudOperationAttempts.settle(attemptKey);
-                openSession(attempt.sessionId);
-              }}
-            >
-              Open
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="shrink-0 underline hover:text-foreground"
-              title="Asks again for the same session, so it cannot start a second one."
-              onClick={() => void start()}
-            >
-              Check again
-            </button>
-          )}
-        </div>
-      )}
+      <CloudStartAttemptStatus
+        agentKey={agent.key}
+        sessions={sessions}
+        onOpen={openSession}
+        onCheckAgain={() => void start()}
+        className="px-7 py-1"
+      />
       {expanded && (
         <div className="flex flex-col gap-[2px] pl-5">
           {agent.problem && (

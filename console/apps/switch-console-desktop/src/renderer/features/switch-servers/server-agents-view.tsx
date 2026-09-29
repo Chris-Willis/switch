@@ -7,6 +7,11 @@ import {
   cloudOperationAttempts,
   startAttemptKey,
 } from '@renderer/features/cloud-agents/cloud-operation-attempts';
+import { CloudStartAttemptStatus } from '@renderer/features/cloud-agents/cloud-start-attempt-status';
+import {
+  useCloudAgentSessions,
+  useCloudAgents,
+} from '@renderer/features/cloud-agents/use-cloud-agents';
 import { useConfirmDeleteAgent } from '@renderer/features/locations/hooks/use-confirm-delete-agent';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationStore } from '@renderer/features/locations/stores/location-selectors';
@@ -29,13 +34,12 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import type { Agent } from '@shared/core/agents/agents';
-import { type CloudLaunch, cloudAgentKey } from '@shared/core/cloud-agents/cloud-agents';
+import type { CloudAgent } from '@shared/core/cloud-agents/cloud-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { ServerPage } from './server-page';
 import { ServerSectionTitlebar } from './server-section-titlebar';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
-import { useCloudLaunches } from './use-cloud-launches';
 
 function useServerId(): string {
   return useParams('serverAgents').params.serverId;
@@ -57,7 +61,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
   }, [serverId]);
 
   const agents = agentsStore.agentsOnServer(serverId);
-  const cloud = useCloudLaunches(serverId);
+  const cloud = useCloudAgents(serverId);
 
   return (
     <ServerPage
@@ -85,9 +89,9 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
           <AgentCard key={agent.id} agent={agent} serverId={serverId} />
         ))}
         {cloud.data
-          ?.filter((launch) => launch.state !== 'deleted')
-          .map((launch) => (
-            <CloudAgentCard key={launch.request_id} launch={launch} serverId={serverId} />
+          ?.filter((listed) => listed.launch.state !== 'deleted')
+          .map((listed) => (
+            <CloudAgentCard key={listed.key} listed={listed} serverId={serverId} />
           ))}
       </div>
       {cloud.error && (
@@ -99,14 +103,30 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
   );
 });
 
-function CloudAgentCard({ launch, serverId }: { launch: CloudLaunch; serverId: string }) {
+const CloudAgentCard = observer(function CloudAgentCard({
+  listed,
+  serverId,
+}: {
+  listed: CloudAgent;
+  serverId: string;
+}) {
+  const launch = listed.launch;
   const [pending, setPending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   useEffect(() => setActionError(null), [launch.revision, launch.state]);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const queryClient = useQueryClient();
   const { navigate } = useNavigate();
-  const agentKey = cloudAgentKey(serverId, launch.request_id);
+  const agentKey = listed.key;
+  const attempt = cloudOperationAttempts.get(startAttemptKey(agentKey));
+  // Asked only while a start is unconfirmed, to tell whether its session exists.
+  const withSessions = useCloudAgentSessions(listed, attempt?.status === 'unknown');
+  const openSession = (sessionId: string) =>
+    navigate('cloudSession', {
+      agentKey,
+      sessionId,
+      name: `${launch.name} · Session ${sessionId.slice(0, 8)}`,
+    });
   const newSession = async () => {
     setActionError(null);
     const result = await cloudOperationAttempts.run(
@@ -116,12 +136,7 @@ function CloudAgentCard({ launch, serverId }: { launch: CloudLaunch; serverId: s
       null
     );
     if (!result) return;
-    if (result.outcome.state === 'applied')
-      navigate('cloudSession', {
-        agentKey,
-        sessionId: result.sessionId,
-        name: `${launch.name} · Session ${result.sessionId.slice(0, 8)}`,
-      });
+    if (result.outcome.state === 'applied') openSession(result.sessionId);
     else if (result.outcome.state === 'failed') setActionError(result.outcome.message);
     else void queryClient.invalidateQueries({ queryKey: ['cloud-agents'] });
   };
@@ -202,16 +217,24 @@ function CloudAgentCard({ launch, serverId }: { launch: CloudLaunch; serverId: s
           {actionError}
         </p>
       )}
+      <CloudStartAttemptStatus
+        agentKey={agentKey}
+        sessions={(withSessions.sessions ?? []).filter((session) => !session.retired)}
+        onOpen={openSession}
+        onCheckAgain={() => void newSession()}
+        className="mt-2 flex-wrap"
+      />
       <div className="mt-2 flex flex-wrap gap-1">
         {launch.state === 'ready' && (
           <>
             <Button
               variant="outline"
               size="sm"
-              disabled={pending}
+              disabled={pending || attempt?.status === 'pending'}
+              aria-busy={attempt?.status === 'pending'}
               onClick={() => void newSession()}
             >
-              New session
+              {attempt?.status === 'pending' ? 'Starting session…' : 'New session'}
             </Button>
             <Button
               variant="ghost"
@@ -282,7 +305,7 @@ function CloudAgentCard({ launch, serverId }: { launch: CloudLaunch; serverId: s
       )}
     </div>
   );
-}
+});
 
 const AgentCard = observer(function AgentCard({
   agent,
