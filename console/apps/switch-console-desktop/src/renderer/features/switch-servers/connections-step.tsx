@@ -99,7 +99,7 @@ export function ConnectionsStep({
           <div
             role="group"
             aria-label="Connections"
-            className="grid max-h-96 grid-cols-1 gap-2 overflow-auto sm:grid-cols-2 md:grid-cols-3"
+            className="grid max-h-96 grid-cols-2 gap-2 overflow-auto"
           >
             {visible.map((connection) => {
               const available = connection.enabled && connection.slug === 'github';
