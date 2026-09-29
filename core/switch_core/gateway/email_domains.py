@@ -3,43 +3,42 @@
 A workspace can let anyone at a domain join it without an invitation. That is
 only meaningful for a domain one organisation controls: opening a workspace to
 a public e-mail provider's domain would open it to anyone who signs up there.
-The list below is the providers common enough that an admin is likely to hold
-an address at one; it is a guard against the obvious mistake, not a registry
-of every free-mail service there is.
+
+The refused domains are two published lists, vendored under
+`email_domain_lists/` with their sources in each file's header, plus the
+providers below that neither list carries. No list of free-mail services is
+complete, so this narrows what can be claimed rather than proving a domain is
+an organisation's.
 """
 
 from __future__ import annotations
 
-PUBLIC_EMAIL_DOMAINS = frozenset(
+from importlib.resources import files
+
+_LISTS = files("switch_core.gateway").joinpath("email_domain_lists")
+
+_NOT_IN_LISTS = frozenset(
     {
-        "163.com",
-        "aol.com",
-        "fastmail.com",
-        "gmail.com",
-        "gmx.com",
-        "gmx.de",
-        "gmx.net",
-        "googlemail.com",
         "hey.com",
-        "hotmail.com",
-        "icloud.com",
-        "live.com",
-        "mail.com",
-        "mail.ru",
-        "me.com",
-        "msn.com",
-        "outlook.com",
         "pm.me",
         "proton.me",
-        "protonmail.com",
-        "qq.com",
         "tutanota.com",
-        "web.de",
-        "yahoo.com",
-        "yandex.com",
-        "yandex.ru",
-        "zoho.com",
     }
+)
+
+
+def _read_domains(name: str) -> frozenset[str]:
+    lines = _LISTS.joinpath(name).read_text(encoding="utf-8").splitlines()
+    domains = frozenset(
+        line.strip() for line in lines if line.strip() and not line.startswith("#")
+    )
+    if not domains:
+        raise RuntimeError(f"email_domain_lists/{name} lists no domains")
+    return domains
+
+
+PUBLIC_EMAIL_DOMAINS = (
+    _read_domains("free.txt") | _read_domains("disposable.txt") | _NOT_IN_LISTS
 )
 
 
