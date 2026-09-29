@@ -44,6 +44,18 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.29.0] - 2026-09-29
+
+#### Added
+- **Agents can find, run and save workspace templates (#554, CHOO-2923).** New
+  agent tools — `get_template_guide`, `list_templates`, `get_template`,
+  `run_template`, `save_template`, `update_template`, `delete_template` — let an
+  agent discover the shared and owned templates available to it, read a
+  template's document and its `params`, create the rooms a template describes by
+  filling each slot with an existing agent, and save, update or delete its own
+  templates (private or shared). Backed by template runs, agent-run tracking,
+  and refusal reasons that explain why an action was declined.
+
 ### [0.28.1] - 2026-09-26
 
 #### Added
