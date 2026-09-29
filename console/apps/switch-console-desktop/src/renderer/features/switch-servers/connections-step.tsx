@@ -119,7 +119,9 @@ export function ConnectionsStep({
                     {connectionMonogram(connection.name)}
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium">{connection.name}</span>
+                    <span className="block truncate text-sm font-medium text-foreground">
+                      {connection.name}
+                    </span>
                     <span className="block truncate text-xs text-foreground-muted">
                       {connection.category}
                     </span>
