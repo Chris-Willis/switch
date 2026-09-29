@@ -37,8 +37,16 @@ trademark rights, which remain with the owners.
 
 These catalog entries show their monogram instead of a logo:
 
-- **Microsoft 365** (`microsoft-365`): Microsoft asked Simple Icons to remove
-  all its marks (simple-icons issue #11236), and its trademark guidelines do not
-  permit third parties to use its logos without a license.
-- **Salesforce** (`salesforce`): removed from Simple Icons, and Salesforce's
-  trademark guidelines require written permission to use its logos.
+- **Microsoft 365** (`microsoft-365`): no logo asset is bundled. Simple Icons
+  removed all Microsoft marks at Microsoft's request
+  (https://github.com/simple-icons/simple-icons/issues/11236). Microsoft's
+  Trademark and Brand Guidelines say logos and icons "will require a license
+  first" (https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks).
+- **Salesforce** (`salesforce`): no logo asset is bundled. Simple Icons removed
+  it in v16.0.0 (https://github.com/simple-icons/simple-icons/releases/tag/16.0.0).
+  Salesforce's Trademark & Copyright Usage Guidelines ask for a license or a
+  signed permission form before its logos are displayed
+  (https://www.salesforce.com/company/legal/intellectual/tmcusageguidelines/).
+
+These notes record why this app does not bundle those two assets. They are not
+a legal opinion on other uses.
