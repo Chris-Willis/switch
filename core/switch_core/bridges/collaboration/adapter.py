@@ -192,6 +192,14 @@ class RichContentFailed(Exception):
         self.text = text
 
 
+class ChannelNotBindable(ValueError):
+    """A room was asked to bind to a channel that is not this bridge's to bind.
+
+    A `ValueError` because it is the caller's input that is wrong, and every
+    path that binds a channel already answers those as a bad request.
+    """
+
+
 class RemovalFailed(Exception):
     """A published message could not be taken back, or not provably.
 
@@ -1138,6 +1146,23 @@ class CollaborationAdapter(ABC):
         kinds of chat cannot be reached by a link at all, and the operator is
         better told where to go instead than left to conclude a button is
         missing. Markdown-free plain text; None when there is nothing to add."""
+        return None
+
+    async def require_bindable_channel(self, channel_id: str) -> None:
+        """Refuse a channel id someone asked to bind a room to, unless it is
+        this bridge's own.
+
+        Asked before a room is bound to an existing channel by id, when a room
+        is created or moved, and never for a channel the platform delivered to
+        this bridge. The id is the caller's, and binding decides where the
+        room's messages are posted.
+
+        Nothing to refuse by default: a bridge whose credential is its own can
+        reach only what that credential reaches. A bridge on a connection
+        shared between organisations can reach every organisation's channels,
+        so being able to see one says nothing about whose it is, and it has to
+        say here which are its own. Raises `ChannelNotBindable`.
+        """
         return None
 
     @abstractmethod

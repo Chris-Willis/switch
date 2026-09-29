@@ -21,6 +21,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
     ActivitySnapshot,
+    ChannelNotBindable,
     CollaborationAdapter,
     RemovalFailed,
     RequestCard,
@@ -2326,6 +2327,24 @@ class DiscordAdapter(CollaborationAdapter):
             return None
         return f"https://discord.com/channels/{self._config.guild_id}"
 
+    async def require_bindable_channel(self, channel_id: str) -> None:
+        """Only a channel in this bridge's own guild.
+
+        The shared bot is in every tenant's guild, and even a bot of the
+        tenant's own serves one guild per bridge. A guild-less channel is a DM,
+        which shared delivery does not carry, so on the shared connection one
+        is not this bridge's either.
+        """
+        target = await self._get_channel(int(channel_id))
+        if (
+            getattr(target, "guild", None) is None
+            and self._config.event_delivery == "shared"
+        ):
+            raise ChannelNotBindable(
+                f"Discord channel {channel_id} is a direct message, which this "
+                "connection does not carry."
+            )
+
     async def get_channel_type(self, channel_id: str) -> ChannelType:
         target = await self._get_channel(int(channel_id))
         return self._channel_type_of(target)
@@ -3363,10 +3382,21 @@ class DiscordAdapter(CollaborationAdapter):
     # ── Webhooks & channels ──────────────────────────────────────────────────
 
     async def _get_channel(self, channel_id: int) -> Any:
+        """The channel, refused if it is in another guild.
+
+        Every path to a channel comes through here — binding, sending, webhooks,
+        threads — so a bridge reaches no guild but its own even if something
+        above it names one.
+        """
         client = self._require_client()
         channel = client.get_channel(channel_id)
         if channel is None:
             channel = await client.fetch_channel(channel_id)
+        guild = getattr(channel, "guild", None)
+        if guild is not None and guild.id != self._guild_id:
+            raise ChannelNotBindable(
+                f"Discord channel {channel_id} is not in this connection's server."
+            )
         return channel
 
     async def _get_guild(self) -> Any:

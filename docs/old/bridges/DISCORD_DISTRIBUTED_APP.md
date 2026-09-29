@@ -180,3 +180,13 @@ database.
 Disconnecting ends that row and detaches its rooms, but **revokes no token**:
 the credential is the application's, shared by every install, and is never ended
 on one customer's disconnect.
+
+## A bridge reaches only its own guild
+
+The shared bot is in every tenant's guild, so it can see every tenant's
+channels. Inbound traffic is routed by guild; outbound traffic goes wherever a
+room is bound, and a room can be bound to an existing channel by id — when it
+is created with a channel id, or moved onto a bridge with one. So the bridge
+refuses a channel outside its own guild at both, and every channel lookup the
+bridge makes refuses one as well, so nothing is posted to another guild even if
+a room names its channel.
