@@ -12,7 +12,8 @@ import {
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
-import { connectionMonogram, filterConnections } from './connections-filter';
+import { ConnectionIcon } from './connection-icon';
+import { filterConnections } from './connections-filter';
 import { ManagedGitHubStep } from './managed-github-step';
 
 const STATUS_LABEL: Record<ConnectionCatalogEntry['status'], string> = {
@@ -110,15 +111,10 @@ export function ConnectionsStep({
                   disabled={!available}
                   title={connection.description}
                   onClick={() => setOpen(connection.slug)}
-                  className="flex items-start gap-3 rounded-lg border border-border p-3 text-left enabled:cursor-pointer enabled:hover:bg-background-tertiary-2 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="group flex items-start gap-3 rounded-lg border border-border p-3 text-left enabled:cursor-pointer enabled:hover:bg-background-tertiary-2 disabled:cursor-not-allowed"
                 >
-                  <span
-                    aria-hidden
-                    className="flex size-9 shrink-0 items-center justify-center rounded-md bg-background-2 text-sm font-semibold text-foreground-muted"
-                  >
-                    {connectionMonogram(connection.name)}
-                  </span>
-                  <span className="min-w-0 flex-1">
+                  <ConnectionIcon slug={connection.slug} name={connection.name} />
+                  <span className="min-w-0 flex-1 group-disabled:opacity-60">
                     <span className="block truncate text-sm font-medium text-foreground">
                       {connection.name}
                     </span>
