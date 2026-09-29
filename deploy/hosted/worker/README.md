@@ -116,8 +116,8 @@ shape:
 }
 ```
 
-`provider.model`, `provider.definition` and `github` are the only optional
-deployment fields, matching the hosted bootstrap. `workerCapability` is the
+`provider.model`, `provider.definition`, `github` and `skills` are the only
+optional deployment fields, matching the hosted bootstrap. `workerCapability` is the
 capability Switch issued for the launch's current revision: 16 to 4096
 printable ASCII characters without whitespace. It is never logged. `deployment.revision`
 is that launch revision. The bootstrap keeps the deployment it first saved while
@@ -159,6 +159,21 @@ Every deployment runs the shared watcher, which starts and reuses the normal
 per-room sessions; `watch` is its automatic-session flag. `provider.definition` contains
 the same rendered Claude agent definition used by local agents; bootstrap writes
 it beneath the selected workspace and refuses a conflicting existing definition.
+
+## Connection skills
+
+An optional `skills` array carries the skills of the connections granted to the
+agent: `[{"slug": "github", "files": {"SKILL.md": "..."}}]`. The launcher
+rejects unknown keys, a repeated or malformed slug, a skill without `SKILL.md`,
+any file path that is absolute or has an empty, `.` or `..` segment, and more
+than 32 KiB of file content in total. The skills travel inside the deployment
+document; the root launcher writes nothing into the agent-owned state disk.
+Bootstrap, running as the agent, replaces
+`<state>/provider-home/claude/skills/<slug>/` for Claude Code,
+`<state>/provider-home/skills/<slug>/` (the Codex home) for Codex and
+`<state>/xdg/config/opencode/skills/<slug>/` for OpenCode at every start.
+Cursor and Antigravity have no skills directory, so bootstrap refuses a
+deployment that grants them skills; Core sends none for those providers.
 
 ## Disk and boot ownership
 

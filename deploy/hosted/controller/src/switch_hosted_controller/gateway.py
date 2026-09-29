@@ -373,6 +373,9 @@ class Gateway:
         model = spec["definition_attributes"].get("model")
         if model:
             deployment["provider"]["model"] = {"id": model}
+        # A Core that predates connection skills does not send the key.
+        if prepared.get("skills"):
+            deployment["skills"] = prepared["skills"]
         return {
             "version": 1,
             "assignment": {

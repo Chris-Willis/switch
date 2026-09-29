@@ -310,3 +310,22 @@ def test_error_launch_being_deleted_is_still_reported(tmp_path):
         )
     ]
     store.close()
+
+
+def test_bundle_carries_granted_skills_only_when_present(tmp_path):
+    gateway = bundle_gateway(tmp_path)
+    skills = [{"slug": "github", "files": {"SKILL.md": "---\nname: github\n---\n"}}]
+    bundled = gateway.bundle(prepared_launch(skills=skills), "vol-0123456789abcdef0")
+    assert bundled["deployment"]["skills"] == skills
+    for prepared in (prepared_launch(skills=[]), prepared_launch()):
+        assert "skills" not in gateway.bundle(prepared, "vol-0123456789abcdef0")["deployment"]
+    gateway.store.close()
+
+
+def test_worker_accepts_a_bundle_with_granted_skills(tmp_path):
+    worker = load_worker()
+    gateway = bundle_gateway(tmp_path)
+    skills = [{"slug": "github", "files": {"SKILL.md": "---\nname: github\n---\n"}}]
+    bundle = gateway.bundle(prepared_launch(skills=skills), "vol-0123456789abcdef0")
+    worker._validate_skills(bundle["deployment"]["skills"])
+    gateway.store.close()

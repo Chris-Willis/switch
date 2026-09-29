@@ -1432,3 +1432,41 @@ async def test_revocation_warning_is_scoped_to_action_owner(
             )
             is True
         )
+
+
+async def test_prepare_delivers_the_granted_github_skill(controller_app):
+    client, request_id, *_ = controller_app
+    result = await client.post(
+        f"/hosted-controller/{request_id}/prepare",
+        headers={"Authorization": "Bearer " + TOKEN},
+    )
+    assert result.status_code == 200, result.text
+    skills = result.json()["skills"]
+    assert [skill["slug"] for skill in skills] == ["github"]
+    assert skills[0]["files"]["SKILL.md"].startswith("---\nname: github\n")
+
+
+async def test_prepare_sends_no_skills_to_a_provider_without_a_skills_directory(
+    controller_app, caplog
+):
+    client, request_id, _, _, factory, _ = controller_app
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        launch.spec = {**launch.spec, "provider": "cursor"}
+        session.add(
+            ProviderConnection(
+                user_id=launch.owner_id,
+                provider="cursor",
+                kind="api-key",
+                encrypted_credential=encrypt_token("SYNTHETIC-CURSOR", "test-secret"),
+                verified_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+    result = await client.post(
+        f"/hosted-controller/{request_id}/prepare",
+        headers={"Authorization": "Bearer " + TOKEN},
+    )
+    assert result.status_code == 200, result.text
+    assert result.json()["skills"] == []
+    assert "granted connection skills are not installed" in caplog.text

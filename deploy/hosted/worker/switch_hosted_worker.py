@@ -48,6 +48,12 @@ SECRET_ARN_RE = re.compile(
 )
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/+\-]{0,199}$")
 WORKER_CAPABILITY_RE = re.compile(r"^[\x21-\x7e]{16,4096}$")
+SKILL_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+SKILL_PATH_RE = re.compile(
+    r"^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}(/[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}){0,7}$"
+)
+MAX_SKILL_BYTES = 32 * 1024
+MAX_SKILLS = 16
 
 
 class WorkerError(RuntimeError):
@@ -381,7 +387,7 @@ def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
             "workerCapabilityPath",
             "watch",
         },
-        {"github"},
+        {"github", "skills"},
         "hosted deployment",
     )
     if value["version"] != 1:
@@ -482,7 +488,41 @@ def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
             )
         if github["credentialPath"] != str(RUNTIME_DIRECTORY / "secrets/github"):
             raise WorkerError("Hosted deployment GitHub credential path is not fixed.")
+    if "skills" in value:
+        _validate_skills(value["skills"])
     return value
+
+
+def _validate_skills(value: Any) -> None:
+    if not isinstance(value, list) or not 0 < len(value) <= MAX_SKILLS:
+        raise WorkerError("Deployment skills are invalid.")
+    slugs: set[str] = set()
+    total = 0
+    for item in value:
+        skill = _strict(item, {"slug", "files"}, set(), "deployment skill")
+        slug = skill["slug"]
+        if (
+            not isinstance(slug, str)
+            or not SKILL_SLUG_RE.fullmatch(slug)
+            or slug in slugs
+        ):
+            raise WorkerError("Deployment skill name is invalid or repeated.")
+        slugs.add(slug)
+        files = skill["files"]
+        if not isinstance(files, dict) or "SKILL.md" not in files:
+            raise WorkerError("Deployment skill must include SKILL.md.")
+        for path, content in files.items():
+            if (
+                not isinstance(path, str)
+                or not SKILL_PATH_RE.fullmatch(path)
+                or any(part in {".", ".."} for part in path.split("/"))
+            ):
+                raise WorkerError("Deployment skill file path is unsafe.")
+            if not isinstance(content, str) or "\x00" in content:
+                raise WorkerError("Deployment skill file content is invalid.")
+            total += len(content.encode())
+    if total > MAX_SKILL_BYTES:
+        raise WorkerError("Deployment skills exceed the size limit.")
 
 
 def _github_credential(value: Any) -> str:

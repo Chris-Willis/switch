@@ -380,6 +380,39 @@ class WorkerTests(unittest.TestCase):
                 with self.assertRaisesRegex(worker.WorkerError, "owner/repository"):
                     worker.parse_secret_document(json.dumps(document), config())
 
+    def test_deployment_skills_are_strict_bounded_and_relative(self):
+        document = json.loads(github_secret())
+        skill = {
+            "slug": "github",
+            "files": {"SKILL.md": "---\nname: github\n---\n", "scripts/pr.sh": "echo"},
+        }
+        document["deployment"]["skills"] = [skill]
+        parsed = worker.parse_secret_document(json.dumps(document), config())
+        self.assertEqual(parsed.deployment["skills"], [skill])
+        invalid = {
+            "absolute path": [
+                {**skill, "files": {"SKILL.md": "x", "/etc/passwd": "x"}}
+            ],
+            "parent segment": [{**skill, "files": {"SKILL.md": "x", "a/../b": "x"}}],
+            "dot segment": [{**skill, "files": {"SKILL.md": "x", "./b": "x"}}],
+            "backslash": [{**skill, "files": {"SKILL.md": "x", "a\\b": "x"}}],
+            "unknown key": [{**skill, "version": 1}],
+            "missing SKILL.md": [{**skill, "files": {"README.md": "x"}}],
+            "repeated slug": [skill, skill],
+            "unsafe slug": [{**skill, "slug": "../github"}],
+            "binary content": [{**skill, "files": {"SKILL.md": "a\x00b"}}],
+            "non-text content": [{**skill, "files": {"SKILL.md": 1}}],
+            "empty list": [],
+            "oversize": [
+                {**skill, "files": {"SKILL.md": "x" * (worker.MAX_SKILL_BYTES + 1)}}
+            ],
+        }
+        for label, skills in invalid.items():
+            with self.subTest(label=label):
+                document["deployment"]["skills"] = skills
+                with self.assertRaises(worker.WorkerError):
+                    worker.parse_secret_document(json.dumps(document), config())
+
     def test_github_credential_requires_bounded_printable_ascii_without_whitespace(
         self,
     ):

@@ -1,3 +1,4 @@
+import logging
 import secrets
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -11,6 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.service import AgentExistsError, ProtocolService
 from switch_core.config import SwitchConfig
+from switch_core.connections.loader import (
+    CATALOG,
+    SKILL_PROVIDERS,
+    deployment_skills,
+)
 from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
     Agent,
@@ -48,6 +54,8 @@ from switch_core.providers.github_revocations import (
 )
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/hosted-controller")
 
@@ -239,6 +247,12 @@ async def prepare(
             raise HTTPException(409, "The cloud agent credential is unavailable.")
         if launch.spec["addressing_policy"] is not None:
             agent.addressing_policy = launch.spec["addressing_policy"]
+        if provider not in SKILL_PROVIDERS:
+            logger.warning(
+                "Cloud launch %s: %s has no skills directory; granted connection skills are not installed.",
+                launch.id,
+                provider,
+            )
         remember_repository_token(session, launch, repository, config)
         launch.state = "provisioning"
         launch.error = None
@@ -264,6 +278,9 @@ async def prepare(
             "github_credential": repository.token,
             "github_expires_at": repository.expires_at.isoformat(),
             "repository": repository.repository_name,
+            "skills": deployment_skills(CATALOG, ["github"])
+            if provider in SKILL_PROVIDERS
+            else [],
             "spec": launch.spec,
         }
     except BaseException as error:
