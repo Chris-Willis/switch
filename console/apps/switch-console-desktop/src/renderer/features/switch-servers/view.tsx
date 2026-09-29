@@ -50,6 +50,8 @@ import { ServerResetSection } from './server-reset-section';
 import { ServerSectionTitlebar } from './server-section-titlebar';
 import { ServerSignInFields, useServerSignIn } from './server-sign-in';
 import { ServerStatTiles } from './server-stat-tiles';
+import { useSharedActionConfirm } from './shared-action-confirm';
+import { SharedConsolesSection } from './shared-consoles-section';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
 import { TelemetryConsentNotice } from './TelemetryConsentNotice';
@@ -93,6 +95,9 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   const serverId = useServerId();
   const store = switchServersStore;
   const server = store.servers.find((s) => s.id === serverId);
+  // A remote server is shared, so restarting it from a notice reaches everyone.
+  const remoteHost = server?.managementKind === 'remote' ? server.sshHost : null;
+  const confirm = useSharedActionConfirm(remoteHost);
   const showEditServerModal = useShowModal('addServerModal');
   const showRenameServerModal = useShowModal('renameServerModal');
   const showDeleteServerModal = useShowModal('deleteServerModal');
@@ -260,16 +265,25 @@ const ServerMainPanel = observer(function ServerMainPanel() {
                 )}
                 <DropdownMenuSeparator />
                 {/* Only a server Switch Console runs is one it can delete; for
-                    anyone else's, all we can do is let go of it. Both stay red:
-                    either way every agent pointed at this server loses it. */}
+                    anyone else's, all we can do is let go of it. A remote one
+                    offers both, since its host is shared. All stay red: either
+                    way every agent pointed at this server loses it. */}
                 <DropdownMenuItem
                   variant="destructive"
                   onClick={() =>
                     showDeleteServerModal({ serverId, onSuccess: () => navigate('home') })
                   }
                 >
-                  {server.managed ? <Trash2 className="size-4" /> : <Unplug className="size-4" />}
-                  {server.managed ? 'Delete server…' : 'Disconnect from server…'}
+                  {server.managed && server.managementKind !== 'remote' ? (
+                    <Trash2 className="size-4" />
+                  ) : (
+                    <Unplug className="size-4" />
+                  )}
+                  {!server.managed
+                    ? 'Disconnect from server…'
+                    : server.managementKind === 'remote'
+                      ? 'Disconnect or delete…'
+                      : 'Delete server…'}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -290,7 +304,14 @@ const ServerMainPanel = observer(function ServerMainPanel() {
           upgrade={serverUpgrade(server)}
           progress={serverProgress(server)}
           disabled={stackTransitioning}
-          onRestart={() => restartStack(server)}
+          affected={confirm.who}
+          onRestart={() =>
+            // A held update names who it reaches on its own button; a stopped
+            // server reaches nobody.
+            isManagedRunning(server) && serverUpgrade(server)?.state !== 'held'
+              ? confirm.request('restart', () => restartStack(server))
+              : restartStack(server)
+          }
         />
 
         {/* Same placement, and for the same reason: a consent decision that has
@@ -301,10 +322,12 @@ const ServerMainPanel = observer(function ServerMainPanel() {
             running: server.managed && isManagedRunning(server),
             deployed: serverDeployedTelemetry(server),
             consent: telemetry?.enabled ?? true,
+            sharedWithOthers: confirm.shared,
           })}
           disabled={stackTransitioning}
-          onRestart={() => restartStack(server)}
+          onRestart={() => confirm.request('restart', () => restartStack(server))}
         />
+        {confirm.dialog}
 
         {detailsVisible && unreachable && <ServerUnreachableCard serverId={serverId} />}
 
@@ -335,6 +358,10 @@ const ServerMainPanel = observer(function ServerMainPanel() {
           ) : (
             <LocalServerControls />
           ))}
+
+        {server.managed && server.managementKind === 'remote' && server.sshHost && (
+          <SharedConsolesSection sshHost={server.sshHost} />
+        )}
 
         {detailsVisible && !unreachable && (
           <div className="flex items-center justify-between gap-3">
@@ -368,6 +395,8 @@ const ServerMainPanel = observer(function ServerMainPanel() {
                 ? `Reset server on ${server.sshHost}`
                 : 'Reset server on this computer'
             }
+            shared={server.managementKind === 'remote'}
+            affected={confirm.who}
             disabled={stackTransitioning}
             onConfirm={() => {
               if (server.managementKind === 'remote' && server.sshHost) {

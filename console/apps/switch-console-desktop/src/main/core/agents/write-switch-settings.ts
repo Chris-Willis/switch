@@ -185,7 +185,10 @@ export type RemoveSwitchSettingsResult =
   | { kind: 'write'; content: string }
   | { kind: 'delete' };
 
-export function removeSwitchSettings(existingRaw: string | null): RemoveSwitchSettingsResult {
+export function removeSwitchSettings(
+  existingRaw: string | null,
+  switchAgentId: string | null
+): RemoveSwitchSettingsResult {
   if (existingRaw === null) return { kind: 'skip' };
 
   let parsed: unknown;
@@ -208,6 +211,11 @@ export function removeSwitchSettings(existingRaw: string | null): RemoveSwitchSe
     env !== null &&
     ('SWITCH_API_ENDPOINT' in env || 'SWITCH_API_TOKEN' in env || 'SWITCH_AGENT_ID' in env);
   if (!hasSwitchCreds) return { kind: 'skip' };
+  // Another agent's credentials in the legacy one-file layout are its to keep.
+  // A file naming no agent is an interrupted write, and goes.
+  if (typeof env.SWITCH_AGENT_ID === 'string' && env.SWITCH_AGENT_ID !== switchAgentId) {
+    return { kind: 'skip' };
+  }
 
   const result: Record<string, unknown> = { ...existing };
 

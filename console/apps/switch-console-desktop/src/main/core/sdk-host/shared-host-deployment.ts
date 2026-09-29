@@ -86,6 +86,26 @@ export async function deploySharedHost(
   return { ctx, root, entrypoint };
 }
 
+/** The state root of `identity`'s watcher on an SSH host, and a context to act
+ * in it, without deploying the host bundle. */
+export async function resolveWatcherRoot(
+  transport: Extract<LocationTransport, { kind: 'ssh' }>,
+  sessionPath: string,
+  identity: string
+): Promise<{ ctx: IExecutionContext; root: string }> {
+  const proxy = await ensureSshConnected(transport.connectionId, transport.host);
+  const ctx = new SshExecutionContext(proxy, { root: sessionPath });
+  const key = createHash('sha256').update(identity).digest('hex');
+  const { stdout } = await ctx.exec('node', [
+    '-e',
+    RESOLVE_STATE_ROOT,
+    key,
+    'sdk-watchers',
+    identity,
+  ]);
+  return { ctx, root: stdout.trim() };
+}
+
 export async function runSharedHostCommand(
   transport: LocationTransport,
   deployed: Awaited<ReturnType<typeof deploySharedHost>>,

@@ -34,6 +34,7 @@ vi.mock('@main/core/execution-context/ssh-execution-context', () => ({
   },
 }));
 vi.mock('@main/core/agents/agent-location', () => ({ getAgentLocation: mocks.location }));
+vi.mock('@main/core/agents/updateAgent', () => ({ updateAgent: vi.fn() }));
 vi.mock('@main/core/locations/location-manager', () => ({
   locationManager: {
     openLocation: async () => ({ success: true, data: { fs: {}, settings: {} } }),
@@ -173,7 +174,7 @@ it.each([true, false])(
   async (autoStart) => {
     mocks.location.mockResolvedValue({ id: 'local', dir: '/work', sshHost: null });
     mocks.spawning.mockResolvedValue(autoStart ? ['agent-1'] : []);
-    await applyControllerState('agent-1', 'restore');
+    await applyControllerState('agent-1', 'restore', 'host');
     expect(mocks.startLocal.mock.calls[0][1]).toEqual({ intent: 'restore', spawning: autoStart });
   }
 );
@@ -210,7 +211,7 @@ it('leaves a stopped controller off the air however auto-start is set', async ()
   mocks.location.mockResolvedValue({ id: 'local', dir: '/work', sshHost: null });
   mocks.stopped.mockResolvedValue(['agent-1']);
   mocks.spawning.mockResolvedValue(['agent-1']);
-  await applyControllerState('agent-1', 'restore');
+  await applyControllerState('agent-1', 'restore', 'host');
   expect(mocks.stopLocal).toHaveBeenCalledWith('switch-agent-1');
   expect(mocks.startLocal).not.toHaveBeenCalled();
 });
