@@ -1089,6 +1089,47 @@ export async function fetchBridges(server: SwitchServer): Promise<RemoteBridge[]
   return json.map(mapBridge);
 }
 
+/**
+ * The messaging platforms this deployment has its own app for, which a
+ * workspace can install with the platform's OAuth consent screen instead of
+ * registering an app and pasting its tokens. Empty on a deployment that
+ * registered none.
+ *
+ * A 404 is a server from before the route existed; it has no app to install
+ * either, so it answers empty rather than failing the connect dialog.
+ */
+export async function fetchInstallablePlatforms(server: SwitchServer): Promise<string[]> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/messaging-apps', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return [];
+    throw cause;
+  }
+  const json = (await res.json()) as { platforms: string[] };
+  return json.platforms;
+}
+
+/**
+ * Start installing the deployment's app for `platform` into the workspace the
+ * session is bound to. Returns the platform's consent URL, which must be
+ * opened in a real browser: the platform refuses to render it in a frame, and
+ * the server finishes the install on its own public callback, so nothing comes
+ * back to Switch Console but the new bridge.
+ */
+export async function beginMessagingAppInstall(
+  server: SwitchServer,
+  platform: string
+): Promise<string> {
+  const res = await gatewayFetch(
+    server,
+    `/messaging-apps/${encodeURIComponent(platform)}/install`,
+    { authenticated: true, method: 'POST' }
+  );
+  const json = (await res.json()) as { authorize_url: string };
+  return json.authorize_url;
+}
+
 /** Field names that hold a credential and must be masked on input. Mirrors the
  * operator dashboard's `isSecretField`, widened to catch `*_private_key` (the
  * Teams bridge's Graph encryption key), which its bare `api_key` alternation

@@ -29,6 +29,7 @@ import {
 } from '@renderer/lib/ui/select';
 import { cn } from '@renderer/utils/utils';
 import type { CreateBridgeResult } from '@shared/core/switch-servers/switch-servers';
+import { InstallMessagingAppPanel } from './InstallMessagingAppPanel';
 import { switchServersStore } from './switch-servers-store';
 import { administersWorkspaceInScope } from './workspace-admin';
 
@@ -81,6 +82,18 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
     enabled: workspaceId !== null,
   });
 
+  // Asked only of someone who may install: the route refuses everyone else, and
+  // for them the dialog already says why nothing here will work.
+  const installableQuery = useQuery({
+    queryKey: ['installable-messaging-apps', workspaceId],
+    queryFn: () => rpc.workspaces.listInstallablePlatforms(workspaceId as string),
+    enabled: workspaceId !== null && isAdmin,
+  });
+  const installable = installableQuery.data ?? [];
+  const [useOwnApp, setUseOwnApp] = useState(false);
+  const offerInstall = installable.length > 0 && !useOwnApp;
+  const showForm = !offerInstall && !(isAdmin && installableQuery.isLoading);
+
   const types = useMemo(() => typesQuery.data ?? [], [typesQuery.data]);
   const selectedType = types.find((t) => t.key === typeKey) ?? null;
   // Unknown until the type list has loaded; assume supported so the checkbox
@@ -116,6 +129,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
     return !(value ?? '').trim();
   });
   const canSubmit =
+    showForm &&
     workspaceId !== null &&
     isAdmin &&
     !!selectedType &&
@@ -183,6 +197,20 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
     setCloseGuard,
   ]);
 
+  const handleInstalled = useCallback(
+    (platform: string, bridge: { bridgeId: string; displayName: string }) => {
+      onSuccess({
+        ...bridge,
+        // Unknown only if the type list failed to load; offering the link step
+        // then costs a search that finds nothing, where skipping it would hide
+        // a step that works.
+        directorySearchSupported:
+          types.find((t) => t.key === platform)?.directorySearchSupported ?? true,
+      });
+    },
+    [onSuccess, types]
+  );
+
   return (
     <>
       <DialogHeader showCloseButton={false}>
@@ -203,37 +231,74 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
             </p>
           )}
 
-          <Field>
-            <FieldLabel>Messaging app</FieldLabel>
-            <Select
-              value={typeKey ?? ''}
-              onValueChange={(next) => handleTypeChange(next ?? null)}
-              disabled={typesQuery.isLoading || types.length === 0 || !isAdmin}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder={typesQuery.isLoading ? 'Loading…' : 'Choose a platform'}>
-                  {selectedType ? bridgePlatformLabel(selectedType.key) : undefined}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {types.map((type) => (
-                  <SelectItem key={type.key} value={type.key}>
-                    <span className="flex items-center gap-2">
-                      {hasBridgeIcon(type.key) && <BridgeIcon bridgeType={type.key} size={16} />}
-                      {bridgePlatformLabel(type.key)}
-                    </span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {typesQuery.isError && (
-              <p className="mt-1 text-xs text-destructive">
-                {failureText(typesQuery.error, 'Could not load the available messaging apps.')}
-              </p>
-            )}
-          </Field>
+          {installableQuery.isError && (
+            <p className="text-xs text-destructive">
+              {failureText(
+                installableQuery.error,
+                'Could not check which messaging apps this server can add for you, so only connecting your own app is offered.'
+              )}
+            </p>
+          )}
 
-          {selectedType && (
+          {isAdmin && installableQuery.isLoading && (
+            <p className="text-xs text-foreground-muted">Loading…</p>
+          )}
+
+          {offerInstall && workspaceId !== null && (
+            <>
+              {installable.map((platform) => (
+                <InstallMessagingAppPanel
+                  key={platform}
+                  workspaceId={workspaceId}
+                  platform={platform}
+                  onInstalled={(bridge) => handleInstalled(platform, bridge)}
+                />
+              ))}
+              <button
+                type="button"
+                className="w-fit text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground"
+                onClick={() => setUseOwnApp(true)}
+              >
+                Use your own app instead
+              </button>
+            </>
+          )}
+
+          {showForm && (
+            <Field>
+              <FieldLabel>Messaging app</FieldLabel>
+              <Select
+                value={typeKey ?? ''}
+                onValueChange={(next) => handleTypeChange(next ?? null)}
+                disabled={typesQuery.isLoading || types.length === 0 || !isAdmin}
+              >
+                <SelectTrigger>
+                  <SelectValue
+                    placeholder={typesQuery.isLoading ? 'Loading…' : 'Choose a platform'}
+                  >
+                    {selectedType ? bridgePlatformLabel(selectedType.key) : undefined}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {types.map((type) => (
+                    <SelectItem key={type.key} value={type.key}>
+                      <span className="flex items-center gap-2">
+                        {hasBridgeIcon(type.key) && <BridgeIcon bridgeType={type.key} size={16} />}
+                        {bridgePlatformLabel(type.key)}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {typesQuery.isError && (
+                <p className="mt-1 text-xs text-destructive">
+                  {failureText(typesQuery.error, 'Could not load the available messaging apps.')}
+                </p>
+              )}
+            </Field>
+          )}
+
+          {showForm && selectedType && (
             <>
               <Field>
                 <FieldLabel>Name</FieldLabel>
@@ -365,9 +430,11 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
         <Button variant="outline" onClick={onClose} disabled={isSubmitting}>
           Cancel
         </Button>
-        <ConfirmButton onClick={() => void handleSubmit()} disabled={!canSubmit}>
-          {isSubmitting ? 'Connecting…' : 'Connect'}
-        </ConfirmButton>
+        {showForm && (
+          <ConfirmButton onClick={() => void handleSubmit()} disabled={!canSubmit}>
+            {isSubmitting ? 'Connecting…' : 'Connect'}
+          </ConfirmButton>
+        )}
       </DialogFooter>
     </>
   );
