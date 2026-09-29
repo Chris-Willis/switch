@@ -47,7 +47,10 @@ auth:
   type: oauth               # oauth | api_key
 ```
 
-There are no logos; the Console draws a monogram from the name.
+The catalog has no logos. The Console bundles one logo per slug in
+`console/apps/switch-console-desktop/src/assets/images/connections/`, with
+sources in `NOTICE.md`, and draws a monogram from the name for a slug with no
+logo.
 
 `core/switch_core/connections/loader.py` validates the whole catalog when
 Core imports it, so a malformed entry stops Core from starting. The loader
@@ -146,7 +149,7 @@ In the cloud onboarding flow, the step that used to connect GitHub directly
 is now a Connections grid:
 
 - a search box that matches name or category, ignoring case;
-- one card per entry, showing the monogram, name, category and a status
+- one card per entry, showing the logo, name, category and a status
   badge; enabled entries are listed first;
 - the GitHub card opens the existing GitHub connection step, and going back
   returns to the grid and refreshes it;
