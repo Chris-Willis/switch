@@ -1,4 +1,14 @@
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -11,6 +21,7 @@ import {
   runHostedBootstrap,
 } from './hosted-bootstrap';
 import { githubLaunchEnvironment } from './hosted-github';
+import { hostedSkillsDirectory } from './hosted-skills';
 import type { superviseSharedHost } from './supervisor';
 
 const roots: string[] = [];
@@ -553,6 +564,69 @@ it('passes an obsolete worker through unchanged', async () => {
       },
     })
   ).rejects.toBe(obsolete);
+});
+
+it('installs granted connection skills into the provider skills directory before launch', async () => {
+  const input = await fixture();
+  input.spec.skills = [
+    {
+      slug: 'github',
+      files: { 'SKILL.md': '---\nname: github\n---\n', 'reference/gh.md': 'gh pr list\n' },
+    },
+  ];
+  await writeFile(input.specPath, JSON.stringify(input.spec));
+  const stale = join(input.state, 'provider-home', 'claude', 'skills', 'github');
+  await mkdir(input.state, { mode: 0o700 });
+  await mkdir(stale, { recursive: true, mode: 0o700 });
+  await writeFile(join(stale, 'old.md'), 'stale');
+  mockHosted();
+  const supervise = vi.fn<typeof superviseSharedHost>(async () => {
+    expect(await readFile(join(stale, 'SKILL.md'), 'utf8')).toBe('---\nname: github\n---\n');
+  });
+  await run(input, { supervise });
+  expect(supervise).toHaveBeenCalledOnce();
+  expect((await readdir(stale)).sort()).toEqual(['SKILL.md', 'reference']);
+  expect(await readFile(join(stale, 'reference', 'gh.md'), 'utf8')).toBe('gh pr list\n');
+  expect(await readdir(join(input.state, 'provider-home', 'claude', 'skills'))).toEqual(['github']);
+});
+
+it('rejects unsafe, oversized or unsupported connection skills', async () => {
+  const { spec } = await fixture();
+  const skill = (files: Record<string, string>, slug = 'github') => ({ slug, files });
+  const valid = skill({ 'SKILL.md': 'x' });
+  expect(hostedDeploymentSpecSchema.safeParse({ ...spec, skills: [valid] }).success).toBe(true);
+  for (const skills of [
+    [],
+    [skill({ 'README.md': 'x' })],
+    [skill({ 'SKILL.md': 'x', '../escape.md': 'x' })],
+    [skill({ 'SKILL.md': 'x', '/abs.md': 'x' })],
+    [skill({ 'SKILL.md': 'x', 'a/../b.md': 'x' })],
+    [skill({ 'SKILL.md': 'x\0' })],
+    [skill({ 'SKILL.md': 'x'.repeat(32 * 1024 + 1) })],
+    [skill({ 'SKILL.md': 'x' }, '../github')],
+    [valid, valid],
+    [{ ...valid, extra: true }],
+  ])
+    expect(hostedDeploymentSpecSchema.safeParse({ ...spec, skills }).success).toBe(false);
+  for (const kind of ['cursor', 'antigravity'] as const)
+    expect(
+      hostedDeploymentSpecSchema.safeParse({
+        ...spec,
+        provider: { ...spec.provider, kind },
+        skills: [valid],
+      }).success
+    ).toBe(false);
+});
+
+it('maps each skills-capable provider to the directory its agent reads', () => {
+  const env = { HOME: '/r/home', CLAUDE_CONFIG_DIR: '/r/claude', XDG_CONFIG_HOME: '/r/xdg' };
+  expect(hostedSkillsDirectory('claude', env)).toBe('/r/claude/skills');
+  expect(hostedSkillsDirectory('codex', { ...env, CODEX_HOME: '/r/codex' })).toBe(
+    '/r/codex/skills'
+  );
+  expect(hostedSkillsDirectory('codex', env)).toBe('/r/home/.codex/skills');
+  expect(hostedSkillsDirectory('opencode', env)).toBe('/r/xdg/opencode/skills');
+  expect(() => hostedSkillsDirectory('opencode', { HOME: '/r/home' })).toThrow(/not configured/);
 });
 
 it('redacts raw and encoded GitHub credentials from launcher failures', async () => {

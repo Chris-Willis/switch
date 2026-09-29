@@ -29,6 +29,12 @@ import {
 import { redactHostedText } from './hosted-log';
 import { runHostedPreflight } from './hosted-preflight';
 import { fetchHostedProvider, hostedRequest, materializeHostedProvider } from './hosted-provider';
+import {
+  hostedSkillsDirectory,
+  hostedSkillsSchema,
+  installHostedSkills,
+  supportsHostedSkills,
+} from './hosted-skills';
 import { checkProviderReadiness } from './provider-readiness';
 import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
 import type { superviseSharedHost } from './supervisor';
@@ -85,6 +91,10 @@ export const hostedDeploymentSpecSchema = z
     runtimeMode: z.enum(['approval-required', 'auto-accept-edits', 'full-access']),
     switchCredentialsPath: absolutePath,
     workerCapabilityPath: absolutePath,
+    skills: hostedSkillsSchema.optional(),
+  })
+  .refine((spec) => spec.skills === undefined || supportsHostedSkills(spec.provider.kind), {
+    message: 'This provider has no skills directory to install connection skills into.',
   })
   .refine((spec) => !spec.github?.refresh || spec.github.repository !== undefined, {
     message: 'GitHub credential renewal requires a selected repository.',
@@ -646,6 +656,11 @@ export async function runHostedBootstrap(
         prepared.providerEnvironment
       );
     await writeDefinition(spec, false);
+    if (spec.skills && supportsHostedSkills(spec.provider.kind))
+      await installHostedSkills(
+        hostedSkillsDirectory(spec.provider.kind, prepared.providerEnvironment),
+        spec.skills
+      );
     await dependencies.supervise({
       root: prepared.root,
       executable: process.execPath,
