@@ -110,7 +110,7 @@ export function ConnectionsStep({
                   disabled={!available}
                   title={connection.description}
                   onClick={() => setOpen(connection.slug)}
-                  className="flex items-center gap-3 rounded-lg border border-border p-3 text-left enabled:cursor-pointer enabled:hover:bg-background-tertiary-2 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="flex items-start gap-3 rounded-lg border border-border p-3 text-left enabled:cursor-pointer enabled:hover:bg-background-tertiary-2 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <span
                     aria-hidden
@@ -125,10 +125,13 @@ export function ConnectionsStep({
                     <span className="block truncate text-xs text-foreground-muted">
                       {connection.category}
                     </span>
+                    <Badge
+                      className="mt-1.5"
+                      variant={connection.status === 'connected' ? 'outline' : 'secondary'}
+                    >
+                      {STATUS_LABEL[connection.status]}
+                    </Badge>
                   </span>
-                  <Badge variant={connection.status === 'connected' ? 'outline' : 'secondary'}>
-                    {STATUS_LABEL[connection.status]}
-                  </Badge>
                 </button>
               );
             })}
