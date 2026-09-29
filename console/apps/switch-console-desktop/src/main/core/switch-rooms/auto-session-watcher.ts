@@ -4,39 +4,34 @@ import { getAgents } from '@main/core/agents/getAgents';
 import { onManagedServerUpgraded } from '@main/core/managed-switch-server/session-readiness';
 import type { HostReachabilityChange } from '@main/core/remote-hosts/host-reachability-service';
 import { hostReachabilityService } from '@main/core/remote-hosts/production-host-reachability';
-import { disposeLocalHosts } from '@main/core/sdk-host/local-host';
+import { disposeLocalHosts, type WatcherIntent } from '@main/core/sdk-host/local-host';
 import { applyControllerState, configureSharedWatcher } from '@main/core/sdk-host/shared-watcher';
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
-import {
-  listAutoSessionAgentIds,
-  listAutoSessionSubagents,
-  setAutoSessionAgent,
-  setAutoSessionSubagent,
-} from './auto-session-store';
+import { listAutoSessionSubagents, setAutoSessionSubagent } from './auto-session-store';
 
 type Subagent = { parentAgentId: string; name: string };
+
+/** The wait before trying again a controller that could not be brought up. */
+export const RETRY_FIRST_MS = 30_000;
+/** Retries back off by doubling, up to this. */
+export const RETRY_MAX_MS = 5 * 60_000;
 
 class AutoSessionWatcher {
   private watchingHosts = false;
   private watchingUpgrades = false;
   private readonly recovering = new Map<string, { again: boolean }>();
+  private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
 
   /**
-   * Brings up a controller for every agent linked to Switch, whether or not it
-   * may start sessions: an agent is reachable because it exists, and the
-   * auto-start setting only decides what its controller does with a message it
-   * is addressed in.
-   *
-   * Each server's agents are brought up on their own, because a controller
-   * waits for its managed server to finish upgrading and that must not hold
-   * back the agents of every other server.
+   * Brings up a controller for every agent linked to Switch. Each server's
+   * agents are brought up on their own, because a controller waits for its
+   * managed server to finish upgrading and that must not hold back the agents
+   * of every other server.
    */
   async initialize(): Promise<void> {
     this.watchHostRecovery();
     this.watchServerUpgrades();
-    for (const agentId of await listAutoSessionAgentIds())
-      if (!(await getAgentById(agentId))) await setAutoSessionAgent(agentId, false);
     const agents = await getAgents();
     const subagents: Subagent[] = [];
     for (const subagent of await listAutoSessionSubagents()) {
@@ -77,22 +72,29 @@ class AutoSessionWatcher {
     }
   }
 
+  /**
+   * Each host's agents are brought up in turn, and the hosts side by side:
+   * a host whose connection is slow or wedged holds back only its own agents,
+   * never another host's or this machine's, and one host is not sent every
+   * agent's launch at once over its one connection.
+   *
+   * Restoring a controller an earlier run was already meant to be holding is
+   * not a decision to reclaim a connection something else has since taken: one
+   * that stood down stays down until someone asks for it by name.
+   */
   private async startControllers(agents: Agent[], subagents: Subagent[]): Promise<void> {
+    const hosts = new Map<string, Agent[]>();
     for (const agent of agents) {
       if (!agent.switchAgentId) continue;
-      try {
-        // Restoring a controller an earlier run was already meant to be
-        // holding, not a decision to reclaim a connection something else has
-        // since taken: one that stood down stays down until someone asks for it
-        // by name.
-        await applyControllerState(agent.id, 'restore');
-      } catch (error) {
-        log.error('Shared SDK watcher could not start', {
-          agentId: agent.id,
-          error: String(error),
-        });
-      }
+      const location = await getAgentLocation(agent).catch(() => null);
+      const host = location?.sshHost ?? '';
+      hosts.set(host, [...(hosts.get(host) ?? []), agent]);
     }
+    await Promise.all(
+      [...hosts.values()].map(async (members) => {
+        for (const agent of members) await this.bringUp(agent.id, 'restore');
+      })
+    );
     for (const { parentAgentId, name } of subagents) {
       try {
         await this.startForSubagent(parentAgentId, name);
@@ -148,21 +150,68 @@ class AutoSessionWatcher {
       if (!agent.switchAgentId) continue;
       const location = await getAgentLocation(agent).catch(() => null);
       if (location?.sshHost !== sshHost) continue;
-      try {
-        // A host coming back is not somebody asking for a connection back, so
-        // a controller that stood down after a takeover stays down and one
-        // stopped by hand stays stopped.
-        await applyControllerState(agent.id, 'restore');
-      } catch (error) {
-        log.error('Shared SDK watcher could not start after its host returned', {
-          agentId: agent.id,
-          error: String(error),
-        });
-      }
+      // A host coming back is not somebody asking for a connection back, so a
+      // controller that stood down after a takeover stays down and one stopped
+      // by hand stays stopped.
+      await this.bringUp(agent.id, 'restore');
     }
   }
 
+  /**
+   * Puts an agent's controller in the state its settings describe, and keeps
+   * trying until it gets there. A controller that cannot be brought up —
+   * its host unreachable, its connection wedged, its server mid-upgrade — is
+   * tried again after `RETRY_FIRST_MS`, doubling up to `RETRY_MAX_MS`, until
+   * it comes up or the agent is gone. Nothing else would try it again, so
+   * without this the agent stays off the air until something unrelated, such
+   * as a host reconnecting or Console restarting, happens to reapply it.
+   *
+   * Retries are restores whatever the first attempt was: only the first is
+   * somebody's request.
+   */
+  async bringUp(agentId: string, intent: WatcherIntent): Promise<void> {
+    this.cancelRetry(agentId);
+    try {
+      await applyControllerState(agentId, intent);
+    } catch (error) {
+      log.error('Shared SDK watcher could not start; will retry', {
+        agentId,
+        error: String(error),
+      });
+      this.scheduleRetry(agentId, 0);
+    }
+  }
+
+  private scheduleRetry(agentId: string, attempt: number): void {
+    const delay = Math.min(RETRY_FIRST_MS * 2 ** attempt, RETRY_MAX_MS);
+    const timer = setTimeout(() => {
+      if (this.retries.get(agentId) !== timer) return;
+      this.retries.delete(agentId);
+      void (async () => {
+        if (!(await getAgentById(agentId))?.switchAgentId) return;
+        try {
+          await applyControllerState(agentId, 'restore');
+        } catch (error) {
+          log.warn('Shared SDK watcher still could not start; will retry', {
+            agentId,
+            attempt: attempt + 1,
+            error: String(error),
+          });
+          if (!this.retries.has(agentId)) this.scheduleRetry(agentId, attempt + 1);
+        }
+      })();
+    }, delay);
+    timer.unref?.();
+    this.retries.set(agentId, timer);
+  }
+
+  private cancelRetry(agentId: string): void {
+    clearTimeout(this.retries.get(agentId));
+    this.retries.delete(agentId);
+  }
+
   stopForAgent(agentId: string): Promise<void> {
+    this.cancelRetry(agentId);
     return configureSharedWatcher(agentId, { connected: false, spawning: false }, 'restore');
   }
   startForSubagent(agentId: string, name: string): Promise<void> {
@@ -171,23 +220,9 @@ class AutoSessionWatcher {
   stopForSubagent(agentId: string, name: string): Promise<void> {
     return configureSharedWatcher(agentId, { connected: false, spawning: false }, 'restore', name);
   }
-  /**
-   * Applies the saved auto-start setting. The controller stays connected either
-   * way — only Stop, or deleting the agent, takes an agent's connection away.
-   */
-  reconcile(agentId: string): Promise<void> {
-    return applyControllerState(agentId, 'explicit');
-  }
-  reconcileSubagent(agentId: string, name: string, enabled: boolean): Promise<void> {
-    return configureSharedWatcher(
-      agentId,
-      { connected: enabled, spawning: enabled },
-      'explicit',
-      name
-    );
-  }
   /** Stops every locally hosted watcher and session, so none outlives Console. */
   dispose(): Promise<void> {
+    for (const agentId of [...this.retries.keys()]) this.cancelRetry(agentId);
     return disposeLocalHosts();
   }
 }

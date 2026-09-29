@@ -7,10 +7,7 @@ import { resolveSessionEnv } from '@main/core/locations/location-runtime-factory
 import { locationTransport, type LocationTransport } from '@main/core/locations/location-transport';
 import { ensureServerSessionReady } from '@main/core/managed-switch-server/session-readiness';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
-import {
-  listAutoSessionAgentIds,
-  listStoppedControllerAgentIds,
-} from '@main/core/switch-rooms/auto-session-store';
+import { listStoppedControllerAgentIds } from '@main/core/switch-rooms/auto-session-store';
 import { controllerConnectionId } from '@main/core/switch-rooms/session-connection-id';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { adoptSubagent } from './adopt-subagent';
@@ -55,22 +52,14 @@ async function readSubagentSwitchId(
 export type ControllerState = { connected: boolean; spawning: boolean };
 
 /**
- * Puts an agent's controller into the state its settings describe: connected
- * unless somebody stopped it, and spawning only if automatic sessions are on.
- * This is the read of those two settings — callers that are not themselves
- * deciding one of them should come through here rather than assemble a state.
+ * Puts an agent's controller into the state its settings describe: connected,
+ * and starting sessions when addressed, unless somebody stopped it. Callers
+ * that are not themselves stopping or starting it should come through here
+ * rather than assemble a state.
  */
 export async function applyControllerState(agentId: string, intent: WatcherIntent): Promise<void> {
-  const [stopped, spawning] = await Promise.all([
-    listStoppedControllerAgentIds(),
-    listAutoSessionAgentIds(),
-  ]);
-  const connected = !stopped.includes(agentId);
-  await configureSharedWatcher(
-    agentId,
-    { connected, spawning: connected && spawning.includes(agentId) },
-    intent
-  );
+  const connected = !(await listStoppedControllerAgentIds()).includes(agentId);
+  await configureSharedWatcher(agentId, { connected, spawning: connected }, intent);
 }
 
 /**

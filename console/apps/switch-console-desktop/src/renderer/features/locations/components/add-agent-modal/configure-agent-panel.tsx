@@ -152,28 +152,6 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
               <label className="-mx-2 flex cursor-pointer items-start justify-between gap-3 rounded-md px-2 py-1.5 transition-colors hover:bg-[var(--sel-soft)]">
                 <span className="flex flex-col gap-0.5">
                   <span className="flex items-center gap-1.5 text-sm">
-                    Auto-create a session on notify
-                    <InfoTooltip
-                      label="More info about auto-creating a session"
-                      content="Switch Console watches this agent's Switch rooms and starts a session — connected to the room and ready to reply — whenever it's addressed with no session running."
-                    />
-                  </span>
-                  <span className="text-xs text-foreground-muted">
-                    Start a session when this agent is addressed.
-                  </span>
-                </span>
-                <Switch
-                  className="mt-0.5"
-                  checked={form.autoSession}
-                  onCheckedChange={(checked) => form.setAutoSession(checked)}
-                />
-              </label>
-            </Field>
-
-            <Field>
-              <label className="-mx-2 flex cursor-pointer items-start justify-between gap-3 rounded-md px-2 py-1.5 transition-colors hover:bg-[var(--sel-soft)]">
-                <span className="flex flex-col gap-0.5">
-                  <span className="flex items-center gap-1.5 text-sm">
                     Bypass permissions
                     <InfoTooltip
                       label="More info about bypassing permissions"

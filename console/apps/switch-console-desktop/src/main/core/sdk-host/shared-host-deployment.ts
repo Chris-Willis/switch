@@ -20,6 +20,51 @@ import { MAKE_LAUNCH_DIR, RESOLVE_STATE_ROOT, STALE_LAUNCH_MS } from './state-ro
 const PRUNE_SUPERSEDED_BUNDLES =
   "const fs=require('node:fs');const [dir,keep]=process.argv.slice(1);const running=require('node:child_process').execFileSync('ps',['-eo','args='],{encoding:'utf8'});for(const name of fs.readdirSync(dir)){if(name===keep||!/^shared-host-[a-f0-9]{64}\\.mjs$/.test(name)||running.includes(name))continue;fs.rmSync(dir+'/'+name,{force:true})}";
 
+/**
+ * Prints the path of a shared host bundle already on the host: this build's
+ * when it is there, otherwise the newest one an earlier deployment left, and
+ * nothing when there is none. Arguments: this build's bundle file name.
+ */
+export const LOCATE_BUNDLE = String.raw`
+const fs = require('node:fs'), path = require('node:path');
+const [wanted] = process.argv.slice(1);
+const dir = path.join(require('node:os').homedir(), '.local', 'state', 'switch', 'sdk-host');
+let names;
+try { names = fs.readdirSync(dir); }
+catch (e) { if (e.code === 'ENOENT') { console.log(''); process.exit(0); } throw e; }
+const bundles = names.filter((name) => /^shared-host-[a-f0-9]{64}\.mjs$/.test(name));
+if (bundles.includes(wanted)) console.log(path.join(dir, wanted));
+else if (!bundles.length) console.log('');
+else console.log(path.join(dir, bundles
+  .map((name) => ({ name, at: fs.statSync(path.join(dir, name)).mtimeMs }))
+  .sort((a, b) => b.at - a.at)[0].name));
+`;
+
+/**
+ * A shared host to run a one-off command with, without deploying one: this
+ * machine's own bundle, or a bundle already on the SSH host. Reading a host —
+ * what its provider offers, whether it is signed in — must not change what is
+ * installed there; only a launch, or somebody pressing Update, deploys. Null
+ * when the host has no bundle yet.
+ */
+export async function locateSharedHost(
+  transport: LocationTransport,
+  dir: string
+): Promise<{ ctx: IExecutionContext; entrypoint: string } | null> {
+  const bundle = resolveSharedHostBundlePath();
+  if (transport.kind !== 'ssh') return { ctx: new LocalExecutionContext(), entrypoint: bundle };
+  const hash = createHash('sha256')
+    .update(await readFile(bundle))
+    .digest('hex');
+  const proxy = await ensureSshConnected(transport.connectionId, transport.host);
+  const ctx = new SshExecutionContext(proxy, { root: dir });
+  const { stdout } = await ctx.exec('node', ['-e', LOCATE_BUNDLE, `shared-host-${hash}.mjs`]);
+  const entrypoint = stdout.trim();
+  if (entrypoint) return { ctx, entrypoint };
+  ctx.dispose();
+  return null;
+}
+
 export async function deploySharedHost(
   transport: LocationTransport,
   sessionPath: string,

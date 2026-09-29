@@ -2,10 +2,7 @@ import { eq } from 'drizzle-orm';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { discardControllerState } from '@main/core/sdk-host/shared-watcher';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
-import {
-  setAutoSessionAgent,
-  setControllerStopped,
-} from '@main/core/switch-rooms/auto-session-store';
+import { setControllerStopped } from '@main/core/switch-rooms/auto-session-store';
 import { autoSessionWatcher } from '@main/core/switch-rooms/auto-session-watcher';
 import {
   deleteAgent as gatewayDeleteAgent,
@@ -179,8 +176,7 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
  *    only when `deleteInSwitch` is set (the opt-in "also delete in Switch").
  * 2. The agent's running sessions (runtime + view-state), which previously
  *    only the location-delete path handled.
- * 3. Its local controller and the state that controller left behind, plus the
- *    local auto_session mirror. The controller caches the agent's Switch
+ * 3. Its local controller and the state that controller left behind. The controller caches the agent's Switch
  *    credentials in memory, so without an explicit stop it keeps heartbeating
  *    and answering rooms for an agent that no longer exists. A controller on a
  *    remote host is stopped and discarded only for a full cleanup — see 4.
@@ -276,7 +272,6 @@ async function removeAgent(
     await discardControllerState(agentId);
   }
 
-  await setAutoSessionAgent(agentId, false);
   await setControllerStopped(agentId, false);
 
   if (agent && location && options.removeProvisionedFiles) {

@@ -1357,6 +1357,25 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Changed
+- **Every agent starts a session when it is addressed; the "Auto-create a
+  session on notify" setting is gone.** Its switch is removed from the agent
+  page and the create form, and new agents register as `auto_session`.
+- **Opening an agent's page only reads.** Reading the auto-session setting used
+  to re-launch the agent's controller as a side effect, which on a remote host
+  uploaded the sidecar bundle and replaced an outdated sidecar, and checking a
+  provider's sign-in or models uploaded the bundle too. The provider check now
+  uses the bundle already on the host, and says so when there is none. The
+  bundle is uploaded only when an agent is started, restarted or updated.
+
+#### Fixed
+- **Agents come up after Console starts without their page being opened.**
+  Console now brings each host's agents up side by side, so a slow or wedged
+  SSH connection holds back only that host, never local agents or other hosts,
+  and it keeps retrying an agent whose controller could not start, backing off
+  from 30 seconds to 5 minutes. Before, an agent that failed once stayed off
+  until its host reconnected or its page was opened.
+
 ### [0.37.3] - 2026-09-29
 
 #### Changed

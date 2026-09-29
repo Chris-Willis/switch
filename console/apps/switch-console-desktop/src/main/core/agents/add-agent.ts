@@ -5,6 +5,7 @@ import { locationManager } from '@main/core/locations/location-manager';
 import { checkIsValidDirectory } from '@main/core/locations/path-utils';
 import { ensureLocation, getLocationByHostDir } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
+import { autoSessionWatcher } from '@main/core/switch-rooms/auto-session-watcher';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type { TelemetryAgentCreateFailure } from '@main/core/telemetry/events';
@@ -12,7 +13,6 @@ import { entryPointOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { db } from '@main/db/client';
 import { agents as agentsTable } from '@main/db/schema';
-import { log } from '@main/lib/logger';
 import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { Agent } from '@shared/core/agents/agents';
@@ -36,7 +36,6 @@ import { acknowledgeDefinition } from './import-agent-config';
 import { knownAgentTypeForProvider } from './known-agent-type';
 import { registerAgentIdentity } from './register-agent-identity';
 import { inspectRemoteDir } from './remote-dir';
-import { reconcileAgentAutoSessionFromGateway } from './setAgentAutoSession';
 import { writeNeutralAgentSettingsFs } from './write-switch-settings';
 
 export type AddAgentParams = {
@@ -60,7 +59,6 @@ export type AddAgentParams = {
   /** The icon picked in the create form. Null means the form offered no
    * choice, and the agent is registered with the avatar its name generates. */
   iconUrl: string | null;
-  autoSession: boolean;
   autoApprove: boolean;
   /** The agent's system prompt, provider-agnostic. Rendered into whatever the
    * provider reads — a Claude Code subagent body, Codex's developer
@@ -261,7 +259,6 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
     description: params.description,
     displayName: params.displayName,
     repoDir: params.dir,
-    autoSession: params.autoSession,
     agentType: knownAgentTypeForProvider(params.providerId),
     iconUrl: params.iconUrl ?? agentAvatarUrlForName(params.name),
   });
@@ -321,15 +318,9 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
     providerConfig: params.providerConfig ?? null,
   });
 
-  // Seed the local auto_session mirror + watcher from the gateway profile so an
-  // agent registered with auto_session on starts watching now, without an
-  // off→on toggle. Best-effort: a gateway hiccup must not fail creation.
-  await reconcileAgentAutoSessionFromGateway(agent.id).catch((error) => {
-    log.warn('addAgent: failed to reconcile auto_session for new agent', {
-      agentId: agent.id,
-      error: String(error),
-    });
-  });
+  // Creating the agent is the ask for its controller. It does not fail
+  // creation when the controller cannot come up yet; it is retried.
+  await autoSessionWatcher.bringUp(agent.id, 'explicit');
 
   await locationManager.openLocation(location);
   agentEvents._emit('agent:created', agent, params.entryPoint);
