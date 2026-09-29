@@ -244,12 +244,30 @@ lands, a DM is dropped with no reply.
     - **After that, any tenant member may connect more chats.** A chat is a
       room, and rooms are member-level on main (`gateway/rooms.py:335` uses
       `get_current_user`).
-    - **Any member may disconnect one chat.** **Removing the whole Telegram
-      connection is admin-only.**
+    - **Any member may disconnect any chat, the last included.** **Removing
+      the whole Telegram connection is admin-only.**
+    - **The bridge outlives its chats.** It is the tenant's connection rather
+      than any chat's, so a chat ending, however it ended, only detaches that
+      chat's room. Telegram stays on with no chats until an admin deletes the
+      bridge with the existing bridge delete, which is already
+      `require_tenant_admin` and already refuses while any live install uses
+      the bridge. So there is no separate "disconnect every chat" action: an
+      admin disconnects what is left, then deletes the connection.
+
+      Removing the bridge with its last chat was the first shape, and it
+      broke the split above: a member disconnecting the last chat, or anyone
+      removing the bot from it in Telegram, turned Telegram off for the
+      tenant, and a member could not turn it back on. Gating the last chat
+      to admins instead would have made who may disconnect a chat depend on
+      the order chats happened to leave in. Slack and Discord already have
+      this shape: removing a workspace's last Switch room leaves the app
+      installed there.
 
     Role is checked when the link is minted, and again when it is redeemed,
-    against whether an active bridge exists *then*: a member's link minted
-    while Telegram was on is refused if an admin has since removed it.
+    against whether the tenant's bridge exists *then*: a member's link minted
+    while Telegram was on is refused if an admin has since deleted it. The
+    bridge is found by its row (`type` and `event_delivery: shared`), not
+    through its installs, since it may have none.
 
     Separately, and for every platform, the existing messaging-install routes
     move from `require_admin` (the deployment operator; its own docstring says
@@ -363,10 +381,10 @@ chat it has just connected that its link expired.
   (`install_service.py:342`).
 - Either way, **the chat's room is detached**
   (`room_service.py:1152` `unlink_bridge_from_room`) and becomes internal-only,
-  unless it was the tenant's **last** active Telegram install. In that case the
-  bridge is removed, as today.
-- **An admin removes the whole connection** → every install is ended, the bot
-  leaves every chat, and the bridge is removed.
+  even when it was the tenant's last chat. The bridge stays (decision 10).
+- **An admin deletes the connection** → the existing bridge delete, refused
+  while any chat is still connected. It removes the bridge and its linked
+  identities.
 
 ## Security
 
@@ -437,16 +455,17 @@ is one constructor argument, because the service now takes a `UserStore` for
 the admin check in `claim()`. Each change is neutral for Slack for the reason
 given.
 
-1. **`disconnect` and `revoked` remove the bridge only on its last active
-   install.** Otherwise they detach that chat's room. Today they call
-   `lifecycle.remove(bridge_id)` unconditionally (`install_service.py:332,396`).
-   *Slack-neutral:* a Slack bridge has exactly one install, which is always the
-   last.
+1. **`disconnect` and `revoked` detach a claimed chat's room rather than
+   remove its bridge.** Today they call `lifecycle.remove(bridge_id)`
+   unconditionally (`install_service.py:332,396`). *Slack-neutral:* an OAuth
+   install still removes its bridge unconditionally.
 2. **`get_for_bridge` becomes `list_for_bridge` and returns a list.** Today it
    is `one_or_none` (`messaging_install_store.py:184`). Its one caller, the
    delete guard
    (`gateway/collaborations.py:700`), refuses when the list is non-empty.
    *Slack-neutral:* a one-element list refuses exactly as the one row did.
+   Its message is reworded to fit a claimed chat too: it no longer mentions a
+   token, which a Discord or Telegram install does not have.
 3. **`complete()` and the new `claim()` share their first steps.** Burning the
    state and encrypting a grant's token move into private helpers that both
    call. After that they differ: `claim()` has no redeem, and it looks up the
@@ -594,11 +613,14 @@ commit that can be tested on its own.
     `installs_by_claim`, so every check for an OAuth platform stays the
     operator check it was. New routes: `POST /messaging-apps/{platform}/claim`
     returns the link and the bare code, and
-    `DELETE /messaging-apps/{platform}/installs` disconnects every chat.
+    `DELETE /messaging-apps/{platform}/installs` disconnected every chat.
     `GET /messaging-apps` says what the caller may do with each claim-based
     platform, because the dashboard knows only the operator bit. The operator
     page lands in the implementation at this path, and this design doc stays
     in its draft PR.
+  - After stage 6: the bridge outlives its chats (decision 10). Disconnecting
+    every chat, its route and the dashboard's menu for it are gone; the
+    existing bridge delete turns Telegram off.
 - **Stage 7 — the cross-tenant test** (below).
   - Built in the integration suite (`just test-integration`), behind a new
     `collaboration_bridges` marker that gives the harness the real bridge
