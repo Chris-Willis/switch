@@ -17,7 +17,9 @@ import {
   fetchAgents,
   fetchAllExternalUsers,
   fetchBridges,
+  beginMessagingAppInstall,
   fetchBridgeTypes,
+  fetchInstallablePlatforms,
   fetchMyIdentities,
   fetchRoomAgentIds,
   fetchRoomDetail,
@@ -261,6 +263,15 @@ export const workspacesController = createRPCController({
 
   listBridgeTypes: (workspaceId: string): Promise<RemoteBridgeType[]> =>
     withReachableWorkspaceSession(workspaceId, fetchBridgeTypes),
+
+  listInstallablePlatforms: (workspaceId: string): Promise<string[]> =>
+    withReachableWorkspaceSession(workspaceId, fetchInstallablePlatforms),
+
+  /** Returns the platform's consent URL for the renderer to open in the browser. */
+  beginMessagingAppInstall: (params: { workspaceId: string; platform: string }): Promise<string> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      beginMessagingAppInstall(server, params.platform)
+    ),
 
   /**
    * Attach a collaboration bridge to the chosen workspace (CHOO-1784).

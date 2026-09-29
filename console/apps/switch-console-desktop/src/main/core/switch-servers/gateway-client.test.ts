@@ -41,6 +41,8 @@ vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer, extractA
 const {
   acceptInvitation,
   acceptPendingInvitation,
+  beginMessagingAppInstall,
+  fetchInstallablePlatforms,
   fetchPendingInvitations,
   fetchJoinableWorkspaces,
   joinWorkspaceByDomain,
@@ -836,6 +838,58 @@ describe('acceptInvitation', () => {
       status: 403,
       detail: 'This invitation has expired',
     });
+  });
+});
+
+describe("installing the deployment's own messaging app", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists the platforms the deployment has an app for', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ platforms: ['slack'] }) as never);
+
+    await expect(fetchInstallablePlatforms(SERVER)).resolves.toEqual(['slack']);
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/messaging-apps'
+    );
+  });
+
+  it('reads a server without the route as having no app to install', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+
+    await expect(fetchInstallablePlatforms(SERVER)).resolves.toEqual([]);
+  });
+
+  it('raises on any other failure', async () => {
+    fetchMock.mockResolvedValue(errorResponse(403, '{"detail":"Forbidden"}') as never);
+
+    await expect(fetchInstallablePlatforms(SERVER)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('starts an install and returns the consent URL', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ authorize_url: 'https://slack.example/oauth?state=s' }) as never
+    );
+
+    await expect(beginMessagingAppInstall(SERVER, 'slack')).resolves.toBe(
+      'https://slack.example/oauth?state=s'
+    );
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/messaging-apps/slack/install');
+    expect(init.method).toBe('POST');
+  });
+
+  it('raises when the deployment has no app for the platform', async () => {
+    fetchMock.mockResolvedValue(errorResponse(501, '{"detail":"no app"}') as never);
+
+    await expect(beginMessagingAppInstall(SERVER, 'slack')).rejects.toMatchObject({ status: 501 });
   });
 });
 
