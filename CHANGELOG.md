@@ -1357,6 +1357,14 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.37.3] - 2026-09-29
+
+#### Changed
+- **The bundled Switch skill now documents the workspace-template tools** an
+  agent can use — finding, reading, running and saving templates (#554).
+- **The bundled local Switch server moves to switch-core 0.29.0**, so
+  local-server mode ships the workspace-template feature those tools rely on.
+
 ### [0.37.2] - 2026-09-27
 
 #### Changed
