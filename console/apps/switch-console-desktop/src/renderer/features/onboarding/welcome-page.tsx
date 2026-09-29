@@ -2,10 +2,30 @@ import { Cloud, Server } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { SwitchConsoleAppIcon } from '@renderer/lib/switch-console-app-icon';
 import { Button } from '@renderer/lib/ui/button';
+import { Spinner } from '@renderer/lib/ui/spinner';
 import { StepPager } from '@renderer/lib/ui/step-pager';
 import { cn } from '@renderer/utils/utils';
 
 const TAGLINE = 'Agents that work alongside your team, in the chat apps you already use.';
+
+/**
+ * What the welcome page can say about Switch Cloud, and what choosing it does.
+ *
+ * `connecting` and `error` belong to the attempt, not to the configuration: the
+ * page stays up while the server is registered, and a failure is shown on the
+ * card that was chosen rather than somewhere the eye has already left.
+ */
+export type WelcomeCloud =
+  | { kind: 'reading' }
+  | { kind: 'closed' }
+  | { kind: 'failed'; headline: string; detail: string | null }
+  | {
+      kind: 'open';
+      url: string;
+      connecting: boolean;
+      error: string | null;
+      onConnect: () => void;
+    };
 
 /**
  * The first page of a fresh install: what Switch is, and where it should run.
@@ -15,19 +35,26 @@ const TAGLINE = 'Agents that work alongside your team, in the chat apps you alre
  * and a first impression made of empty containers says less about the app than
  * one question does.
  *
- * The two places are a list, not a choice. Only one of them can be had: Switch
- * Cloud has no endpoint to sign in to and no account to sign in with. A radio
- * group would announce itself as something to pick between and then answer
- * neither arrow key nor click, which is a worse page than an honest list of
- * two, one of them marked unavailable. Cloud stays on the page rather than
- * being left off it, because the question is "where should it run" and an
- * answer that exists but is not ready yet is part of that answer.
+ * Switch Cloud is a choice only when this build has been told where it is.
+ * Otherwise the two places are a list, not a choice: Cloud stays on the page,
+ * marked unavailable in words as well as in grey, because the question is
+ * "where should it run" and an answer that exists but is not ready yet is part
+ * of that answer. A radio group would announce itself as something to pick
+ * between and then answer neither arrow key nor click.
  *
- * So nothing here is a control except the button, and the button says which of
- * the two it takes — the emphasis on the card is a repeat of that in colour,
- * not the only place it is written.
+ * Either way the controls are buttons that say which place they take, and the
+ * emphasis on a card is a repeat of that in colour, not the only place it is
+ * written. With two places open the pager has no Next: which one is next is the
+ * question the page is asking.
  */
-export function WelcomePage({ onContinue }: { onContinue: () => void }) {
+export function WelcomePage({
+  cloud,
+  onContinue,
+}: {
+  cloud: WelcomeCloud;
+  onContinue: () => void;
+}) {
+  const cloudOpen = cloud.kind === 'open';
   return (
     <div className="flex h-full flex-col bg-background text-foreground [-webkit-app-region:drag]">
       <div className="flex min-h-0 flex-1 flex-col overflow-auto">
@@ -44,30 +71,83 @@ export function WelcomePage({ onContinue }: { onContinue: () => void }) {
           <div className="flex flex-col gap-3">
             <h2 className="text-sm font-medium">Where should it run?</h2>
             <ul className="grid gap-3">
-              <HostingChoice
-                icon={<Cloud className="size-5" />}
-                title="Switch Cloud"
-                badge="Coming soon"
-                description="We would run it for you. Not open yet — there is nothing to sign in to."
-                unavailable
-              />
+              <CloudChoice cloud={cloud} />
               <HostingChoice
                 icon={<Server className="size-5" />}
                 title="Your own server"
                 description="Run the Switch stack on hardware you control. Your data and your accounts stay there."
+                emphasised={!cloudOpen}
               />
             </ul>
-            <div className="mt-1">
-              <Button onClick={onContinue}>Continue with your own server</Button>
+            <div className="mt-1 flex flex-wrap gap-2">
+              {cloudOpen && (
+                <Button onClick={cloud.onConnect} disabled={cloud.connecting}>
+                  {cloud.connecting && <Spinner className="size-3.5" />}
+                  Continue with Switch Cloud
+                </Button>
+              )}
+              <Button
+                variant={cloudOpen ? 'outline' : 'default'}
+                onClick={onContinue}
+                disabled={cloudOpen && cloud.connecting}
+              >
+                Continue with your own server
+              </Button>
             </div>
           </div>
         </div>
       </div>
       <div className="[-webkit-app-region:no-drag]">
-        <StepPager pageName="Welcome" onBack={null} onNext={onContinue} />
+        <StepPager pageName="Welcome" onBack={null} onNext={cloudOpen ? null : onContinue} />
       </div>
     </div>
   );
+}
+
+function CloudChoice({ cloud }: { cloud: WelcomeCloud }) {
+  const icon = <Cloud className="size-5" />;
+  switch (cloud.kind) {
+    case 'open':
+      return (
+        <HostingChoice
+          icon={icon}
+          title="Switch Cloud"
+          description={`We run it for you at ${new URL(cloud.url).host}. Sign in, or create an account there.`}
+          emphasised
+          error={cloud.error}
+        />
+      );
+    case 'failed':
+      return (
+        <HostingChoice
+          icon={icon}
+          title="Switch Cloud"
+          badge="Unavailable"
+          description={`${cloud.headline}${cloud.detail ? ` ${cloud.detail}` : ''}`}
+          unavailable
+        />
+      );
+    case 'reading':
+      return (
+        <HostingChoice
+          icon={icon}
+          title="Switch Cloud"
+          badge="Checking"
+          description="Checking whether this build can connect to Switch Cloud."
+          unavailable
+        />
+      );
+    case 'closed':
+      return (
+        <HostingChoice
+          icon={icon}
+          title="Switch Cloud"
+          badge="Coming soon"
+          description="We would run it for you. Not open yet — there is nothing to sign in to."
+          unavailable
+        />
+      );
+  }
 }
 
 function HostingChoice({
@@ -76,11 +156,17 @@ function HostingChoice({
   badge,
   description,
   unavailable = false,
+  emphasised = false,
+  error = null,
 }: {
   icon: ReactNode;
   title: string;
   badge?: string;
   description: string;
+  /** The place the primary button takes. */
+  emphasised?: boolean;
+  /** Why choosing this place just failed. */
+  error?: string | null;
   /** Somewhere Switch cannot run yet. Said in the badge and the description
    * too, so it does not rest on the greyed-out card alone. */
   unavailable?: boolean;
@@ -89,7 +175,8 @@ function HostingChoice({
     <li
       className={cn(
         'flex list-none items-start gap-3 rounded-lg border p-4 text-left',
-        unavailable ? 'border-border opacity-60' : 'border-foreground'
+        unavailable && 'opacity-60',
+        emphasised ? 'border-foreground' : 'border-border'
       )}
     >
       <span className="mt-0.5 text-foreground-muted">{icon}</span>
@@ -103,6 +190,11 @@ function HostingChoice({
           )}
         </div>
         <p className="text-xs text-foreground-muted">{description}</p>
+        {error && (
+          <p role="alert" className="text-xs text-destructive">
+            {error}
+          </p>
+        )}
       </div>
     </li>
   );

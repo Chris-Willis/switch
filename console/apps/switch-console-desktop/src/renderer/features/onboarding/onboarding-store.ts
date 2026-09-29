@@ -33,6 +33,12 @@ class OnboardingStore {
   page: OnboardingPage = 'welcome';
   /** The server the connect page added, and the subject of the pages after it. */
   server: SwitchServer | null = null;
+  /**
+   * How that server was reached: typed in on the connect page, or chosen as
+   * Switch Cloud on the welcome page. Decides where Back from sign-in goes and
+   * which path the pages after it are reported under.
+   */
+  via: 'external' | 'cloud' = 'external';
   /** The workspaces that server said the account is in, once it has been asked. */
   serverWorkspaces: Workspace[] | null = null;
   /**
@@ -68,6 +74,7 @@ class OnboardingStore {
     // it.
     if (page === 'welcome') {
       this.server = null;
+      this.via = 'external';
       this.serverWorkspaces = null;
       this.registeredOn = null;
     }
@@ -86,8 +93,9 @@ class OnboardingStore {
     this.registeredOn = { page, serverId };
   }
 
-  connected(server: SwitchServer): void {
+  connected(server: SwitchServer, via: 'external' | 'cloud'): void {
     this.server = server;
+    this.via = via;
     this.page = 'signIn';
   }
 
@@ -105,6 +113,7 @@ class OnboardingStore {
   reset(): void {
     this.page = 'welcome';
     this.server = null;
+    this.via = 'external';
     this.serverWorkspaces = null;
     this.registeredOn = null;
   }

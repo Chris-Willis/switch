@@ -10,6 +10,7 @@ import {
 } from '@renderer/features/switch-servers/AddServerModal';
 import { LinkAccountsStep } from '@renderer/features/switch-servers/link-accounts-step';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { useSwitchCloud } from '@renderer/features/switch-servers/use-switch-cloud';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
@@ -26,7 +27,7 @@ import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { CreateWorkspacePage } from './create-workspace-page';
 import { onboardingStore, type OnboardingPage } from './onboarding-store';
 import { PickWorkspacePage } from './pick-workspace-page';
-import { WelcomePage } from './welcome-page';
+import { WelcomePage, type WelcomeCloud } from './welcome-page';
 
 /**
  * The first-run pages and the add-server wizard's steps, named against each
@@ -58,8 +59,10 @@ const STEP_FOR_PAGE: Record<OnboardingPage, AddServerStepName | null> = {
 /**
  * Which path each page belongs to.
  *
- * Unlike the modal's, none of these inherit: the only way to reach sign-in on a
- * fresh install is by connecting to a server someone else runs.
+ * Unlike the modal's, these barely inherit: the only way to reach sign-in on a
+ * fresh install is by connecting to a server someone else runs. Whether that
+ * server was typed in or was Switch Cloud is the one thing the table cannot
+ * know, so `choiceForPage` refines it.
  */
 const CHOICE_FOR_PAGE: Record<OnboardingPage, AddServerChoiceName> = {
   welcome: 'none',
@@ -127,9 +130,43 @@ export const OnboardingFlow = observer(function OnboardingFlow() {
    */
   const exit = server === null ? null : { label: 'Finish later', onExit: () => finish(server.id) };
 
+  const cloud = useSwitchCloud();
+  const [cloudAttempt, setCloudAttempt] = useState<{ connecting: boolean; error: string | null }>({
+    connecting: false,
+    error: null,
+  });
+
+  /**
+   * Register Switch Cloud and go straight to signing in to it.
+   *
+   * There is nothing to ask first: the address is the build's, and the name is
+   * the Cloud's. The connect page's form would be a page of fields already
+   * filled in.
+   */
+  const connectToCloud = () => {
+    setCloudAttempt({ connecting: true, error: null });
+    switchServersStore.connectToSwitchCloud().then(
+      (added) => {
+        setCloudAttempt({ connecting: false, error: null });
+        onboardingStore.connected(added, 'cloud');
+        reportPage('signIn');
+      },
+      (cause) => {
+        const failure = describeFailure(cause, 'Could not connect to Switch Cloud.');
+        setCloudAttempt({
+          connecting: false,
+          error: failure.detail ? `${failure.headline} ${failure.detail}` : failure.headline,
+        });
+      }
+    );
+  };
+
+  const welcomeCloud: WelcomeCloud =
+    cloud.kind === 'open' ? { ...cloud, ...cloudAttempt, onConnect: connectToCloud } : cloud;
+
   return (
     <WizardChromeProvider chrome="page" exit={exit}>
-      {currentPage(server, goTo, finish)}
+      {currentPage(server, welcomeCloud, goTo, finish)}
     </WizardChromeProvider>
   );
 });
@@ -151,20 +188,28 @@ function pageServerId(): string | null {
   return onboardingStore.server?.id ?? null;
 }
 
+function choiceForPage(page: OnboardingPage): AddServerChoiceName {
+  const choice = CHOICE_FOR_PAGE[page];
+  if (choice === 'external' && page !== 'connect' && onboardingStore.via === 'cloud')
+    return 'cloud';
+  return choice;
+}
+
 function reportPage(page: OnboardingPage): void {
   const step = STEP_FOR_PAGE[page];
   if (step === null) return;
-  report('add_server_step', { step, choice: CHOICE_FOR_PAGE[page], first_run: true });
+  report('add_server_step', { step, choice: choiceForPage(page), first_run: true });
 }
 
 function currentPage(
   server: SwitchServer | null,
+  welcomeCloud: WelcomeCloud,
   goTo: (page: OnboardingPage) => void,
   finish: (serverId: string | null) => void
 ) {
   switch (onboardingStore.page) {
     case 'welcome':
-      return <WelcomePage onContinue={() => goTo('whoRuns')} />;
+      return <WelcomePage cloud={welcomeCloud} onContinue={() => goTo('whoRuns')} />;
     case 'whoRuns':
       return (
         <WhoRunsPage
@@ -200,7 +245,9 @@ function currentPage(
       return (
         <SignInStep
           server={server}
-          onBack={() => goTo('connect')}
+          // The Cloud was chosen on the welcome page, with no form in between
+          // to go back to.
+          onBack={() => goTo(onboardingStore.via === 'cloud' ? 'welcome' : 'connect')}
           onClose={null}
           onSignedIn={() => goTo('pickWorkspace')}
         />
@@ -253,7 +300,7 @@ function currentPage(
       onClose={() => goTo('whoRuns')}
       onSuccess={() => finish(server?.id ?? null)}
       onConnected={(added) => {
-        onboardingStore.connected(added);
+        onboardingStore.connected(added, 'external');
         reportPage('signIn');
       }}
     />

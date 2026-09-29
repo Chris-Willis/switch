@@ -15,6 +15,8 @@ const addServer = vi.hoisted(() => vi.fn());
 const setActive = vi.hoisted(() => vi.fn());
 const navigate = vi.hoisted(() => vi.fn());
 const listHosts = vi.hoisted(() => vi.fn());
+const switchCloud = vi.hoisted(() => vi.fn());
+const connectToSwitchCloud = vi.hoisted(() => vi.fn());
 const servers = vi.hoisted(() => [] as { id: string; name: string }[]);
 
 vi.hoisted(() => {
@@ -27,12 +29,13 @@ vi.hoisted(() => {
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { remoteHosts: { listHosts } },
+  rpc: { remoteHosts: { listHosts }, switchServers: { switchCloud } },
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: {
     addServer,
+    connectToSwitchCloud,
     setActive,
     serverById: (id: string | null) => servers.find((s) => s.id === id) ?? null,
     errorText: null,
@@ -91,6 +94,9 @@ beforeEach(() => {
   navigate.mockReset();
   listHosts.mockReset();
   listHosts.mockResolvedValue([]);
+  switchCloud.mockReset();
+  switchCloud.mockResolvedValue(null);
+  connectToSwitchCloud.mockReset();
   servers.length = 0;
   onboardingStore.reset();
   Object.assign(localServer, {
@@ -391,5 +397,50 @@ describe('the first-run flow', () => {
 
     expect(onboardingStore.server).toBeNull();
     expect(el).toBeDefined();
+  });
+});
+
+describe('the first-run flow with Switch Cloud named', () => {
+  const CLOUD = {
+    id: 'cloud-1',
+    name: 'Switch Cloud',
+    gatewayUrl: 'https://cloud.example.com',
+    apiUrl: 'https://cloud.example.com',
+  };
+
+  beforeEach(() => {
+    switchCloud.mockResolvedValue({ url: 'https://cloud.example.com' });
+    servers.push(CLOUD);
+    connectToSwitchCloud.mockResolvedValue(CLOUD);
+  });
+
+  it('goes straight to signing in, with no question about who runs it', async () => {
+    const el = await renderFlow();
+
+    await act(async () => button(el, 'Continue with Switch Cloud').click());
+
+    expect(connectToSwitchCloud).toHaveBeenCalled();
+    expect(onboardingStore.page).toBe('signIn');
+    expect(onboardingStore.server?.id).toBe('cloud-1');
+    expect(el.textContent).not.toContain('Who runs the server?');
+  });
+
+  it('goes back from signing in to the welcome, not to a connect page it never showed', async () => {
+    const el = await renderFlow();
+    await act(async () => button(el, 'Continue with Switch Cloud').click());
+
+    await act(async () => button(el, 'Back').click());
+
+    expect(onboardingStore.page).toBe('welcome');
+  });
+
+  it('stays on the welcome and says why when the Cloud cannot be registered', async () => {
+    connectToSwitchCloud.mockRejectedValue(new Error('disk full'));
+    const el = await renderFlow();
+
+    await act(async () => button(el, 'Continue with Switch Cloud').click());
+
+    expect(onboardingStore.page).toBe('welcome');
+    expect(el.querySelector('[role="alert"]')?.textContent).toContain('disk full');
   });
 });
