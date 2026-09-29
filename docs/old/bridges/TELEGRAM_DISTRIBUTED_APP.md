@@ -413,6 +413,17 @@ fails without it:
   noticed, decision 9), never routed to a first or default tenant.
 - **G4 — No DM routing.** A private chat is the lobby. It is never claimed and
   never routed to a tenant.
+- **G5 — No chat bound by id.** Inbound is routed by claim, but outbound goes
+  to whichever chat a room is bound to, and a room can be bound to a chat id
+  by whoever asks: created with one (`POST /rooms`), or moved onto a bridge
+  with one (`update_room` → `change_bridge`). The shared bot can see every
+  tenant's chats, so seeing a chat proves nothing. Found after stage 7: a
+  member of one tenant could bind a room to another tenant's chat and have
+  agents post into it. `require_bindable_channel`, a new adapter hook asked at
+  both paths and never for a chat the platform delivered, refuses every chat
+  id on the shared bot; a claimed chat already gets its room from the claim.
+  Discord's shared bridges had the same gap, fixed on #492 by refusing a
+  channel outside the bridge's guild.
 
 **A claim token is a bearer credential for ten minutes.** Whoever redeems it
 attaches *their* chat to the minting tenant. The damage is bounded: a new room
@@ -671,6 +682,15 @@ commit that can be tested on its own.
   - Before adopting it: the code waits for its pick in process memory, so it
     has to be stored before it works across replicas. The first live run spent
     its code and saved nothing, and why has not been found.
+- **Connecting a chat from a button in Telegram (follow-up).** The notice the
+  bot posts in an unclaimed group would carry a **Connect to Switch** button:
+  a dashboard link with a signed token naming that chat. Whoever clicks it
+  signs in and confirms "Connect this chat to <organisation>?". It is as
+  strong as `/connect`, since only people who can see the chat can click it,
+  and needs no code copied. Channels keep `/connect`, because the bot posts
+  nothing in an unclaimed channel. The alternative of typing a chat id in the
+  dashboard and confirming in Telegram is ruled out: it would have the shared
+  bot post a prompt into any chat someone names.
 - **A shared bridge restarted at runtime has no bot until its next update.**
   Bridges running at boot are attached when the bot connects, and one created
   by a claim is attached before its first update. One restarted while the
