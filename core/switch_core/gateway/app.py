@@ -34,6 +34,7 @@ from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.api_keys import router as api_keys_router
 from switch_core.gateway.auth_routes import router as auth_router
 from switch_core.gateway.collaborations import router as collaborations_router
+from switch_core.gateway.connection_catalog import router as connection_catalog_router
 from switch_core.gateway.connectors import router as connectors_router
 from switch_core.gateway.dependencies import init_dependencies
 from switch_core.gateway.documents import router as documents_router
@@ -148,6 +149,7 @@ def create_gateway_app(
         github_connections_router,
         tags=["provider-connections"],
     )
+    app.include_router(connection_catalog_router, tags=["provider-connections"])
     app.state.claude_verifier = (
         ClaudeVerifier(config.hosted_claude_verifier_path)
         if config.hosted_claude_verifier_path
