@@ -28,6 +28,7 @@ vi.mock('./servers-store', () => ({ getSessionCookie }));
 vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer }));
 
 const {
+  getConnectionCatalog,
   getGitHubConnection,
   startGitHubConnection,
   completeGitHubConnection,
@@ -914,5 +915,24 @@ describe('GitHub connection transport', () => {
       )
     );
     expect(await getGitHubConnection(SERVER)).not.toHaveProperty('access_token');
+  });
+  it('reads the connection catalog and rejects an unknown status', async () => {
+    const github = {
+      slug: 'github',
+      name: 'GitHub',
+      category: 'Source control',
+      description: 'Repositories.',
+      enabled: true,
+      auth_type: 'oauth',
+      status: 'connected',
+    };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ connections: [github] })));
+    expect(await getConnectionCatalog(SERVER)).toEqual([github]);
+    const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/provider-connections/catalog');
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ connections: [{ ...github, status: 'pending' }] }))
+    );
+    await expect(getConnectionCatalog(SERVER)).rejects.toThrow();
   });
 });

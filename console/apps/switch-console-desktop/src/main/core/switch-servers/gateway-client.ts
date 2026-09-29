@@ -13,6 +13,7 @@ import type {
   ClaudeConnection,
 } from '@shared/core/switch-servers/claude-credential';
 import type { CloudLaunchInput } from '@shared/core/switch-servers/cloud-launch';
+import { connectionCatalogSchema } from '@shared/core/switch-servers/connection-catalog';
 import {
   gitHubConnectionSchema,
   gitHubFlowSchema,
@@ -1639,6 +1640,13 @@ export async function disconnectClaude(server: SwitchServer): Promise<void> {
   });
 }
 
+export async function getConnectionCatalog(server: SwitchServer) {
+  return connectionCatalogSchema.parse(
+    await (
+      await gatewayFetch(server, '/provider-connections/catalog', { authenticated: true })
+    ).json()
+  ).connections;
+}
 export async function getGitHubConnection(server: SwitchServer) {
   return gitHubConnectionSchema.parse(
     await (

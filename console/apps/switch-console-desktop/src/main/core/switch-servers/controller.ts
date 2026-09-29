@@ -72,6 +72,7 @@ import { bundledChatSignInFor } from './bundled-chat-sign-in';
 import { createBridgeOnServer } from './create-bridge';
 import { createRoomOnServer } from './create-room';
 import {
+  getConnectionCatalog,
   getGitHubConnection,
   createCloudLaunch,
   cloudLifecycle,
@@ -394,6 +395,8 @@ export const switchServersController = createRPCController({
 
   removeServer: (serverId: string): Promise<void> => removeServer(serverId),
 
+  getConnectionCatalog: async (serverId: string) =>
+    getConnectionCatalog(await requireReachableServer(serverId)),
   getGitHubConnection: async (serverId: string) =>
     getGitHubConnection(await requireReachableServer(serverId)),
   startGitHubConnection: async (serverId: string) =>

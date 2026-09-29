@@ -32,10 +32,10 @@ import type {
   ServerApiUrlPropagation,
   SwitchServer,
 } from '@shared/core/switch-servers/switch-servers';
+import { ConnectionsStep } from './connections-step';
 import { LinkAccountsStep } from './link-accounts-step';
 import { localServerStore } from './local-server-store';
 import { LogTail } from './log-tail';
-import { ManagedGitHubStep } from './managed-github-step';
 import { ManagedProviderConnectionStep } from './managed-provider-connection-step';
 import { ManagedProvidersStep } from './managed-providers-step';
 import { remoteServerStore } from './remote-server-store';
@@ -292,7 +292,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   }
   if (step === 'managedGitHub' && connected) {
     return (
-      <ManagedGitHubStep
+      <ConnectionsStep
         onContinue={() => goToStep('managedAgent')}
         serverId={connected.id}
         onBack={() => goToStep('managedClaude')}
