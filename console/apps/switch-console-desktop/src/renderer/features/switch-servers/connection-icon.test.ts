@@ -8,10 +8,6 @@ const here = dirname(fileURLToPath(import.meta.url));
 const ICON_DIR = join(here, '../../../assets/images/connections');
 const CATALOG_DIR = join(here, '../../../../../../../core/switch_core/connections/catalog');
 
-// Catalog entries shown on their monogram because their owners' terms do not
-// allow the logo to be redistributed here (see the icons' NOTICE.md).
-const MONOGRAM_ONLY = ['microsoft-365', 'salesforce'];
-
 const catalogSlugs = readdirSync(CATALOG_DIR, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
   .map((entry) => entry.name);
@@ -24,16 +20,8 @@ describe('connection brand icons', () => {
     expect(catalogSlugs).toContain('github');
   });
 
-  it.each(catalogSlugs.filter((slug) => !MONOGRAM_ONLY.includes(slug)))(
-    '%s has a logo the loader resolves',
-    (slug) => {
-      expect(hasConnectionIcon(slug)).toBe(true);
-    }
-  );
-
-  it.each(MONOGRAM_ONLY)('%s deliberately falls back to its monogram', (slug) => {
-    expect(catalogSlugs).toContain(slug);
-    expect(hasConnectionIcon(slug)).toBe(false);
+  it.each(catalogSlugs)('%s has a logo the loader resolves', (slug) => {
+    expect(hasConnectionIcon(slug)).toBe(true);
   });
 
   it('falls back for a slug this build does not know', () => {

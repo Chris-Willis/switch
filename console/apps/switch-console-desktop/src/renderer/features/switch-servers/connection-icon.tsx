@@ -23,7 +23,8 @@ const svgBySlug = new Map(
 // The single-colour marks draw in `currentColor`. Each takes its official brand
 // colour, except on the theme where that colour would vanish into the tile: there
 // it uses the one-colour black or white version the brand's guidelines provide.
-// Canva ships its own full-colour mark and needs no entry.
+// Canva, Microsoft 365 and Salesforce ship their own full-colour marks, which
+// read on both themes, and need no entry.
 const MARK_COLOR: Record<string, string> = {
   github: 'text-foreground',
   notion: 'text-foreground',
@@ -43,7 +44,7 @@ export function hasConnectionIcon(slug: string): boolean {
   return svgBySlug.has(slug);
 }
 
-/** A connection's brand logo on a neutral tile, or its monogram when none is bundled. */
+/** A connection's brand logo on a neutral tile, or its monogram for a slug this build has no logo for. */
 export function ConnectionIcon({ slug, name }: { slug: string; name: string }) {
   const svg = svgBySlug.get(slug);
   return (

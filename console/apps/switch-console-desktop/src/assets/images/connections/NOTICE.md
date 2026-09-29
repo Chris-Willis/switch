@@ -33,20 +33,27 @@ All files fetched 2026-09-29.
 Simple Icons' CC0 dedication covers the drawings; it does not grant any
 trademark rights, which remain with the owners.
 
-## Not bundled
+## Vendor-supplied logos
 
-These catalog entries show their monogram instead of a logo:
+These two are the owners' own files rather than Simple Icons drawings (Simple
+Icons no longer carries either mark). Both are full colour and unmodified apart
+from the hygiene above: `microsoft-365.svg` had its gradient ids renamed and its
+`viewBox` cropped from `0 0 48 48` to the artwork (`4 2 40 44`) so it sits at
+the same size as the other logos; `salesforce.svg` had its `<style>` classes
+written out as the equivalent `fill` attributes and its ids removed.
 
-- **Microsoft 365** (`microsoft-365`): no logo asset is bundled. Simple Icons
-  removed all Microsoft marks at Microsoft's request
-  (https://github.com/simple-icons/simple-icons/issues/11236). Microsoft's
-  Trademark and Brand Guidelines say logos and icons "will require a license
-  first" (https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks).
-- **Salesforce** (`salesforce`): no logo asset is bundled. Simple Icons removed
-  it in v16.0.0 (https://github.com/simple-icons/simple-icons/releases/tag/16.0.0).
-  Salesforce's Trademark & Copyright Usage Guidelines ask for a license or a
-  signed permission form before its logos are displayed
+- **Microsoft 365** (`microsoft-365.svg`): the Microsoft 365 app icon,
+  `m365_48x1.svg` from Microsoft's Fluent UI brand-icon CDN,
+  https://res.cdn.office.net/files/fabric-cdn-prod_20240129.001/assets/brand-icons/product/svg/m365_48x1.svg
+  (byte-identical at
+  https://res-1.cdn.office.net/files/fabric-cdn-prod_20230815.002/assets/brand-icons/product/svg/m365_48x1.svg).
+  Fetched 2026-09-29. Used with the owner's approval pending; trademark of its
+  owner. Terms: Microsoft's Trademark and Brand Guidelines
+  (https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks).
+- **Salesforce** (`salesforce.svg`): the Salesforce cloud logo shown in the
+  header of https://www.salesforce.com/, served from Salesforce's own asset
+  domain at
+  https://wp.sfdcdigital.com/en-us/wp-content/uploads/sites/4/2024/11/logo-salesforce.svg.
+  Fetched 2026-09-29. Used with the owner's approval pending; trademark of its
+  owner. Terms: Salesforce's Trademark & Copyright Usage Guidelines
   (https://www.salesforce.com/company/legal/intellectual/tmcusageguidelines/).
-
-These notes record why this app does not bundle those two assets. They are not
-a legal opinion on other uses.
