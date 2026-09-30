@@ -49,7 +49,7 @@ const identifier = z.string().min(1).max(200);
 
 export const hostedDeploymentSpecSchema = z
   .strictObject({
-    version: z.literal(1),
+    version: z.literal(2),
     /** The launch revision this deployment was issued for. */
     revision: z.number().int().positive(),
     session: z.strictObject({ sessionId: identifier, agentId: identifier }),
@@ -83,6 +83,8 @@ export const hostedDeploymentSpecSchema = z
           .regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}$/)
           .optional(),
         refresh: z.literal(true).optional(),
+        /** The bare mirror the workspace is a worktree of, shared by every agent on the repository. */
+        mirrorPath: absolutePath,
       })
       .optional(),
     workspacePath: absolutePath,
@@ -440,9 +442,10 @@ export async function prepareHostedDeployment(
   const workerCapability = await readWorkerCapability(
     await resolveCredentialFile(spec.workerCapabilityPath, root, workspaceRoot, 'Worker capability')
   );
-  const githubCredentialPath = spec.github
-    ? await resolveCredentialFile(spec.github.credentialPath, root, workspaceRoot, 'GitHub')
-    : undefined;
+  const githubCredentialPath =
+    spec.github && !spec.github.refresh
+      ? await resolveCredentialFile(spec.github.credentialPath, root, workspaceRoot, 'GitHub')
+      : undefined;
   const providerCredential = spec.provider.credential.refresh
     ? null
     : await readProviderCredential(
@@ -452,11 +455,11 @@ export async function prepareHostedDeployment(
     switchCredentialsPath,
     spec.session.agentId
   );
-  const githubCredential = githubCredentialPath
-    ? spec.github?.refresh
-      ? await renewGitHubCredential(switchCredentialsPath, spec.github.repository)
-      : await readGitHubCredential(githubCredentialPath)
-    : undefined;
+  const githubCredential = spec.github?.refresh
+    ? await renewGitHubCredential(switchCredentialsPath, spec.github.repository)
+    : githubCredentialPath
+      ? await readGitHubCredential(githubCredentialPath)
+      : undefined;
   if (githubCredential) await validateGitHubCredential(githubCredential, spec.github?.repository);
   const controlled = controlledEnvironment(root, spec.provider.kind);
   await createControlledDirectories(controlled);

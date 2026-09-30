@@ -75,7 +75,7 @@ async function fixture(): Promise<{
     { mode: 0o600 }
   );
   const spec: HostedDeploymentSpec = {
-    version: 1,
+    version: 2,
     revision: 3,
     session: { sessionId: 'session-id', agentId: 'agent-id' },
     provider: {
@@ -103,13 +103,15 @@ async function fixture(): Promise<{
   };
 }
 
+const mirrorPath = (input: { root: string }) => join(input.root, 'repos', 'example', 'project.git');
+
 async function configureGitHub(
   input: Awaited<ReturnType<typeof fixture>>,
   token = 'github-secret-value'
 ): Promise<string> {
   const credentialPath = join(input.root, 'mounted-secrets', 'github');
   await writeFile(credentialPath, `${token}\n`, { mode: 0o600 });
-  input.spec.github = { credentialPath };
+  input.spec.github = { credentialPath, mirrorPath: mirrorPath(input) };
   return credentialPath;
 }
 
@@ -276,7 +278,7 @@ it('rejects a GitHub credential inside hosted state or workspace before validati
   await mkdir(input.state, { mode: 0o700 });
   const stateCredential = join(input.state, 'github');
   await writeFile(stateCredential, 'github-secret-value\n', { mode: 0o600 });
-  input.spec.github = { credentialPath: stateCredential };
+  input.spec.github = { credentialPath: stateCredential, mirrorPath: mirrorPath(input) };
   const request = mockGitHubValidation();
 
   await expect(prepareHostedDeployment(input.state, input.spec)).rejects.toThrow(
@@ -284,7 +286,7 @@ it('rejects a GitHub credential inside hosted state or workspace before validati
   );
   const workspaceCredential = join(input.workspace, 'github');
   await writeFile(workspaceCredential, 'github-secret-value\n', { mode: 0o600 });
-  input.spec.github = { credentialPath: workspaceCredential };
+  input.spec.github = { credentialPath: workspaceCredential, mirrorPath: mirrorPath(input) };
   await expect(prepareHostedDeployment(input.state, input.spec)).rejects.toThrow(
     'GitHub credential file must be mounted outside'
   );
@@ -292,6 +294,81 @@ it('rejects a GitHub credential inside hosted state or workspace before validati
   await expect(readFile(join(input.state, 'hosted-deployment.json'))).rejects.toMatchObject({
     code: 'ENOENT',
   });
+});
+
+it('renews a refreshed GitHub credential from Switch without a mounted GitHub file', async () => {
+  const input = await fixture();
+  const agents = join(input.root, 'agents', 'agent-id');
+  const workspace = join(input.root, 'worktrees', 'agent-id', 'example', 'project');
+  await mkdir(workspace, { recursive: true });
+  input.spec.workspacePath = workspace;
+  input.spec.github = {
+    credentialPath: join(input.root, 'run', 'agents', 'agent-id', 'github'),
+    repository: 'example/project',
+    refresh: true,
+    mirrorPath: mirrorPath(input),
+  };
+  const request = vi.fn(async (url: string | URL | Request) =>
+    String(url).endsWith('/hosted/github-credential')
+      ? new Response(
+          JSON.stringify({
+            token: 'renewed-github-secret',
+            repository: 'example/project',
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          })
+        )
+      : new Response('{}')
+  );
+  vi.stubGlobal('fetch', request);
+
+  const prepared = await prepareHostedDeployment(agents, input.spec);
+  expect(request.mock.calls.map(([url]) => String(url))).toEqual([
+    'https://switch.invalid/api/agent/hosted/github-credential',
+    'https://api.github.com/repos/example/project',
+  ]);
+  expect(prepared.providerEnvironment.GH_TOKEN).toBeUndefined();
+  expect(prepared.providerEnvironment.SWITCH_HOSTED_GITHUB_REPOSITORY).toBe('example/project');
+  expect(prepared.logRedactions).toContain('renewed-github-secret');
+  const persisted = await readFile(join(prepared.root, 'hosted-deployment.json'), 'utf8');
+  expect(persisted).not.toContain('renewed-github-secret');
+});
+
+it('still requires the mounted GitHub file when the credential is not refreshed', async () => {
+  const input = await fixture();
+  input.spec.github = {
+    credentialPath: join(input.root, 'mounted-secrets', 'github'),
+    repository: 'example/project',
+    mirrorPath: mirrorPath(input),
+  };
+  const request = mockGitHubValidation();
+  await expect(prepareHostedDeployment(input.state, input.spec)).rejects.toThrow(
+    'GitHub credential file is missing or invalid.'
+  );
+  expect(request).not.toHaveBeenCalled();
+});
+
+it('accepts only version 2 and requires an absolute mirror path with a repository', async () => {
+  const { spec, root } = await fixture();
+  const github = {
+    credentialPath: join(root, 'mounted-secrets', 'github'),
+    repository: 'example/project',
+    refresh: true as const,
+  };
+  expect(hostedDeploymentSpecSchema.safeParse(spec).success).toBe(true);
+  expect(hostedDeploymentSpecSchema.safeParse({ ...spec, version: 1 }).success).toBe(false);
+  expect(hostedDeploymentSpecSchema.safeParse({ ...spec, github }).success).toBe(false);
+  expect(
+    hostedDeploymentSpecSchema.safeParse({
+      ...spec,
+      github: { ...github, mirrorPath: 'repos/example/project.git' },
+    }).success
+  ).toBe(false);
+  expect(
+    hostedDeploymentSpecSchema.safeParse({
+      ...spec,
+      github: { ...github, mirrorPath: join(root, 'repos', 'example', 'project.git') },
+    }).success
+  ).toBe(true);
 });
 
 it('sanitizes GitHub validation rejection and does not launch or persist a plan', async () => {
