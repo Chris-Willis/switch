@@ -70,6 +70,8 @@ REPOSITORY_RE = re.compile(
 )
 DEFINITION_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 FINGERPRINT_RE = re.compile(r"^sha256:[0-9a-f]{1,64}$")
+OWNERSHIP_TICKET_RE = re.compile(r"^\d+-[0-9a-f-]+\.json$")
+OWNERSHIP_TEMPORARY_RE = re.compile(r"^\d+-[0-9a-f-]+\.json\.[0-9a-f-]+\.tmp$")
 SKILL_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 SKILL_PATH_RE = re.compile(
     r"^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}(/[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}){0,7}$"
@@ -1378,9 +1380,39 @@ def _known_owner_relative(relative: Path) -> bool:
     )
 
 
-def _validate_quarantine_tree(
-    directory: Path, previous: MachineIdentity
-) -> dict[Path, Path]:
+def _validate_owner_record(relative: Path, path: Path) -> None:
+    name = relative.name
+    if relative.parent.name == "ownership" and OWNERSHIP_TEMPORARY_RE.fullmatch(name):
+        return
+    value = _read_json_nofollow(path)
+    try:
+        if name == "shared-owner.lock":
+            record = _strict(value, {"pid", "token"}, {"group"}, "owner record")
+            if record.get("group") is not None:
+                _positive_integer(record["group"], "owner process group")
+        elif name == "owner.json":
+            record = _strict(value, {"pid", "token", "build"}, set(), "owner record")
+            _text(record["build"], "owner build")
+        elif OWNERSHIP_TICKET_RE.fullmatch(name):
+            record = _strict(value, {"choosing", "ticket"}, set(), "ownership ticket")
+            ticket = record["ticket"]
+            if (
+                not isinstance(record["choosing"], bool)
+                or isinstance(ticket, bool)
+                or not isinstance(ticket, int)
+                or ticket < 0
+            ):
+                raise WorkerError("ownership ticket is invalid.")
+            return
+        else:
+            raise WorkerError("ownership record name is invalid.")
+        _positive_integer(record["pid"], "owner PID")
+        _text(record["token"], "owner token")
+    except WorkerError:
+        raise WorkerError("Saved ownership record is invalid.") from None
+
+
+def _validate_quarantine_tree(directory: Path) -> dict[Path, Path]:
     result: dict[Path, Path] = {}
     if not directory.exists() and not directory.is_symlink():
         return result
@@ -1404,17 +1436,7 @@ def _validate_quarantine_tree(
             relative = path.relative_to(directory)
             if not _known_owner_relative(relative) or path.is_symlink():
                 raise WorkerError("Ownership quarantine contains an unknown record.")
-            value = _read_json_nofollow(path)
-            machine = _strict(
-                value.get("machine") if isinstance(value, dict) else None,
-                {"instanceId", "bootId", "assignmentGeneration"},
-                set(),
-                "ownership machine",
-            )
-            if machine != previous.json():
-                raise WorkerError(
-                    "Quarantined ownership record has unknown machine identity."
-                )
+            _validate_owner_record(relative, path)
             result[relative] = path
     return result
 
@@ -1436,23 +1458,16 @@ def _quarantine_stale_ownership(
     for path in _ownership_paths(state_path):
         if path.is_symlink() or not path.is_file():
             raise WorkerError("Saved ownership record is invalid.")
-        value = _read_json_nofollow(path)
-        machine = _strict(
-            value.get("machine") if isinstance(value, dict) else None,
-            {"instanceId", "bootId", "assignmentGeneration"},
-            set(),
-            "ownership machine",
-        )
-        if machine != previous.json():
-            raise WorkerError("Saved ownership record has unknown machine identity.")
-        sources[path.relative_to(state_path)] = path
+        relative = path.relative_to(state_path)
+        _validate_owner_record(relative, path)
+        sources[relative] = path
     if not sources:
         return
     agent_quarantine = quarantine_root / agent_id
     quarantine = agent_quarantine / f"{previous.boot_id}--{current_boot_id}"
     for directory in (quarantine_root, agent_quarantine, quarantine):
         _private_root_directory(directory)
-    existing = _validate_quarantine_tree(quarantine, previous)
+    existing = _validate_quarantine_tree(quarantine)
     collisions = set(sources) & set(existing)
     if collisions:
         raise WorkerError(

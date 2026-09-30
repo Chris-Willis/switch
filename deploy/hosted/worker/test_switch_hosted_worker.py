@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import configparser
 import contextlib
-import copy
 import fcntl
 import hashlib
 import http.server
@@ -32,6 +31,7 @@ sys.modules[SPEC.name] = worker
 SPEC.loader.exec_module(worker)
 
 TESTDATA = HERE / "testdata"
+CORE_FIXTURES = HERE.parents[2] / "core/tests/switch_core/fixtures/hosted_machines"
 INSTANCE = "i-0123456789abcdef0"
 OTHER_INSTANCE = "i-0fedcba9876543210"
 VOLUME = "vol-0123456789abcdef0"
@@ -44,6 +44,8 @@ FS_UUID = "00000000-0000-4000-8000-00000000f001"
 FINGERPRINT = "sha256:0000"
 SECRET_ARN = "arn:aws:secretsmanager:eu-west-1:000000000000:secret:switch-hosted/inst-test/slot-a"
 CAPABILITY = "wcap-test-0000000000000000"
+MACHINE_CAPABILITY = "mcap-test-00000000000000000000000000000000"
+GENERATION = 1
 ONE_AGENT_MESSAGE = "data volume uses the one-agent layout; see 'Moving to one machine per user' in deploy/hosted/README.md"
 INACTIVE = {
     "ActiveState": "inactive",
@@ -58,6 +60,24 @@ INACTIVE = {
 
 def fixture(name: str):
     return json.loads((TESTDATA / name).read_text())
+
+
+def core_fixture(name: str):
+    return json.loads((CORE_FIXTURES / name).read_text())
+
+
+def core_agent(**overrides) -> dict:
+    agent = core_fixture("agents_response.json")["agents"][0]
+    agent.update(overrides)
+    return agent
+
+
+def structure(value):
+    if isinstance(value, dict):
+        return {key: structure(field) for key, field in value.items()}
+    if isinstance(value, list):
+        return [structure(item) for item in value]
+    return type(value).__name__
 
 
 def runtime_config() -> worker.RuntimeConfig:
@@ -86,7 +106,7 @@ def worker_config(runtime: worker.RuntimeConfig | None = None) -> worker.WorkerC
     return worker.WorkerConfig(
         installation_id="inst-test",
         slot_id="slot-a",
-        generation=2,
+        generation=GENERATION,
         secret_id=SECRET_ARN,
         secret_region="eu-west-1",
         volume_id=VOLUME,
@@ -96,9 +116,9 @@ def worker_config(runtime: worker.RuntimeConfig | None = None) -> worker.WorkerC
 
 
 def valid_agent(**overrides) -> dict:
-    agent = copy.deepcopy(fixture("agents.json")["agents"][0])
-    agent["provider_credential_kind"] = "setup-token"
+    agent = core_agent()
     agent["worker_capability"] = CAPABILITY
+    agent["skills"] = []
     agent["spec"] = {
         "name": "reviewer",
         "instructions": "Review pull requests.",
@@ -130,8 +150,8 @@ def second_agent(**overrides) -> dict:
     return agent
 
 
-def listing(*agents: dict, version: int = 7) -> dict:
-    value = fixture("agents.json")
+def listing(*agents: dict, version: int = 3) -> dict:
+    value = core_fixture("agents_response.json")
     value["agents"] = list(agents)
     value["agents_version"] = version
     return value
@@ -148,6 +168,26 @@ class Response(io.BytesIO):
 def http_error(code: int) -> urllib.error.HTTPError:
     return urllib.error.HTTPError(
         "https://switch.example.test", code, "error", {}, io.BytesIO(b"{}")
+    )
+
+
+def core_client(requests: list, agents_status: int | None = None) -> worker.CoreClient:
+    def opener(request, timeout):
+        requests.append(request)
+        if request.full_url.endswith("/agents"):
+            if agents_status is not None:
+                raise http_error(agents_status)
+            return Response((CORE_FIXTURES / "agents_response.json").read_bytes())
+        return Response((CORE_FIXTURES / "heartbeat_response.json").read_bytes())
+
+    return worker.CoreClient(
+        worker.MachineBundle(
+            MACHINE,
+            "https://switch.example.test/agent-api",
+            MACHINE_CAPABILITY,
+        ),
+        worker.MachineIdentity(INSTANCE, BOOT_1, GENERATION),
+        opener,
     )
 
 
@@ -194,7 +234,7 @@ class FakeClient:
         value = (
             self.heartbeats.pop(0)
             if self.heartbeats
-            else fixture("heartbeat-response.json")
+            else core_fixture("heartbeat_response.json")
         )
         if isinstance(value, BaseException):
             raise value
@@ -234,7 +274,7 @@ class Harness:
     def build(self) -> worker.Supervisor:
         return worker.Supervisor(
             runtime=runtime_config(),
-            identity=worker.MachineIdentity(INSTANCE, BOOT_1, 2),
+            identity=worker.MachineIdentity(INSTANCE, BOOT_1, GENERATION),
             machine_id=MACHINE,
             runtime_fingerprint=FINGERPRINT,
             paths=self.paths,
@@ -282,17 +322,33 @@ class ConfigTests(unittest.TestCase):
         config = worker.load_worker_config(self.write(value), HERE / "runtime.json")
         self.assertEqual(
             (config.installation_id, config.slot_id, config.generation),
-            ("inst-test", "slot-a", 2),
+            ("inst-test", "slot-a", GENERATION),
         )
         self.assertEqual(config.volume_id, VOLUME)
         self.assertEqual(config.device_path, "/dev/sdf")
         self.assertEqual(config.secret_region, "eu-west-1")
 
-    def test_verbatim_assignment_fixture_needs_a_full_secret_arn(self):
+    def test_verbatim_assignment_fixture_parses(self):
+        config = worker.load_worker_config(
+            self.write(fixture("assignment.json")), HERE / "runtime.json"
+        )
+        self.assertEqual(
+            config.secret_id,
+            "arn:aws:secretsmanager:us-east-1:000000000000:secret:switch-hosted/inst-test/slot-a",
+        )
+        self.assertEqual(config.secret_region, "us-east-1")
+        self.assertEqual(
+            (config.installation_id, config.slot_id, config.generation),
+            ("inst-test", "slot-a", GENERATION),
+        )
+        self.assertEqual(config.volume_id, VOLUME)
+        self.assertEqual(config.device_path, "/dev/sdf")
+
+    def test_assignment_with_a_plain_secret_name_is_rejected(self):
+        value = fixture("assignment.json")
+        value["assignmentSecretId"] = "switch-hosted/inst-test/slot-a"
         with self.assertRaisesRegex(worker.WorkerError, "full Secrets Manager ARN"):
-            worker.load_worker_config(
-                self.write(fixture("assignment.json")), HERE / "runtime.json"
-            )
+            worker.load_worker_config(self.write(value), HERE / "runtime.json")
 
     def test_assignment_rejects_v1_unknown_fields_and_other_mounts(self):
         base = fixture("assignment.json")
@@ -332,9 +388,7 @@ class BundleTests(unittest.TestCase):
         bundle = worker.parse_bundle(self.raw(), worker_config())
         self.assertEqual(bundle.machine_id, MACHINE)
         self.assertEqual(bundle.api_endpoint, "https://switch.example.test/agent-api")
-        self.assertEqual(
-            bundle.machine_capability, "mcap-test-0000000000000000000000000000"
-        )
+        self.assertEqual(bundle.machine_capability, MACHINE_CAPABILITY)
         self.assertNotIn("mcap-test", repr(bundle))
 
     def test_other_version_is_obsolete(self):
@@ -418,7 +472,7 @@ class BundleFileTests(RootPatched):
             {
                 "version": 2,
                 "machineId": MACHINE,
-                "machineCapability": "mcap-test-0000000000000000000000000000",
+                "machineCapability": MACHINE_CAPABILITY,
                 "apiEndpoint": "https://switch.example.test/agent-api",
             },
         )
@@ -445,7 +499,7 @@ class MarkerTests(RootPatched):
         super().setUp()
         self.paths = worker.Paths(self.temporary / "data", self.temporary / "run")
         self.paths.data.mkdir(mode=0o755)
-        self.identity = worker.MachineIdentity(INSTANCE, BOOT_1, 2)
+        self.identity = worker.MachineIdentity(INSTANCE, BOOT_1, GENERATION)
 
     def reconcile(self, identity=None, fingerprint=FINGERPRINT):
         worker.reconcile_marker(
@@ -524,7 +578,7 @@ class MarkerTests(RootPatched):
     def test_new_instance_and_fingerprint_are_rewritten_without_pinning(self):
         worker._write_root_json(self.paths.marker, fixture("machine.json"))
         self.reconcile(
-            worker.MachineIdentity(OTHER_INSTANCE, BOOT_2, 2),
+            worker.MachineIdentity(OTHER_INSTANCE, BOOT_2, GENERATION),
             fingerprint="sha256:" + "b" * 64,
         )
         marker = self.marker()
@@ -533,70 +587,91 @@ class MarkerTests(RootPatched):
         self.assertEqual(marker["runtimeFingerprint"], "sha256:" + "b" * 64)
         self.assertEqual(marker["layout"], "per-user-v1")
 
-    def owner_files(self, agent_id: str, previous: worker.MachineIdentity) -> Path:
+    def owner_files(self, agent_id: str) -> Path:
         state = self.paths.agents / agent_id
-        supervisor = state / "supervisor"
-        supervisor.mkdir(parents=True, mode=0o700)
+        for relative, record in fixture("owner-records.json").items():
+            path = state / relative
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            path.write_text(json.dumps(record, separators=(",", ":")))
         self.paths.agents.chmod(0o755)
-        (supervisor / "owner.json").write_text(
-            json.dumps({"pid": 1, "token": "old", "machine": previous.json()})
-        )
         (state / "shared-state.jsonl").write_text('{"journal":"preserve"}\n')
         return state
 
     def test_new_boot_quarantines_ownership_per_agent(self):
         worker._write_root_json(self.paths.marker, fixture("machine.json"))
-        previous = worker.MachineIdentity(INSTANCE, BOOT_1, 2)
-        first = self.owner_files(AGENT, previous)
-        second = self.owner_files(AGENT_2, previous)
+        first = self.owner_files(AGENT)
+        second = self.owner_files(AGENT_2)
         (self.paths.agents / "not-a-uuid").mkdir()
         with self.assertLogs(worker.logger, "WARNING"):
-            self.reconcile(worker.MachineIdentity(INSTANCE, BOOT_2, 2))
+            self.reconcile(worker.MachineIdentity(INSTANCE, BOOT_2, GENERATION))
         for agent_id, state in ((AGENT, first), (AGENT_2, second)):
-            self.assertFalse((state / "supervisor/owner.json").exists())
-            self.assertTrue(
-                (
-                    self.paths.quarantine
-                    / agent_id
-                    / f"{BOOT_1}--{BOOT_2}"
-                    / "supervisor/owner.json"
-                ).exists()
-            )
+            quarantine = self.paths.quarantine / agent_id / f"{BOOT_1}--{BOOT_2}"
+            for relative, record in fixture("owner-records.json").items():
+                self.assertFalse((state / relative).exists())
+                self.assertEqual(
+                    json.loads((quarantine / relative).read_text()), record
+                )
             self.assertEqual(
                 (state / "shared-state.jsonl").read_text(), '{"journal":"preserve"}\n'
             )
         self.assertEqual(self.marker()["bootId"], BOOT_2)
 
+    def test_torn_ticket_write_is_quarantined(self):
+        worker._write_root_json(self.paths.marker, fixture("machine.json"))
+        state = self.owner_files(AGENT)
+        torn = (
+            "ownership/4108-00000000-0000-4000-8000-0000000000c8.json."
+            "00000000-0000-4000-8000-0000000000c9.tmp"
+        )
+        (state / torn).write_text("")
+        self.reconcile(worker.MachineIdentity(INSTANCE, BOOT_2, GENERATION))
+        self.assertFalse((state / torn).exists())
+        self.assertTrue(
+            (self.paths.quarantine / AGENT / f"{BOOT_1}--{BOOT_2}" / torn).exists()
+        )
+        self.assertEqual(self.marker()["bootId"], BOOT_2)
+
     def test_same_boot_does_not_quarantine(self):
         worker._write_root_json(self.paths.marker, fixture("machine.json"))
-        state = self.owner_files(AGENT, self.identity)
+        state = self.owner_files(AGENT)
         self.reconcile(self.identity, fingerprint="sha256:" + "c" * 64)
         self.assertTrue((state / "supervisor/owner.json").exists())
         self.assertFalse(self.paths.quarantine.exists())
         self.assertEqual(self.marker()["runtimeFingerprint"], "sha256:" + "c" * 64)
 
-    def test_owner_from_an_unknown_machine_fails_closed(self):
-        worker._write_root_json(self.paths.marker, fixture("machine.json"))
-        state = self.owner_files(
-            AGENT, worker.MachineIdentity(OTHER_INSTANCE, BOOT_1, 2)
-        )
-        with self.assertRaisesRegex(worker.WorkerError, "unknown machine identity"):
-            self.reconcile(worker.MachineIdentity(INSTANCE, BOOT_2, 2))
-        self.assertTrue((state / "supervisor/owner.json").exists())
-        self.assertEqual(self.marker()["bootId"], BOOT_1)
+    def test_corrupt_owner_record_fails_closed(self):
+        ticket = "ownership/4103-00000000-0000-4000-8000-0000000000c3.json"
+        for relative, content in (
+            ("supervisor/owner.json", "{"),
+            ("supervisor/owner.json", '{"pid":1,"token":"t"}'),
+            ("shared-owner.lock", '{"pid":0,"token":"t"}'),
+            ("shared-owner.lock", '{"pid":1,"token":"t","group":true}'),
+            (ticket, '{"choosing":1,"ticket":1}'),
+            (ticket, '{"choosing":false,"ticket":-1}'),
+            ("ownership/unexpected.json", '{"choosing":false,"ticket":1}'),
+        ):
+            with self.subTest(relative=relative, content=content):
+                shutil.rmtree(self.paths.data)
+                self.paths.data.mkdir(mode=0o755)
+                worker._write_root_json(self.paths.marker, fixture("machine.json"))
+                state = self.owner_files(AGENT)
+                (state / relative).write_text(content)
+                with self.assertRaisesRegex(
+                    worker.WorkerError, "ownership record is invalid"
+                ):
+                    self.reconcile(worker.MachineIdentity(INSTANCE, BOOT_2, GENERATION))
+                self.assertTrue((state / relative).exists())
+                self.assertEqual(self.marker()["bootId"], BOOT_1)
 
     def test_partial_quarantine_is_resumed(self):
         worker._write_root_json(self.paths.marker, fixture("machine.json"))
-        previous = worker.MachineIdentity(INSTANCE, BOOT_1, 2)
-        state = self.owner_files(AGENT, previous)
+        state = self.owner_files(AGENT)
         quarantine = self.paths.quarantine / AGENT / f"{BOOT_1}--{BOOT_2}"
         quarantine.mkdir(parents=True, mode=0o700)
         self.paths.quarantine.chmod(0o700)
         (self.paths.quarantine / AGENT).chmod(0o700)
-        (quarantine / "shared-owner.lock").write_text(
-            json.dumps({"pid": 2, "token": "worker", "machine": previous.json()})
-        )
-        self.reconcile(worker.MachineIdentity(INSTANCE, BOOT_2, 2))
+        os.replace(state / "shared-owner.lock", quarantine / "shared-owner.lock")
+        self.reconcile(worker.MachineIdentity(INSTANCE, BOOT_2, GENERATION))
         self.assertFalse((state / "supervisor/owner.json").exists())
         self.assertTrue((quarantine / "supervisor/owner.json").exists())
         self.assertTrue((quarantine / "shared-owner.lock").exists())
@@ -821,11 +896,9 @@ class DeploymentTests(unittest.TestCase):
     def plan(self, agent: dict) -> worker.AgentPlan:
         return worker.build_agent_plan(agent, runtime_config(), self.paths)
 
-    def test_verbatim_fixture_agent_is_a_per_agent_config_error(self):
-        agent = fixture("agents.json")["agents"][0]
-        self.assertEqual(agent["provider_credential_kind"], "oauth")
-        with self.assertRaisesRegex(worker.WorkerError, "credential kind 'oauth'"):
-            self.plan(agent)
+    def test_core_agent_without_a_credential_kind_is_a_per_agent_config_error(self):
+        with self.assertRaisesRegex(worker.WorkerError, "credential kind None"):
+            self.plan(core_agent(provider_credential_kind=None))
 
     def test_fixture_agent_builds_deployment_v2(self):
         plan = self.plan(valid_agent())
@@ -834,7 +907,7 @@ class DeploymentTests(unittest.TestCase):
             plan.deployment,
             {
                 "version": 2,
-                "revision": 3,
+                "revision": 1,
                 "session": {"sessionId": "watcher-" + AGENT, "agentId": AGENT},
                 "provider": {
                     "kind": "claude",
@@ -947,7 +1020,7 @@ class DeploymentTests(unittest.TestCase):
     def test_environment_file_follows_the_contract(self):
         text = worker.agent_environment(
             runtime_config(),
-            worker.MachineIdentity(INSTANCE, BOOT_1, 2),
+            worker.MachineIdentity(INSTANCE, BOOT_1, GENERATION),
             MACHINE,
             self.paths,
             AGENT,
@@ -963,7 +1036,7 @@ class DeploymentTests(unittest.TestCase):
             f"TMPDIR=/data/agents/{AGENT}/tmp\n"
             f"SWITCH_HOST_INSTANCE_ID={INSTANCE}\n"
             f"SWITCH_HOST_BOOT_ID={BOOT_1}\n"
-            "SWITCH_HOST_ASSIGNMENT_GENERATION=2\n"
+            f"SWITCH_HOST_ASSIGNMENT_GENERATION={GENERATION}\n"
             f"SWITCH_HOST_MACHINE_ID={MACHINE}\n",
         )
 
@@ -974,7 +1047,7 @@ class DeploymentTests(unittest.TestCase):
                 with self.assertRaisesRegex(worker.WorkerError, "PATH"):
                     worker.agent_environment(
                         worker.RuntimeConfig(**{**runtime.__dict__, "path": path}),
-                        worker.MachineIdentity(INSTANCE, BOOT_1, 2),
+                        worker.MachineIdentity(INSTANCE, BOOT_1, GENERATION),
                         MACHINE,
                         self.paths,
                         AGENT,
@@ -983,11 +1056,9 @@ class DeploymentTests(unittest.TestCase):
 
 class CoreClientTests(unittest.TestCase):
     def client(self, opener, endpoint="https://switch.example.test/agent-api/"):
-        bundle = worker.MachineBundle(
-            MACHINE, endpoint, "mcap-test-0000000000000000000000000000"
-        )
+        bundle = worker.MachineBundle(MACHINE, endpoint, MACHINE_CAPABILITY)
         return worker.CoreClient(
-            bundle, worker.MachineIdentity(INSTANCE, BOOT_1, 2), opener
+            bundle, worker.MachineIdentity(INSTANCE, BOOT_1, GENERATION), opener
         )
 
     def test_requests_carry_capability_and_host_identity(self):
@@ -996,14 +1067,14 @@ class CoreClientTests(unittest.TestCase):
         def opener(request, timeout):
             requests.append((request, timeout))
             if request.full_url.endswith("/agents"):
-                value = {**fixture("agents.json"), "future": 1}
+                value = {**core_fixture("agents_response.json"), "future": 1}
             else:
-                value = {**fixture("heartbeat-response.json"), "future": 1}
+                value = {**core_fixture("heartbeat_response.json"), "future": 1}
             return Response(json.dumps(value).encode())
 
         client = self.client(opener)
-        self.assertEqual(client.agents()["agents_version"], 7)
-        body = fixture("heartbeat-request.json")
+        self.assertEqual(client.agents()["agents_version"], 3)
+        body = core_fixture("heartbeat_request.json")
         self.assertEqual(client.heartbeat(body)["heartbeat_every_s"], 15)
         listed, beat = requests
         self.assertEqual(
@@ -1022,7 +1093,7 @@ class CoreClientTests(unittest.TestCase):
             self.assertEqual(timeout, worker.HTTP_TIMEOUT_SECONDS)
             self.assertEqual(
                 request.get_header("Authorization"),
-                "Bearer mcap-test-0000000000000000000000000000",
+                "Bearer " + MACHINE_CAPABILITY,
             )
             self.assertEqual(request.get_header("X-switch-host-boot-id"), BOOT_1)
             self.assertEqual(request.get_header("X-switch-host-instance-id"), INSTANCE)
@@ -1249,21 +1320,65 @@ class SupervisorTests(RootPatched):
             "wcap-test-1111111111111111",
         )
 
-    def test_verbatim_fixture_agent_is_reported_failed_and_not_started(self):
+    def test_core_agent_list_configures_the_agent(self):
+        requests: list = []
+        self.harness.client = core_client(requests)
+        supervisor = self.harness.build()
+        supervisor.tick()
+        unit = f"switch-agent@{AGENT}.service"
+        self.assertEqual(
+            self.commands.actions(),
+            [["reset-failed", unit], ["--no-block", "restart", unit]],
+        )
+        self.assertEqual(
+            [request.full_url.rsplit("/", 1)[-1] for request in requests],
+            ["agents", "heartbeat"],
+        )
+        written = (self.paths.agents_runtime / AGENT / "deployment.json").read_text()
+        written = written.replace(str(self.paths.data), "/data").replace(
+            str(self.paths.runtime), "/run/switch-hosted"
+        )
+        self.assertEqual(json.loads(written), fixture("deployment.json"))
+        body = json.loads(requests[1].data)
+        agent = core_agent()
+        self.assertEqual(
+            [
+                (state["launch_id"], state["revision"], state["exit"])
+                for state in body["agents"]
+            ],
+            [(agent["launch_id"], agent["revision"], None)],
+        )
+        self.harness.now = 14
+        supervisor.tick()
+        self.assertEqual(len(requests), 2)
+        self.harness.now = 15
+        supervisor.tick()
+        self.assertEqual(
+            [request.full_url.rsplit("/", 1)[-1] for request in requests],
+            ["agents", "heartbeat", "heartbeat"],
+        )
+
+    def test_core_agent_without_a_credential_kind_is_stopped_and_kept(self):
+        self.supervisor.reconcile(core_fixture("agents_response.json")["agents"])
+        self.commands.clear()
         with self.assertLogs(worker.logger, "ERROR"):
-            self.supervisor.reconcile(fixture("agents.json")["agents"])
+            self.supervisor.reconcile([core_agent(provider_credential_kind=None)])
         self.assertEqual(
             self.commands.actions(),
             [["--no-block", "stop", f"switch-agent@{AGENT}.service"]],
         )
         self.assertFalse((self.paths.agents_runtime / AGENT).exists())
+        self.assertTrue((self.paths.agents / AGENT / "home").is_dir())
+        self.assertTrue(
+            (self.paths.worktrees / AGENT / "example-org/example-repo").is_dir()
+        )
         self.supervisor._observe()
         self.assertEqual(
             self.state(),
             {
-                "launch_id": "req-0000000000000001",
+                "launch_id": core_agent()["launch_id"],
                 "agent_id": AGENT,
-                "revision": 3,
+                "revision": 1,
                 "process_state": "failed",
                 "restarts": 0,
                 "oom_kills": 0,
@@ -1530,7 +1645,7 @@ class ProcessStateTests(RootPatched):
             },
         )
         supervisor = self.harness.build()
-        supervisor.reconcile([valid_agent()])
+        supervisor.reconcile(core_fixture("agents_response.json")["agents"])
         self.commands.units[AGENT] = {
             "ActiveState": "failed",
             "SubState": "failed",
@@ -1541,10 +1656,12 @@ class ProcessStateTests(RootPatched):
             "ExecMainExitTimestampMonotonic": "100",
         }
         supervisor._observe()
-        expected = fixture("heartbeat-request.json")
+        body = supervisor.heartbeat_body()
+        expected = core_fixture("heartbeat_request.json")
+        self.assertEqual(structure(body), structure(expected))
         self.assertEqual(expected["disk"]["path"], "/data")
         expected["disk"]["path"] = str(self.harness.paths.data)
-        self.assertEqual(supervisor.heartbeat_body(), expected)
+        self.assertEqual(body, expected)
 
 
 class LoopTests(RootPatched):
@@ -1578,7 +1695,7 @@ class LoopTests(RootPatched):
         self.client.listings.append(listing())
         self.client.heartbeats.append(
             {
-                "agents_version": 7,
+                "agents_version": 3,
                 "machine_desired_state": "stopped",
                 "heartbeat_every_s": 30,
             }
@@ -1646,6 +1763,41 @@ class LoopTests(RootPatched):
         self.supervisor.tick()
         self.assertEqual(len(self.client.bodies), 2)
 
+    def test_rejected_agent_list_leaves_agents_and_their_data_alone(self):
+        for status, retired in (
+            (400, False),
+            (409, False),
+            (500, False),
+            (503, False),
+            (410, True),
+        ):
+            with self.subTest(status=status):
+                harness = Harness(self.temporary / f"machine-{status}")
+                for directory in (
+                    harness.paths.agents / AGENT / "home",
+                    harness.paths.worktrees / AGENT / "workspace",
+                ):
+                    directory.mkdir(parents=True)
+                    (directory / "notes").write_text("kept")
+                requests: list = []
+                harness.client = core_client(requests, status)
+                supervisor = harness.build()
+                with self.assertLogs(worker.logger, "WARNING"):
+                    supervisor.tick()
+                self.assertEqual(
+                    harness.commands.actions(),
+                    [["stop", "switch-agent@*.service"]] if retired else [],
+                )
+                self.assertEqual(supervisor.heartbeat_body()["agents"], [])
+                self.assertEqual(
+                    (harness.paths.agents / AGENT / "home/notes").read_text(), "kept"
+                )
+                self.assertEqual(
+                    (harness.paths.worktrees / AGENT / "workspace/notes").read_text(),
+                    "kept",
+                )
+                self.assertEqual(requests[0].full_url.rsplit("/", 1)[-1], "agents")
+
     def test_401_stops_the_supervisor(self):
         self.client.listings.append(worker.WorkerError("rejected"))
         with self.assertRaises(worker.WorkerError):
@@ -1657,7 +1809,7 @@ class LoopTests(RootPatched):
         self.client.heartbeats += [
             worker.MachineRetired(),
             worker.MachineRetired(),
-            fixture("heartbeat-response.json"),
+            core_fixture("heartbeat_response.json"),
         ]
         with self.assertLogs(worker.logger, "WARNING"):
             self.supervisor.tick()
