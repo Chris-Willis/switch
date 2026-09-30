@@ -54,10 +54,10 @@
         "image_id",
         "root_device_name",
         "allowed_instance_types",
-        "max_agents",
+        "max_machines",
         "root_volume_gib",
         "data_volume_gib",
-        "worker_assignments",
+        "machine_slots",
         "poll_interval_seconds"
       ]
     },
