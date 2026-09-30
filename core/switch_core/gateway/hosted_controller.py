@@ -29,7 +29,7 @@ from switch_core.gateway.dependencies import (
     get_protocol,
     get_session_factory,
 )
-from switch_core.gateway.hosted_launches import controller_settings
+from switch_core.gateway.hosted_launches import controller_settings, finish_removal
 from switch_core.providers.github_revocations import revoke_pending
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/hosted-controller")
 
 QUEUED_TIMEOUT = timedelta(minutes=10)
+DELETING_RESUME_AFTER = timedelta(minutes=5)
 
 
 async def controller_session(
@@ -146,6 +147,40 @@ async def _should_sleep(
     return idle and now - machine.active_at >= idle_after
 
 
+async def _resume_removals(
+    session: AsyncSession,
+    protocol: ProtocolService,
+    config: SwitchConfig,
+    now: datetime,
+) -> None:
+    """Finish removals that were interrupted between their two commits."""
+    stalled = list(
+        await session.scalars(
+            select(HostedLaunch.id).where(
+                HostedLaunch.tenant_id == require_tenant_id(),
+                HostedLaunch.state == "deleting",
+                HostedLaunch.updated_at < now - DELETING_RESUME_AFTER,
+            )
+        )
+    )
+    for launch_id in stalled:
+        launch, machine = await HostedMachineStore().locked_launch(session, launch_id)
+        if launch is None or machine is None or launch.state != "deleting":
+            await session.commit()
+            continue
+        try:
+            await finish_removal(session, protocol, config, launch, machine, now)
+        except Exception:
+            logger.error(
+                "Cloud launch %s: finishing its interrupted removal failed",
+                launch_id,
+                exc_info=True,
+            )
+            await session.rollback()
+            continue
+        await session.commit()
+
+
 async def _sweep(
     session: AsyncSession,
     machine: HostedMachine,
@@ -190,6 +225,7 @@ async def machines(
 ) -> dict:
     store = HostedMachineStore()
     now = datetime.now(UTC)
+    await _resume_removals(session, protocol, config, now)
     candidates = list(
         await session.scalars(
             select(HostedMachine)

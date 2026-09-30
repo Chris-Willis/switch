@@ -453,8 +453,8 @@ async def remove(
     Two commits under the machine and launch locks: the first records the
     removal and what to clean up, and drops the queued mail; the second
     deletes the identity and retains the disk when no agent is left. A crash
-    between them leaves the launch `deleting`, and `remove` on it again
-    finishes the cleanup.
+    between them leaves the launch `deleting`; `remove` on it again, or the
+    controller sweep, finishes the cleanup.
     """
     machines = HostedMachineStore()
     now = datetime.now(UTC)
@@ -500,6 +500,29 @@ async def remove(
         await post_removed_notices(protocol, agent, cancelled)
 
     launch, machine = await locked_owned(session, launch.id, launch.owner_id)
+    await finish_removal(session, protocol, config, launch, machine, now)
+    await session.commit()
+    remaining = await revoke_pending(
+        session, config, (GitHubIssuedToken.launch_id == launch.id,)
+    )
+    response = summary(launch, machine)
+    return {**response, "access_warning": ACCESS_WARNING if remaining else None}
+
+
+async def finish_removal(
+    session: AsyncSession,
+    protocol: ProtocolService,
+    config: SwitchConfig,
+    launch: HostedLaunch,
+    machine: HostedMachine,
+    now: datetime,
+) -> None:
+    """Delete a `deleting` launch's identity and mark it `deleted`.
+
+    The caller holds the machine and launch locks and commits. Safe to run
+    again after an interruption.
+    """
+    machines = HostedMachineStore()
     await AgentStore().lock_name(session, launch.name)
     if launch.agent_id and await session.get(Agent, launch.agent_id) is not None:
         await protocol.delete_agent(agent_id=launch.agent_id)
@@ -523,12 +546,6 @@ async def remove(
     await machines.retain_if_empty(
         session, machine, retention_days=config.hosted_disk_retention_days, now=now
     )
-    await session.commit()
-    remaining = await revoke_pending(
-        session, config, (GitHubIssuedToken.launch_id == launch.id,)
-    )
-    response = summary(launch, machine)
-    return {**response, "access_warning": ACCESS_WARNING if remaining else None}
 
 
 def operation_summary(operation: HostedOperation) -> dict:
