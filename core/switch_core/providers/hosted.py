@@ -1,8 +1,15 @@
 from pathlib import Path
+from typing import Annotated
 from urllib.parse import urlsplit
-from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    StringConstraints,
+    field_validator,
+)
 
 
 class HostedControllerSettings(BaseModel):
@@ -10,15 +17,17 @@ class HostedControllerSettings(BaseModel):
 
     tenant_id: str = Field(min_length=1)
     token: SecretStr = Field(min_length=32)
-    agent_ids: list[UUID] = Field(min_length=1, max_length=100)
+    machine_slots: list[
+        Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{2,39}$")]
+    ] = Field(min_length=1, max_length=100)
     github_private_key_path: Path
     agent_api_endpoint: str
 
-    @field_validator("agent_ids")
+    @field_validator("machine_slots")
     @classmethod
-    def unique_ids(cls, value: list[UUID]) -> list[UUID]:
+    def unique_slots(cls, value: list[str]) -> list[str]:
         if len(set(value)) != len(value):
-            raise ValueError("Cloud worker identities must be unique.")
+            raise ValueError("Cloud machine slots must be unique.")
         return value
 
     @field_validator("github_private_key_path")
