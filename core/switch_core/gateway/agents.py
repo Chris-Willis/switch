@@ -17,6 +17,7 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     build_agent_summary,
     list_agent_summaries,
 )
+from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.bridges.agent.protocol.service import AgentExistsError, ProtocolService
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
@@ -56,6 +57,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+CLOUD_AGENT_DELETE_REFUSED = (
+    "This is a cloud agent. Remove it from Switch Console's cloud agents instead."
+)
+
 
 @router.get("")
 async def list_agents(
@@ -89,6 +94,8 @@ async def delete_agent_by_name(
             status_code=403,
             detail="Only the agent's owner or an admin can delete it.",
         )
+    if hosted_launch_of(agent.metadata_) is not None:
+        raise HTTPException(status_code=409, detail=CLOUD_AGENT_DELETE_REFUSED)
     try:
         await protocol.delete_agent(agent_name=agent_name)
     except ValueError as exc:
@@ -120,6 +127,8 @@ async def delete_agent(
             status_code=403,
             detail="Only the agent's owner or an admin can delete it.",
         )
+    if hosted_launch_of(agent.metadata_) is not None:
+        raise HTTPException(status_code=409, detail=CLOUD_AGENT_DELETE_REFUSED)
     try:
         await protocol.delete_agent(agent_id=agent_id)
     except ValueError as exc:
