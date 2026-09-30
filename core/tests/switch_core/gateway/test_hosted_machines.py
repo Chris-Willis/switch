@@ -219,11 +219,36 @@ async def test_retry_only_from_error(mailbox_app):  # noqa: F811
     assert machine["revision"] == 2
 
 
+async def test_retry_requeues_the_retire_of_a_machine_in_error(mailbox_app):  # noqa: F811
+    app = mailbox_app
+    await set_machine(
+        app.factory,
+        app.machine_id,
+        state="error",
+        desired_state="retained",
+        error="The instance could not stop.",
+        error_code="instance_failed",
+    )
+    for action in ("stop", "start"):
+        assert (await _lifecycle(app, action, 1)).status_code == 409
+    retried = await _lifecycle(app, "retry", 1)
+    assert retried.status_code == 200, retried.text
+    machine = retried.json()["machine"]
+    assert (
+        machine["state"],
+        machine["desired_state"],
+        machine["error"],
+        machine["revision"],
+    ) == ("queued", "retained", None, 2)
+
+
 @pytest.mark.parametrize(
     "values",
     [
         {"desired_state": "retained"},
+        {"state": "retained", "desired_state": "retained"},
         {"state": "deleting", "desired_state": "deleted"},
+        {"state": "error", "desired_state": "deleted"},
     ],
 )
 @pytest.mark.parametrize("action", ["stop", "start", "retry"])
