@@ -370,6 +370,29 @@ class MachineStore:
             raise StoreError("cannot cancel an issued instance launch")
         return self._cas_update(claim, "instance_launch_intent = 0")
 
+    def clear_rejected_volume_create(self, claim: Machine) -> Machine:
+        """Forget an issued volume create that EC2 definitely did not accept."""
+        self._connection.execute(
+            """
+            UPDATE machines SET volume_create_issued = 0, updated_at = CURRENT_TIMESTAMP
+            WHERE machine_id = ? AND data_volume_id IS NULL AND volume_create_issued = 1
+            """,
+            (claim.machine_id,),
+        )
+        return self.get(claim.machine_id)
+
+    def clear_unlaunched_instance(self, claim: Machine) -> Machine:
+        """Forget an issued launch of `claim.instance_seq` that produced no instance."""
+        self._connection.execute(
+            """
+            UPDATE machines SET instance_launch_issued = 0, updated_at = CURRENT_TIMESTAMP
+            WHERE machine_id = ? AND instance_seq = ? AND instance_id IS NULL
+            AND instance_launch_issued = 1
+            """,
+            (claim.machine_id, claim.instance_seq),
+        )
+        return self.get(claim.machine_id)
+
     def mark_volume_delete_issued(self, claim: Machine) -> Machine:
         return self._mark_intent(claim, "volume_delete_issued")
 
