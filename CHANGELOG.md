@@ -1357,6 +1357,8 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.38.0] - 2026-09-30
+
 #### Changed
 - **Updating the sidecars on a host with many agents takes a fraction of the
   SSH round trips.** Each agent's bring-up used to check the host's shared
@@ -2999,6 +3001,8 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
+### [0.7.1] - 2026-09-30
+
 #### Fixed
 - **A connection no longer gives itself up to itself.** A placements or room
   subscribe request sent under one incarnation and answered after this client
@@ -3175,6 +3179,8 @@ The remote runtime Switch Console deploys to an agent host. Versioned in
 published on its own.
 
 ### [Unreleased]
+
+### [1.9.11] - 2026-09-30
 
 #### Added
 - **The room watcher records its connection to Switch in `health.json`** beside
