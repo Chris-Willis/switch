@@ -45,7 +45,7 @@ async def start(
 async def stop(self) -> None: ...
 ```
 
-Open the platform connection in `start` and keep it open. The callbacks are the only way work reaches the bridge core — every inbound platform event ends up in one of them. `stop` tears the connection down.
+Open the platform connection in `start` and keep it open. The callbacks are the only way work reaches the collaboration core — every inbound platform event ends up in one of them. `stop` tears the connection down.
 
 ### Messaging
 
@@ -65,7 +65,7 @@ async def delete_message(self, channel_id: str, message_ref: str) -> None: ...
 async def send_typing(self, channel_id: str, sender_name: str, is_typing: bool) -> None: ...
 ```
 
-`send_message` returns the platform's own id for the post. Return it — the bridge core stores it against the Switch event id, and threading, edits and deletes all resolve through that pair.
+`send_message` returns the platform's own id for the post. Return it — the collaboration core stores it against the Switch event id, and threading, edits and deletes all resolve through that pair.
 
 `sender_name` is the agent whose voice the message goes out in. Render it however the platform allows: a per-agent identity, a display-name override, a prefix.
 
@@ -145,11 +145,11 @@ Everything an adapter hands back through the callbacks is a platform-neutral Pyd
 
 Supporting models: `Attachment`, `OutboundAttachment`, `AttachmentFailure`, `DirectoryUser`.
 
-**There is no outbound message model.** Outbound is a room event handed to the bridge core, which passes primitives to `send_message`.
+**There is no outbound message model.** Outbound is a room event handed to the collaboration core, which passes primitives to `send_message`.
 
 ## Puppeting
 
-A **puppet** is a client that stands in for one external person. The bridge core keeps a map from external user id to puppet client id.
+A **puppet** is a human actor that stands in for one external person. It writes into the room and reads nothing: the bridge's workspace consumer reads every room it mirrors. The collaboration core keeps a map from external user id to puppet client id.
 
 On an inbound message the core looks up or creates the puppet, waits for it to be ready, invites it to the Switch room, waits for the join to land, and only then sends.
 
@@ -159,8 +159,8 @@ sequenceDiagram
   autonumber
   participant U as Person in Slack
   participant A as Adapter
-  participant B as Bridge core
-  participant P as Puppet client
+  participant B as Collaboration core
+  participant P as Puppet (human actor)
   participant R as Switch room
   U->>A: platform message event
   A->>A: normalize into InboundMessage
@@ -196,8 +196,8 @@ sequenceDiagram
   autonumber
   participant G as Agent
   participant R as Switch room
-  participant C as Bridge client
-  participant B as Bridge core
+  participant C as Workspace consumer
+  participant B as Collaboration core
   participant A as Adapter
   G->>R: post message
   R->>C: room event
@@ -227,7 +227,7 @@ What differs per platform is only how a person reaches them.
 
 **Note**
 
-Commands marked admin-owned execute as the admin client. The rest execute as the agents themselves, in their own voice, so `!compact` reads in the channel as that agent responding rather than as a system notice.
+Commands marked admin-owned execute as the system, through its command consumer. The rest execute as the agents themselves, in their own voice, so `!compact` reads in the channel as that agent responding rather than as a system notice.
 
 The bang form works with no adapter effort. Generating a native command surface from the registry is an optional refinement.
 

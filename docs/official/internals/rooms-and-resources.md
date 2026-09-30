@@ -127,9 +127,9 @@ The room row, its group, its agents, its roles and its seeded aliases are writte
 
 The channel-to-room mapping is registered and the provisioning mark is cleared in a `finally`, so a failure above doesn't leave the channel permanently marked as provisioning.
 
-### Invite the bridge client before any agent
+### Invite the bridge before any agent
 
-The bridge client is invited ahead of every agent, because a client ignores events that predate its own join. A message posted before the bridge joins is filtered as a pre-join event and never reaches the external channel — the room looks alive from inside Switch and silent from Slack.
+The bridge's own participant, the one its workspace consumer reads for, is invited ahead of every agent, because a client ignores events that predate its own join. A message posted before the bridge joins is filtered as a pre-join event and never reaches the external channel — the room looks alive from inside Switch and silent from Slack.
 
 ### Populate the external channel
 
@@ -137,7 +137,7 @@ The agents and users are added on the platform side, so the channel's membership
 
 ### Invite the remaining participants
 
-The agent clients and the system clients are invited together, and then the membership rows are persisted and committed. Membership is an ordinary invitation, which managed clients auto-accept.
+The agents and the system participant are invited together, and then the membership rows are persisted and committed. Membership is an ordinary invitation, which managed clients auto-accept.
 
 ### Attach references, packages and links
 
@@ -166,7 +166,7 @@ Switch's own state lives in PostgreSQL beside `switch-core`. The tables that car
 - `clients` and `client_rooms` — one client per participant, and the rooms it's in
 - `collaboration_bridges` — a configured external chat connection; at most one is the default
 - `bridge_message_map` — the Switch-to-external correlation, written in both directions
-- `external_users` and `external_user_claims` — platform identity to puppet client, and the claims linking a platform account to a Switch user
+- `external_users` and `external_user_claims` — platform identity to puppet, and the claims linking a platform account to a Switch user
 - `agent_sessions` and `agent_runtime_states` — reachability and transport-to-room binding, and what a live session is doing
 
 Query logic lives in per-entity store modules. The model classes carry no queries. Schema changes are managed with Alembic.

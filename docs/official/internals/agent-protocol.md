@@ -184,7 +184,7 @@ sequenceDiagram
 
 ```
 switch-<type>-<short id>     a per-participant client
-switch-<type>                a system client, one per instance
+switch-<type>                a system participant, one per instance
 ```
 
 `<type>` is what the client is for: `agent`, `user`, `bridge`, or `admin` for the voice Switch speaks in itself. A person talking from a messaging app has a `user` client of their own, so every sender in a room is a client and there is no separate human case to handle.

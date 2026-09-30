@@ -77,10 +77,10 @@ just test -k "test_name"         # run specific test
   - `stores/` — query methods and domain-specific data access
 - `migrations/` — Alembic migrations (`env.py`, `versions/`)
 - `room_service.py` / `rooms_yaml.py` — Room lifecycle, configuration, provisioning
-- `clients/` — room clients (agent, admin, bridge)
+- `clients/` — room participants: `actor.py` (identity, membership, writes: `HumanActor`, `AgentActor`, `SystemActor`) and `consumer.py` (the delivery loop and hooks: `AgentConsumer`, `CommandConsumer`, `WorkspaceConsumer`)
 - `bridges/` — External integrations
-  - `agent/` — Agent Bridge (HTTP API, MCP server, server-side connectors)
-  - `collaboration/` — Collaboration Bridge (Slack, Mattermost, Discord, Teams, Telegram adapters)
+  - `agent/` — Agent Bridge (HTTP API, MCP server, server-side connectors); `protocol/agent_core.py` is `AgentCore`, `protocol/agent_connections.py` holds each `AgentConnection`
+  - `collaboration/` — Collaboration Bridge: one `CollaborationCore` per workspace, driving a `PlatformAdapter` (Slack, Mattermost, Discord, Teams, Telegram)
   - `resource/` — Resource Bridge (platform resource management)
 - `gateway/` — Management API for the frontend
 
@@ -88,7 +88,7 @@ just test -k "test_name"         # run specific test
 - Async throughout: all I/O is async (DB, external APIs)
 - Dependency injection: stores and services are injected, not global singletons
 - Session management: API endpoints use middleware-provided sessions; background work creates sessions explicitly
-- All participants in rooms are clients reading and writing the `messages` table through the transport port
+- Every room participant is an actor writing to the `messages` table through the transport port; only a participant that reads the room has a consumer. Puppets (a `HumanActor` per platform user) read nothing, because the bridge's `WorkspaceConsumer` reads for the whole workspace
 
 **The message bus is PostgreSQL** (`transport/postgres.py`). Switch once ran on a
 Matrix homeserver; that is gone, and no Matrix server or client library is
@@ -101,9 +101,11 @@ each client then reads the rows after its own cursor, 200 at a time. The
 notification is a wake-up, never the payload. Invites and presence travel over
 in-process buses (`transport/invites.py`, `transport/ephemeral.py`), which is
 part of why switch-core runs as a single replica. Names such as
-`matrix_room_id`, `matrix_user_id`, `MATRIX_SERVER_NAME`, the `@localpart:server`
-id shape and `m.room.message` content types are kept as stable identifiers and
-wire shapes, not as a sign that Matrix is in use.
+the `matrix_room_id` / `matrix_user_id` columns and wire fields, the
+`@localpart:server` id shape and `m.room.message` content types are kept as
+stable identifiers and wire shapes, not as a sign that Matrix is in use. In
+Python they are `transport_room_id` / `transport_user_id`, and the server name
+is `ID_SERVER_NAME` (`MATRIX_SERVER_NAME` is still read, with a warning).
 
 ## The Switch skill
 

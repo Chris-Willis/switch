@@ -14,7 +14,7 @@ sequenceDiagram
   autonumber
   participant P as Person in Slack
   participant SA as Slack adapter
-  participant BC as Bridge core
+  participant BC as Collaboration core
   participant RM as Switch room
   participant AC as Agent client
   participant AG as Agent
@@ -28,28 +28,28 @@ sequenceDiagram
   AC->>AG: sequenced in the buffer, pushed over SSE
   Note over AC,AG: delivery is not acting
   AG->>RM: reply, through the agent bridge over HTTP
-  RM->>BC: bridge client sees the reply
+  RM->>BC: workspace consumer sees the reply
   BC->>SA: puppet senders skipped, correlation resolved
   SA->>P: reply in the channel thread
 ```
 
 1. **Slack pushes the message.** It arrives on the connection the adapter dialed out when the bridge started. No inbound port is involved.
 2. **The adapter normalizes it.** Platform formatting becomes the neutral inbound model: channel and channel type, sender id and name, content, message reference, optional thread root, attachments. Everything past this point is written against that model. See [the collaboration bridge](collaboration-bridge.md).
-3. **The bridge core prepares the puppet.** It maps the channel to its Switch room, looks up or creates the sender's puppet client, invites it, and waits for the join to land.
+3. **The collaboration core prepares the puppet.** It maps the channel to its Switch room, looks up or creates the sender's puppet client, invites it, and waits for the join to land.
 4. **The puppet posts the message.** It is now an ordinary event from an ordinary room member.
 5. **The agent's client picks it up.** Each client is delivered the events written to the rooms it belongs to.
 6. **Addressing is decided.** By name, by an alias the agent holds in this room, or by a role it holds. The [addressing policy](identity-and-access.md) decides whether this sender may make this agent respond.
 7. **The event is buffered and streamed.** It is appended to the agent's sequenced buffer and pushed down the open SSE stream. Each frame carries its sequence number as the SSE id, so a reconnect resumes with `Last-Event-ID`. See [the agent protocol](agent-protocol.md).
 8. **The agent replies.** It posts into the same Switch room through the agent bridge over HTTP. A session started by Switch Console calls the Switch tool its host serves, and Console or the sidecar makes that request.
-9. **The bridge client sees the reply.** It is a member of the room, so the reply reaches it like any other event.
-10. **The bridge core routes it out.** Known puppet senders are skipped, and the correlation table resolves the external post to reply under.
+9. **The workspace consumer sees the reply.** The bridge is a member of the room, so the reply reaches it like any other event.
+10. **The collaboration core routes it out.** Known puppet senders are skipped, and the correlation table resolves the external post to reply under.
 11. **The adapter posts it in the channel.** In the agent's name, in the right thread.
 
 ## The join wait
 
-A client ignores events that predate its own join. This is Switch's own rule, applied by the client as events reach it, not something PostgreSQL enforces. The bridge core invites the puppet and waits for the join to land before sending, because a message sent in the gap is filtered out at the far end without raising anything.
+A client ignores events that predate its own join. This is Switch's own rule, applied by the client as events reach it, not something PostgreSQL enforces. The collaboration core invites the puppet and waits for the join to land before sending, because a message sent in the gap is filtered out at the far end without raising anything.
 
-The same rule applies wherever Switch adds a participant that has to see what happens next. Room creation invites the bridge client before any agent for this reason.
+The same rule applies wherever Switch adds a participant that has to see what happens next. Room creation invites the bridge before any agent for this reason.
 
 ## Delivery is not acting
 
