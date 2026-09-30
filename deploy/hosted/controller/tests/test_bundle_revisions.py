@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from unittest.mock import patch
 from uuid import NAMESPACE_URL, uuid5
 
@@ -8,6 +9,7 @@ import pytest
 from botocore.exceptions import ClientError
 from test_controller import MACHINE_ID, config
 
+from switch_hosted_controller.config import ConfigError
 from switch_hosted_controller.gateway import CoreMachine, Gateway, GatewayConfig, GatewayError
 from switch_hosted_controller.model import DesiredState, ObservedState
 from switch_hosted_controller.reconciler import Reconciler
@@ -226,7 +228,7 @@ def launched(tmp_path, *, instance_launch_issued: bool = False):
     sync(gateway, core)
     if instance_launch_issued:
         machine = store.mark_instance_launch_intent(store.get(MACHINE_ID))
-        machine = store.mark_instance_launch_issued(machine)
+        machine = store.mark_instance_launch_issued(machine, datetime.now(UTC))
         store.record_instance(MACHINE_ID, INSTANCE_ID)
     assert store.get(MACHINE_ID).instance_launch_issued is instance_launch_issued
     return store, secrets, core, gateway
@@ -340,9 +342,9 @@ def test_sleep_wake_refreshes_the_bundle_before_the_instance_starts(tmp_path):
     reconciler = Reconciler(store, cloud)
 
     def poll() -> None:
-        gateway.sync_machines()
+        gateway.sync_machines(gateway.machines())
         reconciler.reconcile_all()
-        gateway.report_observations()
+        gateway.report_observations(gateway.machines())
 
     for _ in range(4):
         poll()
@@ -391,4 +393,26 @@ def test_sleep_wake_refreshes_the_bundle_before_the_instance_starts(tmp_path):
     machine = store.get(MACHINE_ID)
     assert machine.observed_state is ObservedState.RUNNING
     assert machine.instance_launch_issued
+    store.close()
+
+
+def test_existing_bundle_version_with_different_content_fails_loud(tmp_path):
+    store, secrets, core, gateway = harness(tmp_path)
+    sync(gateway, core)
+    store.record_volume(MACHINE_ID, VOLUME_ID, "us-east-1a")
+    first = token(core.machine_id, 1)
+    secrets.versions["older"] = {"string": '{"stale":true}', "stages": {"AWSCURRENT"}}
+    describe = secrets.describe_secret
+
+    def describe_before_the_racing_write(SecretId):
+        response = describe(SecretId=SecretId)
+        secrets.versions[first] = {"string": '{"conflicting":true}', "stages": set()}
+        return response
+
+    secrets.describe_secret = describe_before_the_racing_write
+    with pytest.raises(ConfigError, match="different bundle"):
+        sync(gateway, core)
+    assert secrets.promotions == []
+    assert secrets.current()[0] == "older"
+    assert store.get(MACHINE_ID).bundle_token is None
     store.close()

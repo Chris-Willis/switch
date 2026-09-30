@@ -13,6 +13,7 @@ import os
 import pwd
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -52,8 +53,10 @@ OBSERVE_SECONDS = 3
 DEFAULT_HEARTBEAT_SECONDS = 15
 RETIRED_HEARTBEAT_SECONDS = 60
 LIST_RETRY_SECONDS = 15
+RECONCILE_RETRY_MAX_SECONDS = 300
 HTTP_TIMEOUT_SECONDS = 30
 GIT_TIMEOUT_SECONDS = 300
+GIT_KILL_WAIT_SECONDS = 10
 SLICE_RESERVE_BYTES = 1024**3
 MAX_SECRET_BYTES = 128 * 1024
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
@@ -85,6 +88,7 @@ PROVIDER_CONTEXT = (
 )
 INVALID_CONFIG = "invalid-config"
 SETUP_FAILED = "setup-failed"
+OWNERSHIP_INVALID = "ownership-invalid"
 
 
 class WorkerError(RuntimeError):
@@ -92,6 +96,14 @@ class WorkerError(RuntimeError):
 
 
 class ObsoleteBundle(WorkerError):
+    pass
+
+
+class GitAbandoned(WorkerError):
+    pass
+
+
+class ReconcileIncomplete(WorkerError):
     pass
 
 
@@ -147,6 +159,16 @@ def _agent_id(value: Any) -> str:
     except ValueError:
         pass
     raise WorkerError("Agent ID must be a lowercase UUID.")
+
+
+def _unavailable_code(entry: dict[str, Any]) -> str | None:
+    code = entry.get("unavailable")
+    if code is None:
+        return None
+    _text(code, "Unavailable code", maximum=128)
+    _agent_id(entry["agent_id"])
+    _identifier(entry["launch_id"], "Launch ID")
+    return code
 
 
 def _is_agent_id(value: str) -> bool:
@@ -251,6 +273,10 @@ class Paths:
         return self.marker_directory / "quarantine"
 
     @property
+    def ownership_blocked(self) -> Path:
+        return self.marker_directory / "ownership-blocked.json"
+
+    @property
     def agents(self) -> Path:
         return self.data / "agents"
 
@@ -269,6 +295,9 @@ class Paths:
     @property
     def agents_runtime(self) -> Path:
         return self.runtime / "agents"
+
+    def pending_install(self, agent_id: str) -> Path:
+        return self.bundle.parent / f"pending-{agent_id}.json"
 
 
 def load_worker_config(assignment_path: Path, runtime_path: Path) -> WorkerConfig:
@@ -963,6 +992,7 @@ class GitRunner:
         command = [
             *self._prefix,
             self._flock,
+            "--no-fork",
             f"{mirror}.lock",
             self._git,
             "-C",
@@ -971,13 +1001,12 @@ class GitRunner:
         ]
         label = f"git {' '.join(arguments[:2])} on {mirror}"
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 command,
-                check=False,
-                text=True,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                timeout=GIT_TIMEOUT_SECONDS,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
                 env={
                     "PATH": "/usr/bin:/bin",
                     "LANG": "C",
@@ -987,11 +1016,34 @@ class GitRunner:
                     "GIT_TERMINAL_PROMPT": "0",
                 },
             )
-        except (OSError, subprocess.TimeoutExpired):
+        except OSError:
             raise WorkerError(f"{label} could not run.") from None
-        if completed.returncode != 0:
-            detail = completed.stderr.strip()[-500:]
-            raise WorkerError(f"{label} failed: {detail}")
+        try:
+            returncode = process.wait(timeout=GIT_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(process, label)
+            raise WorkerError(f"{label} timed out and was killed.") from None
+        if returncode != 0:
+            raise WorkerError(f"{label} failed with exit status {returncode}.")
+
+
+def _kill_process_group(process: subprocess.Popen[bytes], label: str) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    process.wait()
+    deadline = time.monotonic() + GIT_KILL_WAIT_SECONDS
+    while True:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            pass
+        if time.monotonic() >= deadline:
+            raise GitAbandoned(f"{label} timed out and its processes did not exit.")
+        time.sleep(0.1)
 
 
 def inspect_storage(
@@ -1176,7 +1228,7 @@ def reconcile_marker(
     filesystem_uuid: str,
     runtime_fingerprint: str,
     paths: Paths,
-) -> None:
+) -> set[str]:
     marker_directory = paths.marker_directory
     marker_directory.mkdir(mode=0o700, parents=False, exist_ok=True)
     os.chown(marker_directory, 0, 0)
@@ -1193,23 +1245,21 @@ def reconcile_marker(
         if marker["filesystemUuid"] != filesystem_uuid:
             raise WorkerError("Retained disk filesystem identity changed.")
         if marker["bootId"] != identity.boot_id:
-            previous = MachineIdentity(
-                marker["instanceId"], marker["bootId"], marker["generation"]
+            blocked = _quarantine_agents(
+                paths,
+                [path.name for path in _agent_state_directories(paths.agents)],
+                marker["bootId"],
+                identity.boot_id,
             )
-            for state_path in _agent_state_directories(paths.agents):
-                _quarantine_stale_ownership(
-                    state_path,
-                    paths.quarantine,
-                    state_path.name,
-                    previous,
-                    identity.boot_id,
-                )
-        elif (
-            marker["instanceId"] == identity.instance_id
-            and marker["runtimeFingerprint"] == runtime_fingerprint
-        ):
-            return
+        else:
+            blocked = _retry_blocked_ownership(paths, identity.boot_id)
+            if (
+                marker["instanceId"] == identity.instance_id
+                and marker["runtimeFingerprint"] == runtime_fingerprint
+            ):
+                return blocked
     else:
+        blocked = set()
         unexpected = {
             child.name
             for child in paths.data.iterdir()
@@ -1233,6 +1283,73 @@ def reconcile_marker(
             "layout": MARKER_LAYOUT,
         },
     )
+    return blocked
+
+
+def _quarantine_agents(
+    paths: Paths, agent_ids: list[str], previous_boot_id: str, current_boot_id: str
+) -> set[str]:
+    blocked: set[str] = set()
+    for agent_id in agent_ids:
+        try:
+            _quarantine_stale_ownership(
+                paths.agents / agent_id,
+                paths.quarantine,
+                agent_id,
+                previous_boot_id,
+                current_boot_id,
+            )
+        except (WorkerError, OSError) as error:
+            logger.error(
+                "Agent %s ownership could not be quarantined; it will not start: %s",
+                agent_id,
+                error,
+            )
+            blocked.add(agent_id)
+    if blocked:
+        _write_root_json(
+            paths.ownership_blocked,
+            {
+                "version": 1,
+                "bootId": current_boot_id,
+                "previousBootId": previous_boot_id,
+                "agents": sorted(blocked),
+            },
+        )
+    else:
+        paths.ownership_blocked.unlink(missing_ok=True)
+    return blocked
+
+
+def _retry_blocked_ownership(paths: Paths, boot_id: str) -> set[str]:
+    path = paths.ownership_blocked
+    if not path.exists() and not path.is_symlink():
+        return set()
+    try:
+        details = path.lstat()
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or details.st_uid != ROOT_UID
+            or details.st_mode & 0o077
+        ):
+            raise ValueError()
+        value = _strict(
+            _read_json_nofollow(path),
+            {"version", "bootId", "previousBootId", "agents"},
+            set(),
+            "blocked ownership",
+        )
+        if (
+            value["version"] != 1
+            or value["bootId"] != boot_id
+            or not isinstance(value["previousBootId"], str)
+            or not isinstance(value["agents"], list)
+        ):
+            raise ValueError()
+        agent_ids = [_agent_id(agent_id) for agent_id in value["agents"]]
+    except (OSError, ValueError, WorkerError):
+        raise WorkerError("Blocked ownership record is invalid.") from None
+    return _quarantine_agents(paths, agent_ids, value["previousBootId"], boot_id)
 
 
 def _read_root_marker(path: Path) -> dict[str, Any]:
@@ -1451,7 +1568,7 @@ def _quarantine_stale_ownership(
     state_path: Path,
     quarantine_root: Path,
     agent_id: str,
-    previous: MachineIdentity,
+    previous_boot_id: str,
     current_boot_id: str,
 ) -> None:
     sources: dict[Path, Path] = {}
@@ -1464,7 +1581,7 @@ def _quarantine_stale_ownership(
     if not sources:
         return
     agent_quarantine = quarantine_root / agent_id
-    quarantine = agent_quarantine / f"{previous.boot_id}--{current_boot_id}"
+    quarantine = agent_quarantine / f"{previous_boot_id}--{current_boot_id}"
     for directory in (quarantine_root, agent_quarantine, quarantine):
         _private_root_directory(directory)
     existing = _validate_quarantine_tree(quarantine)
@@ -1539,27 +1656,62 @@ def _root_directory(path: Path, mode: int, gid: int) -> None:
     os.chmod(path, mode)
 
 
-def _agent_directory(path: Path, uid: int, gid: int) -> None:
-    if path.exists() or path.is_symlink():
-        details = path.lstat()
-        if (
-            not stat.S_ISDIR(details.st_mode)
-            or stat.S_ISLNK(details.st_mode)
-            or details.st_uid != uid
-            or details.st_gid != gid
-            or details.st_mode & 0o077
-        ):
-            raise WorkerError(f"{path} is not a private agent-owned directory.")
-        return
-    path.mkdir(mode=0o700)
-    os.chown(path, uid, gid)
-    os.chmod(path, 0o700)
+DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _open_trusted_root(path: Path) -> int:
+    try:
+        descriptor = os.open(path, DIRECTORY_FLAGS)
+    except OSError:
+        raise WorkerError(f"{path} is unavailable.") from None
+    details = os.fstat(descriptor)
+    if details.st_uid != ROOT_UID or details.st_mode & 0o022:
+        os.close(descriptor)
+        raise WorkerError(f"{path} must be a root-owned non-writable directory.")
+    return descriptor
+
+
+def _agent_directories(root: Path, parts: tuple[str, ...], uid: int, gid: int) -> None:
+    """Create or repair each directory of root/parts as a private agent directory.
+
+    Every component is opened relative to its already-open parent with
+    O_NOFOLLOW and changed through its descriptor, so an agent that swaps a
+    component for a symlink cannot redirect root's chown or chmod.
+    """
+    descriptor = _open_trusted_root(root)
+    path = root
+    try:
+        for name in parts:
+            if name in {"", ".", ".."} or "/" in name:
+                raise WorkerError(f"{root} has an unsafe path component.")
+            path = path / name
+            try:
+                os.mkdir(name, 0o700, dir_fd=descriptor)
+            except FileExistsError:
+                pass
+            try:
+                child = os.open(name, DIRECTORY_FLAGS, dir_fd=descriptor)
+            except OSError:
+                raise WorkerError(
+                    f"{path} is not a private agent-owned directory."
+                ) from None
+            os.close(descriptor)
+            descriptor = child
+            details = os.fstat(descriptor)
+            if details.st_uid not in {ROOT_UID, uid}:
+                raise WorkerError(f"{path} is not a private agent-owned directory.")
+            if details.st_uid != uid or details.st_gid != gid:
+                os.fchown(descriptor, uid, gid)
+            if stat.S_IMODE(details.st_mode) != 0o700:
+                os.fchmod(descriptor, 0o700)
+    finally:
+        os.close(descriptor)
 
 
 def prepare_layout(paths: Paths, uid: int, gid: int) -> None:
     _root_directory(paths.agents, 0o755, 0)
     _root_directory(paths.worktrees, 0o755, 0)
-    _agent_directory(paths.repos, uid, gid)
+    _agent_directories(paths.data, (paths.repos.name,), uid, gid)
 
 
 def prepare_runtime_directory(commands: Commands, paths: Paths, gid: int) -> None:
@@ -1770,13 +1922,19 @@ def read_meminfo(path: Path) -> tuple[int, int]:
         raise WorkerError("Memory information is unavailable.") from None
 
 
+@dataclass(frozen=True)
+class Failure:
+    process_state: str
+    result: str
+
+
 @dataclass
 class HeldAgent:
     launch_id: str
     agent_id: str
     revision: int
     desired_state: str | None
-    failure: str | None
+    failure: Failure | None
 
 
 @dataclass
@@ -1806,7 +1964,9 @@ class Supervisor:
         sleep: Callable[[float], None],
         statvfs: Callable[[str], Any],
         meminfo: Path,
+        ownership_blocked: set[str],
     ) -> None:
+        self._ownership_blocked = set(ownership_blocked)
         self._runtime = runtime
         self._identity = identity
         self._machine_id = machine_id
@@ -1827,6 +1987,8 @@ class Supervisor:
         self._touched: set[str] = set()
         self._obsolete_exits: dict[str, str] = {}
         self._agents_version: int | None = None
+        self._reconcile_failures = 0
+        self._pending_prunes: set[Path] = set()
         self._need_list = True
         self._next_list = 0.0
         self._next_heartbeat = 0.0
@@ -1877,9 +2039,25 @@ class Supervisor:
             logger.warning("Agent list fetch failed; retrying: %s", error)
             self._next_list = self._monotonic() + LIST_RETRY_SECONDS
             return
+        try:
+            self.reconcile(listing["agents"])
+        except (WorkerError, OSError) as error:
+            self._reconcile_failures += 1
+            delay = min(
+                LIST_RETRY_SECONDS * 2 ** (self._reconcile_failures - 1),
+                RECONCILE_RETRY_MAX_SECONDS,
+            )
+            logger.error(
+                "Agents version %s was not fully applied; retrying in %s seconds: %s",
+                listing["agents_version"],
+                delay,
+                error,
+            )
+            self._next_list = self._monotonic() + delay
+            return
+        self._reconcile_failures = 0
         self._need_list = False
         self._agents_version = listing["agents_version"]
-        self.reconcile(listing["agents"])
 
     def _send_heartbeat(self) -> None:
         interval = RETIRED_HEARTBEAT_SECONDS if self._retired else self._heartbeat_every
@@ -1919,6 +2097,7 @@ class Supervisor:
         self._next_heartbeat = self._monotonic() + RETIRED_HEARTBEAT_SECONDS
 
     def reconcile(self, entries: list[Any]) -> None:
+        failures: list[str] = []
         remove_runtime_orphans(self._paths.agents_runtime)
         counts: dict[str, int] = {}
         for entry in entries:
@@ -1941,6 +2120,40 @@ class Supervisor:
             try:
                 if counts[agent_id] > 1:
                     raise WorkerError("The agent is listed more than once.")
+                if agent_id in self._ownership_blocked:
+                    logger.error(
+                        "Agent %s has invalid saved ownership; it stays stopped.",
+                        agent_id,
+                    )
+                    held.append(
+                        HeldAgent(
+                            entry["launch_id"],
+                            agent_id,
+                            entry["revision"],
+                            None,
+                            Failure("failed", OWNERSHIP_INVALID),
+                        )
+                    )
+                    self._disable(agent_id, failures)
+                    continue
+                unavailable = _unavailable_code(entry)
+                if unavailable is not None:
+                    logger.warning(
+                        "Agent %s is unavailable (%s); stopping it and keeping its data.",
+                        agent_id,
+                        unavailable,
+                    )
+                    held.append(
+                        HeldAgent(
+                            entry["launch_id"],
+                            agent_id,
+                            entry["revision"],
+                            "stopped",
+                            Failure("stopped", INVALID_CONFIG),
+                        )
+                    )
+                    self._disable(agent_id, failures)
+                    continue
                 plan = build_agent_plan(entry, self._runtime, self._paths)
             except WorkerError as error:
                 logger.error(
@@ -1952,17 +2165,18 @@ class Supervisor:
                         agent_id,
                         entry["revision"],
                         None,
-                        INVALID_CONFIG,
+                        Failure("failed", INVALID_CONFIG),
                     )
                 )
-                self._disable(agent_id)
+                self._disable(agent_id, failures)
                 continue
-            failure = None
+            failure: Failure | None = None
             try:
                 self._apply(plan)
             except (WorkerError, OSError) as error:
                 logger.error("Agent %s could not be set up: %s", agent_id, error)
-                failure = SETUP_FAILED
+                failure = Failure("failed", SETUP_FAILED)
+                failures.append(agent_id)
             held.append(
                 HeldAgent(
                     plan.launch_id,
@@ -1979,31 +2193,60 @@ class Supervisor:
                 self.remove_agent(agent_id)
             except (WorkerError, OSError) as error:
                 logger.error("Agent %s removal failed; will retry: %s", agent_id, error)
+                failures.append(agent_id)
+        self._prune_mirrors()
+        if self._pending_prunes:
+            failures.append("worktree prune")
         for agent_id in set(self._states) - {agent.agent_id for agent in held}:
             del self._states[agent_id]
+        if failures:
+            raise ReconcileIncomplete(
+                "Work is left to retry for: " + ", ".join(failures) + "."
+            )
 
-    def _disable(self, agent_id: str) -> None:
+    def _disable(self, agent_id: str, failures: list[str]) -> None:
         if not _is_agent_id(agent_id):
             return
         try:
-            self._systemd.stop(agent_id, wait=False)
-            self._touched.add(agent_id)
+            self._stop(agent_id, wait=False)
             target = self._paths.agents_runtime / agent_id
             if target.exists() or target.is_symlink():
                 _remove_secret_tree(target)
+            self._paths.pending_install(agent_id).unlink(missing_ok=True)
         except (WorkerError, OSError) as error:
             logger.error("Agent %s could not be stopped: %s", agent_id, error)
+            failures.append(agent_id)
+
+    def _stop(self, agent_id: str, *, wait: bool) -> None:
+        self._systemd.stop(agent_id, wait=wait)
+        self._systemd.reset_failed(agent_id)
+        self._touched.add(agent_id)
+
+    def _prune_mirrors(self) -> None:
+        for mirror in sorted(self._pending_prunes):
+            if mirror.is_dir() and not mirror.is_symlink():
+                try:
+                    self._git.run(mirror, ["worktree", "prune"])
+                except WorkerError as error:
+                    logger.error("Worktree prune failed; will retry: %s", error)
+                    continue
+            self._pending_prunes.discard(mirror)
 
     def _apply(self, plan: AgentPlan) -> None:
         agent_id = plan.agent_id
-        state = self._paths.agents / agent_id
-        for directory in (state, state / "home", state / "tmp"):
-            _agent_directory(directory, self._uid, self._gid)
-        _agent_directory(self._paths.worktrees / agent_id, self._uid, self._gid)
-        if plan.worktree_owner is not None:
-            _agent_directory(plan.worktree_owner, self._uid, self._gid)
-        _agent_directory(plan.workspace, self._uid, self._gid)
+        for leaf in ("home", "tmp"):
+            _agent_directories(
+                self._paths.agents, (agent_id, leaf), self._uid, self._gid
+            )
+        _agent_directories(
+            self._paths.worktrees,
+            plan.workspace.relative_to(self._paths.worktrees).parts,
+            self._uid,
+            self._gid,
+        )
         if self._installed_revision(agent_id) != plan.revision:
+            pending = self._paths.pending_install(agent_id)
+            _write_root_json(pending, {"revision": plan.revision})
             install_runtime_files(
                 self._paths.agents_runtime,
                 agent_id,
@@ -2028,9 +2271,11 @@ class Supervisor:
             if plan.desired_state == "running":
                 self._systemd.reset_failed(agent_id)
                 self._systemd.restart(agent_id)
+                self._touched.add(agent_id)
             else:
-                self._systemd.stop(agent_id, wait=False)
-            self._touched.add(agent_id)
+                self._stop(agent_id, wait=False)
+            self._reset_oom_kills(agent_id, plan.revision)
+            pending.unlink()
             return
         active = self._systemd.show(agent_id)["ActiveState"]
         if plan.desired_state == "running" and active == "inactive":
@@ -2040,11 +2285,24 @@ class Supervisor:
             "active",
             "activating",
             "reloading",
+            "failed",
         }:
-            self._systemd.stop(agent_id, wait=False)
-            self._touched.add(agent_id)
+            self._stop(agent_id, wait=False)
+
+    def _reset_oom_kills(self, agent_id: str, revision: int) -> None:
+        record = self._records.get(agent_id)
+        if record is not None and record.get("revision") != revision:
+            self._records[agent_id] = {
+                "oomKills": 0,
+                "lastOomExit": record["lastOomExit"],
+                "revision": revision,
+            }
+            self._save_records()
 
     def _installed_revision(self, agent_id: str) -> int | None:
+        pending = self._paths.pending_install(agent_id)
+        if pending.exists() or pending.is_symlink():
+            return None
         try:
             value = _read_json_nofollow(
                 self._paths.agents_runtime / agent_id / "deployment.json",
@@ -2077,19 +2335,16 @@ class Supervisor:
 
     def remove_agent(self, agent_id: str) -> None:
         agent_id = _agent_id(agent_id)
-        self._systemd.stop(agent_id, wait=True)
+        self._stop(agent_id, wait=True)
         runtime_files = self._paths.agents_runtime / agent_id
         if runtime_files.exists() or runtime_files.is_symlink():
             _remove_secret_tree(runtime_files)
+        self._paths.pending_install(agent_id).unlink(missing_ok=True)
         worktree_root = self._paths.worktrees / agent_id
         mirrors: list[Path] = []
         if worktree_root.is_dir() and not worktree_root.is_symlink():
             for owner in sorted(worktree_root.iterdir()):
-                if (
-                    owner.name == "workspace"
-                    or owner.is_symlink()
-                    or not owner.is_dir()
-                ):
+                if owner.is_symlink() or not owner.is_dir():
                     continue
                 for repository in sorted(owner.iterdir()):
                     if repository.is_symlink() or not repository.is_dir():
@@ -2101,18 +2356,20 @@ class Supervisor:
                         self._git.run(
                             mirror, ["worktree", "remove", "--force", str(repository)]
                         )
+                    except GitAbandoned:
+                        raise
                     except WorkerError as error:
                         logger.warning("Agent %s: %s", agent_id, error)
                     mirrors.append(mirror)
         _remove_tree(self._paths.agents / agent_id)
         _remove_tree(worktree_root)
-        for mirror in mirrors:
-            self._git.run(mirror, ["worktree", "prune"])
+        self._pending_prunes.update(mirrors)
         if self._records.pop(agent_id, None) is not None:
             self._save_records()
         self._states.pop(agent_id, None)
         self._touched.discard(agent_id)
         self._obsolete_exits.pop(agent_id, None)
+        self._ownership_blocked.discard(agent_id)
         logger.warning("Removed agent %s from this machine.", agent_id)
 
     def _load_records(self) -> dict[str, dict[str, Any]]:
@@ -2137,11 +2394,15 @@ class Supervisor:
                 raise ValueError()
             for agent_id, record in value["agents"].items():
                 _agent_id(agent_id)
-                record = _strict(record, {"oomKills", "lastOomExit"}, set(), "record")
+                record = _strict(
+                    record, {"oomKills", "lastOomExit"}, {"revision"}, "record"
+                )
                 if isinstance(record["oomKills"], bool) or not isinstance(
                     record["oomKills"], int
                 ):
                     raise ValueError()
+                if "revision" in record:
+                    _positive_integer(record["revision"], "record revision")
             return value["agents"]
         except (OSError, ValueError, WorkerError):
             raise WorkerError("Agent records on the data volume are invalid.") from None
@@ -2155,11 +2416,12 @@ class Supervisor:
         changed = False
         now = self._clock().astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         for held in self._held:
+            observed: tuple[str, int, dict[str, Any] | None]
             if held.failure is not None:
                 observed = (
-                    "failed",
+                    held.failure.process_state,
                     0,
-                    {"code": None, "signal": None, "result": held.failure},
+                    {"code": None, "signal": None, "result": held.failure.result},
                 )
             else:
                 try:
@@ -2199,6 +2461,7 @@ class Supervisor:
                 self._records[agent_id] = {
                     "oomKills": record["oomKills"] + 1,
                     "lastOomExit": key,
+                    "revision": held.revision,
                 }
                 self._save_records()
         if code == 1 and status == OBSOLETE_EXIT_CODE and ran:
@@ -2310,7 +2573,7 @@ def main(argv: list[str] | None = None) -> int:
         prepare_runtime_directory(commands, paths, gid)
         write_bundle(paths, bundle)
         storage, _formatted = prepare_storage(commands, config)
-        reconcile_marker(
+        ownership_blocked = reconcile_marker(
             identity,
             config,
             storage.filesystem_uuid or "",
@@ -2334,6 +2597,7 @@ def main(argv: list[str] | None = None) -> int:
             sleep=time.sleep,
             statvfs=os.statvfs,
             meminfo=MEMINFO_PATH,
+            ownership_blocked=ownership_blocked,
         ).run()
         return 0
     finally:

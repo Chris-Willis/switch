@@ -114,6 +114,7 @@ The layout is `per-user-v1`:
 | `/data/.switch-hosted/machine.json` | root, 0600 | Machine marker |
 | `/data/.switch-hosted/agents.json` | root, 0600 | OOM kill count for each agent |
 | `/data/.switch-hosted/quarantine/` | root, 0700 | Stale ownership records |
+| `/data/.switch-hosted/ownership-blocked.json` | root, 0600 | Agents whose stale ownership records could not be moved |
 | `/data/agents/<agent-id>/` | agent, 0700 | Agent state, `home/` and `tmp/` |
 | `/data/repos/<owner>/<repo>.git` | agent, 0700 | Shared repository mirror |
 | `/data/worktrees/<agent-id>/` | agent, 0700 | The agent's worktree |
@@ -129,9 +130,12 @@ filesystem UUID, instance ID, boot ID and runtime fingerprint
 
 The supervisor writes the instance ID, boot ID and runtime fingerprint again at
 each start. On a new boot, it moves each agent's stale ownership records to
-`quarantine/<agent-id>/<old-boot>--<new-boot>/`. It refuses to start if a
-record comes from a machine identity that it does not know. Journals, provider
-homes and worktrees stay in place.
+`quarantine/<agent-id>/<old-boot>--<new-boot>/`. If an agent's records are not
+valid, that agent is not started and is reported as `failed` with the result
+`ownership-invalid`. Its records stay in place and the other agents start. The
+blocked agents are listed in `ownership-blocked.json`, and a supervisor restart
+in the same boot tries to move their records again. Journals, provider homes
+and worktrees stay in place.
 
 ## Agent loop
 
@@ -143,16 +147,28 @@ does these steps in a loop:
    with code 75. A failed request is tried again after 15 seconds.
 2. It reconciles each agent in the list:
    - A new or changed `revision` gets new runtime files, `reset-failed` and a
-     restart (or a stop if `desired_state` is `stopped`).
-   - The same revision only corrects the running state. A crashed unit is not
-     reset.
+     restart (or a stop if `desired_state` is `stopped`). The revision counts
+     as installed only when the restart or stop succeeds. A new revision
+     resets the agent's OOM kill count.
+   - The same revision only corrects the running state.
+   - Each stop is followed by `reset-failed`, so a stopped unit is not left
+     in the `failed` state.
+   - An entry with an `unavailable` code (for example `agent_key_missing`) has
+     no credentials. Its unit is stopped, its data stays on disk, and it is
+     reported as `stopped` with the result `invalid-config`.
    - An agent that is not valid is stopped and reported as `failed` with the
      result `invalid-config`. Its data stays on disk.
    - A setup error is reported as `failed` with the result `setup-failed`.
 3. It removes each agent that is on disk but not in the list. It stops the
-   unit, removes the runtime files, runs `git worktree remove --force` and
-   `git worktree prune` on the mirror, and removes the agent's state and
-   worktree directories. It keeps the mirror and the agent's branch.
+   unit, removes the runtime files, runs `git worktree remove --force` on the
+   mirror, and removes the agent's state and worktree directories. It then
+   runs `git worktree prune` on each mirror it touched. It keeps the mirror and
+   the agent's branch.
+
+   If any agent in steps 2 or 3 fails to set up, stop or be removed, or a
+   prune fails, the list is not marked as applied. The supervisor gets the
+   list and reconciles it again after 15 seconds, doubling the wait after each
+   failure up to 5 minutes. A failed prune is kept and tried again.
 4. It reads unit state every 3 seconds and sends
    `POST <apiEndpoint>/hosted/machines/<machineId>/heartbeat` when a state
    changes, and at the interval that core returns (15 seconds by default).
@@ -194,8 +210,13 @@ once and keeps the count in `agents.json`.
 `switch-hosted-worker.service` uses `Restart=always` and
 `RuntimeDirectoryPreserve=yes`, so agent runtime files stay in place when the
 supervisor restarts. The supervisor runs git as the agent through `setpriv`,
-which removes all capabilities, and under `flock <mirror>.lock`, so it does not
-change a mirror while the bootstrap uses it.
+which removes all capabilities, and under `flock --no-fork <mirror>.lock`, so it
+does not change a mirror while the bootstrap uses it. Each git command runs in
+its own process group. If it runs longer than 5 minutes, the supervisor kills
+the whole group and waits until every process in it is gone; while any is left,
+it does not delete the agent's directories. A git error is logged with the
+operation and the exit status only, because a repository's configuration could
+make git print a secret.
 
 ## Tests
 

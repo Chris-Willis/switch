@@ -299,7 +299,7 @@ def test_uncertain_launch_then_stop_waits_for_late_instance(tmp_path: Path):
         machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone
     )
     machine = store.mark_instance_launch_intent(machine)
-    store.mark_instance_launch_issued(machine)
+    store.mark_instance_launch_issued(machine, datetime.now(UTC))
     store.set_desired(machine.machine_id, DesiredState.STOPPED, None)
 
     client = ec2_client()
@@ -438,9 +438,9 @@ def test_recovery_requires_terminated_predecessor_and_retains_disk(tmp_path):
     store.record_volume(machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone)
     machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0")
     with pytest.raises(StoreError, match="terminated"):
-        store.replace_terminated(machine)
+        store.replace_terminated(machine, unexpected=True)
     machine = store.mark_instance_terminal_observed(machine.machine_id, machine.instance_id)
-    replacement = store.replace_terminated(machine)
+    replacement = store.replace_terminated(machine, unexpected=True)
     assert replacement.instance_id is None
     assert replacement.previous_instance_id == "i-0123456789abcdef0"
     assert replacement.data_volume_id == "vol-0123456789abcdef0"
@@ -454,9 +454,9 @@ def test_recovery_requires_terminated_predecessor_and_retains_disk(tmp_path):
         current = store.mark_instance_terminal_observed(machine.machine_id, current.instance_id)
         if index == 4:
             with pytest.raises(StoreError, match="limit"):
-                store.replace_terminated(current)
+                store.replace_terminated(current, unexpected=True)
         else:
-            store.replace_terminated(current)
+            store.replace_terminated(current, unexpected=True)
     store.close()
 
 

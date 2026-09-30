@@ -178,3 +178,45 @@ def test_upgrade_writes_the_disk_marker_fingerprint_to_user_data(capsys, config_
         line.split("content: ", 1)[1] for line in user_data.splitlines() if "content: " in line
     )
     assert json.loads(base64.b64decode(encoded))["previousRuntimeFingerprint"] == FINGERPRINT
+
+
+class OneIteration:
+    def __init__(self):
+        self.checks = 0
+
+    def is_set(self) -> bool:
+        self.checks += 1
+        return self.checks > 1
+
+    def set(self) -> None:
+        pass
+
+    def wait(self, _timeout: float) -> None:
+        pass
+
+
+def test_serve_lists_core_machines_once_per_poll(tmp_path, config_path):
+    gateway_path = tmp_path / "gateway.json"
+    gateway_path.write_text(
+        json.dumps(
+            {
+                "origin": "https://switch.example.test",
+                "token": "SYNTHETIC-CONTROLLER-CREDENTIAL-0123456789",
+                "instance_type": "m6i.large",
+            }
+        )
+    )
+    request = Mock(return_value={"machines": []})
+    with (
+        patch("switch_hosted_controller.cli.boto3"),
+        patch("switch_hosted_controller.cli.VerificationWorkers"),
+        patch("switch_hosted_controller.cli._touch_health"),
+        patch("switch_hosted_controller.cli.signal.signal"),
+        patch("switch_hosted_controller.cli.threading.Event", OneIteration),
+        patch.object(cli.Gateway, "request", request),
+    ):
+        code = cli.main(
+            ["--config", str(config_path), "--gateway-config", str(gateway_path), "serve"]
+        )
+    assert code == 0
+    assert [call.args[0] for call in request.call_args_list] == ["/machines"]

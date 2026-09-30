@@ -99,6 +99,21 @@ class Ec2Cloud:
         self._validate_instance(active[0], machine)
         return active[0]
 
+    def find_launched_instance(self, machine: Machine) -> dict[str, Any] | None:
+        """The instance, in any state, launched with this machine's current launch token."""
+        instances = self._describe_instances(
+            Filters=[
+                {"Name": "client-token", "Values": [self._launch_token(machine)]},
+                *self._resource_filters(machine, "worker"),
+            ]
+        )
+        if len(instances) > 1:
+            raise CloudResourceError("multiple instances share the machine's launch token")
+        if not instances:
+            return None
+        self._validate_instance(instances[0], machine)
+        return instances[0]
+
     def get_instance(self, machine: Machine) -> dict[str, Any] | None:
         if machine.instance_id is None:
             return self.discover_instance(machine)
@@ -137,7 +152,7 @@ class Ec2Cloud:
             InstanceType=machine.instance_type,
             MinCount=1,
             MaxCount=1,
-            ClientToken=self._token(machine, f"instance-{machine.instance_seq}"),
+            ClientToken=self._launch_token(machine),
             IamInstanceProfile={"Arn": machine.instance_profile_arn},
             Placement={"AvailabilityZone": self._config.availability_zone},
             NetworkInterfaces=[
@@ -314,6 +329,9 @@ class Ec2Cloud:
             {"Name": "tag:switch:managed-by", "Values": [MANAGED_BY]},
         ]
 
+    def _launch_token(self, machine: Machine) -> str:
+        return self._token(machine, f"instance-{machine.instance_seq}")
+
     def _token(self, machine: Machine, resource: str) -> str:
         material = (
             f"{self._config.installation_id}:{machine.slot_id}:{machine.generation}:{resource}"
@@ -378,3 +396,23 @@ class Ec2Cloud:
 
 def _error_code(exc: ClientError) -> str:
     return exc.response.get("Error", {}).get("Code", "")
+
+
+AMBIGUOUS_CLIENT_ERRORS = {
+    "IdempotentParameterMismatch",
+    "RequestLimitExceeded",
+    "RequestTimeout",
+    "RequestTimeoutException",
+    "Throttling",
+    "ThrottlingException",
+}
+
+
+def rejected(exc: ClientError) -> bool:
+    """Whether EC2 definitely refused the request, so it created nothing."""
+    status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    return (
+        isinstance(status, int)
+        and 400 <= status < 500
+        and _error_code(exc) not in AMBIGUOUS_CLIENT_ERRORS
+    )

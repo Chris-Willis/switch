@@ -267,6 +267,7 @@ class Harness:
         self.commands = FakeSystemctl()
         self.client = FakeClient()
         self.git = git or FakeGit()
+        self.ownership_blocked: set[str] = set()
         self.now = 0.0
         self.clock_value = datetime(2026, 1, 1, tzinfo=UTC)
         self.supervisor = self.build()
@@ -290,6 +291,7 @@ class Harness:
                 f_frsize=4096, f_blocks=52428800, f_bfree=49807360, f_bavail=49807360
             ),
             meminfo=self.meminfo,
+            ownership_blocked=self.ownership_blocked,
         )
 
 
@@ -502,7 +504,7 @@ class MarkerTests(RootPatched):
         self.identity = worker.MachineIdentity(INSTANCE, BOOT_1, GENERATION)
 
     def reconcile(self, identity=None, fingerprint=FINGERPRINT):
-        worker.reconcile_marker(
+        return worker.reconcile_marker(
             identity or self.identity,
             worker_config(),
             FS_UUID,
@@ -656,12 +658,56 @@ class MarkerTests(RootPatched):
                 worker._write_root_json(self.paths.marker, fixture("machine.json"))
                 state = self.owner_files(AGENT)
                 (state / relative).write_text(content)
-                with self.assertRaisesRegex(
-                    worker.WorkerError, "ownership record is invalid"
-                ):
-                    self.reconcile(worker.MachineIdentity(INSTANCE, BOOT_2, GENERATION))
+                with self.assertLogs(worker.logger, "ERROR") as logs:
+                    blocked = self.reconcile(
+                        worker.MachineIdentity(INSTANCE, BOOT_2, GENERATION)
+                    )
+                self.assertEqual(blocked, {AGENT})
+                self.assertIn("ownership record is invalid", logs.output[0])
                 self.assertTrue((state / relative).exists())
-                self.assertEqual(self.marker()["bootId"], BOOT_1)
+                self.assertTrue((state / "shared-owner.lock").exists())
+                self.assertEqual(self.marker()["bootId"], BOOT_2)
+
+    def test_corrupt_owner_record_blocks_only_its_agent(self):
+        worker._write_root_json(self.paths.marker, fixture("machine.json"))
+        first = self.owner_files(AGENT)
+        second = self.owner_files(AGENT_2)
+        (first / "supervisor/owner.json").write_text("{")
+        boot_2 = worker.MachineIdentity(INSTANCE, BOOT_2, GENERATION)
+        with self.assertLogs(worker.logger, "ERROR"):
+            self.assertEqual(self.reconcile(boot_2), {AGENT})
+        self.assertFalse((second / "supervisor/owner.json").exists())
+        self.assertTrue(
+            (
+                self.paths.quarantine
+                / AGENT_2
+                / f"{BOOT_1}--{BOOT_2}"
+                / "supervisor/owner.json"
+            ).exists()
+        )
+        self.assertEqual(
+            json.loads(self.paths.ownership_blocked.read_text()),
+            {
+                "version": 1,
+                "bootId": BOOT_2,
+                "previousBootId": BOOT_1,
+                "agents": [AGENT],
+            },
+        )
+        with self.assertLogs(worker.logger, "ERROR"):
+            self.assertEqual(self.reconcile(boot_2), {AGENT})
+        (first / "supervisor/owner.json").unlink()
+        self.assertEqual(self.reconcile(boot_2), set())
+        self.assertFalse(self.paths.ownership_blocked.exists())
+        self.assertFalse((first / "shared-owner.lock").exists())
+        self.assertTrue(
+            (
+                self.paths.quarantine
+                / AGENT
+                / f"{BOOT_1}--{BOOT_2}"
+                / "shared-owner.lock"
+            ).exists()
+        )
 
     def test_partial_quarantine_is_resumed(self):
         worker._write_root_json(self.paths.marker, fixture("machine.json"))
@@ -1266,9 +1312,10 @@ class SupervisorTests(RootPatched):
 
     def test_new_stopped_agent_is_stopped(self):
         self.supervisor.reconcile([valid_agent(desired_state="stopped")])
+        unit = f"switch-agent@{AGENT}.service"
         self.assertEqual(
             self.commands.actions(),
-            [["--no-block", "stop", f"switch-agent@{AGENT}.service"]],
+            [["--no-block", "stop", unit], ["reset-failed", unit]],
         )
         self.supervisor._observe()
         self.assertEqual(self.state()["process_state"], "stopped")
@@ -1286,7 +1333,10 @@ class SupervisorTests(RootPatched):
         self.supervisor.reconcile([valid_agent()])
         self.assertEqual(self.commands.actions(), [])
         self.supervisor.reconcile([valid_agent(desired_state="stopped")])
-        self.assertEqual(self.commands.actions(), [["--no-block", "stop", unit]])
+        self.assertEqual(
+            self.commands.actions(),
+            [["--no-block", "stop", unit], ["reset-failed", unit]],
+        )
         self.commands.clear()
         self.commands.units[AGENT] = {
             "ActiveState": "failed",
@@ -1295,6 +1345,47 @@ class SupervisorTests(RootPatched):
         self.supervisor.reconcile([valid_agent()])
         self.assertEqual(self.commands.actions(), [])
         self.assertEqual(deployment.stat().st_ino, inode)
+
+    def test_stopping_a_crashed_agent_resets_the_failed_unit(self):
+        unit = f"switch-agent@{AGENT}.service"
+        self.supervisor.reconcile([valid_agent()])
+        self.commands.clear()
+        self.commands.units[AGENT] = {
+            "ActiveState": "failed",
+            "Result": "start-limit-hit",
+        }
+        self.supervisor.reconcile([valid_agent(desired_state="stopped")])
+        self.assertEqual(
+            self.commands.actions(),
+            [["--no-block", "stop", unit], ["reset-failed", unit]],
+        )
+
+    def test_failed_restart_is_retried_on_the_next_reconcile(self):
+        unit = f"switch-agent@{AGENT}.service"
+        failing = [True]
+        original = self.commands.run
+
+        def run(arguments, capture=True):
+            if "restart" in arguments and failing and failing.pop():
+                original(arguments, capture)
+                raise worker.WorkerError("Required host operation failed: systemctl.")
+            return original(arguments, capture)
+
+        self.commands.run = run
+        with (
+            self.assertLogs(worker.logger, "ERROR"),
+            self.assertRaises(worker.ReconcileIncomplete),
+        ):
+            self.supervisor.reconcile([valid_agent()])
+        self.commands.clear()
+        self.supervisor.reconcile([valid_agent()])
+        self.assertEqual(
+            self.commands.actions(),
+            [["reset-failed", unit], ["--no-block", "restart", unit]],
+        )
+        self.commands.clear()
+        self.supervisor.reconcile([valid_agent()])
+        self.assertEqual(self.commands.actions(), [["--no-block", "start", unit]])
 
     def test_revision_change_rewrites_files_and_resets_a_crashed_unit(self):
         unit = f"switch-agent@{AGENT}.service"
@@ -1363,9 +1454,10 @@ class SupervisorTests(RootPatched):
         self.commands.clear()
         with self.assertLogs(worker.logger, "ERROR"):
             self.supervisor.reconcile([core_agent(provider_credential_kind=None)])
+        unit = f"switch-agent@{AGENT}.service"
         self.assertEqual(
             self.commands.actions(),
-            [["--no-block", "stop", f"switch-agent@{AGENT}.service"]],
+            [["--no-block", "stop", unit], ["reset-failed", unit]],
         )
         self.assertFalse((self.paths.agents_runtime / AGENT).exists())
         self.assertTrue((self.paths.agents / AGENT / "home").is_dir())
@@ -1387,6 +1479,64 @@ class SupervisorTests(RootPatched):
             },
         )
 
+    def test_unavailable_agent_is_stopped_and_kept(self):
+        unit = f"switch-agent@{AGENT}.service"
+        self.supervisor.reconcile([valid_agent()])
+        self.commands.clear()
+        entry = fixture("agent-unavailable.json")
+        self.assertNotIn("worker_capability", entry)
+        self.assertNotIn("switch_credentials", entry)
+        with self.assertLogs(worker.logger, "WARNING"):
+            self.supervisor.reconcile([entry])
+        self.assertEqual(
+            self.commands.actions(),
+            [["--no-block", "stop", unit], ["reset-failed", unit]],
+        )
+        self.assertFalse((self.paths.agents_runtime / AGENT).exists())
+        self.assertTrue((self.paths.agents / AGENT / "home").is_dir())
+        self.assertTrue(
+            (self.paths.worktrees / AGENT / "example-org/example-repo").is_dir()
+        )
+        self.supervisor._observe()
+        self.assertEqual(
+            self.state(),
+            {
+                "launch_id": entry["launch_id"],
+                "agent_id": AGENT,
+                "revision": 1,
+                "process_state": "stopped",
+                "restarts": 0,
+                "oom_kills": 0,
+                "exit": {"code": None, "signal": None, "result": "invalid-config"},
+                "since": "2026-01-01T00:00:00Z",
+            },
+        )
+        self.commands.clear()
+        self.supervisor.reconcile([valid_agent()])
+        self.assertEqual(
+            self.commands.actions(),
+            [["reset-failed", unit], ["--no-block", "restart", unit]],
+        )
+
+    def test_agent_with_a_missing_identity_is_stopped_and_kept(self):
+        self.supervisor.reconcile([valid_agent()])
+        entry = fixture("agent-unavailable.json")
+        entry["unavailable"] = "agent_identity_missing"
+        with self.assertLogs(worker.logger, "WARNING"):
+            self.supervisor.reconcile([entry])
+        self.assertTrue((self.paths.agents / AGENT / "home").is_dir())
+        self.supervisor._observe()
+        self.assertEqual(self.state()["process_state"], "stopped")
+
+    def test_malformed_unavailable_code_is_an_invalid_config(self):
+        entry = fixture("agent-unavailable.json")
+        entry["unavailable"] = ""
+        with self.assertLogs(worker.logger, "ERROR"):
+            self.supervisor.reconcile([entry])
+        self.supervisor._observe()
+        self.assertEqual(self.state()["process_state"], "failed")
+        self.assertEqual(self.state()["exit"]["result"], "invalid-config")
+
     def test_invalid_revision_stops_a_running_agent_but_keeps_its_data(self):
         self.supervisor.reconcile([valid_agent()])
         self.commands.clear()
@@ -1394,9 +1544,10 @@ class SupervisorTests(RootPatched):
             self.supervisor.reconcile(
                 [valid_agent(revision=4, provider_credential_kind="oauth")]
             )
+        unit = f"switch-agent@{AGENT}.service"
         self.assertEqual(
             self.commands.actions(),
-            [["--no-block", "stop", f"switch-agent@{AGENT}.service"]],
+            [["--no-block", "stop", unit], ["reset-failed", unit]],
         )
         self.assertFalse((self.paths.agents_runtime / AGENT).exists())
         self.assertTrue((self.paths.agents / AGENT).exists())
@@ -1421,13 +1572,56 @@ class SupervisorTests(RootPatched):
         self.assertEqual(self.commands.actions(), [])
 
     def test_setup_failure_is_reported(self):
-        (self.paths.worktrees / AGENT).mkdir(mode=0o755)
-        with self.assertLogs(worker.logger, "ERROR"):
+        (self.paths.worktrees / AGENT).write_text("not a directory")
+        with (
+            self.assertLogs(worker.logger, "ERROR"),
+            self.assertRaises(worker.ReconcileIncomplete),
+        ):
             self.supervisor.reconcile([valid_agent()])
         self.supervisor._observe()
         self.assertEqual(self.state()["process_state"], "failed")
         self.assertEqual(self.state()["exit"]["result"], "setup-failed")
         self.assertEqual(self.commands.actions(), [])
+
+    def test_directory_swapped_for_a_symlink_is_not_followed(self):
+        victim = self.temporary / "victim"
+        victim.mkdir(mode=0o755)
+        real_mkdir = os.mkdir
+
+        def racing_mkdir(path, mode=0o777, *, dir_fd=None):
+            real_mkdir(path, mode, dir_fd=dir_fd)
+            if os.path.basename(os.fspath(path)) == "home":
+                os.rmdir(path, dir_fd=dir_fd)
+                os.symlink(victim, path, dir_fd=dir_fd)
+
+        with (
+            mock.patch.object(worker.os, "mkdir", racing_mkdir),
+            self.assertLogs(worker.logger, "ERROR"),
+            self.assertRaises(worker.ReconcileIncomplete),
+        ):
+            self.supervisor.reconcile([valid_agent()])
+        self.assertEqual(stat.S_IMODE(victim.stat().st_mode), 0o755)
+        for call in worker.os.chown.call_args_list + worker.os.fchown.call_args_list:
+            self.assertNotIn(str(victim), str(call))
+        self.supervisor._observe()
+        self.assertEqual(self.state()["exit"]["result"], "setup-failed")
+        self.assertEqual(self.commands.actions(), [])
+
+    def test_loosened_directory_modes_are_repaired(self):
+        self.supervisor.reconcile([valid_agent()])
+        loosened = (
+            self.paths.agents / AGENT / "home",
+            self.paths.worktrees / AGENT / "example-org/example-repo",
+            self.paths.repos,
+        )
+        for path in loosened:
+            path.chmod(0o755)
+        worker.prepare_layout(self.paths, os.getuid(), os.getgid())
+        self.supervisor.reconcile([valid_agent()])
+        self.supervisor._observe()
+        self.assertIsNone(self.state()["exit"])
+        for path in loosened:
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700, path)
 
     def test_absent_agent_is_removed_and_mirrors_are_kept(self):
         self.supervisor.reconcile([valid_agent(), second_agent()])
@@ -1457,6 +1651,77 @@ class SupervisorTests(RootPatched):
         )
         self.assertTrue(any("not-a-uuid" in line for line in logs.output))
 
+    def test_failed_prune_is_retried(self):
+        class FlakyPruneGit(FakeGit):
+            def __init__(self):
+                super().__init__()
+                self.fail_prune = True
+
+            def run(self, mirror, arguments):
+                super().run(mirror, arguments)
+                if arguments == ["worktree", "prune"] and self.fail_prune:
+                    self.fail_prune = False
+                    raise worker.WorkerError("git worktree prune failed.")
+
+        harness = Harness(self.temporary / "prune", git=FlakyPruneGit())
+        harness.supervisor.reconcile([valid_agent()])
+        mirror = harness.paths.repos / "example-org/example-repo.git"
+        mirror.mkdir(parents=True)
+        with (
+            self.assertLogs(worker.logger, "WARNING"),
+            self.assertRaises(worker.ReconcileIncomplete),
+        ):
+            harness.supervisor.reconcile([])
+        self.assertFalse((harness.paths.worktrees / AGENT).exists())
+        harness.supervisor.reconcile([])
+        self.assertEqual(
+            [arguments for _mirror, arguments in harness.git.calls][-2:],
+            [["worktree", "prune"], ["worktree", "prune"]],
+        )
+        harness.git.calls.clear()
+        harness.supervisor.reconcile([])
+        self.assertEqual(harness.git.calls, [])
+
+    def test_owner_named_workspace_is_cleaned_up(self):
+        self.supervisor.reconcile([valid_agent(repository="workspace/example-repo")])
+        mirror = self.paths.repos / "workspace/example-repo.git"
+        mirror.mkdir(parents=True)
+        with self.assertLogs(worker.logger, "WARNING"):
+            self.supervisor.reconcile([])
+        worktree = self.paths.worktrees / AGENT / "workspace/example-repo"
+        self.assertEqual(
+            self.harness.git.calls,
+            [
+                (mirror, ["worktree", "remove", "--force", str(worktree)]),
+                (mirror, ["worktree", "prune"]),
+            ],
+        )
+
+    def test_agent_with_blocked_ownership_is_not_started(self):
+        self.harness.ownership_blocked.add(AGENT)
+        supervisor = self.harness.build()
+        with self.assertLogs(worker.logger, "ERROR"):
+            supervisor.reconcile([valid_agent(), second_agent()])
+        self.assertEqual(
+            self.commands.actions(),
+            [
+                ["--no-block", "stop", f"switch-agent@{AGENT}.service"],
+                ["reset-failed", f"switch-agent@{AGENT}.service"],
+                ["reset-failed", f"switch-agent@{AGENT_2}.service"],
+                ["--no-block", "restart", f"switch-agent@{AGENT_2}.service"],
+            ],
+        )
+        self.assertFalse((self.paths.agents_runtime / AGENT).exists())
+        supervisor._observe()
+        body = supervisor.heartbeat_body()
+        states = {agent["agent_id"]: agent for agent in body["agents"]}
+        self.assertEqual(states[AGENT]["process_state"], "failed")
+        self.assertEqual(
+            states[AGENT]["exit"],
+            {"code": None, "signal": None, "result": "ownership-invalid"},
+        )
+        self.assertNotEqual(states[AGENT_2]["process_state"], "failed")
+
     def test_worktree_without_mirror_skips_git(self):
         self.supervisor.reconcile([valid_agent()])
         with self.assertLogs(worker.logger, "WARNING"):
@@ -1475,12 +1740,35 @@ class SupervisorTests(RootPatched):
             return original(arguments, capture)
 
         self.commands.run = run
-        with self.assertLogs(worker.logger, "ERROR"):
+        with (
+            self.assertLogs(worker.logger, "ERROR"),
+            self.assertRaises(worker.ReconcileIncomplete),
+        ):
             self.supervisor.reconcile([])
         self.assertTrue((self.paths.agents / AGENT).exists())
         with self.assertLogs(worker.logger, "WARNING"):
             self.supervisor.reconcile([])
         self.assertFalse((self.paths.agents / AGENT).exists())
+
+    def test_removal_stops_when_git_outlives_its_kill(self):
+        class AbandoningGit(FakeGit):
+            def run(self, mirror, arguments):
+                super().run(mirror, arguments)
+                raise worker.GitAbandoned("git worktree remove did not exit.")
+
+        harness = Harness(self.temporary / "abandoned", git=AbandoningGit())
+        harness.supervisor.reconcile([valid_agent()])
+        (harness.paths.repos / "example-org/example-repo.git").mkdir(parents=True)
+        with (
+            self.assertLogs(worker.logger, "ERROR"),
+            self.assertRaises(worker.ReconcileIncomplete),
+        ):
+            harness.supervisor.reconcile([])
+        self.assertTrue(
+            (harness.paths.worktrees / AGENT / "example-org/example-repo").is_dir()
+        )
+        self.assertTrue((harness.paths.agents / AGENT).is_dir())
+        self.assertEqual([call[1][1] for call in harness.git.calls], ["remove"])
 
     def test_stale_temporary_runtime_directories_are_cleaned(self):
         stale = self.paths.agents_runtime / ".tmp-crashed"
@@ -1603,7 +1891,13 @@ class ProcessStateTests(RootPatched):
             json.loads(records.read_text()),
             {
                 "version": 1,
-                "agents": {AGENT: {"oomKills": 2, "lastOomExit": f"{BOOT_1}:200"}},
+                "agents": {
+                    AGENT: {
+                        "oomKills": 2,
+                        "lastOomExit": f"{BOOT_1}:200",
+                        "revision": 1,
+                    }
+                },
             },
         )
         restarted = self.harness.build()
@@ -1613,6 +1907,30 @@ class ProcessStateTests(RootPatched):
         with self.assertLogs(worker.logger, "WARNING"):
             restarted.reconcile([])
         self.assertEqual(json.loads(records.read_text()), {"version": 1, "agents": {}})
+
+    def test_new_revision_resets_the_oom_count(self):
+        self.supervisor.reconcile([valid_agent()])
+        self.commands.units[AGENT] = {
+            "ActiveState": "activating",
+            "SubState": "auto-restart",
+            "Result": "oom-kill",
+            "ExecMainCode": "2",
+            "ExecMainStatus": "9",
+            "ExecMainExitTimestampMonotonic": "100",
+        }
+        self.supervisor._observe()
+        self.assertEqual(self.supervisor.heartbeat_body()["agents"][0]["oom_kills"], 1)
+        self.supervisor.reconcile([valid_agent(revision=2)])
+        self.supervisor._observe()
+        self.assertEqual(self.supervisor.heartbeat_body()["agents"][0]["oom_kills"], 0)
+        self.assertEqual(
+            json.loads(self.harness.paths.agent_records.read_text())["agents"][AGENT],
+            {"oomKills": 0, "lastOomExit": f"{BOOT_1}:100", "revision": 2},
+        )
+        restarted = self.harness.build()
+        restarted.reconcile([valid_agent(revision=2)])
+        restarted._observe()
+        self.assertEqual(restarted.heartbeat_body()["agents"][0]["oom_kills"], 0)
 
     def test_invalid_records_file_fails_loud(self):
         worker._write_root_json(self.harness.paths.agent_records, {"version": 9})
@@ -1641,7 +1959,13 @@ class ProcessStateTests(RootPatched):
             self.harness.paths.agent_records,
             {
                 "version": 1,
-                "agents": {AGENT: {"oomKills": 1, "lastOomExit": f"{BOOT_1}:50"}},
+                "agents": {
+                    AGENT: {
+                        "oomKills": 1,
+                        "lastOomExit": f"{BOOT_1}:50",
+                        "revision": 1,
+                    }
+                },
             },
         )
         supervisor = self.harness.build()
@@ -1754,6 +2078,37 @@ class LoopTests(RootPatched):
         self.supervisor.tick()
         self.assertEqual(self.client.list_calls, 2)
 
+    def test_failed_reconcile_is_retried_with_backoff(self):
+        blocker = self.harness.paths.worktrees / AGENT
+        blocker.write_text("not a directory")
+        self.client.listings += [listing(valid_agent()) for _ in range(3)]
+        with self.assertLogs(worker.logger, "ERROR"):
+            self.supervisor.tick()
+        self.assertEqual(self.client.list_calls, 1)
+        self.assertIsNone(self.supervisor._agents_version)
+        self.harness.now = 14
+        self.supervisor.tick()
+        self.assertEqual(self.client.list_calls, 1)
+        self.harness.now = 15
+        with self.assertLogs(worker.logger, "ERROR"):
+            self.supervisor.tick()
+        self.assertEqual(self.client.list_calls, 2)
+        self.harness.now = 44
+        self.supervisor.tick()
+        self.assertEqual(self.client.list_calls, 2)
+        blocker.unlink()
+        self.harness.now = 45
+        self.supervisor.tick()
+        self.assertEqual(self.client.list_calls, 3)
+        self.assertEqual(self.supervisor._agents_version, 3)
+        self.assertEqual(
+            self.commands.actions()[-1],
+            ["--no-block", "restart", f"switch-agent@{AGENT}.service"],
+        )
+        self.harness.now = 200
+        self.supervisor.tick()
+        self.assertEqual(self.client.list_calls, 3)
+
     def test_failed_heartbeat_is_retried_next_interval(self):
         self.client.listings.append(listing())
         self.client.heartbeats.append(worker.CoreUnavailable("down"))
@@ -1861,10 +2216,12 @@ class GitTests(RootPatched):
         self.flock.write_text(
             f"#!{sys.executable}\n"
             "import fcntl, os, sys\n"
-            "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n"
+            "if sys.argv[1] != '--no-fork':\n"
+            "    sys.exit('flock must not fork')\n"
+            "fd = os.open(sys.argv[2], os.O_RDWR | os.O_CREAT, 0o600)\n"
             "fcntl.flock(fd, fcntl.LOCK_EX)\n"
             "os.set_inheritable(fd, True)\n"
-            "os.execv(sys.argv[2], sys.argv[2:])\n"
+            "os.execv(sys.argv[3], sys.argv[3:])\n"
         )
         self.record = tools / "record"
         self.git = tools / "git"
@@ -1945,8 +2302,9 @@ class GitTests(RootPatched):
         harness.commands.clear()
         with self.assertLogs(worker.logger, "WARNING"):
             harness.supervisor.reconcile([])
+        unit = f"switch-agent@{AGENT}.service"
         self.assertEqual(
-            harness.commands.actions(), [["stop", f"switch-agent@{AGENT}.service"]]
+            harness.commands.actions(), [["stop", unit], ["reset-failed", unit]]
         )
         self.assertFalse(worktree.exists())
         self.assertFalse((harness.paths.worktrees / AGENT).exists())
@@ -1990,10 +2348,60 @@ class GitTests(RootPatched):
         thread.join()
         self.assertEqual(errors, [])
 
-    def test_git_failure_is_a_worker_error_with_detail(self):
-        (self.temporary / "missing.git.lock").write_text("")
-        with self.assertRaisesRegex(worker.WorkerError, "failed"):
-            self.runner.run(self.temporary / "missing.git", ["worktree", "prune"])
+    def script(self, name: str, body: str) -> Path:
+        path = self.temporary / "tools" / name
+        path.write_text(f"#!{sys.executable}\n" + body)
+        path.chmod(0o755)
+        return path
+
+    def test_git_failure_reports_the_exit_status_but_not_stderr(self):
+        secret = "ghs_placeholder-secret-from-repo-config"
+        git = self.script(
+            "noisy-git", f"import sys\nsys.stderr.write({secret!r})\nsys.exit(3)\n"
+        )
+        runner = worker.GitRunner([], str(self.flock), str(git))
+        mirror = self.temporary / "mirror.git"
+        with self.assertRaises(worker.WorkerError) as raised:
+            runner.run(mirror, ["worktree", "prune"])
+        self.assertEqual(
+            str(raised.exception),
+            f"git worktree prune on {mirror} failed with exit status 3.",
+        )
+        self.assertNotIn(secret, str(raised.exception))
+
+    def test_timeout_kills_every_process_holding_the_lock(self):
+        child_record = self.temporary / "child-pid"
+        git = self.script(
+            "hanging-git",
+            "import os, time\n"
+            "pid = os.fork()\n"
+            "if pid == 0:\n"
+            "    time.sleep(60)\n"
+            "    os._exit(0)\n"
+            f"with open({str(child_record)!r}, 'w') as handle:\n"
+            "    handle.write(str(pid))\n"
+            "time.sleep(60)\n",
+        )
+        runner = worker.GitRunner([], str(self.flock), str(git))
+        mirror = self.temporary / "mirror.git"
+        with mock.patch.object(worker, "GIT_TIMEOUT_SECONDS", 1):
+            with self.assertRaises(worker.WorkerError) as raised:
+                runner.run(mirror, ["worktree", "prune"])
+        child = int(child_record.read_text())
+        self.addCleanup(self.kill_quietly, child)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(child, 0)
+        descriptor = os.open(f"{mirror}.lock", os.O_RDWR)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(descriptor)
+        self.assertIn("timed out", str(raised.exception))
+
+    @staticmethod
+    def kill_quietly(pid: int) -> None:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, 9)
 
     def test_setpriv_prefix_drops_everything(self):
         self.assertEqual(

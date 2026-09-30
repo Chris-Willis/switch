@@ -193,8 +193,7 @@ class Gateway:
             raise ConfigError("Cloud gateway returned an invalid machine list.")
         return response["machines"]
 
-    def sync_machines(self) -> None:
-        listed = self.machines()
+    def sync_machines(self, listed: list[dict]) -> None:
         active_ids = {item.get("machine_id") for item in listed if isinstance(item, dict)}
         self.prepare_failures = {
             key: started for key, started in self.prepare_failures.items() if key in active_ids
@@ -371,8 +370,11 @@ class Gateway:
         except ClientError as error:
             if error.response.get("Error", {}).get("Code") != "ResourceExistsException":
                 raise
-            if not self.promote_bundle(secret_id, token):
-                raise
+            # Secrets Manager answers a repeated ClientRequestToken with this error
+            # only when the stored version's content differs from the request.
+            raise ConfigError(
+                "The assignment secret already holds a different bundle for this revision."
+            ) from error
         self.store.record_bundle(machine.machine_id, token)
 
     def promote_bundle(self, secret_id: str, token: str) -> bool:
@@ -392,8 +394,8 @@ class Gateway:
         )
         return True
 
-    def report_observations(self) -> None:
-        for item in self.machines():
+    def report_observations(self, listed: list[dict]) -> None:
+        for item in listed:
             try:
                 core = CoreMachine.parse(item)
             except Exception as error:

@@ -63,6 +63,10 @@ run "rendered_permissions" {
     error_message = "Controller secret writes must remain scoped to assigned secrets."
   }
   assert {
+    condition     = contains(jsondecode(aws_iam_policy.controller_assignments.policy).Statement[0].Action, "secretsmanager:UpdateSecretVersionStage")
+    error_message = "Controller must be able to promote a written bundle to AWSCURRENT on its assigned secrets."
+  }
+  assert {
     condition = alltrue([for statement in jsondecode(aws_iam_role_policy.controller.policy).Statement :
       statement.Condition.Null[startswith(statement.Sid, "CreateManaged") || statement.Sid == "TagOnCreate" ? "aws:RequestTag/switch:generation" : "ec2:ResourceTag/switch:generation"] == "false"
       && !contains(keys(statement.Condition.StringEquals), "aws:RequestTag/switch:generation")

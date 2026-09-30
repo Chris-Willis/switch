@@ -116,7 +116,7 @@ def test_launch_retry_reuses_the_slot_and_row(tmp_path):
     )
     gateway = make_gateway(cfg, store, secrets)
     gateway.request = routed([core_machine()], prepared_machine())
-    gateway.sync_machines()
+    gateway.sync_machines(gateway.machines())
     assert not saved
     machine = store.get(MACHINE_ID)
     assert (machine.slot_id, machine.generation, machine.instance_type) == (
@@ -129,7 +129,7 @@ def test_launch_retry_reuses_the_slot_and_row(tmp_path):
     assert machine.instance_profile_arn == cfg.slot("slot-1").instance_profile_arn
     store.record_volume(MACHINE_ID, VOLUME_ID, cfg.availability_zone)
     for _ in range(3):
-        gateway.sync_machines()
+        gateway.sync_machines(gateway.machines())
     assert len(store.list()) == 1
     assert secrets.put_secret_value.call_count == 1
     assert sum(call.args[0].endswith("/prepare") for call in gateway.request.call_args_list) == 1
@@ -221,7 +221,7 @@ def test_one_failed_machine_does_not_block_other_machines(tmp_path, failure):
         [core_machine(), core_machine(machine_id=OTHER_MACHINE_ID, slot_id="slot-2")]
     )
     gateway.sync_machine = Mock(side_effect=[failure, None])
-    gateway.sync_machines()
+    gateway.sync_machines(gateway.machines())
     assert gateway.sync_machine.call_count == 2
     assert gateway.request.call_count == 1
     gateway.sync_machine.side_effect = [failure, None]
@@ -229,7 +229,7 @@ def test_one_failed_machine_does_not_block_other_machines(tmp_path, failure):
         "switch_hosted_controller.gateway.monotonic",
         return_value=gateway.prepare_failures[MACHINE_ID] + 301,
     ):
-        gateway.sync_machines()
+        gateway.sync_machines(gateway.machines())
     assert gateway.request.call_args_list[-1].args == (
         f"/machines/{MACHINE_ID}/observation",
         {
@@ -253,7 +253,7 @@ def test_conflict_during_prepare_is_retried_without_reporting(tmp_path):
     gateway.sync_machine = Mock(side_effect=GatewayError(409))
     for _ in range(2):
         with patch("switch_hosted_controller.gateway.monotonic", return_value=10_000):
-            gateway.sync_machines()
+            gateway.sync_machines(gateway.machines())
     assert gateway.prepare_failures == {}
     assert [call.args[0] for call in gateway.request.call_args_list] == ["/machines", "/machines"]
     store.close()
@@ -275,7 +275,7 @@ def test_rejected_prepare_stops_the_machine_and_reports_the_detail(tmp_path):
         return {}
 
     gateway.request = Mock(side_effect=request)
-    gateway.sync_machines()
+    gateway.sync_machines(gateway.machines())
     assert store.get(MACHINE_ID).desired_state is DesiredState.STOPPED
     assert gateway.request.call_args_list[-1].args == (
         f"/machines/{MACHINE_ID}/observation",
@@ -305,7 +305,7 @@ def test_error_machine_being_deleted_is_still_reported(tmp_path):
             core_machine(machine_id=OTHER_MACHINE_ID, slot_id="slot-2", state="error", revision=4),
         ]
     )
-    gateway.report_observations()
+    gateway.report_observations(gateway.machines())
     reports = [call.args for call in gateway.request.call_args_list if call.args[0] != "/machines"]
     assert reports == [
         (
@@ -336,7 +336,7 @@ def synced_from_core(tmp_path) -> tuple[MachineStore, Gateway, dict]:
     secrets.describe_secret.return_value = {"VersionIdsToStages": {}}
     gateway = make_gateway(cfg, store, secrets, instance_type="c7i.2xlarge")
     gateway.request = routed([listed], core_fixture("prepare_response.json"))
-    gateway.sync_machines()
+    gateway.sync_machines(gateway.machines())
     return store, gateway, listed
 
 
@@ -380,7 +380,7 @@ def test_running_observation_matches_the_core_fixture(tmp_path):
     store, gateway, listed = synced_from_core(tmp_path)
     store.record_instance(listed["machine_id"], "i-0123456789abcdef0")
     store.set_observed(store.get(listed["machine_id"]), ObservedState.RUNNING, None)
-    gateway.report_observations()
+    gateway.report_observations(gateway.machines())
     path, body = gateway.request.call_args_list[-1].args
     assert path == f"/machines/{listed['machine_id']}/observation"
     assert body == core_fixture("controller_observation.json")
@@ -408,7 +408,7 @@ def test_observed_states_map_onto_core_states(tmp_path, observed, state):
     store.set_observed(machine, observed, "internal detail")
     gateway = make_gateway(cfg, store)
     gateway.request = routed([core_machine()])
-    gateway.report_observations()
+    gateway.report_observations(gateway.machines())
     body = gateway.request.call_args_list[-1].args[1]
     assert body["state"] == state
     if state == "error":
@@ -442,7 +442,7 @@ def test_pending_is_reported_by_desired_state(tmp_path, desired, core_desired, s
     assert store.get(MACHINE_ID).observed_state is ObservedState.PENDING
     gateway = make_gateway(cfg, store)
     gateway.request = routed([core_machine(desired_state=core_desired)])
-    gateway.report_observations()
+    gateway.report_observations(gateway.machines())
     assert gateway.request.call_args_list[-1].args[1]["state"] == state
     store.close()
 
@@ -454,7 +454,7 @@ def test_retained_on_the_way_to_deletion_is_reported_as_deleting(tmp_path):
     store.set_observed(machine, ObservedState.RETAINED, None)
     gateway = make_gateway(cfg, store)
     gateway.request = routed([core_machine(desired_state="deleted")])
-    gateway.report_observations()
+    gateway.report_observations(gateway.machines())
     assert gateway.request.call_args_list[-1].args[1]["state"] == "deleting"
     store.close()
 
@@ -658,6 +658,6 @@ def test_invalid_core_machine_does_not_block_the_others(tmp_path):
     store = open_store(cfg)
     gateway = make_gateway(cfg, store)
     gateway.request = routed([core_machine(generation=0), core_machine(desired_state="stopped")])
-    gateway.sync_machines()
+    gateway.sync_machines(gateway.machines())
     assert store.get(MACHINE_ID).desired_state is DesiredState.STOPPED
     store.close()
