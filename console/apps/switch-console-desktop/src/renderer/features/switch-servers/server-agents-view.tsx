@@ -307,8 +307,10 @@ const CloudAgentCard = observer(function CloudAgentCard({
       {confirmRemove && (
         <div className="mt-2 text-xs">
           <p>
-            Remove this agent and its sessions from Switch? If it is the last agent on your machine,
-            the machine shuts down and its disk is kept until the date shown on the machine card.
+            Remove this agent and its sessions from Switch? Its working copy on the cloud machine is
+            deleted right away, with any uncommitted changes. If it is the last agent on your
+            machine, the machine shuts down and its disk is kept until the date shown on the machine
+            card.
           </p>
           <Button size="sm" disabled={pending} onClick={() => void run('remove')}>
             Remove agent

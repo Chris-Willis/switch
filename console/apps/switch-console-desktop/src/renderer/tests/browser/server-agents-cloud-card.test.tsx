@@ -340,6 +340,7 @@ it('removes a running agent once confirmed', async () => {
   const el = await render();
 
   await act(async () => button(el, /^remove$/i)!.click());
+  expect(el.textContent).toMatch(/Its working copy on the cloud machine is\s+deleted right away/);
   expect(el.textContent).toMatch(/the machine shuts down and its disk is kept/);
   expect(switchServers.cloudLifecycle).not.toHaveBeenCalled();
   await act(async () => button(el, /remove agent/i)!.click());
