@@ -336,6 +336,16 @@ export class SwitchEventStream {
    * incarnation we have just replaced.
    */
   private readonly fence = new ReattachFence();
+  /**
+   * How many times the server has named an incarnation for this client, and
+   * how to cut the heartbeat's current wait short when it does.
+   *
+   * A fresh attach starts the server's 6-second clock on a connection that has
+   * never beaten, so the heartbeat must go out promptly — whatever back-off an
+   * earlier, failing connection had built up. See `beatLoop`.
+   */
+  private attaches = 0;
+  private wakeBeat: () => void = () => {};
 
   constructor(deps: SwitchEventStreamDeps) {
     this.deps = deps;
@@ -772,6 +782,8 @@ export class SwitchEventStream {
         });
         this.reportRooms(frame.data.rooms);
         this.fence.attached();
+        this.attaches += 1;
+        this.wakeBeat();
         this.redeclare();
         this.deps.onConnected?.();
         return;
@@ -905,6 +917,35 @@ export class SwitchEventStream {
     const { log, signal, connectionId } = this.deps;
     let failures = 0;
     let backoff = BEAT_INTERVAL_MS;
+    // Rejections in a row, which pace reopening rather than beating. Kept
+    // apart from `backoff` because a fresh attach resets that and must not
+    // reset this: see the 404/409 branch below.
+    let rejections = 0;
+    let seenAttach = this.attaches;
+
+    /**
+     * Wait `ms`, but stop waiting the moment the server names a new
+     * incarnation — and do not start waiting if it already has.
+     *
+     * The back-off used to be served in full across a reattach. A beat that
+     * had been failing left the loop sleeping for up to 30 seconds; the stream
+     * reopened, the server started its 6-second clock on the new connection,
+     * and the next beat arrived long after the server had closed it for
+     * silence. That beat was refused, which counted as another failure, which
+     * kept the wait at 30 seconds. The client could not get out of it on its
+     * own: one hiccup, and it lapsed every connection it ever opened again.
+     */
+    const pause = async (ms: number): Promise<void> => {
+      if (this.attaches !== seenAttach) return;
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, ms);
+        this.wakeBeat = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+      });
+      this.wakeBeat = () => {};
+    };
 
     /** Count a beat that did not land and slow the loop down. Returns whether
      * to report this one: the first, then powers of two, so a permanent
@@ -958,6 +999,13 @@ export class SwitchEventStream {
       // beat could be sent under an incarnation later than the one recorded.
       await Promise.race([this.fence.reached, until(signal, this.halt.signal)]);
       if (signal.aborted || this.halt.signal.aborted) return;
+      // A connection the server has just attached has never beaten, and has
+      // 6 seconds to. Whatever an earlier connection's failures built up says
+      // nothing about this one, so it starts at the base cadence.
+      if (this.attaches !== seenAttach) {
+        seenAttach = this.attaches;
+        backoff = BEAT_INTERVAL_MS;
+      }
       const tick = await this.fence.tick(beat);
       if (signal.aborted || this.halt.signal.aborted) return;
 
@@ -989,20 +1037,36 @@ export class SwitchEventStream {
         if (status === 404 || status === 409) {
           // The server answered, so this is not an outage — but it is not a
           // beat that landed either: we are not attached, and only a reopen
-          // fixes that. Reopen, and slow down all the same. A reopen that
-          // keeps being refused is a client that cannot currently succeed,
-          // and it must not spend the endpoint at full rate while it fails.
-          const report = slowDown();
-          this.reopen();
-          if (report) {
+          // fixes that. A reopen that keeps being refused is a client that
+          // cannot currently succeed, and it must not spend the endpoint at
+          // full rate while it fails.
+          //
+          // So the wait goes *before* the reopen, and grows with each refusal
+          // in a row. It used to go after — reopen at once, then sleep the
+          // back-off before beating — which starved the very connection the
+          // reopen had just made. Pacing the reopen instead keeps the same
+          // brake on a refusing server while letting each new connection beat
+          // as soon as it is attached.
+          failures += 1;
+          rejections += 1;
+          const waitMs = Math.min(BEAT_INTERVAL_MS * 2 ** rejections, MAX_BACKOFF_MS);
+          if ((failures & (failures - 1)) === 0) {
             log.warn('SwitchEventStream: heartbeat rejected — reopening', {
               event: 'switch_beat_rejected',
               status,
               connectionId,
               failures,
-              backoffMs: backoff,
+              backoffMs: waitMs,
             });
           }
+          await pause(waitMs);
+          if (signal.aborted || this.halt.signal.aborted) return;
+          // The stream may have reattached on its own while we waited — the
+          // server closes a lapsed connection's socket, and the stream loop
+          // reopens it. Reopening again would throw that healthy connection
+          // away; beat on it instead.
+          if (this.attaches === seenAttach) this.reopen();
+          continue;
         } else if (!ok) {
           fail(new Error(`HTTP ${status}`));
         } else {
@@ -1013,10 +1077,11 @@ export class SwitchEventStream {
             });
           }
           failures = 0;
+          rejections = 0;
           backoff = BEAT_INTERVAL_MS;
         }
       }
-      await new Promise((r) => setTimeout(r, backoff));
+      await pause(backoff);
     }
   }
 }
