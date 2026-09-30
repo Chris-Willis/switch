@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
-import { mkdir, open, readFile, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, open, readFile, readdir, realpath } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -222,30 +222,101 @@ export async function runGitHubCli(args: string[]): Promise<void> {
   });
 }
 
-export async function ensureHostedRepository(
-  workspace: string,
-  repository: string,
-  env: NodeJS.ProcessEnv
-): Promise<void> {
-  const url = `https://github.com/${repository}.git`;
-  const run = promisify(execFile);
-  try {
-    if ((await readdir(workspace)).length === 0) {
-      await run('git', ['clone', '--', url, workspace], {
+class RepositoryStepError extends Error {}
+
+/**
+ * Makes `workspace` a worktree on `switch/<agentId>` over the bare mirror every
+ * agent on the machine shares for `repository`. Every git command that changes
+ * the mirror holds `<mirror>.lock`, so concurrent agents take turns.
+ */
+export async function ensureHostedRepository(input: {
+  workspace: string;
+  mirror: string;
+  repository: string;
+  agentId: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  const { workspace, mirror, env } = input;
+  const url = `https://github.com/${input.repository}.git`;
+  const lock = `${mirror}.lock`;
+  const exec = promisify(execFile);
+  const locked = async (step: string, args: string[]) => {
+    try {
+      await exec('flock', [lock, 'git', ...args], {
         env,
         timeout: 120_000,
         maxBuffer: 1024 * 1024,
       });
-    } else {
-      const { stdout } = await run('git', ['-C', workspace, 'remote', 'get-url', 'origin'], {
-        env,
-        timeout: 10_000,
-      });
-      if (stdout.trim() !== url) throw new Error();
+    } catch {
+      throw new RepositoryStepError(step);
     }
-  } catch {
+  };
+  const probe = async (args: string[]) => {
+    try {
+      return (await exec('git', args, { env, timeout: 10_000 })).stdout.trim();
+    } catch {
+      return null;
+    }
+  };
+  const origin = () => probe(['--git-dir', mirror, 'config', '--get', 'remote.origin.url']);
+  try {
+    try {
+      await mkdir(dirname(mirror), { recursive: true, mode: 0o700 });
+    } catch {
+      throw new RepositoryStepError('create the mirror directory');
+    }
+    const bare = await probe(['--git-dir', mirror, 'rev-parse', '--is-bare-repository']);
+    if (bare === null) await locked('initialize the mirror', ['init', '--bare', '--', mirror]);
+    else if (bare !== 'true') throw new RepositoryStepError('the mirror is not a bare repository');
+    if ((await origin()) === null) {
+      try {
+        await locked('add the mirror origin', ['-C', mirror, 'remote', 'add', 'origin', url]);
+      } catch (error) {
+        if ((await origin()) === null) throw error;
+      }
+    }
+    if ((await origin()) !== url)
+      throw new RepositoryStepError('the mirror belongs to a different repository');
+    await locked('fetch the repository', ['-C', mirror, 'fetch', '--prune', 'origin']);
+    await locked('resolve the default branch', [
+      '-C',
+      mirror,
+      'remote',
+      'set-head',
+      'origin',
+      '--auto',
+    ]);
+    const common = await probe(['-C', workspace, 'rev-parse', '--git-common-dir']);
+    if (
+      common !== null &&
+      (await realpath(resolve(workspace, common)).catch(() => null)) === (await realpath(mirror))
+    )
+      return;
+    let entries: string[];
+    try {
+      entries = await readdir(workspace);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
+        throw new RepositoryStepError('read the workspace');
+      entries = [];
+    }
+    if (entries.length > 0)
+      throw new RepositoryStepError('the workspace holds files that are not its worktree');
+    await locked('add the worktree', [
+      '-C',
+      mirror,
+      'worktree',
+      'add',
+      '-B',
+      `switch/${input.agentId}`,
+      '--',
+      workspace,
+      'origin/HEAD',
+    ]);
+  } catch (error) {
+    const step = error instanceof RepositoryStepError ? error.message : 'inspect the repository';
     throw new Error(
-      'Could not prepare the selected GitHub repository. Check repository access and the saved workspace.'
+      `Could not prepare the selected GitHub repository (${step}). Check repository access and the saved workspace.`
     );
   }
 }

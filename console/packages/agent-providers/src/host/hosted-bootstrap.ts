@@ -653,11 +653,13 @@ export async function runHostedBootstrap(
       );
     Object.assign(prepared.providerEnvironment, env);
     if (spec.github?.refresh && spec.github.repository)
-      await ensureHostedRepository(
-        spec.workspacePath,
-        spec.github.repository,
-        prepared.providerEnvironment
-      );
+      await ensureHostedRepository({
+        workspace: spec.workspacePath,
+        mirror: spec.github.mirrorPath,
+        repository: spec.github.repository,
+        agentId: spec.session.agentId,
+        env: prepared.providerEnvironment,
+      });
     await writeDefinition(spec, false);
     if (spec.skills && supportsHostedSkills(spec.provider.kind))
       await installHostedSkills(
