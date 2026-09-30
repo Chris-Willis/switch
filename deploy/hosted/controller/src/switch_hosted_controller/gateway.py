@@ -370,8 +370,11 @@ class Gateway:
         except ClientError as error:
             if error.response.get("Error", {}).get("Code") != "ResourceExistsException":
                 raise
-            if not self.promote_bundle(secret_id, token):
-                raise
+            # Secrets Manager answers a repeated ClientRequestToken with this error
+            # only when the stored version's content differs from the request.
+            raise ConfigError(
+                "The assignment secret already holds a different bundle for this revision."
+            ) from error
         self.store.record_bundle(machine.machine_id, token)
 
     def promote_bundle(self, secret_id: str, token: str) -> bool:
