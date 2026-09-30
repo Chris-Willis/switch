@@ -399,7 +399,11 @@ async def heartbeat(
         machine.error_code = None
     for report in body.agents:
         launch = await _machine_launch(session, machine, report.launch_id)
-        if launch is None or launch.agent_id != report.agent_id:
+        if (
+            launch is None
+            or launch.agent_id != report.agent_id
+            or launch.revision != report.revision
+        ):
             continue
         launch.process_state = report.process_state
         launch.process_restarts = report.restarts
@@ -408,7 +412,7 @@ async def heartbeat(
             None if report.exit is None else report.exit.model_dump(mode="json")
         )
         launch.process_reported_at = now
-        if report.revision == launch.revision and launch.desired_state != "deleted":
+        if launch.desired_state != "deleted":
             _apply_process_state(launch, report, protocol, now)
     result = {
         "agents_version": machine.agents_version,

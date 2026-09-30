@@ -639,16 +639,33 @@ async def test_heartbeat_refuses_a_report_time_without_an_offset(supervisor):
     assert response.status_code == 422
 
 
-async def test_stale_revision_report_writes_columns_but_not_state(supervisor):
+async def test_stale_revision_report_writes_nothing(supervisor):
     client, request_id, agent_id, _, factory, machine_id, headers = supervisor
-    await update_launch(factory, request_id, revision=2)
-    await client.post(
+    reported_at = datetime.now(UTC) - timedelta(minutes=5)
+    await update_launch(
+        factory,
+        request_id,
+        revision=2,
+        process_state="starting",
+        process_restarts=0,
+        process_oom_kills=0,
+        process_exit=None,
+        process_reported_at=reported_at,
+    )
+    response = await client.post(
         f"/hosted/machines/{machine_id}/heartbeat",
         headers=headers,
         json=heartbeat_body(launch_id=request_id, agent_id=agent_id, revision=1),
     )
+    assert response.status_code == 200, response.text
     launch = await launch_row(factory, request_id)
-    assert launch.process_state == "crashed"
+    assert (
+        launch.process_state,
+        launch.process_restarts,
+        launch.process_oom_kills,
+        launch.process_exit,
+        launch.process_reported_at,
+    ) == ("starting", 0, 0, None, reported_at)
     assert launch.state == "queued"
     assert launch.error_code is None
 
