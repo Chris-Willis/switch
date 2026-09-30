@@ -295,13 +295,23 @@ async def test_agents_lists_a_launch_whose_provider_connection_is_gone(
     supervisor, caplog
 ):
     client, request_id, _, _, factory, machine_id, headers = supervisor
-    await update_launch(factory, request_id, spec={**SPEC, "provider": "codex"})
+    launch = await launch_row(factory, request_id)
+    async with factory() as session:
+        await session.delete(
+            await session.get(
+                ProviderConnection, (require_tenant_id(), launch.owner_id, "claude")
+            )
+        )
+        await session.commit()
     with caplog.at_level(logging.WARNING):
         response = await client.get(
             f"/hosted/machines/{machine_id}/agents", headers=headers
         )
     assert response.status_code == 200, response.text
-    assert response.json()["agents"][0]["provider_credential_kind"] is None
+    [entry] = response.json()["agents"]
+    assert entry["launch_id"] == request_id
+    assert "provider_credential_kind" in entry
+    assert entry["provider_credential_kind"] is None
     assert "connection is gone" in caplog.text
 
 

@@ -55,7 +55,7 @@ async def test_summary_has_the_contract_shape(mailbox_app):  # noqa: F811
         state="stopped",
         desired_state="stopped",
         stop_reason="idle",
-        revision=5,
+        revision=expected["revision"],
         instance_type="c7i.2xlarge",
         heartbeat=HEARTBEAT,
         heartbeat_at=datetime(2026, 1, 1, tzinfo=UTC),
