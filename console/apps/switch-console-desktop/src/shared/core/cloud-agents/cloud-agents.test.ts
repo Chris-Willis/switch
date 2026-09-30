@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
 import {
   cloudAgentPhase,
@@ -7,9 +10,16 @@ import {
   cloudMachineSchema,
 } from './cloud-agents';
 
-const idleSleeping = JSON.parse(
-  '{"machine_id":"3f1c2b4a-0000-4000-8000-000000000001","state":"stopped","desired_state":"stopped","stop_reason":"idle","sleeping":true,"revision":5,"instance_type":"c7i.2xlarge","error":null,"error_code":null,"retain_until":null,"heartbeat_at":"2026-01-01T00:00:00Z","disk":{"total_bytes":214748364800,"available_bytes":204010946560},"memory":{"total_bytes":17179869184,"available_bytes":12884901888},"agents":["req-0000000000000001"]}'
-) as unknown;
+const CORE_FIXTURES = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../../../../../../core/tests/switch_core/fixtures/hosted_machines'
+);
+
+function coreFixture(name: string): unknown {
+  return JSON.parse(readFileSync(join(CORE_FIXTURES, name), 'utf8')) as unknown;
+}
+
+const idleSleeping = coreFixture('machine_summary_sleeping.json');
 
 const launch: CloudLaunch = cloudLaunchSchema.parse({
   request_id: '00000000-0000-4000-8000-000000000001',
@@ -39,8 +49,17 @@ function machine(overrides: Partial<CloudMachine>): CloudMachine {
   };
 }
 
-it('parses the idle-sleeping machine summary', () => {
+it('parses the idle-sleeping machine summary Core serves', () => {
   expect(cloudMachineSchema.parse(idleSleeping)).toEqual(idleSleeping);
+});
+
+it('parses every launch summary Core serves', () => {
+  for (const name of readdirSync(CORE_FIXTURES).filter((file) =>
+    /^launch_summary.*\.json$/.test(file)
+  )) {
+    const summary = coreFixture(name);
+    expect(cloudLaunchSchema.parse(summary), name).toEqual(summary);
+  }
 });
 
 it('parses a launch summary with its machine and process', () => {
@@ -69,9 +88,37 @@ it.each([
     'machine_stopped',
   ],
   ['a machine on its way up', machine({ state: 'provisioning' }), 'waking'],
+  ['a retained machine being reused', machine({ state: 'retained' }), 'waking'],
   ['a ready machine', machine({}), null],
 ] as const)('reads %s', (_name, onMachine, phase) => {
   expect(cloudAgentPhase(launch, onMachine)).toBe(phase);
+});
+
+const stopped: CloudLaunch = { ...launch, desired_state: 'stopped', state: 'stopped' };
+const crashed: CloudLaunch = {
+  ...launch,
+  state: 'error',
+  error: 'crashed',
+  error_code: 'agent_crashed',
+  process_state: 'crashed',
+};
+
+it.each([
+  ['stopped', stopped],
+  ['crashed', crashed],
+] as const)('does not sleep or wake with its machine a launch that is %s', (_name, onLaunch) => {
+  expect(cloudAgentPhase(onLaunch, cloudMachineSchema.parse(idleSleeping))).toBeNull();
+  expect(cloudAgentPhase({ ...onLaunch, sleeping: true, machine_id: null }, null)).toBeNull();
+  expect(cloudAgentPhase(onLaunch, machine({ state: 'provisioning' }))).toBeNull();
+});
+
+it('reads a machine its owner stopped whatever the launch', () => {
+  expect(
+    cloudAgentPhase(
+      stopped,
+      machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'owner' })
+    )
+  ).toBe('machine_stopped');
 });
 
 it('reads a launch without a machine from the launch', () => {

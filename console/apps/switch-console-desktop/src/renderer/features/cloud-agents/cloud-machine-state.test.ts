@@ -40,6 +40,7 @@ describe('machinePresentation label', () => {
     ['error', machine({ ...running, state: 'error', error_code: 'x' }), 'Error'],
     ['retained', machine({ state: 'retained', desired_state: 'retained' }), 'Retained'],
     ['retaining', machine({ ...running, state: 'ready', desired_state: 'retained' }), 'Retained'],
+    ['reused while retained', machine({ ...running, state: 'retained' }), 'Provisioning'],
     ['deleting', machine({ state: 'deleting', desired_state: 'deleted' }), 'Deleting disk…'],
   ])('%s', (_name, input, label) => {
     expect(machinePresentation(input).label).toBe(label);
@@ -108,6 +109,13 @@ describe('machinePresentation retainUntil', () => {
       machinePresentation(machine({ retain_until: '2026-02-01T00:00:00Z' })).retainUntil
     ).toBeNull();
   });
+
+  it('is null for a retained machine being reused', () => {
+    expect(
+      machinePresentation(machine({ ...running, state: 'retained', retain_until: null }))
+        .retainUntil
+    ).toBeNull();
+  });
 });
 
 describe('machinePresentation disk', () => {
@@ -150,6 +158,7 @@ describe('machinePresentation actions', () => {
     ],
     ['retained', machine({ state: 'retained', desired_state: 'retained', sleeping: false }), []],
     ['retaining', machine({ ...running, state: 'ready', desired_state: 'retained' }), []],
+    ['reused while retained', machine({ ...running, state: 'retained' }), []],
     ['deleting', machine({ state: 'deleting', desired_state: 'deleted', sleeping: false }), []],
   ])('%s', (_name, input, actions) => {
     expect(machinePresentation(input).actions).toEqual(actions);

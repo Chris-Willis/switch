@@ -21,7 +21,10 @@ export type MachinePresentation = {
 };
 
 function isRetained(machine: CloudMachine): boolean {
-  return machine.state === 'retained' || machine.desired_state === 'retained';
+  return (
+    machine.desired_state === 'retained' ||
+    (machine.state === 'retained' && machine.desired_state !== 'running')
+  );
 }
 
 function machineLabel(machine: CloudMachine): string {
@@ -59,6 +62,7 @@ function machineDisk(machine: CloudMachine): MachineDisk | null {
 function machineActions(machine: CloudMachine): MachineAction[] {
   if (
     isRetained(machine) ||
+    machine.state === 'retained' ||
     machine.state === 'deleting' ||
     machine.state === 'deleted' ||
     machine.desired_state === 'deleted'

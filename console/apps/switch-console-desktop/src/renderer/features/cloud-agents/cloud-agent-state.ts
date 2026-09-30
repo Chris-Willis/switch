@@ -8,6 +8,7 @@ import { type CloudAgent, cloudAgentPhase } from '@shared/core/cloud-agents/clou
 export function cloudAgentState(
   agent: CloudAgent
 ): { label: string; tone: SessionStateTone } | null {
+  if (agent.launch.desired_state === 'deleted') return { label: 'removing…', tone: 'idle' };
   const phase = cloudAgentPhase(agent.launch, agent.machine);
   if (phase === 'sleeping') return { label: 'sleeping', tone: 'idle' };
   if (phase === 'machine_stopped') return { label: 'machine stopped', tone: 'idle' };

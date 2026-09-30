@@ -178,7 +178,7 @@ const CloudAgentCard = observer(function CloudAgentCard({
   const addToRooms = useShowModal('addAgentToRoomModal');
   const { toastPromise } = useToast();
   const iconUrl = useAgentIconUrl(serverId, launch.agent_id);
-  const phase = cloudAgentPhase(launch, listed.machine);
+  const phase = launch.desired_state === 'deleted' ? null : cloudAgentPhase(launch, listed.machine);
   const stateLabel =
     phase === 'sleeping'
       ? 'Sleeping'
@@ -200,7 +200,7 @@ const CloudAgentCard = observer(function CloudAgentCard({
                 deleting: 'Removing…',
                 deleted: 'Removed',
               }[launch.state];
-  const usable = launch.state === 'ready' && phase === null;
+  const usable = launch.agent_id !== null && launch.state === 'ready' && phase === null;
   const crashed = launch.process_state === 'crashed' || launch.error_code === 'agent_crashed';
   const add = () => {
     if (!launch.agent_id) return;
@@ -282,6 +282,7 @@ const CloudAgentCard = observer(function CloudAgentCard({
           </>
         )}
         {launch.desired_state === 'running' &&
+          launch.agent_id !== null &&
           ['ready', 'provisioning', 'queued', 'error'].includes(launch.state) && (
             <Button variant="ghost" size="sm" disabled={pending} onClick={() => void run('stop')}>
               Stop agent

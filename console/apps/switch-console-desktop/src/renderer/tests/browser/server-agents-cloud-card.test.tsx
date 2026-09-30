@@ -272,6 +272,68 @@ it('shows a crashed agent with its out-of-memory restarts and offers Retry', asy
   expect(button(el, /stop agent/i)).toBeDefined();
 });
 
+function actions(el: HTMLElement): string[] {
+  return [...el.querySelectorAll('button')].map((b) => b.textContent ?? '').filter(Boolean);
+}
+
+it('offers only Retry and Remove for an agent Switch could not register', async () => {
+  const base = agent();
+  sdkHost.cloudAgents.mockResolvedValue([
+    {
+      ...base,
+      launch: {
+        ...base.launch,
+        agent_id: null,
+        state: 'error',
+        error: 'registration failed',
+        error_code: 'identity_failed',
+      },
+      problem: { code: 'worker_not_attached', message: 'error', wakeAvailable: false },
+    },
+  ]);
+  const el = await render();
+
+  expect(el.querySelector('[role="alert"]')?.textContent).toMatch(/could not register/);
+  expect(actions(el)).toEqual(['Retry', 'Remove']);
+});
+
+it('offers only Remove for a removal left halfway', async () => {
+  const base = agent();
+  sdkHost.cloudAgents.mockResolvedValue([
+    {
+      ...base,
+      launch: { ...base.launch, state: 'deleting', desired_state: 'deleted' },
+      problem: { code: 'worker_not_attached', message: 'removing', wakeAvailable: false },
+    },
+  ]);
+  const el = await render();
+
+  expect(el.textContent).toMatch(/Cloud · Removing…/);
+  expect(actions(el)).toEqual(['Remove']);
+});
+
+it('shows a stopped agent on a sleeping machine as stopped', async () => {
+  const machine = sleepingMachine();
+  const base = agent();
+  sdkHost.cloudAgents.mockResolvedValue([
+    {
+      ...base,
+      launch: {
+        ...base.launch,
+        machine_id: machine.machine_id,
+        desired_state: 'stopped',
+        state: 'stopped',
+        sleeping: true,
+      },
+      machine,
+    },
+  ]);
+  const el = await render();
+
+  expect(el.textContent).toMatch(/Cloud · Stopped/);
+  expect(button(el, /start agent/i)).toBeDefined();
+});
+
 it('removes a running agent once confirmed', async () => {
   switchServers.cloudLifecycle.mockResolvedValue({});
   sdkHost.cloudAgents.mockResolvedValue([agent()]);

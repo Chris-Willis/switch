@@ -120,11 +120,21 @@ export async function listServerCloudMachines(serverId: string): Promise<CloudMa
   return listCloudMachines(server);
 }
 
-/** Why a launch's worker cannot be asked, machine first, or null when it can. */
+/**
+ * Why a launch's worker cannot be asked, machine first, or null when it can.
+ * Read the way the server answers a read-only relay, which reports a sleeping
+ * machine whatever the launch's own state.
+ */
 function launchProblem(
   launch: CloudLaunch,
   machine: CloudMachine | null
 ): CloudRelayProblem | null {
+  if (launch.desired_state === 'deleted')
+    return {
+      code: 'worker_not_attached',
+      message: 'The cloud agent is being removed.',
+      wakeAvailable: false,
+    };
   const phase = cloudAgentPhase(launch, machine);
   if (phase === 'machine_stopped')
     return {
@@ -132,7 +142,7 @@ function launchProblem(
       message: 'The owner stopped the cloud machine.',
       wakeAvailable: false,
     };
-  if (phase === 'sleeping')
+  if (machine ? machine.sleeping : launch.sleeping)
     return {
       code: 'worker_sleeping',
       message: 'The cloud machine is asleep.',
@@ -171,7 +181,11 @@ export async function listCloudAgents(serverId: string): Promise<CloudAgent[] | 
   const server = await serverOf(serverId);
   const listed = await listCloudLaunches(server);
   if (listed === null) return null;
-  const launches = listed.filter((launch) => launch.agent_id && launch.desired_state !== 'deleted');
+  const launches = listed.filter(
+    (launch) =>
+      launch.state !== 'deleted' &&
+      (launch.desired_state !== 'deleted' || launch.state === 'deleting')
+  );
   if (launches.length === 0) return [];
   const machines = new Map(
     (await listCloudMachines(server)).map((machine) => [machine.machine_id, machine])

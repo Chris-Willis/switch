@@ -180,7 +180,32 @@ it.each([
     false,
   ],
   ['worker_waking', machine({ state: 'provisioning' }), {}, false],
+  ['worker_waking', machine({ state: 'retained' }), {}, false],
   ['agent_stopped', machine({}), { desired_state: 'stopped', state: 'stopped' }, false],
+  [
+    'agent_stopped',
+    machine({ state: 'provisioning' }),
+    { desired_state: 'stopped', state: 'stopped' },
+    false,
+  ],
+  [
+    'agent_crashed',
+    machine({ state: 'provisioning' }),
+    { state: 'error', error_code: 'agent_crashed', error: 'The agent crashed 5 times.' },
+    false,
+  ],
+  [
+    'worker_sleeping',
+    machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'idle', sleeping: true }),
+    { desired_state: 'stopped', state: 'stopped' },
+    true,
+  ],
+  [
+    'worker_sleeping',
+    machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'idle', sleeping: true }),
+    { state: 'error', error_code: 'agent_crashed', error: 'The agent crashed 5 times.' },
+    true,
+  ],
   [
     'agent_crashed',
     machine({}),
@@ -194,6 +219,42 @@ it.each([
   ];
   const [listed] = (await listCloudAgents('server'))!;
   expect(listed?.problem).toMatchObject({ code, wakeAvailable });
+});
+
+it('lists a launch whose identity registration failed, so it can be retried or removed', async () => {
+  server.machines = [machine({})];
+  server.launches = [
+    launch('00000000-0000-4000-8000-000000000001', {
+      machine_id: machineId,
+      agent_id: null,
+      state: 'error',
+      error: 'registration failed',
+      error_code: 'identity_failed',
+    }),
+  ];
+  const [listed] = (await listCloudAgents('server'))!;
+  expect(listed?.launch).toMatchObject({ agent_id: null, error_code: 'identity_failed' });
+  expect(listed?.problem?.code).toBe('worker_not_attached');
+});
+
+it('lists a removal left halfway so it can be finished, and hides a finished one', async () => {
+  server.machines = [machine({})];
+  server.launches = [
+    launch('00000000-0000-4000-8000-000000000001', {
+      machine_id: machineId,
+      state: 'deleting',
+      desired_state: 'deleted',
+    }),
+    launch('00000000-0000-4000-8000-000000000002', {
+      machine_id: machineId,
+      state: 'deleted',
+      desired_state: 'deleted',
+    }),
+  ];
+  const agents = (await listCloudAgents('server'))!;
+  expect(agents.map((each) => [each.launch.request_id, each.problem?.code])).toEqual([
+    ['00000000-0000-4000-8000-000000000001', 'worker_not_attached'],
+  ]);
 });
 
 it('wakes an agent by starting its machine at the machine’s revision', async () => {
