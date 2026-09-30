@@ -1539,27 +1539,62 @@ def _root_directory(path: Path, mode: int, gid: int) -> None:
     os.chmod(path, mode)
 
 
-def _agent_directory(path: Path, uid: int, gid: int) -> None:
-    if path.exists() or path.is_symlink():
-        details = path.lstat()
-        if (
-            not stat.S_ISDIR(details.st_mode)
-            or stat.S_ISLNK(details.st_mode)
-            or details.st_uid != uid
-            or details.st_gid != gid
-            or details.st_mode & 0o077
-        ):
-            raise WorkerError(f"{path} is not a private agent-owned directory.")
-        return
-    path.mkdir(mode=0o700)
-    os.chown(path, uid, gid)
-    os.chmod(path, 0o700)
+DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _open_trusted_root(path: Path) -> int:
+    try:
+        descriptor = os.open(path, DIRECTORY_FLAGS)
+    except OSError:
+        raise WorkerError(f"{path} is unavailable.") from None
+    details = os.fstat(descriptor)
+    if details.st_uid != ROOT_UID or details.st_mode & 0o022:
+        os.close(descriptor)
+        raise WorkerError(f"{path} must be a root-owned non-writable directory.")
+    return descriptor
+
+
+def _agent_directories(root: Path, parts: tuple[str, ...], uid: int, gid: int) -> None:
+    """Create or repair each directory of root/parts as a private agent directory.
+
+    Every component is opened relative to its already-open parent with
+    O_NOFOLLOW and changed through its descriptor, so an agent that swaps a
+    component for a symlink cannot redirect root's chown or chmod.
+    """
+    descriptor = _open_trusted_root(root)
+    path = root
+    try:
+        for name in parts:
+            if name in {"", ".", ".."} or "/" in name:
+                raise WorkerError(f"{root} has an unsafe path component.")
+            path = path / name
+            try:
+                os.mkdir(name, 0o700, dir_fd=descriptor)
+            except FileExistsError:
+                pass
+            try:
+                child = os.open(name, DIRECTORY_FLAGS, dir_fd=descriptor)
+            except OSError:
+                raise WorkerError(
+                    f"{path} is not a private agent-owned directory."
+                ) from None
+            os.close(descriptor)
+            descriptor = child
+            details = os.fstat(descriptor)
+            if details.st_uid not in {ROOT_UID, uid}:
+                raise WorkerError(f"{path} is not a private agent-owned directory.")
+            if details.st_uid != uid or details.st_gid != gid:
+                os.fchown(descriptor, uid, gid)
+            if stat.S_IMODE(details.st_mode) != 0o700:
+                os.fchmod(descriptor, 0o700)
+    finally:
+        os.close(descriptor)
 
 
 def prepare_layout(paths: Paths, uid: int, gid: int) -> None:
     _root_directory(paths.agents, 0o755, 0)
     _root_directory(paths.worktrees, 0o755, 0)
-    _agent_directory(paths.repos, uid, gid)
+    _agent_directories(paths.data, (paths.repos.name,), uid, gid)
 
 
 def prepare_runtime_directory(commands: Commands, paths: Paths, gid: int) -> None:
@@ -1996,13 +2031,16 @@ class Supervisor:
 
     def _apply(self, plan: AgentPlan) -> None:
         agent_id = plan.agent_id
-        state = self._paths.agents / agent_id
-        for directory in (state, state / "home", state / "tmp"):
-            _agent_directory(directory, self._uid, self._gid)
-        _agent_directory(self._paths.worktrees / agent_id, self._uid, self._gid)
-        if plan.worktree_owner is not None:
-            _agent_directory(plan.worktree_owner, self._uid, self._gid)
-        _agent_directory(plan.workspace, self._uid, self._gid)
+        for leaf in ("home", "tmp"):
+            _agent_directories(
+                self._paths.agents, (agent_id, leaf), self._uid, self._gid
+            )
+        _agent_directories(
+            self._paths.worktrees,
+            plan.workspace.relative_to(self._paths.worktrees).parts,
+            self._uid,
+            self._gid,
+        )
         if self._installed_revision(agent_id) != plan.revision:
             install_runtime_files(
                 self._paths.agents_runtime,

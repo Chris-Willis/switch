@@ -1421,13 +1421,52 @@ class SupervisorTests(RootPatched):
         self.assertEqual(self.commands.actions(), [])
 
     def test_setup_failure_is_reported(self):
-        (self.paths.worktrees / AGENT).mkdir(mode=0o755)
+        (self.paths.worktrees / AGENT).write_text("not a directory")
         with self.assertLogs(worker.logger, "ERROR"):
             self.supervisor.reconcile([valid_agent()])
         self.supervisor._observe()
         self.assertEqual(self.state()["process_state"], "failed")
         self.assertEqual(self.state()["exit"]["result"], "setup-failed")
         self.assertEqual(self.commands.actions(), [])
+
+    def test_directory_swapped_for_a_symlink_is_not_followed(self):
+        victim = self.temporary / "victim"
+        victim.mkdir(mode=0o755)
+        real_mkdir = os.mkdir
+
+        def racing_mkdir(path, mode=0o777, *, dir_fd=None):
+            real_mkdir(path, mode, dir_fd=dir_fd)
+            if os.path.basename(os.fspath(path)) == "home":
+                os.rmdir(path, dir_fd=dir_fd)
+                os.symlink(victim, path, dir_fd=dir_fd)
+
+        with (
+            mock.patch.object(worker.os, "mkdir", racing_mkdir),
+            self.assertLogs(worker.logger, "ERROR"),
+        ):
+            self.supervisor.reconcile([valid_agent()])
+        self.assertEqual(stat.S_IMODE(victim.stat().st_mode), 0o755)
+        for call in worker.os.chown.call_args_list + worker.os.fchown.call_args_list:
+            self.assertNotIn(str(victim), str(call))
+        self.supervisor._observe()
+        self.assertEqual(self.state()["exit"]["result"], "setup-failed")
+        self.assertEqual(self.commands.actions(), [])
+
+    def test_loosened_directory_modes_are_repaired(self):
+        self.supervisor.reconcile([valid_agent()])
+        loosened = (
+            self.paths.agents / AGENT / "home",
+            self.paths.worktrees / AGENT / "example-org/example-repo",
+            self.paths.repos,
+        )
+        for path in loosened:
+            path.chmod(0o755)
+        worker.prepare_layout(self.paths, os.getuid(), os.getgid())
+        self.supervisor.reconcile([valid_agent()])
+        self.supervisor._observe()
+        self.assertIsNone(self.state()["exit"])
+        for path in loosened:
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700, path)
 
     def test_absent_agent_is_removed_and_mirrors_are_kept(self):
         self.supervisor.reconcile([valid_agent(), second_agent()])
