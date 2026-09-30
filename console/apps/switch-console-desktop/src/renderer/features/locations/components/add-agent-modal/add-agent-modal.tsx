@@ -374,7 +374,6 @@ export const AddAgentModal = observer(function AddAgentModal({
         displayName: form.displayName.trim() || null,
         instructions: form.instructions,
         iconUrl: form.iconUrl,
-        autoSession: form.autoSession,
         autoApprove: form.autoApprove,
         definitionAttributes: advancedAttributesRef.current,
         providerConfig: launchProfileConfigRef.current,

@@ -1,8 +1,5 @@
 import { keepAutoApproveChoice, recordAutoApproveOnHost } from '@main/core/sdk-host/shared-watcher';
-import {
-  listAutoSessionAgentIds,
-  listStoppedControllerAgentIds,
-} from '@main/core/switch-rooms/auto-session-store';
+import { listStoppedControllerAgentIds } from '@main/core/switch-rooms/auto-session-store';
 import { getRemoteAgentLocation } from './agent-location';
 import { getAgentById } from './getAgentById';
 import { pushRemoteAutoApprove } from './remote-watcher';
@@ -30,11 +27,7 @@ export async function setAgentAutoApprove(params: AgentAutoApproveParams): Promi
     await setRow(params.enabled);
     return;
   }
-  const [spawning, stopped] = await Promise.all([
-    listAutoSessionAgentIds(),
-    listStoppedControllerAgentIds(),
-  ]);
-  if (!spawning.includes(agent.id) || stopped.includes(agent.id)) {
+  if ((await listStoppedControllerAgentIds()).includes(agent.id)) {
     await recordAutoApproveOnHost(agent.id, params.enabled);
     await setRow(params.enabled);
     return;

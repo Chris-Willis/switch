@@ -13,7 +13,6 @@ const updateAgent = vi.hoisted(() =>
   })
 );
 const getRemoteAgentLocation = vi.hoisted(() => vi.fn());
-const listAutoSessionAgentIds = vi.hoisted(() => vi.fn(async (): Promise<string[]> => []));
 const listStoppedControllerAgentIds = vi.hoisted(() => vi.fn(async (): Promise<string[]> => []));
 const pushRemoteAutoApprove = vi.hoisted(() =>
   vi.fn(async (_id: string) => void calls.push('push'))
@@ -29,7 +28,6 @@ vi.mock('./getAgentById', () => ({ getAgentById: async () => agentRow.current })
 vi.mock('./updateAgent', () => ({ updateAgent }));
 vi.mock('./agent-location', () => ({ getRemoteAgentLocation }));
 vi.mock('@main/core/switch-rooms/auto-session-store', () => ({
-  listAutoSessionAgentIds,
   listStoppedControllerAgentIds,
 }));
 vi.mock('./remote-watcher', () => ({ pushRemoteAutoApprove }));
@@ -46,7 +44,6 @@ describe('setAgentAutoApprove', () => {
     calls.length = 0;
     agentRow.current = { id: 'agent-1', switchAgentId: 'sw-1', autoApprove: false };
     getRemoteAgentLocation.mockResolvedValue({ id: 'loc-1' });
-    listAutoSessionAgentIds.mockResolvedValue([]);
     listStoppedControllerAgentIds.mockResolvedValue([]);
   });
 
@@ -61,7 +58,6 @@ describe('setAgentAutoApprove', () => {
   it('keeps the choice on the host, then the row, then rewrites a watcher that starts sessions', async () => {
     // The choice first, so a racing watcher write takes the new value instead
     // of putting the old one back.
-    listAutoSessionAgentIds.mockResolvedValue(['agent-1']);
 
     await setAgentAutoApprove({ agentId: 'agent-1', enabled: true });
 
@@ -71,7 +67,6 @@ describe('setAgentAutoApprove', () => {
   it('says the watcher lags when the push does not reach the host, keeping the saved choice', async () => {
     // The host's choice already holds the new value; rolling the row back
     // would let the next watcher write silently undo it.
-    listAutoSessionAgentIds.mockResolvedValue(['agent-1']);
     pushRemoteAutoApprove.mockRejectedValueOnce(new Error('host unreachable'));
 
     await expect(setAgentAutoApprove({ agentId: 'agent-1', enabled: true })).rejects.toThrow(
@@ -83,7 +78,6 @@ describe('setAgentAutoApprove', () => {
   });
 
   it('changes nothing when the host could not take the choice', async () => {
-    listAutoSessionAgentIds.mockResolvedValue(['agent-1']);
     keepAutoApproveChoice.mockRejectedValueOnce(new Error('host unreachable'));
 
     await expect(setAgentAutoApprove({ agentId: 'agent-1', enabled: true })).rejects.toThrow(
@@ -96,22 +90,13 @@ describe('setAgentAutoApprove', () => {
 
   it('writes only the row for an agent with no Switch identity, which has no watcher yet', async () => {
     agentRow.current = { id: 'agent-1', switchAgentId: null, autoApprove: false };
-    listAutoSessionAgentIds.mockResolvedValue(['agent-1']);
 
     await setAgentAutoApprove({ agentId: 'agent-1', enabled: true });
 
     expect(calls).toEqual(['row true']);
   });
 
-  it('keeps the choice on the host first for a watcher that starts no sessions', async () => {
-    await setAgentAutoApprove({ agentId: 'agent-1', enabled: true });
-
-    expect(recordAutoApproveOnHost).toHaveBeenCalledWith('agent-1', true);
-    expect(calls).toEqual(['host true', 'row true']);
-  });
-
   it('keeps the choice on the host for a stopped watcher, which nothing rewrites until it starts', async () => {
-    listAutoSessionAgentIds.mockResolvedValue(['agent-1']);
     listStoppedControllerAgentIds.mockResolvedValue(['agent-1']);
 
     await setAgentAutoApprove({ agentId: 'agent-1', enabled: true });
@@ -121,6 +106,7 @@ describe('setAgentAutoApprove', () => {
   });
 
   it('leaves the row alone when the host could not keep the choice', async () => {
+    listStoppedControllerAgentIds.mockResolvedValue(['agent-1']);
     recordAutoApproveOnHost.mockRejectedValueOnce(new Error('host unreachable'));
 
     await expect(setAgentAutoApprove({ agentId: 'agent-1', enabled: true })).rejects.toThrow(
@@ -140,7 +126,6 @@ describe('setAgentAutoApprove', () => {
   });
 
   it('says why the watcher lags when the push failed with something other than an Error', async () => {
-    listAutoSessionAgentIds.mockResolvedValue(['agent-1']);
     pushRemoteAutoApprove.mockRejectedValueOnce('ssh closed');
 
     await expect(setAgentAutoApprove({ agentId: 'agent-1', enabled: true })).rejects.toThrow(
