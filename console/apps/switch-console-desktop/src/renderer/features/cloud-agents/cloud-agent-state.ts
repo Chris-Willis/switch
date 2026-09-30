@@ -1,3 +1,4 @@
+import { relayRefusal } from '@renderer/features/sessions/components/transcript/held-message';
 import type { SessionStateTone } from '@renderer/features/sessions/components/transcript/session-state';
 import { type CloudAgent, cloudAgentPhase } from '@shared/core/cloud-agents/cloud-agents';
 
@@ -22,3 +23,19 @@ export function cloudAgentState(
   return null;
 }
 
+/**
+ * Why a message held for a waking machine will not be delivered without the
+ * user acting, or null while it still may be.
+ */
+export function cloudHoldBlocker(agent: CloudAgent): string | null {
+  const { launch } = agent;
+  if (launch.desired_state === 'deleted') return 'This agent is being removed.';
+  const phase = cloudAgentPhase(launch, agent.machine);
+  if (phase === 'machine_stopped' || phase === 'machine_error') return relayRefusal(phase);
+  if (launch.desired_state === 'stopped') return relayRefusal('agent_stopped');
+  if (launch.process_state === 'crashed' || launch.error_code === 'agent_crashed')
+    return relayRefusal('agent_crashed');
+  if (launch.state === 'error')
+    return 'This agent could not start. Retry it in Your Agents, then send again.';
+  return null;
+}

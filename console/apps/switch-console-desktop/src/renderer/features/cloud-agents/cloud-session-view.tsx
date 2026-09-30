@@ -17,7 +17,7 @@ import {
   cloudAgentPhase,
   parseCloudAgentKey,
 } from '@shared/core/cloud-agents/cloud-agents';
-import { cloudAgentState } from './cloud-agent-state';
+import { cloudAgentState, cloudHoldBlocker } from './cloud-agent-state';
 import { cloudOperationAttempts, restartAttemptKey } from './cloud-operation-attempts';
 import { CloudProblem } from './cloud-problem';
 import {
@@ -99,6 +99,7 @@ const CloudSessionPanel = observer(function CloudSessionPanel() {
         hostState={agent ? cloudAgentState(agent) : null}
         autoWake={{
           phase: agent ? cloudAgentPhase(agent.launch, agent.machine) : null,
+          blocked: agent ? cloudHoldBlocker(agent) : null,
           wake: () => wake.mutateAsync(params.agentKey),
         }}
         stopHost={() => rpc.sdkHost.stop(params.agentKey, params.sessionId)}
