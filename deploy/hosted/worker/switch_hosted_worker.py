@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Trusted root launcher for one retained-disk hosted Switch agent."""
+"""Trusted root supervisor for one hosted Switch machine and its agents."""
 
 from __future__ import annotations
 
@@ -8,38 +8,55 @@ import fcntl
 import grp
 import hashlib
 import json
+import logging
 import os
 import pwd
 import re
 import shutil
-import signal
 import stat
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
+
+logger = logging.getLogger("switch-hosted-worker")
 
 DATA_MOUNT = Path("/data")
-STATE_PATH = DATA_MOUNT / "state"
-WORKSPACE_PATH = DATA_MOUNT / "workspace"
-MARKER_DIRECTORY = DATA_MOUNT / ".switch-hosted"
-MARKER_PATH = MARKER_DIRECTORY / "machine.json"
 RUNTIME_DIRECTORY = Path("/run/switch-hosted")
 LOCK_PATH = Path("/run/lock/switch-hosted-worker.lock")
 BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
-OBSOLETE_BUNDLE_PATH = STATE_PATH / "obsolete-bundle"
-OBSOLETE_BUNDLE_EXIT_CODE = 75
-OBSOLETE_POLL_SECONDS = 30
-OBSOLETE_WARN_SECONDS = 5 * 60
+MEMINFO_PATH = Path("/proc/meminfo")
 IMDS_BASE = "http://169.254.169.254/latest"
+SYSTEMCTL = "/usr/bin/systemctl"
+SYSTEMD_MOUNT = "/usr/bin/systemd-mount"
+SETPRIV = "/usr/bin/setpriv"
+FLOCK = "/usr/bin/flock"
+GIT = "/usr/bin/git"
+UNIT_NODE_PATH = "/opt/switch/node/bin/node"
+UNIT_BOOTSTRAP_PATH = "/opt/switch/agent-providers/hosted-bootstrap.mjs"
+AGENT_SLICE = "switch-agents.slice"
+SUPERVISOR_VERSION = "2.0.0"
+MARKER_LAYOUT = "per-user-v1"
+ONE_AGENT_LAYOUT_MESSAGE = "data volume uses the one-agent layout; see 'Moving to one machine per user' in deploy/hosted/README.md"
+OBSOLETE_EXIT_CODE = 75
+OBSERVE_SECONDS = 3
+DEFAULT_HEARTBEAT_SECONDS = 15
+RETIRED_HEARTBEAT_SECONDS = 60
+LIST_RETRY_SECONDS = 15
+HTTP_TIMEOUT_SECONDS = 30
+GIT_TIMEOUT_SECONDS = 300
+SLICE_RESERVE_BYTES = 1024**3
 MAX_SECRET_BYTES = 128 * 1024
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 ROOT_UID = 0
 INSTANCE_RE = re.compile(r"^i-[0-9a-f]{8,17}$")
 VOLUME_RE = re.compile(r"^vol-[0-9a-f]{8,17}$")
@@ -47,16 +64,40 @@ SECRET_ARN_RE = re.compile(
     r"^arn:(aws|aws-us-gov|aws-cn):secretsmanager:([a-z]{2}(?:-gov)?-[a-z]+-\d):([0-9]{12}):secret:([A-Za-z0-9/_+=.@-]+)$"
 )
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/+\-]{0,199}$")
-WORKER_CAPABILITY_RE = re.compile(r"^[\x21-\x7e]{16,4096}$")
+CAPABILITY_RE = re.compile(r"^[\x21-\x7e]{16,4096}$")
+REPOSITORY_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}$"
+)
+DEFINITION_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+FINGERPRINT_RE = re.compile(r"^sha256:[0-9a-f]{1,64}$")
 SKILL_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 SKILL_PATH_RE = re.compile(
     r"^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}(/[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}){0,7}$"
 )
 MAX_SKILL_BYTES = 32 * 1024
 MAX_SKILLS = 16
+CREDENTIAL_KINDS = {"api-key", "setup-token", "auth-json"}
+SKILL_PROVIDERS = {"claude", "codex", "opencode"}
+PROVIDER_CONTEXT = (
+    "Use the Switch tools to read room context and post replies to the room.\n"
+)
+INVALID_CONFIG = "invalid-config"
+SETUP_FAILED = "setup-failed"
 
 
 class WorkerError(RuntimeError):
+    pass
+
+
+class ObsoleteBundle(WorkerError):
+    pass
+
+
+class MachineRetired(Exception):
+    pass
+
+
+class CoreUnavailable(Exception):
     pass
 
 
@@ -97,6 +138,38 @@ def _positive_integer(value: Any, label: str) -> int:
     return value
 
 
+def _agent_id(value: Any) -> str:
+    try:
+        if isinstance(value, str) and str(uuid.UUID(value)) == value:
+            return value
+    except ValueError:
+        pass
+    raise WorkerError("Agent ID must be a lowercase UUID.")
+
+
+def _is_agent_id(value: str) -> bool:
+    try:
+        _agent_id(value)
+    except WorkerError:
+        return False
+    return True
+
+
+def _https_endpoint(value: Any, label: str) -> str:
+    endpoint = _text(value, label)
+    parsed = urlsplit(endpoint)
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise WorkerError(f"{label} is invalid.")
+    return endpoint
+
+
 @dataclass(frozen=True)
 class RuntimeConfig:
     node_path: str
@@ -114,15 +187,20 @@ class RuntimeConfig:
 @dataclass(frozen=True)
 class WorkerConfig:
     installation_id: str
+    slot_id: str
+    generation: int
     secret_id: str
     secret_region: str
-    agent_id: str
-    generation: int
     volume_id: str
     device_path: str
     runtime: RuntimeConfig
-    previous_instance_id: str | None = None
-    previous_runtime_fingerprint: str | None = None
+
+
+@dataclass(frozen=True)
+class MachineBundle:
+    machine_id: str
+    api_endpoint: str
+    machine_capability: str = field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -140,15 +218,6 @@ class MachineIdentity:
 
 
 @dataclass(frozen=True)
-class SecretBundle:
-    deployment: dict[str, Any]
-    provider_credential: str | None
-    switch_credentials: dict[str, Any]
-    worker_capability: str
-    github_credential: str | None = None
-
-
-@dataclass(frozen=True)
 class StorageObservation:
     device_path: str
     volume_id: str
@@ -156,6 +225,48 @@ class StorageObservation:
     filesystem_uuid: str | None
     has_children: bool
     signatures: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Paths:
+    data: Path
+    runtime: Path
+
+    @property
+    def marker_directory(self) -> Path:
+        return self.data / ".switch-hosted"
+
+    @property
+    def marker(self) -> Path:
+        return self.marker_directory / "machine.json"
+
+    @property
+    def agent_records(self) -> Path:
+        return self.marker_directory / "agents.json"
+
+    @property
+    def quarantine(self) -> Path:
+        return self.marker_directory / "quarantine"
+
+    @property
+    def agents(self) -> Path:
+        return self.data / "agents"
+
+    @property
+    def repos(self) -> Path:
+        return self.data / "repos"
+
+    @property
+    def worktrees(self) -> Path:
+        return self.data / "worktrees"
+
+    @property
+    def bundle(self) -> Path:
+        return self.runtime / "machine" / "bundle.json"
+
+    @property
+    def agents_runtime(self) -> Path:
+        return self.runtime / "agents"
 
 
 def load_worker_config(assignment_path: Path, runtime_path: Path) -> WorkerConfig:
@@ -167,7 +278,7 @@ def load_worker_config(assignment_path: Path, runtime_path: Path) -> WorkerConfi
         {
             "version",
             "installationId",
-            "agentId",
+            "slotId",
             "generation",
             "assignmentSecretId",
             "dataVolumeId",
@@ -177,7 +288,7 @@ def load_worker_config(assignment_path: Path, runtime_path: Path) -> WorkerConfi
         {"previousInstanceId", "previousRuntimeFingerprint"},
         "worker assignment",
     )
-    if value["version"] != 1:
+    if value["version"] != 2:
         raise WorkerError("Worker assignment version is unsupported.")
     if value["mountPath"] != str(DATA_MOUNT):
         raise WorkerError("Worker data mount path must be /data.")
@@ -227,32 +338,25 @@ def load_worker_config(assignment_path: Path, runtime_path: Path) -> WorkerConfi
         artifact_sha256=artifact_sha256,
         providers=_provider_runtimes(runtime_value.get("providers", {})),
     )
-    secret_id = _text(value["assignmentSecretId"], "worker secret ID")
-    secret_region = _secret_arn_region(secret_id)
-    previous_fingerprint = value.get("previousRuntimeFingerprint")
-    if previous_fingerprint is not None and (
-        not isinstance(previous_fingerprint, str)
-        or not re.fullmatch(r"[0-9a-f]{64}", previous_fingerprint)
-        or "previousInstanceId" not in value
+    if (
+        runtime.node_path != UNIT_NODE_PATH
+        or runtime.bootstrap_path != UNIT_BOOTSTRAP_PATH
     ):
         raise WorkerError(
-            "Runtime upgrade requires an exact predecessor and runtime fingerprint."
+            "Pinned runtime paths do not match the switch-agent@ unit ExecStart."
         )
+    secret_id = _text(value["assignmentSecretId"], "worker secret ID")
     return WorkerConfig(
         installation_id=_identifier(value["installationId"], "installation ID"),
-        secret_id=secret_id,
-        secret_region=secret_region,
-        agent_id=_identifier(value["agentId"], "worker agent ID"),
+        slot_id=_identifier(value["slotId"], "slot ID"),
         generation=_positive_integer(
             value["generation"], "worker assignment generation"
         ),
+        secret_id=secret_id,
+        secret_region=_secret_arn_region(secret_id),
         volume_id=volume_id,
         device_path=_absolute_path(value["dataDevice"], "worker data device"),
         runtime=runtime,
-        previous_runtime_fingerprint=previous_fingerprint,
-        previous_instance_id=_text(value["previousInstanceId"], "previous instance ID")
-        if "previousInstanceId" in value
-        else None,
     )
 
 
@@ -307,190 +411,44 @@ def _artifact_hashes(value: Any) -> dict[str, str]:
     return value
 
 
-def parse_secret_document(raw: str, config: WorkerConfig) -> SecretBundle:
+def parse_bundle(raw: str, config: WorkerConfig) -> MachineBundle:
     if len(raw.encode()) > MAX_SECRET_BYTES:
-        raise WorkerError("Assignment secret is invalid.")
+        raise WorkerError("Machine bundle is invalid.")
     try:
         value = json.loads(raw)
     except (json.JSONDecodeError, UnicodeError):
-        raise WorkerError("Assignment secret is invalid.") from None
+        raise WorkerError("Machine bundle is invalid.") from None
+    if not isinstance(value, dict) or "version" not in value:
+        raise WorkerError("Machine bundle is invalid.")
+    if value["version"] != 2:
+        raise ObsoleteBundle("obsolete bundle")
     value = _strict(
         value,
-        {
-            "version",
-            "assignment",
-            "deployment",
-            "switchCredentials",
-            "workerCapability",
-        },
-        {"githubCredential", "providerCredential"},
-        "assignment secret",
+        {"version", "machineId", "assignment", "machineCapability", "apiEndpoint"},
+        set(),
+        "machine bundle",
     )
-    if value["version"] != 1:
-        raise WorkerError("Assignment secret version is unsupported.")
     assignment = _strict(
         value["assignment"],
-        {"installationId", "agentId", "generation", "dataVolumeId"},
+        {"installationId", "slotId", "generation", "dataVolumeId"},
         set(),
-        "secret assignment",
+        "bundle assignment",
     )
     if (
         assignment["installationId"] != config.installation_id
-        or assignment["agentId"] != config.agent_id
+        or assignment["slotId"] != config.slot_id
         or assignment["generation"] != config.generation
         or assignment["dataVolumeId"] != config.volume_id
     ):
-        raise WorkerError("Assignment secret does not match the worker assignment.")
-    deployment = _validate_deployment(value["deployment"], config)
-    credential = None
-    if not deployment["provider"]["credential"].get("refresh"):
-        credential = _text(
-            value.get("providerCredential"), "provider credential", maximum=16 * 1024
-        ).strip()
-        if not credential or any(character in credential for character in "\x00\r\n"):
-            raise WorkerError("Provider credential is invalid.")
-    switch_credentials = _validate_switch_credentials(
-        value["switchCredentials"], config.agent_id
+        raise WorkerError("Machine bundle does not match the worker assignment.")
+    capability = value["machineCapability"]
+    if not isinstance(capability, str) or not CAPABILITY_RE.fullmatch(capability):
+        raise WorkerError("Machine capability is invalid.")
+    return MachineBundle(
+        machine_id=_identifier(value["machineId"], "machine ID"),
+        api_endpoint=_https_endpoint(value["apiEndpoint"], "Switch API endpoint"),
+        machine_capability=capability,
     )
-    worker_capability = value["workerCapability"]
-    if not isinstance(worker_capability, str) or not WORKER_CAPABILITY_RE.fullmatch(
-        worker_capability
-    ):
-        raise WorkerError("Worker capability is invalid.")
-    if deployment["session"]["agentId"] != config.agent_id:
-        raise WorkerError("Hosted deployment belongs to a different agent.")
-    has_github_credential = "githubCredential" in value
-    has_github_deployment = "github" in deployment
-    if has_github_credential != has_github_deployment:
-        raise WorkerError(
-            "GitHub credential and deployment configuration must be provided together."
-        )
-    github_credential = (
-        _github_credential(value["githubCredential"]) if has_github_credential else None
-    )
-    return SecretBundle(
-        deployment, credential, switch_credentials, worker_capability, github_credential
-    )
-
-
-def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
-    value = _strict(
-        value,
-        {
-            "version",
-            "revision",
-            "session",
-            "provider",
-            "workspacePath",
-            "runtimeMode",
-            "switchCredentialsPath",
-            "workerCapabilityPath",
-            "watch",
-        },
-        {"github", "skills"},
-        "hosted deployment",
-    )
-    if value["version"] != 1:
-        raise WorkerError("Hosted deployment version is unsupported.")
-    revision = value["revision"]
-    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
-        raise WorkerError("Hosted deployment revision is invalid.")
-    session = _strict(
-        value["session"],
-        {"sessionId", "agentId"},
-        set(),
-        "deployment session",
-    )
-    _identifier(session["sessionId"], "deployment session ID")
-    _identifier(session["agentId"], "deployment agent ID")
-    if not isinstance(value["watch"], bool):
-        raise WorkerError("Deployment watcher configuration is invalid.")
-    provider = _strict(
-        value["provider"],
-        {"kind", "credential", "binaryPath", "context"},
-        {"model", "definition"},
-        "deployment provider",
-    )
-    if provider["kind"] not in {"claude", *config.runtime.providers}:
-        raise WorkerError("Hosted deployment provider is unsupported.")
-    credential = _strict(
-        provider["credential"],
-        {"kind", "path"},
-        {"refresh"},
-        "deployment provider credential",
-    )
-    if credential["kind"] not in {"api-key", "setup-token", "auth-json"}:
-        raise WorkerError("Hosted deployment provider credential kind is unsupported.")
-    if credential["path"] != str(RUNTIME_DIRECTORY / "secrets/provider"):
-        raise WorkerError("Hosted deployment provider credential path is not fixed.")
-    expected_binary = (
-        config.runtime.provider_binary_path
-        if provider["kind"] == "claude"
-        else config.runtime.providers[provider["kind"]]["path"]
-    )
-    if provider["binaryPath"] != expected_binary:
-        raise WorkerError(
-            "Hosted deployment provider executable is not the pinned executable."
-        )
-    _text(provider["context"], "deployment provider context", maximum=64 * 1024)
-    if "definition" in provider:
-        definition = _strict(
-            provider["definition"], {"name", "content"}, set(), "agent definition"
-        )
-        if not isinstance(definition["name"], str) or not re.fullmatch(
-            r"[a-z0-9][a-z0-9._-]{0,127}", definition["name"]
-        ):
-            raise WorkerError("Hosted agent definition name is invalid.")
-        _text(definition["content"], "agent definition", maximum=64 * 1024)
-    if "model" in provider:
-        model = _strict(provider["model"], {"id"}, {"options"}, "deployment model")
-        _text(model["id"], "deployment model ID")
-        if "options" in model:
-            if not isinstance(model["options"], dict) or not all(
-                isinstance(key, str) and isinstance(item, str)
-                for key, item in model["options"].items()
-            ):
-                raise WorkerError("Deployment model options are invalid.")
-    if value["workspacePath"] != str(WORKSPACE_PATH):
-        raise WorkerError("Hosted deployment workspace path is not fixed.")
-    if value["runtimeMode"] not in {
-        "approval-required",
-        "auto-accept-edits",
-        "full-access",
-    }:
-        raise WorkerError("Hosted deployment runtime mode is invalid.")
-    if value["switchCredentialsPath"] != str(RUNTIME_DIRECTORY / "secrets/switch.json"):
-        raise WorkerError("Hosted deployment Switch credential path is not fixed.")
-    if value["workerCapabilityPath"] != str(
-        RUNTIME_DIRECTORY / "secrets/worker-capability"
-    ):
-        raise WorkerError("Hosted deployment worker capability path is not fixed.")
-    if "github" in value:
-        github = _strict(
-            value["github"],
-            {"credentialPath"},
-            {"repository", "refresh"},
-            "deployment GitHub",
-        )
-        if "refresh" in github and (
-            github["refresh"] is not True or "repository" not in github
-        ):
-            raise WorkerError("Hosted GitHub refresh requires a selected repository.")
-        if "repository" in github and (
-            not isinstance(github["repository"], str)
-            or not re.fullmatch(
-                r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}",
-                github["repository"],
-            )
-        ):
-            raise WorkerError(
-                "Hosted GitHub repository must be an owner/repository name."
-            )
-        if github["credentialPath"] != str(RUNTIME_DIRECTORY / "secrets/github"):
-            raise WorkerError("Hosted deployment GitHub credential path is not fixed.")
-    if "skills" in value:
-        _validate_skills(value["skills"])
-    return value
 
 
 def _validate_skills(value: Any) -> None:
@@ -525,17 +483,6 @@ def _validate_skills(value: Any) -> None:
         raise WorkerError("Deployment skills exceed the size limit.")
 
 
-def _github_credential(value: Any) -> str:
-    if (
-        not isinstance(value, str)
-        or not value
-        or len(value) > 16 * 1024
-        or any(ord(character) < 0x21 or ord(character) > 0x7E for character in value)
-    ):
-        raise WorkerError("GitHub credential is invalid.")
-    return value
-
-
 def _validate_switch_credentials(value: Any, agent_id: str) -> dict[str, Any]:
     value = _strict(value, {"env"}, set(), "Switch credentials")
     env = _strict(
@@ -544,17 +491,7 @@ def _validate_switch_credentials(value: Any, agent_id: str) -> dict[str, Any]:
         set(),
         "Switch credential environment",
     )
-    endpoint = _text(env["SWITCH_API_ENDPOINT"], "Switch API endpoint")
-    parsed = urlsplit(endpoint)
-    if (
-        parsed.scheme != "https"
-        or not parsed.netloc
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise WorkerError("Switch API endpoint is invalid.")
+    _https_endpoint(env["SWITCH_API_ENDPOINT"], "Switch API endpoint")
     _text(env["SWITCH_API_TOKEN"], "Switch API token", maximum=16 * 1024)
     if env["SWITCH_AGENT_ID"] != agent_id:
         raise WorkerError("Switch credentials belong to a different agent.")
@@ -575,6 +512,193 @@ def _load_json(path: Path, failure: str, maximum: int) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeError):
         raise WorkerError(failure) from None
+
+
+@dataclass(frozen=True)
+class AgentPlan:
+    launch_id: str
+    agent_id: str
+    revision: int
+    desired_state: str
+    deployment: dict[str, Any]
+    switch_credentials: dict[str, Any] = field(repr=False)
+    worker_capability: str = field(repr=False)
+    workspace: Path
+    worktree_owner: Path | None
+
+
+AGENT_FIELDS = {
+    "launch_id",
+    "agent_id",
+    "name",
+    "revision",
+    "desired_state",
+    "provider",
+    "provider_credential_kind",
+    "worker_capability",
+    "switch_credentials",
+    "repository",
+    "spec",
+    "skills",
+}
+
+
+def build_agent_plan(
+    value: dict[str, Any], runtime: RuntimeConfig, paths: Paths
+) -> AgentPlan:
+    missing = AGENT_FIELDS - set(value)
+    if missing:
+        raise WorkerError(f"Agent entry is missing {', '.join(sorted(missing))}.")
+    agent_id = _agent_id(value["agent_id"])
+    launch_id = _identifier(value["launch_id"], "launch ID")
+    revision = _positive_integer(value["revision"], "launch revision")
+    if value["desired_state"] not in {"running", "stopped"}:
+        raise WorkerError("Agent desired state is invalid.")
+    provider = value["provider"]
+    if provider == "claude":
+        binary = runtime.provider_binary_path
+    elif isinstance(provider, str) and provider in runtime.providers:
+        binary = runtime.providers[provider]["path"]
+    else:
+        raise WorkerError(f"Provider {provider!r} is not installed on this machine.")
+    credential_kind = value["provider_credential_kind"]
+    if credential_kind not in CREDENTIAL_KINDS:
+        raise WorkerError(f"Provider credential kind {credential_kind!r} is invalid.")
+    capability = value["worker_capability"]
+    if not isinstance(capability, str) or not CAPABILITY_RE.fullmatch(capability):
+        raise WorkerError("Worker capability is invalid.")
+    switch_credentials = _validate_switch_credentials(
+        value["switch_credentials"], agent_id
+    )
+    repository = value["repository"]
+    if repository is not None and (
+        not isinstance(repository, str) or not REPOSITORY_RE.fullmatch(repository)
+    ):
+        raise WorkerError("Hosted GitHub repository must be an owner/repository name.")
+    skills = value["skills"]
+    if not isinstance(skills, list):
+        raise WorkerError("Deployment skills are invalid.")
+    if skills:
+        _validate_skills(skills)
+        if provider not in SKILL_PROVIDERS:
+            raise WorkerError("This provider has no skills directory.")
+    spec = value["spec"]
+    if not isinstance(spec, dict):
+        raise WorkerError("Launch spec must be an object.")
+    for key in (
+        "instructions",
+        "auto_session",
+        "auto_approve",
+        "definition_attributes",
+    ):
+        if key not in spec:
+            raise WorkerError(f"Launch spec is missing {key}.")
+    if not isinstance(spec["instructions"], str):
+        raise WorkerError("Launch instructions are invalid.")
+    if not isinstance(spec["auto_session"], bool) or not isinstance(
+        spec["auto_approve"], bool
+    ):
+        raise WorkerError("Launch session flags are invalid.")
+    if not isinstance(spec["definition_attributes"], dict):
+        raise WorkerError("Launch definition attributes are invalid.")
+    agent_runtime = paths.agents_runtime / agent_id
+    provider_spec: dict[str, Any] = {
+        "kind": provider,
+        "credential": {
+            "kind": credential_kind,
+            "path": str(agent_runtime / "provider"),
+            "refresh": True,
+        },
+        "binaryPath": binary,
+        "context": _text(
+            PROVIDER_CONTEXT + spec["instructions"],
+            "deployment provider context",
+            maximum=64 * 1024,
+        ),
+    }
+    if provider == "claude":
+        name = spec.get("name")
+        if not isinstance(name, str) or not DEFINITION_NAME_RE.fullmatch(name):
+            raise WorkerError("Hosted agent definition name is invalid.")
+        provider_spec["definition"] = {
+            "name": name,
+            "content": _text(
+                spec.get("definition"), "agent definition", maximum=64 * 1024
+            ),
+        }
+    model = spec["definition_attributes"].get("model")
+    if model:
+        provider_spec["model"] = {"id": _text(model, "deployment model ID")}
+    deployment: dict[str, Any] = {
+        "version": 2,
+        "revision": revision,
+        "session": {"sessionId": "watcher-" + agent_id, "agentId": agent_id},
+        "provider": provider_spec,
+    }
+    worktree_owner = None
+    if repository is not None:
+        owner, name = repository.lower().split("/")
+        worktree_owner = paths.worktrees / agent_id / owner
+        workspace = worktree_owner / name
+        deployment["github"] = {
+            "credentialPath": str(agent_runtime / "github"),
+            "repository": repository,
+            "refresh": True,
+            "mirrorPath": str(paths.repos / owner / f"{name}.git"),
+        }
+    else:
+        workspace = paths.worktrees / agent_id / "workspace"
+    deployment.update(
+        {
+            "workspacePath": str(workspace),
+            "watch": spec["auto_session"],
+            "runtimeMode": "full-access"
+            if spec["auto_approve"]
+            else "approval-required",
+            "switchCredentialsPath": str(agent_runtime / "switch.json"),
+            "workerCapabilityPath": str(agent_runtime / "worker-capability"),
+        }
+    )
+    if skills:
+        deployment["skills"] = skills
+    return AgentPlan(
+        launch_id=launch_id,
+        agent_id=agent_id,
+        revision=revision,
+        desired_state=value["desired_state"],
+        deployment=deployment,
+        switch_credentials=switch_credentials,
+        worker_capability=capability,
+        workspace=workspace,
+        worktree_owner=worktree_owner,
+    )
+
+
+def agent_environment(
+    runtime: RuntimeConfig,
+    identity: MachineIdentity,
+    machine_id: str,
+    paths: Paths,
+    agent_id: str,
+) -> str:
+    state = paths.agents / agent_id
+    values = {
+        "PATH": runtime.path,
+        "USER": runtime.agent_user,
+        "LOGNAME": runtime.agent_user,
+        "SHELL": "/bin/bash",
+        "LANG": "C.UTF-8",
+        "HOME": str(state / "home"),
+        "TMPDIR": str(state / "tmp"),
+        "SWITCH_HOST_INSTANCE_ID": identity.instance_id,
+        "SWITCH_HOST_BOOT_ID": identity.boot_id,
+        "SWITCH_HOST_ASSIGNMENT_GENERATION": str(identity.assignment_generation),
+        "SWITCH_HOST_MACHINE_ID": machine_id,
+    }
+    for name, value in values.items():
+        if any(character in value for character in "\r\n\x00\\\"'"):
+            raise WorkerError(f"Agent environment value {name} is invalid.")
+    return "".join(f"{name}={value}\n" for name, value in values.items())
 
 
 class ImdsV2:
@@ -615,20 +739,108 @@ class SecretsManager:
             client = boto3.client("secretsmanager", region_name=region)
         self._client = client
 
-    def read(self, secret_id: str) -> tuple[str, str]:
+    def read(self, secret_id: str) -> str:
         try:
             response = self._client.get_secret_value(
                 SecretId=secret_id, VersionStage="AWSCURRENT"
             )
             value = response.get("SecretString")
-            version_id = response.get("VersionId")
         except Exception:
             raise WorkerError("The assignment secret could not be read.") from None
         if not isinstance(value, str):
             raise WorkerError("The assignment secret is not a JSON string.")
-        if not isinstance(version_id, str) or not version_id:
-            raise WorkerError("The assignment secret has no version ID.")
-        return value, version_id
+        return value
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
+class CoreClient:
+    def __init__(
+        self,
+        bundle: MachineBundle,
+        identity: MachineIdentity,
+        opener: Callable[[urllib.request.Request, float], Any],
+    ) -> None:
+        self._base = (
+            bundle.api_endpoint.rstrip("/")
+            + "/hosted/machines/"
+            + quote(bundle.machine_id, safe="")
+        )
+        self._headers = {
+            "Authorization": "Bearer " + bundle.machine_capability,
+            "X-Switch-Host-Boot-Id": identity.boot_id,
+            "X-Switch-Host-Instance-Id": identity.instance_id,
+            "Accept": "application/json",
+        }
+        self._opener = opener
+
+    def agents(self) -> dict[str, Any]:
+        value = self._request("/agents", None)
+        if (
+            not isinstance(value, dict)
+            or isinstance(value.get("agents_version"), bool)
+            or not isinstance(value.get("agents_version"), int)
+            or not isinstance(value.get("agents"), list)
+        ):
+            raise CoreUnavailable("Switch returned an invalid agent list.")
+        return value
+
+    def heartbeat(self, body: dict[str, Any]) -> dict[str, Any]:
+        value = self._request("/heartbeat", body)
+        if (
+            not isinstance(value, dict)
+            or isinstance(value.get("agents_version"), bool)
+            or not isinstance(value.get("agents_version"), int)
+        ):
+            raise CoreUnavailable("Switch returned an invalid heartbeat response.")
+        return value
+
+    def _request(self, suffix: str, body: dict[str, Any] | None) -> Any:
+        headers = dict(self._headers)
+        data = None
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+            data = json.dumps(body, separators=(",", ":")).encode()
+        request = urllib.request.Request(
+            self._base + suffix,
+            data=data,
+            headers=headers,
+            method="GET" if body is None else "POST",
+        )
+        try:
+            with self._opener(request, HTTP_TIMEOUT_SECONDS) as response:
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
+        except urllib.error.HTTPError as error:
+            error.close()
+            if error.code == 401:
+                raise WorkerError(
+                    "Switch rejected the machine capability; restarting to re-read the bundle."
+                ) from None
+            if error.code == 410:
+                raise MachineRetired() from None
+            raise CoreUnavailable(
+                f"Switch returned HTTP {error.code} for {suffix}."
+            ) from None
+        except (urllib.error.URLError, OSError, ValueError) as error:
+            raise CoreUnavailable(
+                f"Switch is unreachable for {suffix}: {type(error).__name__}."
+            ) from None
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise CoreUnavailable(f"Switch response for {suffix} is too large.")
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, UnicodeError):
+            raise CoreUnavailable(
+                f"Switch response for {suffix} is not JSON."
+            ) from None
+
+
+def default_opener() -> Callable[[urllib.request.Request, float], Any]:
+    opener = urllib.request.build_opener(_NoRedirect())
+    return lambda request, timeout: opener.open(request, timeout=timeout)
 
 
 class Commands:
@@ -654,6 +866,130 @@ class Commands:
         if completed.returncode != 0:
             raise WorkerError(f"Required host operation failed: {arguments[0]}.")
         return completed.stdout if capture else ""
+
+
+def agent_unit(agent_id: str) -> str:
+    return f"switch-agent@{_agent_id(agent_id)}.service"
+
+
+SHOW_PROPERTIES = (
+    "ActiveState",
+    "SubState",
+    "Result",
+    "NRestarts",
+    "ExecMainStatus",
+    "ExecMainCode",
+    "ExecMainExitTimestampMonotonic",
+)
+
+
+class Systemd:
+    def __init__(self, commands: Commands) -> None:
+        self._commands = commands
+
+    def show(self, agent_id: str) -> dict[str, str]:
+        output = self._commands.run(
+            [SYSTEMCTL, "show", "-p", ",".join(SHOW_PROPERTIES), agent_unit(agent_id)]
+        )
+        values = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+        if not set(SHOW_PROPERTIES) <= set(values):
+            raise WorkerError(f"systemctl show returned no state for {agent_id}.")
+        return values
+
+    def start(self, agent_id: str) -> None:
+        self._commands.run(
+            [SYSTEMCTL, "--no-block", "start", agent_unit(agent_id)], capture=False
+        )
+
+    def restart(self, agent_id: str) -> None:
+        self._commands.run(
+            [SYSTEMCTL, "--no-block", "restart", agent_unit(agent_id)], capture=False
+        )
+
+    def stop(self, agent_id: str, *, wait: bool) -> None:
+        self._commands.run(
+            [
+                SYSTEMCTL,
+                *([] if wait else ["--no-block"]),
+                "stop",
+                agent_unit(agent_id),
+            ],
+            capture=False,
+        )
+
+    def reset_failed(self, agent_id: str) -> None:
+        self._commands.result(
+            [SYSTEMCTL, "reset-failed", agent_unit(agent_id)], capture=False
+        )
+
+    def stop_all(self) -> None:
+        self._commands.run([SYSTEMCTL, "stop", "switch-agent@*.service"], capture=False)
+
+    def limit_slice(self, memory_max: int) -> None:
+        self._commands.run(
+            [
+                SYSTEMCTL,
+                "set-property",
+                "--runtime",
+                AGENT_SLICE,
+                f"MemoryMax={memory_max}",
+            ],
+            capture=False,
+        )
+
+
+def setpriv_prefix(uid: int, gid: int) -> list[str]:
+    return [
+        SETPRIV,
+        f"--reuid={uid}",
+        f"--regid={gid}",
+        "--clear-groups",
+        "--no-new-privs",
+        "--inh-caps=-all",
+        "--ambient-caps=-all",
+        "--bounding-set=-all",
+    ]
+
+
+class GitRunner:
+    def __init__(self, prefix: list[str], flock: str, git: str) -> None:
+        self._prefix = prefix
+        self._flock = flock
+        self._git = git
+
+    def run(self, mirror: Path, arguments: list[str]) -> None:
+        command = [
+            *self._prefix,
+            self._flock,
+            f"{mirror}.lock",
+            self._git,
+            "-C",
+            str(mirror),
+            *arguments,
+        ]
+        label = f"git {' '.join(arguments[:2])} on {mirror}"
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                text=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=GIT_TIMEOUT_SECONDS,
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "LANG": "C",
+                    "HOME": "/nonexistent",
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                    "GIT_CONFIG_GLOBAL": "/dev/null",
+                    "GIT_TERMINAL_PROMPT": "0",
+                },
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            raise WorkerError(f"{label} could not run.") from None
+        if completed.returncode != 0:
+            detail = completed.stderr.strip()[-500:]
+            raise WorkerError(f"{label} failed: {detail}")
 
 
 def inspect_storage(
@@ -789,11 +1125,9 @@ def prepare_storage(
     elif mounted.returncode == 1:
         commands.run(
             [
-                "/usr/bin/mount",
-                "--types",
-                "ext4",
-                "--options",
-                "nodev,nosuid",
+                SYSTEMD_MOUNT,
+                "--type=ext4",
+                "--options=nodev,nosuid",
                 observation.device_path,
                 str(DATA_MOUNT),
             ],
@@ -829,63 +1163,54 @@ def acquire_root_lock(path: Path = LOCK_PATH) -> Any:
     except BlockingIOError:
         os.close(descriptor)
         raise WorkerError(
-            "Another trusted worker launcher already owns this instance."
+            "Another trusted worker supervisor already owns this instance."
         ) from None
     return os.fdopen(descriptor, "r+")
 
 
-def reconcile_boot_identity(
+def reconcile_marker(
     identity: MachineIdentity,
-    installation_id: str,
-    agent_id: str,
+    config: WorkerConfig,
     filesystem_uuid: str,
     runtime_fingerprint: str,
-    *,
-    previous_instance_id: str | None = None,
-    previous_runtime_fingerprint: str | None = None,
-    marker_directory: Path = MARKER_DIRECTORY,
-    marker_path: Path = MARKER_PATH,
-    state_path: Path = STATE_PATH,
-    data_mount: Path = DATA_MOUNT,
+    paths: Paths,
 ) -> None:
+    marker_directory = paths.marker_directory
     marker_directory.mkdir(mode=0o700, parents=False, exist_ok=True)
     os.chown(marker_directory, 0, 0)
     os.chmod(marker_directory, 0o700)
-    if marker_path.exists() or marker_path.is_symlink():
-        marker = _read_root_marker(marker_path)
-        previous = _marker_identity(marker)
-        if marker["installationId"] != installation_id:
-            raise WorkerError("Retained disk belongs to another installation.")
-        if marker["agentId"] != agent_id:
-            raise WorkerError("Retained disk belongs to another agent.")
-        if marker["runtimeFingerprint"] != runtime_fingerprint and not (
-            previous.instance_id == previous_instance_id
-            and previous.instance_id != identity.instance_id
-            and marker["runtimeFingerprint"] == previous_runtime_fingerprint
+    if paths.marker.exists() or paths.marker.is_symlink():
+        marker = _read_root_marker(paths.marker)
+        if (
+            marker["installationId"] != config.installation_id
+            or marker["slotId"] != config.slot_id
         ):
-            raise WorkerError(
-                "Pinned hosted runtime changed for the retained assignment."
-            )
+            raise WorkerError("Retained disk belongs to another installation or slot.")
+        if marker["generation"] != config.generation:
+            raise WorkerError("Retained disk belongs to another assignment generation.")
         if marker["filesystemUuid"] != filesystem_uuid:
             raise WorkerError("Retained disk filesystem identity changed.")
-        if (
-            previous.instance_id != identity.instance_id
-            and previous.instance_id != previous_instance_id
-        ):
-            raise WorkerError(
-                "Retained disk belongs to another EC2 instance; replacement is unsupported."
+        if marker["bootId"] != identity.boot_id:
+            previous = MachineIdentity(
+                marker["instanceId"], marker["bootId"], marker["generation"]
             )
-        if previous.assignment_generation != identity.assignment_generation:
-            raise WorkerError("Retained disk belongs to another assignment generation.")
-        if previous.boot_id == identity.boot_id:
+            for state_path in _agent_state_directories(paths.agents):
+                _quarantine_stale_ownership(
+                    state_path,
+                    paths.quarantine,
+                    state_path.name,
+                    previous,
+                    identity.boot_id,
+                )
+        elif (
+            marker["instanceId"] == identity.instance_id
+            and marker["runtimeFingerprint"] == runtime_fingerprint
+        ):
             return
-        _quarantine_stale_ownership(
-            state_path, marker_directory, previous, identity.boot_id
-        )
     else:
         unexpected = {
             child.name
-            for child in data_mount.iterdir()
+            for child in paths.data.iterdir()
             if child.name not in {"lost+found", marker_directory.name}
         }
         if unexpected:
@@ -893,16 +1218,17 @@ def reconcile_boot_identity(
                 "Retained disk has no trusted machine marker; refusing legacy state."
             )
     _write_root_json(
-        marker_path,
+        paths.marker,
         {
-            "version": 1,
-            "installationId": installation_id,
-            "agentId": agent_id,
+            "version": 2,
+            "installationId": config.installation_id,
+            "slotId": config.slot_id,
+            "generation": config.generation,
             "instanceId": identity.instance_id,
             "bootId": identity.boot_id,
-            "assignmentGeneration": identity.assignment_generation,
             "filesystemUuid": filesystem_uuid,
             "runtimeFingerprint": runtime_fingerprint,
+            "layout": MARKER_LAYOUT,
         },
     )
 
@@ -918,47 +1244,57 @@ def _read_root_marker(path: Path) -> dict[str, Any]:
         ):
             raise ValueError()
         value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        raise WorkerError("Retained disk machine marker is invalid.") from None
+    if isinstance(value, dict) and value.get("version") == 1:
+        raise WorkerError(ONE_AGENT_LAYOUT_MESSAGE)
+    try:
         value = _strict(
             value,
             {
                 "version",
                 "installationId",
-                "agentId",
+                "slotId",
+                "generation",
                 "instanceId",
                 "bootId",
-                "assignmentGeneration",
                 "filesystemUuid",
                 "runtimeFingerprint",
+                "layout",
             },
             set(),
             "machine marker",
         )
-        if value["version"] != 1:
+        if value["version"] != 2 or value["layout"] != MARKER_LAYOUT:
             raise ValueError()
         _identifier(value["installationId"], "marker installation ID")
-        _identifier(value["agentId"], "marker agent ID")
-        _marker_identity(value)
+        _identifier(value["slotId"], "marker slot ID")
+        _positive_integer(value["generation"], "marker generation")
+        if not INSTANCE_RE.fullmatch(_text(value["instanceId"], "marker instance")):
+            raise ValueError()
+        if str(uuid.UUID(_text(value["bootId"], "marker boot ID"))) != value["bootId"]:
+            raise ValueError()
         str(uuid.UUID(_text(value["filesystemUuid"], "filesystem UUID")))
-        if not re.fullmatch(r"[0-9a-f]{64}", value["runtimeFingerprint"]):
+        if not FINGERPRINT_RE.fullmatch(
+            _text(value["runtimeFingerprint"], "runtime fingerprint")
+        ):
             raise ValueError()
         return value
-    except (OSError, ValueError, json.JSONDecodeError, WorkerError):
+    except (ValueError, WorkerError):
         raise WorkerError("Retained disk machine marker is invalid.") from None
 
 
-def _marker_identity(value: dict[str, Any]) -> MachineIdentity:
-    instance_id = _text(value["instanceId"], "marker instance ID")
-    if not INSTANCE_RE.fullmatch(instance_id):
-        raise WorkerError("Machine marker instance ID is invalid.")
-    try:
-        boot_id = str(uuid.UUID(_text(value["bootId"], "marker boot ID")))
-    except ValueError:
-        raise WorkerError("Machine marker boot ID is invalid.") from None
-    return MachineIdentity(
-        instance_id,
-        boot_id,
-        _positive_integer(value["assignmentGeneration"], "marker generation"),
-    )
+def _agent_state_directories(agents: Path) -> list[Path]:
+    if not agents.exists() and not agents.is_symlink():
+        return []
+    _validate_root_directory(agents, create=False)
+    result = []
+    for child in sorted(agents.iterdir()):
+        if not _is_agent_id(child.name):
+            logger.warning("Ignoring unexpected entry %s in %s.", child.name, agents)
+            continue
+        result.append(child)
+    return result
 
 
 def _validated_directory(path: Path, *, root: Path) -> None:
@@ -1083,9 +1419,16 @@ def _validate_quarantine_tree(
     return result
 
 
+def _private_root_directory(path: Path) -> None:
+    path.mkdir(mode=0o700, exist_ok=True)
+    os.chown(path, 0, 0)
+    os.chmod(path, 0o700)
+
+
 def _quarantine_stale_ownership(
     state_path: Path,
-    marker_directory: Path,
+    quarantine_root: Path,
+    agent_id: str,
     previous: MachineIdentity,
     current_boot_id: str,
 ) -> None:
@@ -1103,14 +1446,12 @@ def _quarantine_stale_ownership(
         if machine != previous.json():
             raise WorkerError("Saved ownership record has unknown machine identity.")
         sources[path.relative_to(state_path)] = path
-    quarantine_parent = marker_directory / "quarantine"
-    quarantine_parent.mkdir(mode=0o700, exist_ok=True)
-    os.chown(quarantine_parent, 0, 0)
-    os.chmod(quarantine_parent, 0o700)
-    quarantine = quarantine_parent / f"{previous.boot_id}--{current_boot_id}"
-    quarantine.mkdir(mode=0o700, exist_ok=True)
-    os.chown(quarantine, 0, 0)
-    os.chmod(quarantine, 0o700)
+    if not sources:
+        return
+    agent_quarantine = quarantine_root / agent_id
+    quarantine = agent_quarantine / f"{previous.boot_id}--{current_boot_id}"
+    for directory in (quarantine_root, agent_quarantine, quarantine):
+        _private_root_directory(directory)
     existing = _validate_quarantine_tree(quarantine, previous)
     collisions = set(sources) & set(existing)
     if collisions:
@@ -1125,7 +1466,7 @@ def _quarantine_stale_ownership(
         os.replace(path, target)
         _fsync_directory(target.parent)
     _fsync_directory(quarantine)
-    _fsync_directory(quarantine_parent)
+    _fsync_directory(agent_quarantine)
 
 
 def _write_root_json(path: Path, value: Any) -> None:
@@ -1154,35 +1495,88 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def prepare_agent_directories(user: str, group: str) -> tuple[int, int]:
+def resolve_agent_account(user: str, group: str) -> tuple[int, int]:
     try:
-        uid = pwd.getpwnam(user).pw_uid
+        account = pwd.getpwnam(user)
         gid = grp.getgrnam(group).gr_gid
     except KeyError:
         raise WorkerError(
             "Pinned AMI is missing the unprivileged agent account."
         ) from None
-    account = pwd.getpwnam(user)
-    if uid == 0 or gid == 0 or account.pw_gid != gid:
+    if account.pw_uid == 0 or gid == 0 or account.pw_gid != gid:
         raise WorkerError(
             "Pinned AMI agent account must use its non-root primary group."
         )
-    for path in [STATE_PATH, WORKSPACE_PATH]:
-        if path.exists():
-            details = path.lstat()
-            if (
-                not stat.S_ISDIR(details.st_mode)
-                or stat.S_ISLNK(details.st_mode)
-                or details.st_uid != uid
-                or details.st_gid != gid
-                or details.st_mode & 0o077
-            ):
-                raise WorkerError(f"{path} is not a private agent-owned directory.")
-        else:
-            path.mkdir(mode=0o700)
-            os.chown(path, uid, gid)
-            os.chmod(path, 0o700)
-    return uid, gid
+    return account.pw_uid, gid
+
+
+def _root_directory(path: Path, mode: int, gid: int) -> None:
+    if not path.exists() and not path.is_symlink():
+        path.mkdir(mode=mode)
+    details = path.lstat()
+    if (
+        not stat.S_ISDIR(details.st_mode)
+        or stat.S_ISLNK(details.st_mode)
+        or details.st_uid != ROOT_UID
+    ):
+        raise WorkerError(f"{path} must be a root-owned directory.")
+    os.chown(path, 0, gid)
+    os.chmod(path, mode)
+
+
+def _agent_directory(path: Path, uid: int, gid: int) -> None:
+    if path.exists() or path.is_symlink():
+        details = path.lstat()
+        if (
+            not stat.S_ISDIR(details.st_mode)
+            or stat.S_ISLNK(details.st_mode)
+            or details.st_uid != uid
+            or details.st_gid != gid
+            or details.st_mode & 0o077
+        ):
+            raise WorkerError(f"{path} is not a private agent-owned directory.")
+        return
+    path.mkdir(mode=0o700)
+    os.chown(path, uid, gid)
+    os.chmod(path, 0o700)
+
+
+def prepare_layout(paths: Paths, uid: int, gid: int) -> None:
+    _root_directory(paths.agents, 0o755, 0)
+    _root_directory(paths.worktrees, 0o755, 0)
+    _agent_directory(paths.repos, uid, gid)
+
+
+def prepare_runtime_directory(commands: Commands, paths: Paths, gid: int) -> None:
+    filesystem = commands.run(
+        [
+            "/usr/bin/findmnt",
+            "--noheadings",
+            "--output",
+            "FSTYPE",
+            "--target",
+            str(paths.runtime),
+        ]
+    ).strip()
+    if filesystem != "tmpfs":
+        raise WorkerError("Runtime secret directory is not backed by tmpfs.")
+    _validate_root_directory(paths.runtime, create=False)
+    os.chown(paths.runtime, 0, gid)
+    os.chmod(paths.runtime, 0o750)
+    _root_directory(paths.bundle.parent, 0o700, 0)
+    _root_directory(paths.agents_runtime, 0o750, gid)
+
+
+def write_bundle(paths: Paths, bundle: MachineBundle) -> None:
+    _write_root_json(
+        paths.bundle,
+        {
+            "version": 2,
+            "machineId": bundle.machine_id,
+            "machineCapability": bundle.machine_capability,
+            "apiEndpoint": bundle.api_endpoint,
+        },
+    )
 
 
 def _validate_secret_tree(directory: Path) -> None:
@@ -1224,55 +1618,27 @@ def _remove_secret_tree(directory: Path) -> None:
     shutil.rmtree(directory)
 
 
-def materialize_secrets(
-    bundle: SecretBundle,
-    uid: int,
-    gid: int,
-    runtime_directory: Path = RUNTIME_DIRECTORY,
-) -> tuple[Path, Callable[[], None]]:
-    del uid
-    commands = Commands()
-    filesystem = commands.run(
-        [
-            "/usr/bin/findmnt",
-            "--noheadings",
-            "--output",
-            "FSTYPE",
-            "--target",
-            str(runtime_directory),
-        ]
-    ).strip()
-    if filesystem != "tmpfs":
-        raise WorkerError("Runtime secret directory is not backed by tmpfs.")
-    _validate_root_directory(runtime_directory, create=False)
-    os.chown(runtime_directory, 0, gid)
-    os.chmod(runtime_directory, 0o750)
-    for orphan in runtime_directory.iterdir():
-        if orphan.name.startswith(".secrets-"):
+def remove_runtime_orphans(parent: Path) -> None:
+    for orphan in parent.iterdir():
+        if orphan.name.startswith("."):
             _remove_secret_tree(orphan)
-    secret_directory = runtime_directory / "secrets"
-    temporary = runtime_directory / f".secrets-{uuid.uuid4()}"
-    previous = runtime_directory / f".secrets-old-{uuid.uuid4()}"
+
+
+def install_runtime_files(
+    parent: Path, name: str, files: dict[str, str], gid: int
+) -> None:
+    target = parent / name
+    temporary = parent / f".tmp-{uuid.uuid4()}"
+    previous = parent / f".old-{uuid.uuid4()}"
     try:
         temporary.mkdir(mode=0o750)
         directory_fd = os.open(temporary, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             os.fchown(directory_fd, 0, gid)
             os.fchmod(directory_fd, 0o750)
-            files = {
-                "switch.json": json.dumps(
-                    bundle.switch_credentials, separators=(",", ":")
-                ),
-                "deployment.json": json.dumps(bundle.deployment, separators=(",", ":")),
-                "worker-capability": bundle.worker_capability,
-            }
-            if bundle.provider_credential is not None:
-                files["provider"] = bundle.provider_credential + "\n"
-            if bundle.github_credential is not None:
-                files["github"] = bundle.github_credential + "\n"
-            for name, value in files.items():
+            for file_name, value in files.items():
                 descriptor = os.open(
-                    name,
+                    file_name,
                     os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                     0o440,
                     dir_fd=directory_fd,
@@ -1287,10 +1653,10 @@ def materialize_secrets(
             os.fsync(directory_fd)
         finally:
             os.close(directory_fd)
-        if secret_directory.exists() or secret_directory.is_symlink():
-            _validate_secret_tree(secret_directory)
-            os.replace(secret_directory, previous)
-        os.replace(temporary, secret_directory)
+        if target.exists() or target.is_symlink():
+            _validate_secret_tree(target)
+            os.replace(target, previous)
+        os.replace(temporary, target)
         if previous.exists():
             _remove_secret_tree(previous)
     except Exception:
@@ -1302,73 +1668,12 @@ def materialize_secrets(
                     pass
         raise
 
-    def cleanup() -> None:
-        try:
-            _remove_secret_tree(secret_directory)
-        except FileNotFoundError:
-            pass
 
-    return secret_directory / "deployment.json", cleanup
-
-
-def build_launch(
-    config: WorkerConfig,
-    identity: MachineIdentity,
-    deployment_path: Path,
-    uid: int,
-    gid: int,
-) -> tuple[list[str], dict[str, str]]:
-    arguments = [
-        "/usr/bin/setpriv",
-        f"--reuid={uid}",
-        f"--regid={gid}",
-        "--clear-groups",
-        "--no-new-privs",
-        "--inh-caps=-all",
-        "--ambient-caps=-all",
-        "--bounding-set=-all",
-        config.runtime.node_path,
-        config.runtime.bootstrap_path,
-        str(STATE_PATH),
-        str(deployment_path),
-    ]
-    environment = {
-        "PATH": config.runtime.path,
-        "USER": config.runtime.agent_user,
-        "LOGNAME": config.runtime.agent_user,
-        "SHELL": "/bin/bash",
-        "LANG": "C.UTF-8",
-        "SWITCH_HOST_INSTANCE_ID": identity.instance_id,
-        "SWITCH_HOST_BOOT_ID": identity.boot_id,
-        "SWITCH_HOST_ASSIGNMENT_GENERATION": str(identity.assignment_generation),
-    }
-    return arguments, environment
-
-
-def run_child(arguments: list[str], environment: dict[str, str]) -> int:
-    child = subprocess.Popen(arguments, env=environment, start_new_session=True)
-    stopping = False
-
-    def forward(signum: int, _frame: Any) -> None:
-        nonlocal stopping
-        stopping = True
-        try:
-            os.killpg(child.pid, signum)
-        except ProcessLookupError:
-            pass
-
-    previous = {
-        signum: signal.signal(signum, forward)
-        for signum in (signal.SIGTERM, signal.SIGINT)
-    }
-    try:
-        code = child.wait()
-    finally:
-        for signum, handler in previous.items():
-            signal.signal(signum, handler)
-    if stopping and code in {-signal.SIGTERM, -signal.SIGINT}:
-        return 0
-    return code
+def _remove_tree(path: Path) -> None:
+    if path.is_symlink():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
 
 
 def _sha256_file(path: str) -> str:
@@ -1435,64 +1740,525 @@ def verify_pinned_runtime(config: WorkerConfig) -> str:
     return fingerprint
 
 
-def record_obsolete_bundle(path: Path, version_id: str) -> None:
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+def read_meminfo(path: Path) -> tuple[int, int]:
+    values: dict[str, int] = {}
     try:
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(version_id)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        _fsync_directory(path.parent)
-    finally:
+        for line in path.read_text(encoding="ascii").splitlines():
+            name, _, rest = line.partition(":")
+            if name in {"MemTotal", "MemAvailable"}:
+                number, unit = rest.split()
+                if unit != "kB":
+                    raise ValueError()
+                values[name] = int(number) * 1024
+        return values["MemTotal"], values["MemAvailable"]
+    except (OSError, ValueError, KeyError):
+        raise WorkerError("Memory information is unavailable.") from None
+
+
+@dataclass
+class HeldAgent:
+    launch_id: str
+    agent_id: str
+    revision: int
+    desired_state: str | None
+    failure: str | None
+
+
+@dataclass
+class ObservedState:
+    process_state: str
+    restarts: int
+    exit: dict[str, Any] | None
+    since: str
+
+
+class Supervisor:
+    def __init__(
+        self,
+        *,
+        runtime: RuntimeConfig,
+        identity: MachineIdentity,
+        machine_id: str,
+        runtime_fingerprint: str,
+        paths: Paths,
+        uid: int,
+        gid: int,
+        client: CoreClient,
+        systemd: Systemd,
+        git: GitRunner,
+        clock: Callable[[], datetime],
+        monotonic: Callable[[], float],
+        sleep: Callable[[float], None],
+        statvfs: Callable[[str], Any],
+        meminfo: Path,
+    ) -> None:
+        self._runtime = runtime
+        self._identity = identity
+        self._machine_id = machine_id
+        self._fingerprint = runtime_fingerprint
+        self._paths = paths
+        self._uid = uid
+        self._gid = gid
+        self._client = client
+        self._systemd = systemd
+        self._git = git
+        self._clock = clock
+        self._monotonic = monotonic
+        self._sleep = sleep
+        self._statvfs = statvfs
+        self._meminfo = meminfo
+        self._held: list[HeldAgent] = []
+        self._states: dict[str, ObservedState] = {}
+        self._touched: set[str] = set()
+        self._obsolete_exits: dict[str, str] = {}
+        self._agents_version: int | None = None
+        self._need_list = True
+        self._next_list = 0.0
+        self._next_heartbeat = 0.0
+        self._heartbeat_every = DEFAULT_HEARTBEAT_SECONDS
+        self._retired = False
+        self._records = self._load_records()
+
+    def run(self) -> None:
+        self.limit_slice()
+        while True:
+            self.tick()
+            self._sleep(OBSERVE_SECONDS)
+
+    def limit_slice(self) -> None:
+        total, _available = read_meminfo(self._meminfo)
+        if total <= SLICE_RESERVE_BYTES:
+            raise WorkerError("The machine has too little memory for agents.")
+        self._systemd.limit_slice(total - SLICE_RESERVE_BYTES)
+
+    def tick(self) -> None:
+        now = self._monotonic()
+        if self._retired:
+            if now >= self._next_heartbeat:
+                self._observe()
+                self._send_heartbeat()
+            return
+        if self._need_list and now >= self._next_list:
+            self._refresh()
+            if self._retired:
+                return
+        changed = self._observe()
+        if changed or self._monotonic() >= self._next_heartbeat:
+            self._send_heartbeat()
+        if (
+            self._need_list
+            and self._monotonic() >= self._next_list
+            and not self._retired
+        ):
+            self._refresh()
+
+    def _refresh(self) -> None:
         try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
+            listing = self._client.agents()
+        except MachineRetired:
+            self._retire()
+            return
+        except CoreUnavailable as error:
+            logger.warning("Agent list fetch failed; retrying: %s", error)
+            self._next_list = self._monotonic() + LIST_RETRY_SECONDS
+            return
+        self._need_list = False
+        self._agents_version = listing["agents_version"]
+        self.reconcile(listing["agents"])
 
+    def _send_heartbeat(self) -> None:
+        interval = RETIRED_HEARTBEAT_SECONDS if self._retired else self._heartbeat_every
+        try:
+            response = self._client.heartbeat(self.heartbeat_body())
+        except MachineRetired:
+            self._retire()
+            return
+        except CoreUnavailable as error:
+            logger.warning("Heartbeat failed; retrying: %s", error)
+            self._next_heartbeat = self._monotonic() + interval
+            return
+        every = response.get("heartbeat_every_s", DEFAULT_HEARTBEAT_SECONDS)
+        if (
+            isinstance(every, bool)
+            or not isinstance(every, int)
+            or not 0 < every <= 3600
+        ):
+            logger.warning("Heartbeat interval from Switch is invalid; using default.")
+            every = DEFAULT_HEARTBEAT_SECONDS
+        self._heartbeat_every = every
+        if self._retired:
+            logger.warning("Switch accepts this machine again; resuming agents.")
+            self._retired = False
+            self._need_list = True
+            self._next_list = 0.0
+        if response["agents_version"] != self._agents_version:
+            self._need_list = True
+        self._next_heartbeat = self._monotonic() + self._heartbeat_every
 
-def read_obsolete_bundle(path: Path) -> str | None:
-    try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    except FileNotFoundError:
-        return None
-    except OSError:
-        raise WorkerError("Obsolete bundle marker is invalid.") from None
-    try:
-        details = os.fstat(descriptor)
-        if not stat.S_ISREG(details.st_mode) or details.st_size > 1024:
-            raise WorkerError("Obsolete bundle marker is invalid.")
-        return os.read(descriptor, 1024).decode().strip()
-    except (OSError, UnicodeError):
-        raise WorkerError("Obsolete bundle marker is invalid.") from None
-    finally:
-        os.close(descriptor)
+    def _retire(self) -> None:
+        if not self._retired:
+            logger.warning("Switch retired this machine; stopping all agents.")
+            self._systemd.stop_all()
+            self._touched.update(held.agent_id for held in self._held)
+            self._retired = True
+        self._next_heartbeat = self._monotonic() + RETIRED_HEARTBEAT_SECONDS
 
-
-def await_current_bundle(
-    secrets: SecretsManager, secret_id: str, marker: Path
-) -> tuple[str, str]:
-    raw, version_id = secrets.read(secret_id)
-    obsolete = read_obsolete_bundle(marker)
-    if obsolete is None:
-        return raw, version_id
-    warned_at: float | None = None
-    while version_id == obsolete:
-        now = time.monotonic()
-        if warned_at is None or now - warned_at >= OBSOLETE_WARN_SECONDS:
-            print(
-                "The assignment secret still holds the bundle Switch refused as "
-                "obsolete; waiting for the controller to publish the current one.",
-                file=sys.stderr,
-                flush=True,
+    def reconcile(self, entries: list[Any]) -> None:
+        remove_runtime_orphans(self._paths.agents_runtime)
+        counts: dict[str, int] = {}
+        for entry in entries:
+            if isinstance(entry, dict) and isinstance(entry.get("agent_id"), str):
+                counts[entry["agent_id"]] = counts.get(entry["agent_id"], 0) + 1
+        held: list[HeldAgent] = []
+        for entry in entries:
+            if (
+                not isinstance(entry, dict)
+                or not isinstance(entry.get("launch_id"), str)
+                or not isinstance(entry.get("agent_id"), str)
+                or isinstance(entry.get("revision"), bool)
+                or not isinstance(entry.get("revision"), int)
+            ):
+                logger.error(
+                    "Ignoring an agent entry without launch, agent and revision."
+                )
+                continue
+            agent_id = entry["agent_id"]
+            try:
+                if counts[agent_id] > 1:
+                    raise WorkerError("The agent is listed more than once.")
+                plan = build_agent_plan(entry, self._runtime, self._paths)
+            except WorkerError as error:
+                logger.error(
+                    "Agent %s has an invalid configuration: %s", agent_id, error
+                )
+                held.append(
+                    HeldAgent(
+                        entry["launch_id"],
+                        agent_id,
+                        entry["revision"],
+                        None,
+                        INVALID_CONFIG,
+                    )
+                )
+                self._disable(agent_id)
+                continue
+            failure = None
+            try:
+                self._apply(plan)
+            except (WorkerError, OSError) as error:
+                logger.error("Agent %s could not be set up: %s", agent_id, error)
+                failure = SETUP_FAILED
+            held.append(
+                HeldAgent(
+                    plan.launch_id,
+                    plan.agent_id,
+                    plan.revision,
+                    plan.desired_state,
+                    failure,
+                )
             )
-            warned_at = now
-        time.sleep(OBSOLETE_POLL_SECONDS)
-        raw, version_id = secrets.read(secret_id)
-    os.unlink(marker)
-    _fsync_directory(marker.parent)
-    return raw, version_id
+        self._held = held
+        listed = {agent.agent_id for agent in held} | set(counts)
+        for agent_id in sorted(self._agents_on_disk() - listed):
+            try:
+                self.remove_agent(agent_id)
+            except (WorkerError, OSError) as error:
+                logger.error("Agent %s removal failed; will retry: %s", agent_id, error)
+        for agent_id in set(self._states) - {agent.agent_id for agent in held}:
+            del self._states[agent_id]
+
+    def _disable(self, agent_id: str) -> None:
+        if not _is_agent_id(agent_id):
+            return
+        try:
+            self._systemd.stop(agent_id, wait=False)
+            self._touched.add(agent_id)
+            target = self._paths.agents_runtime / agent_id
+            if target.exists() or target.is_symlink():
+                _remove_secret_tree(target)
+        except (WorkerError, OSError) as error:
+            logger.error("Agent %s could not be stopped: %s", agent_id, error)
+
+    def _apply(self, plan: AgentPlan) -> None:
+        agent_id = plan.agent_id
+        state = self._paths.agents / agent_id
+        for directory in (state, state / "home", state / "tmp"):
+            _agent_directory(directory, self._uid, self._gid)
+        _agent_directory(self._paths.worktrees / agent_id, self._uid, self._gid)
+        if plan.worktree_owner is not None:
+            _agent_directory(plan.worktree_owner, self._uid, self._gid)
+        _agent_directory(plan.workspace, self._uid, self._gid)
+        if self._installed_revision(agent_id) != plan.revision:
+            install_runtime_files(
+                self._paths.agents_runtime,
+                agent_id,
+                {
+                    "switch.json": json.dumps(
+                        plan.switch_credentials, separators=(",", ":")
+                    ),
+                    "deployment.json": json.dumps(
+                        plan.deployment, separators=(",", ":")
+                    ),
+                    "worker-capability": plan.worker_capability,
+                    "env": agent_environment(
+                        self._runtime,
+                        self._identity,
+                        self._machine_id,
+                        self._paths,
+                        agent_id,
+                    ),
+                },
+                self._gid,
+            )
+            if plan.desired_state == "running":
+                self._systemd.reset_failed(agent_id)
+                self._systemd.restart(agent_id)
+            else:
+                self._systemd.stop(agent_id, wait=False)
+            self._touched.add(agent_id)
+            return
+        active = self._systemd.show(agent_id)["ActiveState"]
+        if plan.desired_state == "running" and active == "inactive":
+            self._systemd.start(agent_id)
+            self._touched.add(agent_id)
+        elif plan.desired_state == "stopped" and active in {
+            "active",
+            "activating",
+            "reloading",
+        }:
+            self._systemd.stop(agent_id, wait=False)
+            self._touched.add(agent_id)
+
+    def _installed_revision(self, agent_id: str) -> int | None:
+        try:
+            value = _read_json_nofollow(
+                self._paths.agents_runtime / agent_id / "deployment.json",
+                maximum=MAX_SECRET_BYTES,
+            )
+        except (OSError, WorkerError):
+            return None
+        revision = value.get("revision") if isinstance(value, dict) else None
+        return revision if isinstance(revision, int) else None
+
+    def _agents_on_disk(self) -> set[str]:
+        found: set[str] = set()
+        for parent in (
+            self._paths.agents_runtime,
+            self._paths.agents,
+            self._paths.worktrees,
+        ):
+            if not parent.is_dir():
+                continue
+            for child in parent.iterdir():
+                if parent == self._paths.agents_runtime and child.name.startswith("."):
+                    continue
+                if not _is_agent_id(child.name):
+                    logger.warning(
+                        "Ignoring unexpected entry %s in %s.", child.name, parent
+                    )
+                    continue
+                found.add(child.name)
+        return found
+
+    def remove_agent(self, agent_id: str) -> None:
+        agent_id = _agent_id(agent_id)
+        self._systemd.stop(agent_id, wait=True)
+        runtime_files = self._paths.agents_runtime / agent_id
+        if runtime_files.exists() or runtime_files.is_symlink():
+            _remove_secret_tree(runtime_files)
+        worktree_root = self._paths.worktrees / agent_id
+        mirrors: list[Path] = []
+        if worktree_root.is_dir() and not worktree_root.is_symlink():
+            for owner in sorted(worktree_root.iterdir()):
+                if (
+                    owner.name == "workspace"
+                    or owner.is_symlink()
+                    or not owner.is_dir()
+                ):
+                    continue
+                for repository in sorted(owner.iterdir()):
+                    if repository.is_symlink() or not repository.is_dir():
+                        continue
+                    mirror = self._paths.repos / owner.name / f"{repository.name}.git"
+                    if mirror.is_symlink() or not mirror.is_dir():
+                        continue
+                    try:
+                        self._git.run(
+                            mirror, ["worktree", "remove", "--force", str(repository)]
+                        )
+                    except WorkerError as error:
+                        logger.warning("Agent %s: %s", agent_id, error)
+                    mirrors.append(mirror)
+        _remove_tree(self._paths.agents / agent_id)
+        _remove_tree(worktree_root)
+        for mirror in mirrors:
+            self._git.run(mirror, ["worktree", "prune"])
+        if self._records.pop(agent_id, None) is not None:
+            self._save_records()
+        self._states.pop(agent_id, None)
+        self._touched.discard(agent_id)
+        self._obsolete_exits.pop(agent_id, None)
+        logger.warning("Removed agent %s from this machine.", agent_id)
+
+    def _load_records(self) -> dict[str, dict[str, Any]]:
+        path = self._paths.agent_records
+        if not path.exists() and not path.is_symlink():
+            return {}
+        try:
+            details = path.lstat()
+            if (
+                not stat.S_ISREG(details.st_mode)
+                or details.st_uid != ROOT_UID
+                or details.st_mode & 0o077
+            ):
+                raise ValueError()
+            value = _strict(
+                _read_json_nofollow(path, maximum=MAX_SECRET_BYTES),
+                {"version", "agents"},
+                set(),
+                "agent records",
+            )
+            if value["version"] != 1 or not isinstance(value["agents"], dict):
+                raise ValueError()
+            for agent_id, record in value["agents"].items():
+                _agent_id(agent_id)
+                record = _strict(record, {"oomKills", "lastOomExit"}, set(), "record")
+                if isinstance(record["oomKills"], bool) or not isinstance(
+                    record["oomKills"], int
+                ):
+                    raise ValueError()
+            return value["agents"]
+        except (OSError, ValueError, WorkerError):
+            raise WorkerError("Agent records on the data volume are invalid.") from None
+
+    def _save_records(self) -> None:
+        _write_root_json(
+            self._paths.agent_records, {"version": 1, "agents": self._records}
+        )
+
+    def _observe(self) -> bool:
+        changed = False
+        now = self._clock().astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for held in self._held:
+            if held.failure is not None:
+                observed = (
+                    "failed",
+                    0,
+                    {"code": None, "signal": None, "result": held.failure},
+                )
+            else:
+                try:
+                    observed = self._unit_state(held)
+                except (WorkerError, ValueError) as error:
+                    logger.warning(
+                        "Agent %s state is unavailable: %s", held.agent_id, error
+                    )
+                    continue
+            process_state, restarts, exit_value = observed
+            previous = self._states.get(held.agent_id)
+            since = now
+            if previous is not None and previous.process_state == process_state:
+                since = previous.since
+            else:
+                changed = True
+            self._states[held.agent_id] = ObservedState(
+                process_state, restarts, exit_value, since
+            )
+        return changed
+
+    def _unit_state(self, held: HeldAgent) -> tuple[str, int, dict[str, Any] | None]:
+        agent_id = held.agent_id
+        properties = self._systemd.show(agent_id)
+        active = properties["ActiveState"]
+        sub = properties["SubState"]
+        result = properties["Result"]
+        restarts = int(properties["NRestarts"] or 0)
+        code = int(properties["ExecMainCode"] or 0)
+        status = int(properties["ExecMainStatus"] or 0)
+        exited_at = properties["ExecMainExitTimestampMonotonic"] or "0"
+        ran = exited_at != "0"
+        if result == "oom-kill" and ran:
+            key = f"{self._identity.boot_id}:{exited_at}"
+            record = self._records.get(agent_id, {"oomKills": 0, "lastOomExit": ""})
+            if record["lastOomExit"] != key:
+                self._records[agent_id] = {
+                    "oomKills": record["oomKills"] + 1,
+                    "lastOomExit": key,
+                }
+                self._save_records()
+        if code == 1 and status == OBSOLETE_EXIT_CODE and ran:
+            if self._obsolete_exits.get(agent_id) != exited_at:
+                self._obsolete_exits[agent_id] = exited_at
+                logger.warning(
+                    "Agent %s reported an obsolete worker; refetching.", agent_id
+                )
+                self._need_list = True
+                self._next_list = 0.0
+        if active in {"active", "reloading"}:
+            process_state = "running"
+        elif active == "activating":
+            process_state = (
+                "restarting" if sub.startswith("auto-restart") else "starting"
+            )
+        elif active == "deactivating":
+            process_state = "stopping"
+        elif active == "failed":
+            process_state = "crashed" if result == "start-limit-hit" else "failed"
+        elif active == "inactive":
+            process_state = (
+                "stopped"
+                if held.desired_state == "stopped" or agent_id in self._touched or ran
+                else "pending"
+            )
+        else:
+            raise WorkerError(f"unknown unit state {active}/{sub}")
+        exit_value: dict[str, Any] | None = None
+        if process_state != "running":
+            if code == 1:
+                exit_value = {"code": status, "signal": None, "result": result}
+            elif code in {2, 3}:
+                exit_value = {"code": None, "signal": status, "result": result}
+        return process_state, restarts, exit_value
+
+    def heartbeat_body(self) -> dict[str, Any]:
+        disk = self._statvfs(str(self._paths.data))
+        total_memory, available_memory = read_meminfo(self._meminfo)
+        agents = []
+        for held in self._held:
+            observed = self._states.get(held.agent_id)
+            if observed is None:
+                continue
+            agents.append(
+                {
+                    "launch_id": held.launch_id,
+                    "agent_id": held.agent_id,
+                    "revision": held.revision,
+                    "process_state": observed.process_state,
+                    "restarts": observed.restarts,
+                    "oom_kills": self._records.get(held.agent_id, {}).get(
+                        "oomKills", 0
+                    ),
+                    "exit": observed.exit,
+                    "since": observed.since,
+                }
+            )
+        return {
+            "boot_id": self._identity.boot_id,
+            "instance_id": self._identity.instance_id,
+            "supervisor_version": SUPERVISOR_VERSION,
+            "runtime_fingerprint": self._fingerprint,
+            "disk": {
+                "path": str(self._paths.data),
+                "total_bytes": disk.f_blocks * disk.f_frsize,
+                "used_bytes": (disk.f_blocks - disk.f_bfree) * disk.f_frsize,
+                "available_bytes": disk.f_bavail * disk.f_frsize,
+            },
+            "memory": {
+                "total_bytes": total_memory,
+                "available_bytes": available_memory,
+            },
+            "agents": agents,
+        }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1504,54 +2270,58 @@ def main(argv: list[str] | None = None) -> int:
         "--runtime-config", default="/etc/switch-hosted/runtime.json", type=Path
     )
     arguments = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     if os.geteuid() != 0:
-        raise WorkerError("Trusted worker launcher must run as root.")
+        raise WorkerError("Trusted worker supervisor must run as root.")
     root_lock = acquire_root_lock()
-
-    def cleanup() -> None:
-        pass
-
     try:
         config = load_worker_config(arguments.config, arguments.runtime_config)
-        runtime_fingerprint = verify_pinned_runtime(config)
-        instance_id = ImdsV2().instance_id()
-        boot_id = _read_boot_id()
-        identity = MachineIdentity(instance_id, boot_id, config.generation)
-        commands = Commands()
-        storage, _formatted = prepare_storage(commands, config)
-        reconcile_boot_identity(
-            identity,
-            config.installation_id,
-            config.agent_id,
-            storage.filesystem_uuid or "",
-            runtime_fingerprint,
-            previous_instance_id=config.previous_instance_id,
-            previous_runtime_fingerprint=config.previous_runtime_fingerprint,
-        )
-        uid, gid = prepare_agent_directories(
+        runtime_fingerprint = "sha256:" + verify_pinned_runtime(config)
+        uid, gid = resolve_agent_account(
             config.runtime.agent_user, config.runtime.agent_group
         )
-        raw_secret, version_id = await_current_bundle(
-            SecretsManager(config.secret_region),
-            config.secret_id,
-            OBSOLETE_BUNDLE_PATH,
+        identity = MachineIdentity(
+            ImdsV2().instance_id(), _read_boot_id(), config.generation
         )
-        bundle = parse_secret_document(raw_secret, config)
-        raw_secret = ""
-        deployment_path, cleanup = materialize_secrets(bundle, uid, gid)
-        launch, environment = build_launch(config, identity, deployment_path, uid, gid)
-        code = run_child(launch, environment)
-        if code == OBSOLETE_BUNDLE_EXIT_CODE:
-            record_obsolete_bundle(OBSOLETE_BUNDLE_PATH, version_id)
-            print(
-                "Switch refused this worker's bundle as obsolete; restarting onto "
-                "the current assignment secret.",
-                file=sys.stderr,
-                flush=True,
+        try:
+            bundle = parse_bundle(
+                SecretsManager(config.secret_region).read(config.secret_id), config
             )
-        return code
+        except ObsoleteBundle:
+            print("obsolete bundle", file=sys.stderr, flush=True)
+            return OBSOLETE_EXIT_CODE
+        commands = Commands()
+        paths = Paths(DATA_MOUNT, RUNTIME_DIRECTORY)
+        prepare_runtime_directory(commands, paths, gid)
+        write_bundle(paths, bundle)
+        storage, _formatted = prepare_storage(commands, config)
+        reconcile_marker(
+            identity,
+            config,
+            storage.filesystem_uuid or "",
+            runtime_fingerprint,
+            paths,
+        )
+        prepare_layout(paths, uid, gid)
+        Supervisor(
+            runtime=config.runtime,
+            identity=identity,
+            machine_id=bundle.machine_id,
+            runtime_fingerprint=runtime_fingerprint,
+            paths=paths,
+            uid=uid,
+            gid=gid,
+            client=CoreClient(bundle, identity, default_opener()),
+            systemd=Systemd(commands),
+            git=GitRunner(setpriv_prefix(uid, gid), FLOCK, GIT),
+            clock=lambda: datetime.now(UTC),
+            monotonic=time.monotonic,
+            sleep=time.sleep,
+            statvfs=os.statvfs,
+            meminfo=MEMINFO_PATH,
+        ).run()
+        return 0
     finally:
-        cleanup()
         root_lock.close()
 
 

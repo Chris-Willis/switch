@@ -1,9 +1,11 @@
-import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFile, spawn } from 'node:child_process';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterEach, expect, it, vi } from 'vitest';
+import { join, resolve } from 'node:path';
+import { promisify } from 'node:util';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  ensureHostedRepository,
   githubLaunchEnvironment,
   githubRedactions,
   gitHubCredentialResponse,
@@ -231,4 +233,190 @@ it.each([409, 503, 422])('retries a token renewal only for retryable status %s',
     expect(await renewGitHubCredential(path, 'example/project')).toBe(token);
     expect(request).toHaveBeenCalledTimes(2);
   }
+});
+
+describe('ensureHostedRepository', () => {
+  const exec = promisify(execFile);
+  const AGENT = '00000000-0000-4000-8000-000000000001';
+  const OTHER = '00000000-0000-4000-8000-000000000002';
+
+  /** util-linux `flock <file> <command...>`, which macOS lacks. */
+  const FLOCK_SHIM = [
+    '#!/usr/bin/env python3',
+    'import fcntl, os, sys',
+    'fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)',
+    'os.set_inheritable(fd, True)',
+    'fcntl.flock(fd, fcntl.LOCK_EX)',
+    'os.execvp(sys.argv[2], sys.argv[2:])',
+    '',
+  ].join('\n');
+
+  async function repositories() {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'hosted-repository-')));
+    roots.push(root);
+    const bin = join(root, 'bin');
+    await mkdir(bin);
+    await writeFile(join(bin, 'flock'), FLOCK_SHIM);
+    await chmod(join(bin, 'flock'), 0o755);
+    const upstream = join(root, 'upstream');
+    const env: NodeJS.ProcessEnv = {
+      PATH: `${bin}:${process.env.PATH}`,
+      HOME: root,
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_AUTHOR_NAME: 'Fixture',
+      GIT_AUTHOR_EMAIL: 'fixture@example.test',
+      GIT_COMMITTER_NAME: 'Fixture',
+      GIT_COMMITTER_EMAIL: 'fixture@example.test',
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: `url.file://${upstream}/.insteadOf`,
+      GIT_CONFIG_VALUE_0: 'https://github.com/',
+    };
+    const git = async (...args: string[]) => (await exec('git', args, { env })).stdout.trim();
+    const seed = join(root, 'seed');
+    await git('init', '--bare', '-b', 'main', join(upstream, 'example', 'project.git'));
+    await git('init', '--bare', '-b', 'main', join(upstream, 'example', 'other.git'));
+    await git('init', '-b', 'main', seed);
+    const commit = async (message: string) => {
+      await writeFile(join(seed, 'README.md'), `${message}\n`);
+      await git('-C', seed, 'add', 'README.md');
+      await git('-C', seed, 'commit', '-m', message);
+      await git('-C', seed, 'push', '-q', 'https://github.com/example/project.git', 'main');
+      return git('-C', seed, 'rev-parse', 'HEAD');
+    };
+    const mirror = join(root, 'repos', 'example', 'project.git');
+    const workspace = (agentId: string) => join(root, 'worktrees', agentId, 'example', 'project');
+    const ensure = (agentId: string, repository = 'example/project') =>
+      ensureHostedRepository({
+        workspace: workspace(agentId),
+        mirror,
+        repository,
+        agentId,
+        env,
+      });
+    return { root, env, git, commit, mirror, workspace, ensure };
+  }
+
+  it('creates the mirror and a worktree on the agent branch at the default branch', async () => {
+    const { git, commit, mirror, workspace, ensure } = await repositories();
+    const head = await commit('first');
+    await mkdir(workspace(AGENT), { recursive: true });
+    await ensure(AGENT);
+    expect(await git('--git-dir', mirror, 'rev-parse', '--is-bare-repository')).toBe('true');
+    expect(await git('--git-dir', mirror, 'config', 'remote.origin.url')).toBe(
+      'https://github.com/example/project.git'
+    );
+    expect(await git('--git-dir', mirror, 'config', 'remote.origin.fetch')).toBe(
+      '+refs/heads/*:refs/remotes/origin/*'
+    );
+    expect(await git('-C', workspace(AGENT), 'rev-parse', '--abbrev-ref', 'HEAD')).toBe(
+      `switch/${AGENT}`
+    );
+    expect(await git('-C', workspace(AGENT), 'rev-parse', 'HEAD')).toBe(head);
+    expect(await readFile(join(workspace(AGENT), 'README.md'), 'utf8')).toBe('first\n');
+  });
+
+  it('gives a second agent its own worktree over the same mirror', async () => {
+    const { git, commit, mirror, workspace, ensure } = await repositories();
+    const head = await commit('first');
+    await ensure(AGENT);
+    await ensure(OTHER);
+    for (const agentId of [AGENT, OTHER]) {
+      const common = await git('-C', workspace(agentId), 'rev-parse', '--git-common-dir');
+      expect(await realpath(resolve(workspace(agentId), common))).toBe(mirror);
+      expect(await git('-C', workspace(agentId), 'rev-parse', 'HEAD')).toBe(head);
+    }
+    expect(await git('-C', workspace(OTHER), 'rev-parse', '--abbrev-ref', 'HEAD')).toBe(
+      `switch/${OTHER}`
+    );
+    const listed = await git('--git-dir', mirror, 'worktree', 'list', '--porcelain');
+    expect(listed).toContain(`worktree ${workspace(AGENT)}`);
+    expect(listed).toContain(`worktree ${workspace(OTHER)}`);
+  });
+
+  it('accepts its existing worktree on a rerun and still fetches', async () => {
+    const { git, commit, mirror, workspace, ensure } = await repositories();
+    const first = await commit('first');
+    await ensure(AGENT);
+    await writeFile(join(workspace(AGENT), 'work.txt'), 'in progress\n');
+    const second = await commit('second');
+    await ensure(AGENT);
+    expect(await git('--git-dir', mirror, 'rev-parse', 'refs/remotes/origin/main')).toBe(second);
+    expect(await git('-C', workspace(AGENT), 'rev-parse', 'HEAD')).toBe(first);
+    expect(await readFile(join(workspace(AGENT), 'work.txt'), 'utf8')).toBe('in progress\n');
+  });
+
+  it('refuses a non-empty workspace that is not a worktree of the mirror', async () => {
+    const { commit, mirror, workspace, ensure, git } = await repositories();
+    await commit('first');
+    await mkdir(workspace(AGENT), { recursive: true });
+    await writeFile(join(workspace(AGENT), 'stray.txt'), 'kept\n');
+    await expect(ensure(AGENT)).rejects.toThrow(
+      'Could not prepare the selected GitHub repository (the workspace holds files that are not its worktree).'
+    );
+    expect(await readFile(join(workspace(AGENT), 'stray.txt'), 'utf8')).toBe('kept\n');
+    expect(await git('--git-dir', mirror, 'worktree', 'list', '--porcelain')).not.toContain(
+      workspace(AGENT)
+    );
+  });
+
+  it('refuses a mirror whose origin is a different repository', async () => {
+    const { commit, mirror, workspace, ensure, git } = await repositories();
+    await commit('first');
+    await git('init', '--bare', mirror);
+    await git(
+      '--git-dir',
+      mirror,
+      'remote',
+      'add',
+      'origin',
+      'https://github.com/example/other.git'
+    );
+    await expect(ensure(AGENT)).rejects.toThrow(
+      'Could not prepare the selected GitHub repository (the mirror belongs to a different repository).'
+    );
+    await expect(readFile(join(workspace(AGENT), 'README.md'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
+  it('waits for the mirror lock before touching the mirror', async () => {
+    const { root, commit, mirror, ensure, git } = await repositories();
+    await commit('first');
+    await ensure(AGENT);
+    const second = await commit('second');
+    const holder = spawn(
+      'python3',
+      [
+        '-c',
+        'import fcntl, os, sys\n' +
+          'fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n' +
+          'fcntl.flock(fd, fcntl.LOCK_EX)\n' +
+          'print("locked", flush=True)\n' +
+          'sys.stdin.read()\n',
+        `${mirror}.lock`,
+      ],
+      { cwd: root, stdio: ['pipe', 'pipe', 'inherit'] }
+    );
+    try {
+      await new Promise<void>((resolve, reject) => {
+        holder.once('error', reject);
+        holder.stdout!.once('data', () => resolve());
+      });
+      let settled = false;
+      const pending = ensure(AGENT).finally(() => {
+        settled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      expect(settled).toBe(false);
+      expect(await git('--git-dir', mirror, 'rev-parse', 'refs/remotes/origin/main')).not.toBe(
+        second
+      );
+      holder.stdin!.end();
+      await pending;
+      expect(await git('--git-dir', mirror, 'rev-parse', 'refs/remotes/origin/main')).toBe(second);
+    } finally {
+      holder.kill();
+    }
+  }, 15_000);
 });

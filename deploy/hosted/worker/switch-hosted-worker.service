@@ -1,5 +1,5 @@
 [Unit]
-Description=Switch hosted agent worker
+Description=Switch hosted machine supervisor
 Wants=network-online.target
 After=network-online.target cloud-final.service
 ConditionPathExists=/etc/switch-hosted/assignment.json
@@ -17,6 +17,7 @@ TimeoutStopSec=45s
 KillMode=control-group
 RuntimeDirectory=switch-hosted
 RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
 ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
@@ -32,7 +33,7 @@ RestrictSUIDSGID=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL
-# Retained across launcher exec; setpriv clears all capabilities for the agent.
+# setpriv drops every capability before git runs as the agent.
 AmbientCapabilities=CAP_SETUID
 StandardOutput=journal
 StandardError=journal
