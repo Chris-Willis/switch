@@ -13,6 +13,7 @@ import { sharedConfigSchema } from './shared-config';
 import { hostSessionProcess } from './shared-host';
 import { runSharedWatcher } from './shared-watcher';
 import { superviseSharedHost } from './supervisor';
+import { recordWatcherHealth } from './watcher-health-file';
 import { WatcherControl } from './watcher-tools';
 
 const [root, configPath, mode] = process.argv.slice(2);
@@ -120,6 +121,9 @@ async function main(): Promise<void> {
     const ensure = ensureSessions(supervision);
     // Console's "Reconnect to room" reaches the watcher through the control port.
     const control = new WatcherControl();
+    // Console reads the watcher's connection state from this file, with the
+    // rest of the host's watcher state, rather than from the control port.
+    const stopRecording = recordWatcherHealth(resolve(root), control);
     // A watcher that stops (disabled, stood down after a takeover, or
     // signalled) takes the process with it: the control port and every
     // session host go too, so the supervisor sees a clean exit and does not
@@ -132,6 +136,7 @@ async function main(): Promise<void> {
         serveControl(resolve(root), links, ensure, control, stop.signal),
       ]);
     } finally {
+      stopRecording();
       await supervision.close();
     }
   } else if (process.platform !== 'win32' && (await ownProcessGroup()) === null) {

@@ -1369,6 +1369,15 @@ version of their own to them without also giving them a release of their own.
   bundle is uploaded only when an agent is started, restarted or updated.
 
 #### Fixed
+- **A remote agent's status can no longer go stale.** Console used to learn
+  whether a remote agent was connected only from what its sidecar pushed down a
+  long-lived connection, and trusted that connection until it said it had
+  closed. One that died without saying so, as when every sidecar is replaced
+  while its host's SSH connection is rebuilt, left the last thing it carried
+  on screen for good: agents that were answering in Slack showed "Connection
+  failed" and "The agent's room watcher is not running". Console now reads each
+  host every five seconds, in one command for every agent on it, and the
+  sidebar and the agent's page are both built from that one read.
 - **Agents come up after Console starts without their page being opened.**
   Console now brings each host's agents up side by side, so a slow or wedged
   SSH connection holds back only that host, never local agents or other hosts,
@@ -3148,6 +3157,11 @@ The remote runtime Switch Console deploys to an agent host. Versioned in
 published on its own.
 
 ### [Unreleased]
+
+#### Added
+- **The room watcher records its connection to Switch in `health.json`** beside
+  its other state, each time it changes, so Console can read it from the host
+  instead of relying on a live connection to the sidecar.
 
 #### Fixed
 - **A session whose host hung up no longer blocks its room for good.** After a

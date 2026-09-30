@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import { READ_JSON } from './remote-json';
+import { IS_STATE_ROOT } from './state-roots';
 
 /**
  * What every watcher on one host is currently doing — one command, whatever
@@ -23,7 +24,7 @@ import { READ_JSON } from './remote-json';
  * `watcherIsCurrent` for that, so the decision lives in one place and can be
  * read without the script.
  */
-export const WATCHER_STATUS_SCRIPT = String.raw`${READ_JSON}
+export const WATCHER_STATUS_SCRIPT = String.raw`${READ_JSON}${IS_STATE_ROOT}
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -33,7 +34,7 @@ const alive = (pid) => {
   try { process.kill(pid, 0); return true; } catch { return false; }
 };
 let names = [];
-try { names = fs.readdirSync(base); } catch {}
+try { names = fs.readdirSync(base).filter(isStateRoot); } catch {}
 const found = [];
 for (const name of names) {
   const root = path.join(base, name);
@@ -46,6 +47,15 @@ for (const name of names) {
   try { watch = readJson(path.join(root, 'watch.json')); } catch (e) { if (e.code !== 'ENOENT') throw e }
   let stoodDown = false;
   try { fs.statSync(path.join(root, 'taken-over.json')); stoodDown = true; } catch (e) { if (e.code !== 'ENOENT') throw e }
+  let takenOver = null;
+  try { takenOver = readJson(path.join(root, 'taken-over.json')); } catch (e) { if (e.code !== 'ENOENT') throw e }
+  let worker = null;
+  try { worker = readJson(path.join(root, 'shared-owner.lock')); } catch (e) { if (e.code !== 'ENOENT') throw e }
+  let health = null;
+  try { health = readJson(path.join(root, 'health.json')); } catch (e) { if (e.code !== 'ENOENT') throw e }
+  let failure = null;
+  try { failure = readJson(path.join(root, 'supervisor', 'failure.json')); } catch (e) { if (e.code !== 'ENOENT') throw e }
+  const workerPid = worker && Number.isSafeInteger(worker.pid) && worker.pid > 0 ? worker.pid : null;
   found.push({
     agentId: config.session.agentId,
     root,
@@ -54,6 +64,14 @@ for (const name of names) {
     enabled: watch ? watch.enabled === true : null,
     spawn: watch ? watch.spawn === true : null,
     stoodDown,
+    supervisorPid: owner && Number.isSafeInteger(owner.pid) && owner.pid > 0 ? owner.pid : null,
+    workerPid,
+    workerAlive: workerPid !== null && alive(workerPid),
+    health,
+    failure: failure && typeof failure.message === 'string' ? failure.message : null,
+    takenOver: takenOver && typeof takenOver.reason === 'string'
+      ? { at: String(takenOver.at ?? ''), reason: takenOver.reason }
+      : null,
   });
 }
 process.stdout.write(JSON.stringify(found));
@@ -68,6 +86,18 @@ const statusSchema = z.array(
     enabled: z.boolean().nullable(),
     spawn: z.boolean().nullable(),
     stoodDown: z.boolean(),
+    supervisorPid: z.number().int().positive().nullable(),
+    /** The watcher process itself, from `shared-owner.lock`, and whether it is alive. */
+    workerPid: z.number().int().positive().nullable(),
+    workerAlive: z.boolean(),
+    /**
+     * What the watcher last wrote about its connection to Switch, or null
+     * from a sidecar that does not write it. Unparsed here: see
+     * `watcherHealthFileSchema`, applied where it is read.
+     */
+    health: z.unknown(),
+    failure: z.string().nullable(),
+    takenOver: z.object({ at: z.string(), reason: z.string() }).nullable(),
   })
 );
 
