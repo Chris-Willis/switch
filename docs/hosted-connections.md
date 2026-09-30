@@ -97,20 +97,20 @@ the existing GitHub endpoints.
 
 ## Skill delivery
 
-The skills travel inside the launch's deployment document, next to the other
-launch data:
+The skills travel with each agent in the machine's agent list, next to the
+other agent data. The supervisor copies them into that agent's deployment
+document:
 
 ```json
 "skills": [{"slug": "github", "files": {"SKILL.md": "..."}}]
 ```
 
-1. **Core** (`/hosted-controller/{id}/prepare`) adds `skills` for the
-   connections granted to the launch. A provider that has no skills directory
-   (Cursor, Antigravity) gets an empty list, and Core logs a warning.
-2. **The controller** copies `skills` into the deployment only when it is
-   non-empty, so a Core that predates skills produces the same deployment as
-   before.
-3. **The worker** (root) validates `skills` strictly: at most 16 skills,
+1. **Core** (`GET /hosted/machines/{id}/agents`) adds `skills` to each agent
+   for the connections granted to the launch. A provider that has no skills
+   directory (Cursor, Antigravity) gets an empty list, and Core logs a warning.
+2. **The supervisor** (root) builds each agent's deployment. It copies
+   `skills` into the deployment only when the list is not empty.
+3. **The supervisor** also validates `skills` strictly: at most 16 skills,
    unique and well-formed slugs, `SKILL.md` required, relative paths with no
    empty, `.` or `..` segment, no NUL, and 32 KiB in total. It writes nothing
    into the agent-owned state disk, because a root process writing into a
@@ -126,22 +126,23 @@ launch data:
    | Codex | `$CODEX_HOME/skills/<slug>/`, linked into each session's home |
    | OpenCode | `$XDG_CONFIG_HOME/opencode/skills/<slug>/` |
 
-`skills` is optional in every layer, so deployments without it keep working.
+Each agent in the agent list must have `skills`, which can be empty. A
+deployment without `skills` keeps working.
 
 ## Rollout
 
 The worker rejects a deployment key it does not know. A worker built before
 this change therefore rejects a deployment that carries `skills`, and the
-launch fails. That happens when a new Core and a new controller send skills
-to a worker on an older VM image.
+launch fails. That happens when a new Core sends skills to a worker on an
+older VM image.
 
-- Roll out the new VM image before, or together with, the new Core and
-  controller. A worker must accept `skills` before any launch carries them.
+- Roll out the new VM image before, or together with, the new Core. A worker
+  must accept `skills` before any launch carries them.
 - Existing workers pick up the new image only when they are replaced. Until
-  then, do not deploy a Core and controller that send skills to them.
+  then, do not deploy a Core that sends skills to them.
 - Images and a VM image built before this change cannot validate skill
   delivery. Validate it on a build that contains the whole change: Core,
-  controller, worker and bootstrap.
+  worker and bootstrap.
 
 ## Console
 
