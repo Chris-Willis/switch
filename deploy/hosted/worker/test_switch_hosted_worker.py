@@ -1,117 +1,140 @@
 from __future__ import annotations
 
+import configparser
+import contextlib
+import copy
+import fcntl
 import hashlib
+import http.server
 import importlib.util
 import io
 import json
 import os
-import signal
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.error
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
-MODULE_PATH = Path(__file__).with_name("switch_hosted_worker.py")
+HERE = Path(__file__).parent
+MODULE_PATH = HERE / "switch_hosted_worker.py"
 SPEC = importlib.util.spec_from_file_location("switch_hosted_worker", MODULE_PATH)
 assert SPEC and SPEC.loader
 worker = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = worker
 SPEC.loader.exec_module(worker)
 
+TESTDATA = HERE / "testdata"
 INSTANCE = "i-0123456789abcdef0"
+OTHER_INSTANCE = "i-0fedcba9876543210"
 VOLUME = "vol-0123456789abcdef0"
-BOOT_1 = "11111111-1111-4111-8111-111111111111"
-BOOT_2 = "22222222-2222-4222-8222-222222222222"
-FS_UUID = "33333333-3333-4333-8333-333333333333"
-RUNTIME_FP = "a" * 64
-GITHUB_CREDENTIAL = "synthetic-github-credential"
-WORKER_CAPABILITY = "synthetic-worker-capability-0123456789"
+MACHINE = "3f1c2b4a-0000-4000-8000-000000000001"
+AGENT = "3f1c2b4a-0000-4000-8000-0000000000a1"
+AGENT_2 = "3f1c2b4a-0000-4000-8000-0000000000a2"
+BOOT_1 = "00000000-0000-4000-8000-00000000b001"
+BOOT_2 = "00000000-0000-4000-8000-00000000b002"
+FS_UUID = "00000000-0000-4000-8000-00000000f001"
+FINGERPRINT = "sha256:0000"
+SECRET_ARN = "arn:aws:secretsmanager:eu-west-1:000000000000:secret:switch-hosted/inst-test/slot-a"
+CAPABILITY = "wcap-test-0000000000000000"
+ONE_AGENT_MESSAGE = "data volume uses the one-agent layout; see 'Moving to one machine per user' in deploy/hosted/README.md"
+INACTIVE = {
+    "ActiveState": "inactive",
+    "SubState": "dead",
+    "Result": "success",
+    "NRestarts": "0",
+    "ExecMainStatus": "0",
+    "ExecMainCode": "0",
+    "ExecMainExitTimestampMonotonic": "0",
+}
 
 
-def config() -> worker.WorkerConfig:
+def fixture(name: str):
+    return json.loads((TESTDATA / name).read_text())
+
+
+def runtime_config() -> worker.RuntimeConfig:
+    return worker.RuntimeConfig(
+        node_path="/opt/switch/node/bin/node",
+        bootstrap_path="/opt/switch/agent-providers/hosted-bootstrap.mjs",
+        shared_host_daemon_path="/opt/switch/agent-providers/shared-host-daemon.mjs",
+        provider_binary_path="/opt/switch/claude/bin/claude",
+        agent_user="switch-agent",
+        agent_group="switch-agent",
+        path="/opt/switch/node/bin:/usr/bin:/bin",
+        allow_initial_format=True,
+        artifact_sha256={
+            "node": "1" * 64,
+            "bootstrap": "2" * 64,
+            "sharedHostDaemon": "3" * 64,
+            "provider": "4" * 64,
+        },
+        providers={
+            "codex": {"path": "/opt/switch/providers/codex", "sha256": "5" * 64}
+        },
+    )
+
+
+def worker_config(runtime: worker.RuntimeConfig | None = None) -> worker.WorkerConfig:
     return worker.WorkerConfig(
-        installation_id="installation-1",
-        secret_id="arn:aws:secretsmanager:eu-west-1:000000000000:secret:assignment-1",
+        installation_id="inst-test",
+        slot_id="slot-a",
+        generation=2,
+        secret_id=SECRET_ARN,
         secret_region="eu-west-1",
-        agent_id="agent-1",
-        generation=7,
         volume_id=VOLUME,
         device_path="/dev/sdf",
-        runtime=worker.RuntimeConfig(
-            node_path="/opt/switch/node/bin/node",
-            bootstrap_path="/opt/switch/agent-providers/hosted-bootstrap.mjs",
-            shared_host_daemon_path="/opt/switch/agent-providers/shared-host-daemon.mjs",
-            provider_binary_path="/opt/switch/claude/bin/claude",
-            agent_user="switch-agent",
-            agent_group="switch-agent",
-            path="/opt/switch/node/bin:/usr/bin:/bin",
-            allow_initial_format=True,
-            artifact_sha256={
-                "node": "1" * 64,
-                "bootstrap": "2" * 64,
-                "sharedHostDaemon": "3" * 64,
-                "provider": "4" * 64,
-            },
-        ),
+        runtime=runtime or runtime_config(),
     )
 
 
-def deployment() -> dict:
-    return {
-        "version": 1,
-        "revision": 3,
-        "session": {"sessionId": "session-1", "agentId": "agent-1"},
-        "provider": {
-            "kind": "claude",
-            "credential": {
-                "kind": "api-key",
-                "path": "/run/switch-hosted/secrets/provider",
-            },
-            "binaryPath": "/opt/switch/claude/bin/claude",
-            "context": "test",
+def valid_agent(**overrides) -> dict:
+    agent = copy.deepcopy(fixture("agents.json")["agents"][0])
+    agent["provider_credential_kind"] = "setup-token"
+    agent["worker_capability"] = CAPABILITY
+    agent["spec"] = {
+        "name": "reviewer",
+        "instructions": "Review pull requests.",
+        "provider": "claude",
+        "definition": "You review code.",
+        "definition_attributes": {"model": "claude-test-model"},
+        "auto_session": True,
+        "auto_approve": False,
+        "session_limit": 8,
+    }
+    agent.update(overrides)
+    return agent
+
+
+def second_agent(**overrides) -> dict:
+    agent = valid_agent(
+        agent_id=AGENT_2,
+        launch_id="req-0000000000000002",
+        repository=None,
+        switch_credentials={
+            "env": {
+                "SWITCH_API_ENDPOINT": "https://switch.example.test/agent-api",
+                "SWITCH_API_TOKEN": "test-token-placeholder",
+                "SWITCH_AGENT_ID": AGENT_2,
+            }
         },
-        "workspacePath": "/data/workspace",
-        "watch": True,
-        "runtimeMode": "approval-required",
-        "switchCredentialsPath": "/run/switch-hosted/secrets/switch.json",
-        "workerCapabilityPath": "/run/switch-hosted/secrets/worker-capability",
-    }
-
-
-def secret(provider: str = "provider-value", switch_token: str = "switch-value") -> str:
-    return json.dumps(
-        {
-            "version": 1,
-            "assignment": {
-                "installationId": "installation-1",
-                "agentId": "agent-1",
-                "generation": 7,
-                "dataVolumeId": VOLUME,
-            },
-            "deployment": deployment(),
-            "providerCredential": provider,
-            "switchCredentials": {
-                "env": {
-                    "SWITCH_API_ENDPOINT": "https://switch.invalid/api/agent",
-                    "SWITCH_API_TOKEN": switch_token,
-                    "SWITCH_AGENT_ID": "agent-1",
-                }
-            },
-            "workerCapability": WORKER_CAPABILITY,
-        }
     )
+    agent.update(overrides)
+    return agent
 
 
-def github_secret(credential: object = GITHUB_CREDENTIAL) -> str:
-    value = json.loads(secret())
-    value["githubCredential"] = credential
-    value["deployment"]["github"] = {
-        "credentialPath": "/run/switch-hosted/secrets/github"
-    }
-    return json.dumps(value)
+def listing(*agents: dict, version: int = 7) -> dict:
+    value = fixture("agents.json")
+    value["agents"] = list(agents)
+    value["agents_version"] = version
+    return value
 
 
 class Response(io.BytesIO):
@@ -122,324 +145,169 @@ class Response(io.BytesIO):
         self.close()
 
 
-class WorkerTests(unittest.TestCase):
-    def test_imdsv2_requires_token_and_does_not_guess_identity(self):
-        requests = []
+def http_error(code: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        "https://switch.example.test", code, "error", {}, io.BytesIO(b"{}")
+    )
 
-        def opener(request, timeout):
-            requests.append((request, timeout))
-            if request.full_url.endswith("/api/token"):
-                return Response(b"token")
-            self.assertEqual(request.get_header("X-aws-ec2-metadata-token"), "token")
-            return Response(INSTANCE.encode())
 
-        self.assertEqual(worker.ImdsV2(opener).instance_id(), INSTANCE)
-        self.assertEqual(requests[0][0].method, "PUT")
+class FakeSystemctl:
+    def __init__(self):
+        self.calls: list[list[str]] = []
+        self.units: dict[str, dict[str, str]] = {}
+
+    def run(self, arguments, capture=True):
+        self.calls.append(arguments)
+        if arguments[1] == "show":
+            agent = arguments[-1].removeprefix("switch-agent@").removesuffix(".service")
+            properties = {**INACTIVE, **self.units.get(agent, {})}
+            return "".join(f"{name}={value}\n" for name, value in properties.items())
+        return ""
+
+    def result(self, arguments, capture=True):
+        self.calls.append(arguments)
+        return subprocess.CompletedProcess(arguments, 1, "", "")
+
+    def actions(self) -> list[list[str]]:
+        return [call[1:] for call in self.calls if call[1] != "show"]
+
+    def clear(self) -> None:
+        self.calls.clear()
+
+
+class FakeClient:
+    def __init__(self):
+        self.listings: list = []
+        self.heartbeats: list = []
+        self.bodies: list[dict] = []
+        self.list_calls = 0
+
+    def agents(self):
+        self.list_calls += 1
+        value = self.listings.pop(0)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    def heartbeat(self, body):
+        self.bodies.append(body)
+        value = (
+            self.heartbeats.pop(0)
+            if self.heartbeats
+            else fixture("heartbeat-response.json")
+        )
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+
+class FakeGit:
+    def __init__(self):
+        self.calls: list[tuple[Path, list[str]]] = []
+
+    def run(self, mirror, arguments):
+        self.calls.append((mirror, arguments))
+
+
+class Harness:
+    def __init__(self, root: Path, git=None):
+        root.mkdir(exist_ok=True)
+        self.paths = worker.Paths(root / "data", root / "run")
+        self.paths.data.mkdir(mode=0o755)
+        self.paths.marker_directory.mkdir(mode=0o700)
+        self.paths.runtime.mkdir(mode=0o750)
+        self.paths.agents_runtime.mkdir(mode=0o750)
+        worker.prepare_layout(self.paths, os.getuid(), os.getgid())
+        self.meminfo = root / "meminfo"
+        self.meminfo.write_text(
+            "MemTotal:       16777216 kB\n"
+            "MemFree:            1000 kB\n"
+            "MemAvailable:   12582912 kB\n"
+        )
+        self.commands = FakeSystemctl()
+        self.client = FakeClient()
+        self.git = git or FakeGit()
+        self.now = 0.0
+        self.clock_value = datetime(2026, 1, 1, tzinfo=UTC)
+        self.supervisor = self.build()
+
+    def build(self) -> worker.Supervisor:
+        return worker.Supervisor(
+            runtime=runtime_config(),
+            identity=worker.MachineIdentity(INSTANCE, BOOT_1, 2),
+            machine_id=MACHINE,
+            runtime_fingerprint=FINGERPRINT,
+            paths=self.paths,
+            uid=os.getuid(),
+            gid=os.getgid(),
+            client=self.client,
+            systemd=worker.Systemd(self.commands),
+            git=self.git,
+            clock=lambda: self.clock_value,
+            monotonic=lambda: self.now,
+            sleep=lambda _seconds: None,
+            statvfs=lambda _path: SimpleNamespace(
+                f_frsize=4096, f_blocks=52428800, f_bfree=49807360, f_bavail=49807360
+            ),
+            meminfo=self.meminfo,
+        )
+
+
+class RootPatched(unittest.TestCase):
+    def setUp(self):
+        for patcher in (
+            mock.patch.object(worker, "ROOT_UID", os.getuid()),
+            mock.patch.object(worker.os, "chown"),
+            mock.patch.object(worker.os, "fchown"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.temporary = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, self.temporary, True)
+
+
+class ConfigTests(unittest.TestCase):
+    def write(self, value) -> Path:
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        path = directory / "assignment.json"
+        path.write_text(json.dumps(value))
+        return path
+
+    def test_assignment_v2_fixture_with_secret_arn(self):
+        value = fixture("assignment.json")
+        value["assignmentSecretId"] = SECRET_ARN
+        value["previousInstanceId"] = INSTANCE
+        value["previousRuntimeFingerprint"] = "sha256:ffff"
+        config = worker.load_worker_config(self.write(value), HERE / "runtime.json")
         self.assertEqual(
-            requests[0][0].get_header("X-aws-ec2-metadata-token-ttl-seconds"), "60"
+            (config.installation_id, config.slot_id, config.generation),
+            ("inst-test", "slot-a", 2),
         )
-        self.assertEqual(len(requests), 2)
+        self.assertEqual(config.volume_id, VOLUME)
+        self.assertEqual(config.device_path, "/dev/sdf")
+        self.assertEqual(config.secret_region, "eu-west-1")
 
-    def test_refreshing_provider_never_copies_an_assignment_credential(self):
-        value = json.loads(secret())
-        value["deployment"]["provider"]["credential"]["refresh"] = True
-        self.assertIsNone(
-            worker.parse_secret_document(
-                json.dumps(value), config()
-            ).provider_credential
-        )
-        del value["providerCredential"]
-        self.assertIsNone(
-            worker.parse_secret_document(
-                json.dumps(value), config()
-            ).provider_credential
-        )
+    def test_verbatim_assignment_fixture_needs_a_full_secret_arn(self):
+        with self.assertRaisesRegex(worker.WorkerError, "full Secrets Manager ARN"):
+            worker.load_worker_config(
+                self.write(fixture("assignment.json")), HERE / "runtime.json"
+            )
 
-    def test_secret_boundary_is_strict_and_launch_has_no_secret_values(self):
-        parsed = worker.parse_secret_document(secret(), config())
-        identity = worker.MachineIdentity(INSTANCE, BOOT_1, 7)
-        arguments, environment = worker.build_launch(
-            config(),
-            identity,
-            Path("/run/switch-hosted/secrets/deployment.json"),
-            123,
-            456,
-        )
-        serialized = json.dumps({"arguments": arguments, "environment": environment})
-        self.assertNotIn(parsed.provider_credential, serialized)
-        self.assertNotIn("switch-value", serialized)
-        self.assertNotIn(WORKER_CAPABILITY, serialized)
-        self.assertEqual(environment["SWITCH_HOST_BOOT_ID"], BOOT_1)
-        self.assertNotIn("SWITCH_HOSTED_MCP_RUNTIME_PATH", environment)
-        altered = json.loads(secret())
-        altered["assignment"]["generation"] = 8
-        with self.assertRaisesRegex(worker.WorkerError, "does not match"):
-            worker.parse_secret_document(json.dumps(altered), config())
-        insecure = json.loads(secret())
-        insecure["switchCredentials"]["env"]["SWITCH_API_ENDPOINT"] = (
-            "http://switch.invalid/api"
-        )
-        with self.assertRaisesRegex(worker.WorkerError, "endpoint is invalid"):
-            worker.parse_secret_document(json.dumps(insecure), config())
-
-    def test_deployment_is_an_agent_watcher_only(self):
-        document = json.loads(secret())
-        deployment = document["deployment"]
-        parsed = worker.parse_secret_document(json.dumps(document), config())
-        self.assertTrue(parsed.deployment["watch"])
-        for invalid in (
-            {**deployment, "room": {"roomId": "room-1"}},
-            {**deployment, "watch": "true"},
-            {key: value for key, value in deployment.items() if key != "watch"},
-            {**deployment, "mcpRuntime": "@sandboxaq/switch-agent-runtime@0.4.2"},
-            {
-                **deployment,
-                "session": {**deployment["session"], "nativeSessionId": "old"},
-            },
+    def test_assignment_rejects_v1_unknown_fields_and_other_mounts(self):
+        base = fixture("assignment.json")
+        base["assignmentSecretId"] = SECRET_ARN
+        for change in (
+            {"version": 1},
+            {"agentId": "agent-1"},
+            {"mountPath": "/mnt"},
+            {"generation": 0},
         ):
-            with self.subTest(invalid=invalid):
-                document["deployment"] = invalid
+            with self.subTest(change=change):
                 with self.assertRaises(worker.WorkerError):
-                    worker.parse_secret_document(json.dumps(document), config())
-
-    def test_worker_capability_is_required_bounded_and_at_a_fixed_path(self):
-        parsed = worker.parse_secret_document(secret(), config())
-        self.assertEqual(parsed.worker_capability, WORKER_CAPABILITY)
-        for invalid in ("short", "has space in it 0123456789", "x" * 4097, 7):
-            with self.subTest(invalid=invalid):
-                document = json.loads(secret())
-                document["workerCapability"] = invalid
-                with self.assertRaisesRegex(
-                    worker.WorkerError, "capability is invalid"
-                ):
-                    worker.parse_secret_document(json.dumps(document), config())
-        document = json.loads(secret())
-        del document["workerCapability"]
-        with self.assertRaisesRegex(worker.WorkerError, "missing or unexpected"):
-            worker.parse_secret_document(json.dumps(document), config())
-        document = json.loads(secret())
-        document["deployment"]["workerCapabilityPath"] = "/tmp/worker-capability"
-        with self.assertRaisesRegex(worker.WorkerError, "capability path is not fixed"):
-            worker.parse_secret_document(json.dumps(document), config())
-
-    def test_deployment_revision_must_be_a_positive_integer(self):
-        for revision in [0, True, "3", None]:
-            document = json.loads(secret())
-            document["deployment"]["revision"] = revision
-            with self.assertRaisesRegex(worker.WorkerError, "revision is invalid"):
-                worker.parse_secret_document(json.dumps(document), config())
-
-    def test_runtime_config_has_no_bundled_mcp_runtime(self):
-        assignment = {
-            "version": 1,
-            "installationId": "installation-1",
-            "agentId": "agent-1",
-            "generation": 7,
-            "assignmentSecretId": "arn:aws:secretsmanager:eu-west-1:000000000000:secret:assignment-1",
-            "dataVolumeId": VOLUME,
-            "dataDevice": "/dev/sdf",
-            "mountPath": "/data",
-        }
-        runtime = {
-            "version": 1,
-            "nodePath": "/opt/switch/node/bin/node",
-            "bootstrapPath": "/opt/switch/agent-providers/hosted-bootstrap.mjs",
-            "sharedHostDaemonPath": "/opt/switch/agent-providers/shared-host-daemon.mjs",
-            "providerBinaryPath": "/opt/switch/claude/bin/claude",
-            "agentUser": "switch-agent",
-            "agentGroup": "switch-agent",
-            "path": "/opt/switch/node/bin:/usr/bin:/bin",
-            "allowInitialFormat": True,
-            "artifactSha256": {
-                "node": "1" * 64,
-                "bootstrap": "2" * 64,
-                "sharedHostDaemon": "3" * 64,
-                "provider": "4" * 64,
-            },
-        }
-        with tempfile.TemporaryDirectory() as temporary:
-            assignment_path = Path(temporary) / "assignment.json"
-            runtime_path = Path(temporary) / "runtime.json"
-            assignment_path.write_text(json.dumps(assignment))
-            runtime_path.write_text(json.dumps(runtime))
-            parsed = worker.load_worker_config(assignment_path, runtime_path)
-            self.assertEqual(parsed.runtime.artifact_sha256, runtime["artifactSha256"])
-
-            for key, value in (
-                ("mcpRuntime", "@sandboxaq/switch-agent-runtime@0.4.2"),
-                (
-                    "mcpRuntimePath",
-                    "/opt/switch/agent-providers/switch-agent-runtime.mjs",
-                ),
-            ):
-                with self.subTest(key=key):
-                    runtime_path.write_text(json.dumps({**runtime, key: value}))
-                    with self.assertRaisesRegex(
-                        worker.WorkerError, "missing or unexpected"
-                    ):
-                        worker.load_worker_config(assignment_path, runtime_path)
-            hashes = {**runtime["artifactSha256"], "mcpRuntime": "5" * 64}
-            runtime_path.write_text(json.dumps({**runtime, "artifactSha256": hashes}))
-            with self.assertRaisesRegex(worker.WorkerError, "missing or unexpected"):
-                worker.load_worker_config(assignment_path, runtime_path)
-
-    def test_tampered_baked_runtime_fails_checksum_verification(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            paths = {}
-            hashes = {}
-            for name in ("node", "bootstrap", "sharedHostDaemon", "provider"):
-                path = Path(temporary) / name
-                path.write_bytes(f"trusted-{name}".encode())
-                path.chmod(0o444)
-                paths[name] = str(path)
-                hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
-            runtime = worker.RuntimeConfig(
-                node_path=paths["node"],
-                bootstrap_path=paths["bootstrap"],
-                shared_host_daemon_path=paths["sharedHostDaemon"],
-                provider_binary_path=paths["provider"],
-                agent_user="switch-agent",
-                agent_group="switch-agent",
-                path="/usr/bin:/bin",
-                allow_initial_format=True,
-                artifact_sha256=hashes,
-            )
-            configured = worker.WorkerConfig(
-                installation_id="installation-1",
-                secret_id="arn:aws:secretsmanager:eu-west-1:000000000000:secret:assignment-1",
-                secret_region="eu-west-1",
-                agent_id="agent-1",
-                generation=7,
-                volume_id=VOLUME,
-                device_path="/dev/sdf",
-                runtime=runtime,
-            )
-            Path(paths["bootstrap"]).chmod(0o644)
-            Path(paths["bootstrap"]).write_text("tampered")
-            Path(paths["bootstrap"]).chmod(0o444)
-            completed = subprocess.CompletedProcess(
-                [paths["node"], "--version"], 0, "v24.1.0\n", ""
-            )
-            with (
-                mock.patch.object(worker, "ROOT_UID", os.getuid()),
-                mock.patch.object(worker.subprocess, "run", return_value=completed),
-            ):
-                with self.assertRaisesRegex(worker.WorkerError, "checksum"):
-                    worker.verify_pinned_runtime(configured)
-
-    def test_optional_github_contract_is_strict_and_never_enters_launch(self):
-        legacy = worker.parse_secret_document(secret(), config())
-        self.assertIsNone(legacy.github_credential)
-
-        parsed = worker.parse_secret_document(github_secret(), config())
-        self.assertEqual(parsed.github_credential, GITHUB_CREDENTIAL)
-        identity = worker.MachineIdentity(INSTANCE, BOOT_1, 7)
-        arguments, environment = worker.build_launch(
-            config(),
-            identity,
-            Path("/run/switch-hosted/secrets/deployment.json"),
-            123,
-            456,
-        )
-        serialized = json.dumps({"arguments": arguments, "environment": environment})
-        self.assertNotIn(GITHUB_CREDENTIAL, serialized)
-        self.assertNotIn("githubCredential", json.dumps(parsed.deployment))
-
-        missing_credential = json.loads(github_secret())
-        del missing_credential["githubCredential"]
-        missing_deployment = json.loads(github_secret())
-        del missing_deployment["deployment"]["github"]
-        for invalid in (missing_credential, missing_deployment):
-            with self.subTest(invalid=invalid):
-                with self.assertRaisesRegex(worker.WorkerError, "provided together"):
-                    worker.parse_secret_document(json.dumps(invalid), config())
-
-        wrong_path = json.loads(github_secret())
-        wrong_path["deployment"]["github"]["credentialPath"] = "/tmp/github"
-        with self.assertRaisesRegex(worker.WorkerError, "path is not fixed"):
-            worker.parse_secret_document(json.dumps(wrong_path), config())
-
-        unexpected = json.loads(github_secret())
-        unexpected["deployment"]["github"]["extra"] = True
-        with self.assertRaisesRegex(worker.WorkerError, "missing or unexpected"):
-            worker.parse_secret_document(json.dumps(unexpected), config())
-
-    def test_github_repository_is_optional_but_must_be_a_safe_full_name(self):
-        document = json.loads(github_secret())
-        document["deployment"]["github"]["repository"] = "example/project"
-        parsed = worker.parse_secret_document(json.dumps(document), config())
-        self.assertEqual(parsed.deployment["github"]["repository"], "example/project")
-        for name in [
-            "../project",
-            "example/..",
-            "example/project?token=x",
-            "example/project/extra",
-        ]:
-            with self.subTest(name=name):
-                document["deployment"]["github"]["repository"] = name
-                with self.assertRaisesRegex(worker.WorkerError, "owner/repository"):
-                    worker.parse_secret_document(json.dumps(document), config())
-
-    def test_deployment_skills_are_strict_bounded_and_relative(self):
-        document = json.loads(github_secret())
-        skill = {
-            "slug": "github",
-            "files": {"SKILL.md": "---\nname: github\n---\n", "scripts/pr.sh": "echo"},
-        }
-        document["deployment"]["skills"] = [skill]
-        parsed = worker.parse_secret_document(json.dumps(document), config())
-        self.assertEqual(parsed.deployment["skills"], [skill])
-        invalid = {
-            "absolute path": [
-                {**skill, "files": {"SKILL.md": "x", "/etc/passwd": "x"}}
-            ],
-            "parent segment": [{**skill, "files": {"SKILL.md": "x", "a/../b": "x"}}],
-            "dot segment": [{**skill, "files": {"SKILL.md": "x", "./b": "x"}}],
-            "backslash": [{**skill, "files": {"SKILL.md": "x", "a\\b": "x"}}],
-            "unknown key": [{**skill, "version": 1}],
-            "missing SKILL.md": [{**skill, "files": {"README.md": "x"}}],
-            "repeated slug": [skill, skill],
-            "unsafe slug": [{**skill, "slug": "../github"}],
-            "binary content": [{**skill, "files": {"SKILL.md": "a\x00b"}}],
-            "non-text content": [{**skill, "files": {"SKILL.md": 1}}],
-            "empty list": [],
-            "oversize": [
-                {**skill, "files": {"SKILL.md": "x" * (worker.MAX_SKILL_BYTES + 1)}}
-            ],
-        }
-        for label, skills in invalid.items():
-            with self.subTest(label=label):
-                document["deployment"]["skills"] = skills
-                with self.assertRaises(worker.WorkerError):
-                    worker.parse_secret_document(json.dumps(document), config())
-
-    def test_github_credential_requires_bounded_printable_ascii_without_whitespace(
-        self,
-    ):
-        invalid_credentials = [
-            "",
-            "two words",
-            "line\nbreak",
-            "control\x1fvalue",
-            "non-ascii-\N{SNOWMAN}",
-            "x" * (16 * 1024 + 1),
-        ]
-        for credential in invalid_credentials:
-            with self.subTest(credential_length=len(credential)):
-                with self.assertRaisesRegex(
-                    worker.WorkerError, "GitHub credential is invalid"
-                ):
-                    worker.parse_secret_document(github_secret(credential), config())
-
-    def test_secret_arn_supplies_region_without_ambient_aws_configuration(self):
-        boto3 = mock.Mock()
-        boto3.client.return_value = mock.Mock()
-        with (
-            mock.patch.dict(sys.modules, {"boto3": boto3}),
-            mock.patch.dict(os.environ, {}, clear=True),
-        ):
-            worker.SecretsManager("eu-west-1")
-        boto3.client.assert_called_once_with("secretsmanager", region_name="eu-west-1")
+                    worker.load_worker_config(
+                        self.write({**base, **change}), HERE / "runtime.json"
+                    )
 
     def test_secret_arn_rejects_malformed_and_partition_mismatched_regions(self):
         with self.assertRaisesRegex(worker.WorkerError, "full Secrets Manager ARN"):
@@ -455,24 +323,286 @@ class WorkerTests(unittest.TestCase):
             "us-gov-west-1",
         )
 
-    def test_secret_store_calls_only_get_for_configured_secret(self):
-        class Client:
-            def __init__(self):
-                self.calls = []
 
-            def get_secret_value(self, **kwargs):
-                self.calls.append(kwargs)
-                return {"SecretString": secret(), "VersionId": "version-1"}
+class BundleTests(unittest.TestCase):
+    def raw(self, **changes) -> str:
+        return json.dumps({**fixture("bundle.json"), **changes})
 
-        client = Client()
+    def test_fixture_bundle_parses(self):
+        bundle = worker.parse_bundle(self.raw(), worker_config())
+        self.assertEqual(bundle.machine_id, MACHINE)
+        self.assertEqual(bundle.api_endpoint, "https://switch.example.test/agent-api")
         self.assertEqual(
-            worker.SecretsManager("eu-west-1", client).read("secret-id"),
-            (secret(), "version-1"),
+            bundle.machine_capability, "mcap-test-0000000000000000000000000000"
         )
+        self.assertNotIn("mcap-test", repr(bundle))
+
+    def test_other_version_is_obsolete(self):
+        for version in (1, 3, "2"):
+            with self.subTest(version=version):
+                with self.assertRaises(worker.ObsoleteBundle):
+                    worker.parse_bundle(self.raw(version=version), worker_config())
+
+    def test_bundle_must_match_the_assignment(self):
+        for key, value in (
+            ("installationId", "inst-other"),
+            ("slotId", "slot-b"),
+            ("generation", 3),
+            ("dataVolumeId", "vol-0fedcba9876543210"),
+        ):
+            assignment = {**fixture("bundle.json")["assignment"], key: value}
+            with self.subTest(key=key):
+                with self.assertRaisesRegex(worker.WorkerError, "does not match"):
+                    worker.parse_bundle(
+                        self.raw(assignment=assignment), worker_config()
+                    )
+
+    def test_bundle_rejects_unsafe_endpoints_capabilities_and_extra_keys(self):
+        for change in (
+            {"apiEndpoint": "http://switch.example.test/agent-api"},
+            {"apiEndpoint": "https://user:pass@switch.example.test/agent-api"},
+            {"apiEndpoint": "https://switch.example.test/agent-api?x=1"},
+            {"apiEndpoint": "https://switch.example.test/agent-api#x"},
+            {"machineCapability": "short"},
+            {"machineCapability": "has a space in it 0000"},
+            {"machineCapability": "x" * 4097},
+            {"agentId": AGENT},
+        ):
+            with self.subTest(change=change):
+                with self.assertRaises(worker.WorkerError) as raised:
+                    worker.parse_bundle(self.raw(**change), worker_config())
+                self.assertNotIsInstance(raised.exception, worker.ObsoleteBundle)
+
+    def test_main_exits_75_on_an_obsolete_bundle_before_touching_the_host(self):
+        secrets = mock.Mock()
+        secrets.read.return_value = self.raw(version=1)
+        imds = mock.Mock()
+        imds.return_value.instance_id.return_value = INSTANCE
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(worker.os, "geteuid", return_value=0),
+            mock.patch.object(worker, "acquire_root_lock"),
+            mock.patch.object(
+                worker, "load_worker_config", return_value=worker_config()
+            ),
+            mock.patch.object(worker, "verify_pinned_runtime", return_value="0" * 64),
+            mock.patch.object(
+                worker, "resolve_agent_account", return_value=(1000, 1000)
+            ),
+            mock.patch.object(worker, "ImdsV2", imds),
+            mock.patch.object(worker, "_read_boot_id", return_value=BOOT_1),
+            mock.patch.object(worker, "SecretsManager", return_value=secrets),
+            mock.patch.object(worker, "prepare_runtime_directory") as runtime,
+            mock.patch.object(worker, "prepare_storage") as storage,
+            contextlib.redirect_stderr(stderr),
+        ):
+            self.assertEqual(worker.main([]), 75)
+        self.assertEqual(stderr.getvalue(), "obsolete bundle\n")
+        secrets.read.assert_called_once_with(SECRET_ARN)
+        runtime.assert_not_called()
+        storage.assert_not_called()
+
+
+class BundleFileTests(RootPatched):
+    def test_bundle_file_is_private_and_holds_only_machine_fields(self):
+        paths = worker.Paths(self.temporary / "data", self.temporary / "run")
+        paths.runtime.mkdir()
+        worker.write_bundle(
+            paths,
+            worker.parse_bundle(json.dumps(fixture("bundle.json")), worker_config()),
+        )
+        self.assertEqual(paths.bundle, self.temporary / "run/machine/bundle.json")
+        self.assertEqual(stat.S_IMODE(paths.bundle.stat().st_mode), 0o600)
         self.assertEqual(
-            client.calls, [{"SecretId": "secret-id", "VersionStage": "AWSCURRENT"}]
+            json.loads(paths.bundle.read_text()),
+            {
+                "version": 2,
+                "machineId": MACHINE,
+                "machineCapability": "mcap-test-0000000000000000000000000000",
+                "apiEndpoint": "https://switch.example.test/agent-api",
+            },
         )
 
+    def test_runtime_directory_must_be_tmpfs(self):
+        class Commands:
+            def __init__(self, filesystem):
+                self.filesystem = filesystem
+
+            def run(self, arguments, capture=True):
+                return self.filesystem + "\n"
+
+        paths = worker.Paths(self.temporary / "data", self.temporary / "run")
+        paths.runtime.mkdir(mode=0o750)
+        with self.assertRaisesRegex(worker.WorkerError, "tmpfs"):
+            worker.prepare_runtime_directory(Commands("ext4"), paths, os.getgid())
+        worker.prepare_runtime_directory(Commands("tmpfs"), paths, os.getgid())
+        self.assertEqual(stat.S_IMODE(paths.bundle.parent.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(paths.agents_runtime.stat().st_mode), 0o750)
+
+
+class MarkerTests(RootPatched):
+    def setUp(self):
+        super().setUp()
+        self.paths = worker.Paths(self.temporary / "data", self.temporary / "run")
+        self.paths.data.mkdir(mode=0o755)
+        self.identity = worker.MachineIdentity(INSTANCE, BOOT_1, 2)
+
+    def reconcile(self, identity=None, fingerprint=FINGERPRINT):
+        worker.reconcile_marker(
+            identity or self.identity,
+            worker_config(),
+            FS_UUID,
+            fingerprint,
+            self.paths,
+        )
+
+    def marker(self) -> dict:
+        return json.loads(self.paths.marker.read_text())
+
+    def test_blank_disk_gets_a_v2_marker(self):
+        (self.paths.data / "lost+found").mkdir()
+        self.reconcile()
+        self.assertEqual(self.marker(), fixture("machine.json"))
+        self.assertEqual(stat.S_IMODE(self.paths.marker.stat().st_mode), 0o600)
+
+    def test_unmarked_disk_with_data_is_refused(self):
+        (self.paths.data / "state").mkdir()
+        with self.assertRaisesRegex(worker.WorkerError, "no trusted machine marker"):
+            self.reconcile()
+
+    def test_fixture_marker_is_accepted_unchanged(self):
+        worker._write_root_json(self.paths.marker, fixture("machine.json"))
+        before = self.paths.marker.stat().st_ino
+        self.reconcile()
+        self.assertEqual(self.paths.marker.stat().st_ino, before)
+
+    def test_v1_marker_is_refused_with_the_migration_message(self):
+        worker._write_root_json(
+            self.paths.marker,
+            {
+                "version": 1,
+                "installationId": "inst-test",
+                "agentId": "agent-1",
+                "generation": 2,
+                "instanceId": INSTANCE,
+                "bootId": BOOT_1,
+                "filesystemUuid": FS_UUID,
+                "runtimeFingerprint": "a" * 64,
+            },
+        )
+        with self.assertRaises(worker.WorkerError) as raised:
+            self.reconcile()
+        self.assertEqual(str(raised.exception), ONE_AGENT_MESSAGE)
+
+    def test_identity_mismatches_are_refused(self):
+        for key, value in (
+            ("installationId", "inst-other"),
+            ("slotId", "slot-b"),
+            ("generation", 3),
+            ("filesystemUuid", "00000000-0000-4000-8000-00000000f002"),
+        ):
+            with self.subTest(key=key):
+                worker._write_root_json(
+                    self.paths.marker, {**fixture("machine.json"), key: value}
+                )
+                with self.assertRaises(worker.WorkerError):
+                    self.reconcile()
+
+    def test_malformed_marker_is_refused(self):
+        for change in (
+            {"layout": "one-agent"},
+            {"runtimeFingerprint": "0000"},
+            {"extra": 1},
+        ):
+            with self.subTest(change=change):
+                worker._write_root_json(
+                    self.paths.marker, {**fixture("machine.json"), **change}
+                )
+                with self.assertRaisesRegex(worker.WorkerError, "marker is invalid"):
+                    self.reconcile()
+
+    def test_new_instance_and_fingerprint_are_rewritten_without_pinning(self):
+        worker._write_root_json(self.paths.marker, fixture("machine.json"))
+        self.reconcile(
+            worker.MachineIdentity(OTHER_INSTANCE, BOOT_2, 2),
+            fingerprint="sha256:" + "b" * 64,
+        )
+        marker = self.marker()
+        self.assertEqual(marker["instanceId"], OTHER_INSTANCE)
+        self.assertEqual(marker["bootId"], BOOT_2)
+        self.assertEqual(marker["runtimeFingerprint"], "sha256:" + "b" * 64)
+        self.assertEqual(marker["layout"], "per-user-v1")
+
+    def owner_files(self, agent_id: str, previous: worker.MachineIdentity) -> Path:
+        state = self.paths.agents / agent_id
+        supervisor = state / "supervisor"
+        supervisor.mkdir(parents=True, mode=0o700)
+        self.paths.agents.chmod(0o755)
+        (supervisor / "owner.json").write_text(
+            json.dumps({"pid": 1, "token": "old", "machine": previous.json()})
+        )
+        (state / "shared-state.jsonl").write_text('{"journal":"preserve"}\n')
+        return state
+
+    def test_new_boot_quarantines_ownership_per_agent(self):
+        worker._write_root_json(self.paths.marker, fixture("machine.json"))
+        previous = worker.MachineIdentity(INSTANCE, BOOT_1, 2)
+        first = self.owner_files(AGENT, previous)
+        second = self.owner_files(AGENT_2, previous)
+        (self.paths.agents / "not-a-uuid").mkdir()
+        with self.assertLogs(worker.logger, "WARNING"):
+            self.reconcile(worker.MachineIdentity(INSTANCE, BOOT_2, 2))
+        for agent_id, state in ((AGENT, first), (AGENT_2, second)):
+            self.assertFalse((state / "supervisor/owner.json").exists())
+            self.assertTrue(
+                (
+                    self.paths.quarantine
+                    / agent_id
+                    / f"{BOOT_1}--{BOOT_2}"
+                    / "supervisor/owner.json"
+                ).exists()
+            )
+            self.assertEqual(
+                (state / "shared-state.jsonl").read_text(), '{"journal":"preserve"}\n'
+            )
+        self.assertEqual(self.marker()["bootId"], BOOT_2)
+
+    def test_same_boot_does_not_quarantine(self):
+        worker._write_root_json(self.paths.marker, fixture("machine.json"))
+        state = self.owner_files(AGENT, self.identity)
+        self.reconcile(self.identity, fingerprint="sha256:" + "c" * 64)
+        self.assertTrue((state / "supervisor/owner.json").exists())
+        self.assertFalse(self.paths.quarantine.exists())
+        self.assertEqual(self.marker()["runtimeFingerprint"], "sha256:" + "c" * 64)
+
+    def test_owner_from_an_unknown_machine_fails_closed(self):
+        worker._write_root_json(self.paths.marker, fixture("machine.json"))
+        state = self.owner_files(
+            AGENT, worker.MachineIdentity(OTHER_INSTANCE, BOOT_1, 2)
+        )
+        with self.assertRaisesRegex(worker.WorkerError, "unknown machine identity"):
+            self.reconcile(worker.MachineIdentity(INSTANCE, BOOT_2, 2))
+        self.assertTrue((state / "supervisor/owner.json").exists())
+        self.assertEqual(self.marker()["bootId"], BOOT_1)
+
+    def test_partial_quarantine_is_resumed(self):
+        worker._write_root_json(self.paths.marker, fixture("machine.json"))
+        previous = worker.MachineIdentity(INSTANCE, BOOT_1, 2)
+        state = self.owner_files(AGENT, previous)
+        quarantine = self.paths.quarantine / AGENT / f"{BOOT_1}--{BOOT_2}"
+        quarantine.mkdir(parents=True, mode=0o700)
+        self.paths.quarantine.chmod(0o700)
+        (self.paths.quarantine / AGENT).chmod(0o700)
+        (quarantine / "shared-owner.lock").write_text(
+            json.dumps({"pid": 2, "token": "worker", "machine": previous.json()})
+        )
+        self.reconcile(worker.MachineIdentity(INSTANCE, BOOT_2, 2))
+        self.assertFalse((state / "supervisor/owner.json").exists())
+        self.assertTrue((quarantine / "supervisor/owner.json").exists())
+        self.assertTrue((quarantine / "shared-owner.lock").exists())
+
+
+class StorageTests(unittest.TestCase):
     def test_storage_resolves_nitro_device_by_ebs_serial(self):
         class FakeCommands:
             def __init__(self):
@@ -480,22 +610,20 @@ class WorkerTests(unittest.TestCase):
 
             def run(self, arguments, capture=True):
                 self.calls.append(arguments)
-                if arguments[0].endswith("lsblk"):
-                    return json.dumps(
-                        {
-                            "blockdevices": [
-                                {
-                                    "path": "/dev/nvme0n1",
-                                    "type": "disk",
-                                    "fstype": "ext4",
-                                    "uuid": FS_UUID,
-                                    "serial": VOLUME.replace("-", ""),
-                                    "mountpoints": [None],
-                                }
-                            ]
-                        }
-                    )
-                raise AssertionError(arguments)
+                return json.dumps(
+                    {
+                        "blockdevices": [
+                            {
+                                "path": "/dev/nvme0n1",
+                                "type": "disk",
+                                "fstype": "ext4",
+                                "uuid": FS_UUID,
+                                "serial": VOLUME.replace("-", ""),
+                                "mountpoints": [None],
+                            }
+                        ]
+                    }
+                )
 
         commands = FakeCommands()
         observed = worker.inspect_storage(commands, "/dev/sdf", VOLUME)
@@ -503,56 +631,23 @@ class WorkerTests(unittest.TestCase):
         self.assertNotIn("/dev/sdf", commands.calls[0])
 
     def test_unexpected_signature_never_formats(self):
-        class FakeCommands:
-            def __init__(self):
-                self.calls = []
+        blank = worker.StorageObservation(
+            "/dev/nvme1n1", VOLUME, None, None, False, ("xfs",)
+        )
+        commands = mock.Mock()
+        with mock.patch.object(worker, "inspect_storage", return_value=blank):
+            with self.assertRaisesRegex(
+                worker.WorkerError, "not a safely initializable"
+            ):
+                worker.prepare_storage(commands, worker_config())
+        commands.run.assert_not_called()
 
-            def run(self, arguments, capture=True):
-                self.calls.append(arguments)
-                if arguments[0].endswith("lsblk"):
-                    return json.dumps(
-                        {
-                            "blockdevices": [
-                                {
-                                    "path": "/dev/nvme1n1",
-                                    "type": "disk",
-                                    "fstype": None,
-                                    "uuid": None,
-                                    "serial": VOLUME.replace("-", ""),
-                                    "mountpoints": [None],
-                                }
-                            ]
-                        }
-                    )
-                if arguments[0].endswith("wipefs"):
-                    return json.dumps({"signatures": [{"type": "xfs"}]})
-                raise AssertionError(arguments)
-
-            def result(self, arguments, capture=True):
-                raise AssertionError(arguments)
-
-        commands = FakeCommands()
-        with self.assertRaisesRegex(worker.WorkerError, "not a safely initializable"):
-            worker.prepare_storage(commands, config())
-        self.assertFalse(any(call[0].endswith("mkfs.ext4") for call in commands.calls))
-
-    def test_findmnt_exit_one_mounts_exact_resolved_device(self):
+    def test_unmounted_data_is_mounted_with_systemd_mount(self):
         observation = worker.StorageObservation(
             "/dev/nvme1n1", VOLUME, "ext4", FS_UUID, False, ()
         )
-
-        class FakeCommands:
-            def __init__(self):
-                self.calls = []
-
-            def result(self, arguments, capture=True):
-                self.calls.append(arguments)
-                return subprocess.CompletedProcess(arguments, 1, "", "")
-
-            def run(self, arguments, capture=True):
-                self.calls.append(arguments)
-                return ""
-
+        commands = mock.Mock()
+        commands.result.return_value = subprocess.CompletedProcess([], 1, "", "")
         with tempfile.TemporaryDirectory() as temporary:
             mount = Path(temporary) / "data"
             with (
@@ -560,12 +655,34 @@ class WorkerTests(unittest.TestCase):
                 mock.patch.object(worker, "inspect_storage", return_value=observation),
                 mock.patch.object(worker, "ROOT_UID", os.getuid()),
             ):
-                commands = FakeCommands()
-                worker.prepare_storage(commands, config())
-        find = next(call for call in commands.calls if call[0].endswith("findmnt"))
-        self.assertIn("--mountpoint", find)
-        mounted = next(call for call in commands.calls if call[0].endswith("mount"))
-        self.assertEqual(mounted[-2], "/dev/nvme1n1")
+                worker.prepare_storage(commands, worker_config())
+        commands.run.assert_called_once_with(
+            [
+                "/usr/bin/systemd-mount",
+                "--type=ext4",
+                "--options=nodev,nosuid",
+                "/dev/nvme1n1",
+                str(mount),
+            ],
+            capture=False,
+        )
+
+    def test_mountpoint_held_by_another_device_is_refused(self):
+        observation = worker.StorageObservation(
+            "/dev/nvme1n1", VOLUME, "ext4", FS_UUID, False, ()
+        )
+        commands = mock.Mock()
+        commands.result.return_value = subprocess.CompletedProcess(
+            [], 0, "/dev/nvme9n1\n", ""
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                mock.patch.object(worker, "DATA_MOUNT", Path(temporary) / "data"),
+                mock.patch.object(worker, "inspect_storage", return_value=observation),
+                mock.patch.object(worker, "ROOT_UID", os.getuid()),
+            ):
+                with self.assertRaisesRegex(worker.WorkerError, "occupied"):
+                    worker.prepare_storage(commands, worker_config())
 
     def test_new_filesystem_waits_for_device_metadata_before_mount(self):
         blank = worker.StorageObservation("/dev/nvme1n1", VOLUME, None, None, False, ())
@@ -595,519 +712,1222 @@ class WorkerTests(unittest.TestCase):
                     side_effect=lambda *_: formatted if settled else blank,
                 ),
             ):
-                observation, did_format = worker.prepare_storage(commands, config())
+                observation, did_format = worker.prepare_storage(
+                    commands, worker_config()
+                )
         self.assertTrue(did_format)
         self.assertEqual(observation.filesystem_uuid, FS_UUID)
         self.assertEqual(sum(call[0].endswith("mkfs.ext4") for call in calls), 1)
-        self.assertIn(
-            ["/usr/bin/udevadm", "trigger", "--action=change", blank.device_path], calls
+        self.assertEqual(calls[-1][0], "/usr/bin/systemd-mount")
+
+
+class HostTests(unittest.TestCase):
+    def test_imdsv2_requires_token_and_does_not_guess_identity(self):
+        requests = []
+
+        def opener(request, timeout):
+            requests.append((request, timeout))
+            if request.full_url.endswith("/api/token"):
+                return Response(b"token")
+            self.assertEqual(request.get_header("X-aws-ec2-metadata-token"), "token")
+            return Response(INSTANCE.encode())
+
+        self.assertEqual(worker.ImdsV2(opener).instance_id(), INSTANCE)
+        self.assertEqual(requests[0][0].method, "PUT")
+        self.assertEqual(len(requests), 2)
+
+    def test_secret_store_calls_only_get_for_configured_secret(self):
+        client = mock.Mock()
+        client.get_secret_value.return_value = {"SecretString": "{}", "VersionId": "v"}
+        self.assertEqual(
+            worker.SecretsManager("eu-west-1", client).read(SECRET_ARN), "{}"
+        )
+        client.get_secret_value.assert_called_once_with(
+            SecretId=SECRET_ARN, VersionStage="AWSCURRENT"
         )
 
-    def test_same_instance_new_boot_quarantines_only_proven_owners(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            data = Path(temporary) / "data"
-            state = data / "state"
-            marker_directory = data / ".switch-hosted"
-            marker = marker_directory / "machine.json"
-            supervisor = state / "supervisor"
-            ownership = supervisor / "ownership"
-            ownership.mkdir(parents=True, mode=0o700)
-            journal = state / "shared-state.jsonl"
-            journal.write_text('{"journal":"preserve"}\n')
-            previous = worker.MachineIdentity(INSTANCE, BOOT_1, 7)
-            owner_value = {
-                "pid": os.getpid(),
-                "token": "old",
-                "machine": previous.json(),
-            }
-            (supervisor / "owner.json").write_text(json.dumps(owner_value))
-            session_root = state / "home/.local/state/switch/sdk-sessions" / ("a" * 64)
-            session_supervisor = session_root / "supervisor"
-            session_supervisor.mkdir(parents=True, mode=0o700)
-            (session_supervisor / "owner.json").write_text(json.dumps(owner_value))
-            (session_root / "config.json").write_text('{"session":"preserve"}')
-            (ownership / f"{os.getpid()}-ticket.json").write_text(
-                json.dumps({"choosing": False, "ticket": 1, "machine": previous.json()})
-            )
-            with (
-                mock.patch.object(worker, "ROOT_UID", os.getuid()),
-                mock.patch.object(worker.os, "chown"),
-            ):
-                worker._write_root_json(
-                    marker,
-                    {
-                        "version": 1,
-                        "installationId": "installation-1",
-                        "agentId": "agent-1",
-                        **previous.json(),
-                        "filesystemUuid": FS_UUID,
-                        "runtimeFingerprint": RUNTIME_FP,
-                    },
-                )
-                worker.reconcile_boot_identity(
-                    worker.MachineIdentity(INSTANCE, BOOT_2, 7),
-                    "installation-1",
-                    "agent-1",
-                    FS_UUID,
-                    RUNTIME_FP,
-                    marker_directory=marker_directory,
-                    marker_path=marker,
-                    state_path=state,
-                    data_mount=data,
-                )
-            self.assertEqual(journal.read_text(), '{"journal":"preserve"}\n')
-            self.assertFalse((supervisor / "owner.json").exists())
-            quarantined = list((marker_directory / "quarantine").rglob("owner.json"))
-            self.assertEqual(len(quarantined), 2)
-            self.assertFalse((session_supervisor / "owner.json").exists())
-            self.assertEqual(
-                (session_root / "config.json").read_text(), '{"session":"preserve"}'
-            )
-            with mock.patch.object(worker, "ROOT_UID", os.getuid()):
-                self.assertEqual(worker._read_root_marker(marker)["bootId"], BOOT_2)
-
-    def test_replacement_requires_exact_root_authorized_predecessor(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            data = Path(tmp)
-            marker_directory = data / ".switch-hosted"
-            marker_directory.mkdir()
-            marker = marker_directory / "machine.json"
-            state = data / "state"
-            state.mkdir()
-            previous = worker.MachineIdentity(INSTANCE, BOOT_1, 7)
-            with (
-                mock.patch.object(worker, "ROOT_UID", os.getuid()),
-                mock.patch.object(worker.os, "chown"),
-            ):
-                worker._write_root_json(
-                    marker,
-                    {
-                        "version": 1,
-                        "installationId": "installation-1",
-                        "agentId": "agent-1",
-                        **previous.json(),
-                        "filesystemUuid": FS_UUID,
-                        "runtimeFingerprint": RUNTIME_FP,
-                    },
-                )
-                kwargs = dict(
-                    marker_directory=marker_directory,
-                    marker_path=marker,
-                    state_path=state,
-                    data_mount=data,
-                )
-                current = worker.MachineIdentity("i-11111111111111111", BOOT_2, 7)
-                with self.assertRaises(worker.WorkerError):
-                    worker.reconcile_boot_identity(
-                        current,
-                        "installation-1",
-                        "agent-1",
-                        FS_UUID,
-                        RUNTIME_FP,
-                        previous_instance_id="i-22222222222222222",
-                        **kwargs,
-                    )
-                worker.reconcile_boot_identity(
-                    current,
-                    "installation-1",
-                    "agent-1",
-                    FS_UUID,
-                    RUNTIME_FP,
-                    previous_instance_id=INSTANCE,
-                    **kwargs,
-                )
-                self.assertEqual(
-                    worker._read_root_marker(marker)["instanceId"], current.instance_id
-                )
+    def test_secret_region_is_explicit(self):
+        boto3 = mock.Mock()
+        with (
+            mock.patch.dict(sys.modules, {"boto3": boto3}),
+            mock.patch.dict(os.environ, {}, clear=True),
+        ):
+            worker.SecretsManager("eu-west-1")
+        boto3.client.assert_called_once_with("secretsmanager", region_name="eu-west-1")
 
     def test_agent_account_cannot_resolve_to_root(self):
-        account = mock.Mock(pw_uid=0, pw_gid=0)
-        group = mock.Mock(gr_gid=0)
         with (
-            mock.patch.object(worker.pwd, "getpwnam", return_value=account),
-            mock.patch.object(worker.grp, "getgrnam", return_value=group),
+            mock.patch.object(
+                worker.pwd,
+                "getpwnam",
+                return_value=SimpleNamespace(pw_uid=0, pw_gid=0),
+            ),
+            mock.patch.object(
+                worker.grp, "getgrnam", return_value=SimpleNamespace(gr_gid=0)
+            ),
         ):
-            with self.assertRaisesRegex(worker.WorkerError, "non-root primary group"):
-                worker.prepare_agent_directories("switch-agent", "switch-agent")
+            with self.assertRaisesRegex(worker.WorkerError, "non-root"):
+                worker.resolve_agent_account("switch-agent", "switch-agent")
 
-    def test_changed_instance_fails_without_moving_owner(self):
+    def test_tampered_baked_runtime_fails_checksum_verification(self):
         with tempfile.TemporaryDirectory() as temporary:
-            data = Path(temporary) / "data"
-            state = data / "state"
-            marker_directory = data / ".switch-hosted"
-            marker = marker_directory / "machine.json"
-            state.mkdir(parents=True, mode=0o700)
-            owner = state / "shared-owner.lock"
-            previous = worker.MachineIdentity(INSTANCE, BOOT_1, 7)
-            owner.write_text(json.dumps({"pid": 123, "machine": previous.json()}))
-            with (
-                mock.patch.object(worker, "ROOT_UID", os.getuid()),
-                mock.patch.object(worker.os, "chown"),
-            ):
-                worker._write_root_json(
-                    marker,
-                    {
-                        "version": 1,
-                        "installationId": "installation-1",
-                        "agentId": "agent-1",
-                        **previous.json(),
-                        "filesystemUuid": FS_UUID,
-                        "runtimeFingerprint": RUNTIME_FP,
-                    },
-                )
-                with self.assertRaisesRegex(worker.WorkerError, "another EC2 instance"):
-                    worker.reconcile_boot_identity(
-                        worker.MachineIdentity("i-11111111111111111", BOOT_2, 7),
-                        "installation-1",
-                        "agent-1",
-                        FS_UUID,
-                        RUNTIME_FP,
-                        marker_directory=marker_directory,
-                        marker_path=marker,
-                        state_path=state,
-                        data_mount=data,
-                    )
-            self.assertTrue(owner.exists())
-
-    def test_legacy_owner_and_symlinked_supervisor_fail_closed(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            data = Path(temporary) / "data"
-            state = data / "state"
-            marker_directory = data / ".switch-hosted"
-            marker = marker_directory / "machine.json"
-            state.mkdir(parents=True, mode=0o700)
-            previous = worker.MachineIdentity(INSTANCE, BOOT_1, 7)
-            (state / "shared-owner.lock").write_text(json.dumps({"pid": os.getpid()}))
-            with (
-                mock.patch.object(worker, "ROOT_UID", os.getuid()),
-                mock.patch.object(worker.os, "chown"),
-            ):
-                worker._write_root_json(
-                    marker,
-                    {
-                        "version": 1,
-                        "installationId": "installation-1",
-                        "agentId": "agent-1",
-                        **previous.json(),
-                        "filesystemUuid": FS_UUID,
-                        "runtimeFingerprint": RUNTIME_FP,
-                    },
-                )
-                with self.assertRaisesRegex(worker.WorkerError, "must be an object"):
-                    worker.reconcile_boot_identity(
-                        worker.MachineIdentity(INSTANCE, BOOT_2, 7),
-                        "installation-1",
-                        "agent-1",
-                        FS_UUID,
-                        RUNTIME_FP,
-                        marker_directory=marker_directory,
-                        marker_path=marker,
-                        state_path=state,
-                        data_mount=data,
-                    )
-            (state / "shared-owner.lock").unlink()
-            target = data / "attacker"
-            target.mkdir()
-            (state / "supervisor").symlink_to(target, target_is_directory=True)
-            with self.assertRaisesRegex(worker.WorkerError, "directory is invalid"):
-                worker._ownership_paths(state)
-
-    def test_runtime_upgrade_requires_exact_predecessor_and_fingerprint(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            data = Path(temporary)
-            directory = data / ".switch-hosted"
-            marker = directory / "machine.json"
-            arguments = dict(
-                marker_directory=directory,
-                marker_path=marker,
-                state_path=data / "state",
-                data_mount=data,
+            paths = {}
+            hashes = {}
+            for name in ("node", "bootstrap", "sharedHostDaemon", "provider"):
+                path = Path(temporary) / name
+                path.write_bytes(f"trusted-{name}".encode())
+                path.chmod(0o444)
+                paths[name] = str(path)
+                hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+            runtime = worker.RuntimeConfig(
+                node_path=paths["node"],
+                bootstrap_path=paths["bootstrap"],
+                shared_host_daemon_path=paths["sharedHostDaemon"],
+                provider_binary_path=paths["provider"],
+                agent_user="switch-agent",
+                agent_group="switch-agent",
+                path="/usr/bin:/bin",
+                allow_initial_format=True,
+                artifact_sha256=hashes,
             )
+            completed = subprocess.CompletedProcess([], 0, "v24.1.0\n", "")
             with (
                 mock.patch.object(worker, "ROOT_UID", os.getuid()),
-                mock.patch.object(worker.os, "chown"),
+                mock.patch.object(worker.subprocess, "run", return_value=completed),
             ):
-                worker.reconcile_boot_identity(
-                    worker.MachineIdentity(INSTANCE, BOOT_1, 7),
-                    "installation-1",
-                    "agent-1",
-                    FS_UUID,
-                    RUNTIME_FP,
-                    **arguments,
+                self.assertRegex(
+                    worker.verify_pinned_runtime(worker_config(runtime)),
+                    r"^[0-9a-f]{64}$",
                 )
-                replacement = worker.MachineIdentity("i-11111111111111111", BOOT_2, 7)
-                for predecessor, fingerprint in [
-                    (None, RUNTIME_FP),
-                    (INSTANCE, "b" * 64),
-                    ("i-22222222222222222", RUNTIME_FP),
-                ]:
-                    with self.assertRaises(worker.WorkerError):
-                        worker.reconcile_boot_identity(
-                            replacement,
-                            "installation-1",
-                            "agent-1",
-                            FS_UUID,
-                            "c" * 64,
-                            previous_instance_id=predecessor,
-                            previous_runtime_fingerprint=fingerprint,
-                            **arguments,
-                        )
-                worker.reconcile_boot_identity(
-                    replacement,
-                    "installation-1",
-                    "agent-1",
-                    FS_UUID,
-                    "c" * 64,
-                    previous_instance_id=INSTANCE,
-                    previous_runtime_fingerprint=RUNTIME_FP,
-                    **arguments,
-                )
-                self.assertEqual(
-                    json.loads(marker.read_text())["runtimeFingerprint"], "c" * 64
-                )
-                self.assertEqual(
-                    json.loads(marker.read_text())["instanceId"],
-                    replacement.instance_id,
-                )
+                Path(paths["bootstrap"]).chmod(0o644)
+                Path(paths["bootstrap"]).write_text("tampered")
+                Path(paths["bootstrap"]).chmod(0o444)
+                with self.assertRaisesRegex(worker.WorkerError, "checksum"):
+                    worker.verify_pinned_runtime(worker_config(runtime))
 
-    def test_partial_quarantine_is_resumed_after_launcher_crash(self):
+    def test_meminfo_is_read_in_bytes(self):
         with tempfile.TemporaryDirectory() as temporary:
-            data = Path(temporary) / "data"
-            state = data / "state"
-            marker_directory = data / ".switch-hosted"
-            marker = marker_directory / "machine.json"
-            supervisor = state / "supervisor"
-            supervisor.mkdir(parents=True, mode=0o700)
-            previous = worker.MachineIdentity(INSTANCE, BOOT_1, 7)
-            machine = previous.json()
-            (supervisor / "owner.json").write_text(
-                json.dumps({"pid": 42, "token": "supervisor", "machine": machine})
-            )
-            quarantine = marker_directory / "quarantine" / f"{BOOT_1}--{BOOT_2}"
-            quarantine.mkdir(parents=True, mode=0o700)
-            (quarantine / "shared-owner.lock").write_text(
-                json.dumps({"pid": 43, "token": "worker", "machine": machine})
-            )
-            with (
-                mock.patch.object(worker, "ROOT_UID", os.getuid()),
-                mock.patch.object(worker.os, "chown"),
-            ):
-                worker._write_root_json(
-                    marker,
-                    {
-                        "version": 1,
-                        "installationId": "installation-1",
-                        "agentId": "agent-1",
-                        **machine,
-                        "filesystemUuid": FS_UUID,
-                        "runtimeFingerprint": RUNTIME_FP,
+            path = Path(temporary) / "meminfo"
+            path.write_text("MemTotal: 2048 kB\nMemAvailable: 1024 kB\n")
+            self.assertEqual(worker.read_meminfo(path), (2097152, 1048576))
+            path.write_text("MemTotal: 2048 kB\n")
+            with self.assertRaisesRegex(worker.WorkerError, "Memory"):
+                worker.read_meminfo(path)
+
+
+class DeploymentTests(unittest.TestCase):
+    paths = worker.Paths(Path("/data"), Path("/run/switch-hosted"))
+
+    def plan(self, agent: dict) -> worker.AgentPlan:
+        return worker.build_agent_plan(agent, runtime_config(), self.paths)
+
+    def test_verbatim_fixture_agent_is_a_per_agent_config_error(self):
+        agent = fixture("agents.json")["agents"][0]
+        self.assertEqual(agent["provider_credential_kind"], "oauth")
+        with self.assertRaisesRegex(worker.WorkerError, "credential kind 'oauth'"):
+            self.plan(agent)
+
+    def test_fixture_agent_builds_deployment_v2(self):
+        plan = self.plan(valid_agent())
+        run = f"/run/switch-hosted/agents/{AGENT}"
+        self.assertEqual(
+            plan.deployment,
+            {
+                "version": 2,
+                "revision": 3,
+                "session": {"sessionId": "watcher-" + AGENT, "agentId": AGENT},
+                "provider": {
+                    "kind": "claude",
+                    "credential": {
+                        "kind": "setup-token",
+                        "path": f"{run}/provider",
+                        "refresh": True,
                     },
-                )
-                worker.reconcile_boot_identity(
-                    worker.MachineIdentity(INSTANCE, BOOT_2, 7),
-                    "installation-1",
-                    "agent-1",
-                    FS_UUID,
-                    RUNTIME_FP,
-                    marker_directory=marker_directory,
-                    marker_path=marker,
-                    state_path=state,
-                    data_mount=data,
-                )
-            self.assertFalse((supervisor / "owner.json").exists())
-            self.assertTrue((quarantine / "supervisor/owner.json").exists())
-            self.assertTrue((quarantine / "shared-owner.lock").exists())
+                    "binaryPath": "/opt/switch/claude/bin/claude",
+                    "context": "Use the Switch tools to read room context and post replies to the room.\nReview pull requests.",
+                    "definition": {"name": "reviewer", "content": "You review code."},
+                    "model": {"id": "claude-test-model"},
+                },
+                "github": {
+                    "credentialPath": f"{run}/github",
+                    "repository": "example-org/example-repo",
+                    "refresh": True,
+                    "mirrorPath": "/data/repos/example-org/example-repo.git",
+                },
+                "workspacePath": f"/data/worktrees/{AGENT}/example-org/example-repo",
+                "watch": True,
+                "runtimeMode": "approval-required",
+                "switchCredentialsPath": f"{run}/switch.json",
+                "workerCapabilityPath": f"{run}/worker-capability",
+            },
+        )
+        self.assertEqual(plan.worker_capability, CAPABILITY)
+        self.assertNotIn(CAPABILITY, json.dumps(plan.deployment))
+        self.assertNotIn("test-token-placeholder", json.dumps(plan.deployment))
 
-    def test_stale_secret_orphans_are_removed_before_new_materialization(self):
-        parsed = worker.parse_secret_document(secret(), config())
+    def test_repository_paths_are_lowercase_and_optional(self):
+        plan = self.plan(valid_agent(repository="Example-Org/Example.Repo"))
+        self.assertEqual(
+            plan.deployment["github"]["repository"], "Example-Org/Example.Repo"
+        )
+        self.assertEqual(
+            plan.deployment["github"]["mirrorPath"],
+            "/data/repos/example-org/example.repo.git",
+        )
+        self.assertEqual(
+            plan.worktree_owner, Path(f"/data/worktrees/{AGENT}/example-org")
+        )
+        plan = self.plan(valid_agent(repository=None))
+        self.assertNotIn("github", plan.deployment)
+        self.assertEqual(
+            plan.deployment["workspacePath"], f"/data/worktrees/{AGENT}/workspace"
+        )
+        self.assertIsNone(plan.worktree_owner)
 
-        class TmpfsCommands:
-            def run(self, arguments, capture=True):
-                return "tmpfs\n"
+    def test_codex_uses_its_pinned_binary_and_has_no_definition(self):
+        spec = {
+            **valid_agent()["spec"],
+            "definition_attributes": {},
+            "auto_approve": True,
+        }
+        plan = self.plan(
+            valid_agent(
+                provider="codex", provider_credential_kind="auth-json", spec=spec
+            )
+        )
+        provider = plan.deployment["provider"]
+        self.assertEqual(provider["binaryPath"], "/opt/switch/providers/codex")
+        self.assertNotIn("definition", provider)
+        self.assertNotIn("model", provider)
+        self.assertEqual(plan.deployment["runtimeMode"], "full-access")
 
-        with tempfile.TemporaryDirectory() as temporary:
-            runtime = Path(temporary)
-            orphan = runtime / ".secrets-old-crash"
-            orphan.mkdir(mode=0o750)
-            (orphan / "provider").write_text("old-provider")
-            os.chmod(orphan / "provider", 0o440)
-            with (
-                mock.patch.object(worker, "Commands", TmpfsCommands),
-                mock.patch.object(worker, "ROOT_UID", os.getuid()),
-                mock.patch.object(worker.os, "chown"),
-                mock.patch.object(worker.os, "fchown"),
-            ):
-                deployment_path, cleanup = worker.materialize_secrets(
-                    parsed, 12345, os.getgid(), runtime
-                )
-                self.assertFalse(orphan.exists())
-                self.assertEqual(
-                    (deployment_path.parent / "provider").read_text(),
-                    "provider-value\n",
-                )
-                cleanup()
-
-    def test_secret_directory_is_root_owned_group_read_only_and_cleaned(self):
-        parsed = worker.parse_secret_document(github_secret(), config())
-
-        class TmpfsCommands:
-            def run(self, arguments, capture=True):
-                return "tmpfs\n"
-
-        with tempfile.TemporaryDirectory() as temporary:
-            runtime = Path(temporary)
-            with (
-                mock.patch.object(worker, "Commands", TmpfsCommands),
-                mock.patch.object(worker, "ROOT_UID", os.getuid()),
-                mock.patch.object(worker.os, "chown"),
-                mock.patch.object(worker.os, "fchown"),
-            ):
-                deployment_path, cleanup = worker.materialize_secrets(
-                    parsed, 12345, os.getgid(), runtime
-                )
-                directory = deployment_path.parent
-                self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o750)
-                self.assertEqual(directory.stat().st_uid, os.getuid())
-                for path in directory.iterdir():
-                    self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o440)
-                    self.assertEqual(path.stat().st_uid, os.getuid())
-                self.assertEqual(
-                    (directory / "github").read_text(), GITHUB_CREDENTIAL + "\n"
-                )
-                self.assertEqual(
-                    (directory / "worker-capability").read_text(), WORKER_CAPABILITY
-                )
-                self.assertNotIn(
-                    WORKER_CAPABILITY, (directory / "deployment.json").read_text()
-                )
-                self.assertNotIn(
-                    GITHUB_CREDENTIAL, (directory / "deployment.json").read_text()
-                )
-                cleanup()
-                self.assertFalse(directory.exists())
-
-    def test_signal_is_forwarded_to_the_child_process_group(self):
-        handlers = {}
-
-        class Child:
-            pid = 4321
-
-            def wait(self):
-                handlers[signal.SIGTERM](signal.SIGTERM, None)
-                return -signal.SIGTERM
-
-        def install_handler(signum, handler):
-            previous = handlers.get(signum, signal.SIG_DFL)
-            if callable(handler):
-                handlers[signum] = handler
-            return previous
-
-        with (
-            mock.patch.object(worker.subprocess, "Popen", return_value=Child()),
-            mock.patch.object(worker.signal, "signal", side_effect=install_handler),
-            mock.patch.object(worker.os, "killpg") as killpg,
+    def test_skills_are_validated_and_included(self):
+        skills = [{"slug": "review", "files": {"SKILL.md": "# Review\n"}}]
+        self.assertEqual(
+            self.plan(valid_agent(skills=skills)).deployment["skills"], skills
+        )
+        for bad in (
+            [{"slug": "../x", "files": {"SKILL.md": "x"}}],
+            [{"slug": "review", "files": {"notes.md": "x"}}],
+            [{"slug": "review", "files": {"../SKILL.md": "x", "SKILL.md": "x"}}],
         ):
-            self.assertEqual(worker.run_child(["safe"], {"PATH": "/usr/bin"}), 0)
-        killpg.assert_called_once_with(4321, signal.SIGTERM)
+            with self.subTest(skills=bad):
+                with self.assertRaises(worker.WorkerError):
+                    self.plan(valid_agent(skills=bad))
+
+    def test_invalid_agent_fields_are_rejected(self):
+        wrong_agent = {
+            "env": {
+                "SWITCH_API_ENDPOINT": "https://switch.example.test",
+                "SWITCH_API_TOKEN": "x",
+                "SWITCH_AGENT_ID": AGENT_2,
+            }
+        }
+        for change in (
+            {"agent_id": "agent-1"},
+            {"agent_id": AGENT.upper()},
+            {"provider": "opencode"},
+            {"provider_credential_kind": "oauth"},
+            {"worker_capability": "wcap-test-0000"},
+            {"repository": "example-org/.."},
+            {"repository": "-bad/repo"},
+            {"desired_state": "deleted"},
+            {"revision": 0},
+            {"spec": {"session_limit": 8}},
+            {"switch_credentials": wrong_agent},
+        ):
+            with self.subTest(change=change):
+                with self.assertRaises(worker.WorkerError):
+                    self.plan(valid_agent(**change))
+        without = valid_agent()
+        del without["skills"]
+        with self.assertRaisesRegex(worker.WorkerError, "missing skills"):
+            self.plan(without)
+
+    def test_environment_file_follows_the_contract(self):
+        text = worker.agent_environment(
+            runtime_config(),
+            worker.MachineIdentity(INSTANCE, BOOT_1, 2),
+            MACHINE,
+            self.paths,
+            AGENT,
+        )
+        self.assertEqual(
+            text,
+            "PATH=/opt/switch/node/bin:/usr/bin:/bin\n"
+            "USER=switch-agent\n"
+            "LOGNAME=switch-agent\n"
+            "SHELL=/bin/bash\n"
+            "LANG=C.UTF-8\n"
+            f"HOME=/data/agents/{AGENT}/home\n"
+            f"TMPDIR=/data/agents/{AGENT}/tmp\n"
+            f"SWITCH_HOST_INSTANCE_ID={INSTANCE}\n"
+            f"SWITCH_HOST_BOOT_ID={BOOT_1}\n"
+            "SWITCH_HOST_ASSIGNMENT_GENERATION=2\n"
+            f"SWITCH_HOST_MACHINE_ID={MACHINE}\n",
+        )
+
+    def test_environment_values_with_newlines_are_refused(self):
+        runtime = runtime_config()
+        for path in ("/usr/bin\nEVIL=1", "/usr/bin\r", '/usr/bin"'):
+            with self.subTest(path=path):
+                with self.assertRaisesRegex(worker.WorkerError, "PATH"):
+                    worker.agent_environment(
+                        worker.RuntimeConfig(**{**runtime.__dict__, "path": path}),
+                        worker.MachineIdentity(INSTANCE, BOOT_1, 2),
+                        MACHINE,
+                        self.paths,
+                        AGENT,
+                    )
 
 
-class Secrets:
-    def __init__(self, versions):
-        self.versions = list(versions)
-        self.reads = 0
+class CoreClientTests(unittest.TestCase):
+    def client(self, opener, endpoint="https://switch.example.test/agent-api/"):
+        bundle = worker.MachineBundle(
+            MACHINE, endpoint, "mcap-test-0000000000000000000000000000"
+        )
+        return worker.CoreClient(
+            bundle, worker.MachineIdentity(INSTANCE, BOOT_1, 2), opener
+        )
 
-    def read(self, secret_id):
-        self.reads += 1
-        version = self.versions.pop(0) if len(self.versions) > 1 else self.versions[0]
-        return f"secret-{version}", version
+    def test_requests_carry_capability_and_host_identity(self):
+        requests = []
 
+        def opener(request, timeout):
+            requests.append((request, timeout))
+            if request.full_url.endswith("/agents"):
+                value = {**fixture("agents.json"), "future": 1}
+            else:
+                value = {**fixture("heartbeat-response.json"), "future": 1}
+            return Response(json.dumps(value).encode())
 
-class ObsoleteBundleTests(unittest.TestCase):
-    def test_no_marker_boots_the_current_bundle(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            marker = Path(temporary) / "obsolete-bundle"
+        client = self.client(opener)
+        self.assertEqual(client.agents()["agents_version"], 7)
+        body = fixture("heartbeat-request.json")
+        self.assertEqual(client.heartbeat(body)["heartbeat_every_s"], 15)
+        listed, beat = requests
+        self.assertEqual(
+            listed[0].full_url,
+            f"https://switch.example.test/agent-api/hosted/machines/{MACHINE}/agents",
+        )
+        self.assertEqual(listed[0].get_method(), "GET")
+        self.assertIsNone(listed[0].data)
+        self.assertEqual(
+            beat[0].full_url,
+            f"https://switch.example.test/agent-api/hosted/machines/{MACHINE}/heartbeat",
+        )
+        self.assertEqual(beat[0].get_method(), "POST")
+        self.assertEqual(json.loads(beat[0].data), body)
+        for request, timeout in requests:
+            self.assertEqual(timeout, worker.HTTP_TIMEOUT_SECONDS)
             self.assertEqual(
-                worker.await_current_bundle(Secrets(["v1"]), "secret-id", marker),
-                ("secret-v1", "v1"),
+                request.get_header("Authorization"),
+                "Bearer mcap-test-0000000000000000000000000000",
             )
+            self.assertEqual(request.get_header("X-switch-host-boot-id"), BOOT_1)
+            self.assertEqual(request.get_header("X-switch-host-instance-id"), INSTANCE)
 
-    def test_marker_is_private_and_holds_the_booted_version(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            marker = Path(temporary) / "obsolete-bundle"
-            worker.record_obsolete_bundle(marker, "v1")
-            self.assertEqual(marker.read_text(), "v1")
-            self.assertEqual(stat.S_IMODE(marker.stat().st_mode), 0o600)
-            self.assertEqual(worker.read_obsolete_bundle(marker), "v1")
+    def test_status_codes_map_to_restart_retire_and_retry(self):
+        for code, expected in (
+            (401, worker.WorkerError),
+            (410, worker.MachineRetired),
+            (500, worker.CoreUnavailable),
+            (404, worker.CoreUnavailable),
+        ):
 
-    def test_same_version_waits_and_warns_then_boots_the_next_one(self):
-        clock = [0.0]
-        sleeps = []
+            def opener(request, timeout, code=code):
+                raise http_error(code)
 
-        def sleep(seconds):
-            sleeps.append(seconds)
-            clock[0] += seconds
+            with self.subTest(code=code):
+                with self.assertRaises(expected):
+                    self.client(opener).heartbeat({})
 
-        with tempfile.TemporaryDirectory() as temporary:
-            marker = Path(temporary) / "obsolete-bundle"
-            worker.record_obsolete_bundle(marker, "v1")
-            secrets = Secrets(["v1"] * 12 + ["v2"])
-            stderr = io.StringIO()
-            with (
-                mock.patch.object(worker.time, "sleep", side_effect=sleep),
-                mock.patch.object(
-                    worker.time, "monotonic", side_effect=lambda: clock[0]
-                ),
-                mock.patch.object(worker.sys, "stderr", stderr),
-            ):
-                result = worker.await_current_bundle(secrets, "secret-id", marker)
-            self.assertEqual(result, ("secret-v2", "v2"))
-            self.assertEqual(sleeps, [30] * 12)
-            self.assertEqual(stderr.getvalue().count("obsolete"), 2)
-            self.assertFalse(marker.exists())
+    def test_network_errors_and_invalid_bodies_are_retryable(self):
+        def unreachable(request, timeout):
+            raise urllib.error.URLError("down")
 
-    def test_symlinked_marker_is_refused(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            target = Path(temporary) / "target"
-            target.write_text("v1")
-            marker = Path(temporary) / "obsolete-bundle"
-            marker.symlink_to(target)
-            with self.assertRaisesRegex(worker.WorkerError, "marker is invalid"):
-                worker.read_obsolete_bundle(marker)
+        with self.assertRaises(worker.CoreUnavailable):
+            self.client(unreachable).agents()
+        for raw in (
+            b"not json",
+            b"[]",
+            b'{"agents_version": true, "agents": []}',
+            b'{"agents_version": 1}',
+        ):
+            with self.subTest(raw=raw):
+                with self.assertRaises(worker.CoreUnavailable):
+                    self.client(
+                        lambda request, timeout, raw=raw: Response(raw)
+                    ).agents()
 
-    def test_exit_75_records_the_booted_version(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            marker = Path(temporary) / "obsolete-bundle"
-            lock = mock.Mock()
-            with (
-                mock.patch.object(worker.os, "geteuid", return_value=0),
-                mock.patch.object(worker, "acquire_root_lock", return_value=lock),
-                mock.patch.object(worker, "load_worker_config", return_value=config()),
-                mock.patch.object(worker, "verify_pinned_runtime", return_value="f"),
-                mock.patch.object(worker, "ImdsV2"),
-                mock.patch.object(worker, "_read_boot_id", return_value=BOOT_1),
-                mock.patch.object(
-                    worker, "prepare_storage", return_value=(mock.Mock(), False)
-                ),
-                mock.patch.object(worker, "reconcile_boot_identity"),
-                mock.patch.object(
-                    worker, "prepare_agent_directories", return_value=(1, 1)
-                ),
-                mock.patch.object(
-                    worker, "SecretsManager", return_value=Secrets(["v1"])
-                ),
-                mock.patch.object(worker, "parse_secret_document"),
-                mock.patch.object(
-                    worker,
-                    "materialize_secrets",
-                    return_value=(Path("/run/deployment.json"), lambda: None),
-                ),
-                mock.patch.object(worker, "build_launch", return_value=([], {})),
-                mock.patch.object(worker, "run_child", return_value=75),
-                mock.patch.object(worker, "OBSOLETE_BUNDLE_PATH", marker),
-                mock.patch.object(worker.sys, "stderr", io.StringIO()),
-            ):
-                self.assertEqual(worker.main([]), worker.OBSOLETE_BUNDLE_EXIT_CODE)
-            self.assertEqual(marker.read_text(), "v1")
+    def test_redirects_are_not_followed(self):
+        hits = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                hits.append(self.path)
+                if self.path.endswith("/agents"):
+                    self.send_response(302)
+                    self.send_header("Location", "/elsewhere")
+                    self.end_headers()
+                else:
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b'{"agents_version":1,"agents":[]}')
+
+            def log_message(self, *_args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        endpoint = f"http://127.0.0.1:{server.server_address[1]}/agent-api"
+        with mock.patch.dict(os.environ, {"no_proxy": "*", "NO_PROXY": "*"}):
+            with self.assertRaisesRegex(worker.CoreUnavailable, "302"):
+                self.client(worker.default_opener(), endpoint).agents()
+        self.assertEqual(hits, [f"/agent-api/hosted/machines/{MACHINE}/agents"])
+
+
+class SystemdTests(unittest.TestCase):
+    def test_systemctl_argv(self):
+        commands = FakeSystemctl()
+        systemd = worker.Systemd(commands)
+        systemd.start(AGENT)
+        systemd.restart(AGENT)
+        systemd.stop(AGENT, wait=False)
+        systemd.stop(AGENT, wait=True)
+        systemd.reset_failed(AGENT)
+        systemd.stop_all()
+        systemd.limit_slice(15 * 1024**3)
+        unit = f"switch-agent@{AGENT}.service"
+        self.assertEqual(
+            commands.calls,
+            [
+                ["/usr/bin/systemctl", "--no-block", "start", unit],
+                ["/usr/bin/systemctl", "--no-block", "restart", unit],
+                ["/usr/bin/systemctl", "--no-block", "stop", unit],
+                ["/usr/bin/systemctl", "stop", unit],
+                ["/usr/bin/systemctl", "reset-failed", unit],
+                ["/usr/bin/systemctl", "stop", "switch-agent@*.service"],
+                [
+                    "/usr/bin/systemctl",
+                    "set-property",
+                    "--runtime",
+                    "switch-agents.slice",
+                    "MemoryMax=16106127360",
+                ],
+            ],
+        )
+        with self.assertRaises(worker.WorkerError):
+            systemd.start("../../etc")
+
+    def test_show_reads_the_contract_properties(self):
+        commands = FakeSystemctl()
+        self.assertEqual(worker.Systemd(commands).show(AGENT), INACTIVE)
+        self.assertEqual(
+            commands.calls[0],
+            [
+                "/usr/bin/systemctl",
+                "show",
+                "-p",
+                "ActiveState,SubState,Result,NRestarts,ExecMainStatus,ExecMainCode,ExecMainExitTimestampMonotonic",
+                f"switch-agent@{AGENT}.service",
+            ],
+        )
+
+
+class SupervisorTests(RootPatched):
+    def setUp(self):
+        super().setUp()
+        self.harness = Harness(self.temporary / "machine")
+        self.supervisor = self.harness.supervisor
+        self.paths = self.harness.paths
+        self.commands = self.harness.commands
+
+    def state(self, agent_id=AGENT) -> dict:
+        body = self.supervisor.heartbeat_body()
+        return next(agent for agent in body["agents"] if agent["agent_id"] == agent_id)
+
+    def test_new_running_agent_gets_files_directories_and_a_restart(self):
+        self.supervisor.reconcile([valid_agent()])
+        unit = f"switch-agent@{AGENT}.service"
+        self.assertEqual(
+            self.commands.actions(),
+            [["reset-failed", unit], ["--no-block", "restart", unit]],
+        )
+        directory = self.paths.agents_runtime / AGENT
+        self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o750)
+        self.assertEqual(
+            sorted(path.name for path in directory.iterdir()),
+            ["deployment.json", "env", "switch.json", "worker-capability"],
+        )
+        for path in directory.iterdir():
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o440)
+        self.assertEqual((directory / "worker-capability").read_text(), CAPABILITY)
+        self.assertEqual(
+            json.loads((directory / "switch.json").read_text()),
+            valid_agent()["switch_credentials"],
+        )
+        deployment = json.loads((directory / "deployment.json").read_text())
+        self.assertEqual(deployment["version"], 2)
+        self.assertEqual(
+            deployment["workspacePath"],
+            str(self.paths.worktrees / AGENT / "example-org/example-repo"),
+        )
+        self.assertIn(
+            f"SWITCH_HOST_MACHINE_ID={MACHINE}\n", (directory / "env").read_text()
+        )
+        for path in (
+            self.paths.agents / AGENT,
+            self.paths.agents / AGENT / "home",
+            self.paths.agents / AGENT / "tmp",
+            self.paths.worktrees / AGENT,
+            self.paths.worktrees / AGENT / "example-org",
+            self.paths.worktrees / AGENT / "example-org/example-repo",
+            self.paths.repos,
+        ):
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700, path)
+        self.assertEqual(stat.S_IMODE(self.paths.agents.stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE(self.paths.worktrees.stat().st_mode), 0o755)
+        self.assertEqual(list(self.paths.agents_runtime.glob(".*")), [])
+
+    def test_new_stopped_agent_is_stopped(self):
+        self.supervisor.reconcile([valid_agent(desired_state="stopped")])
+        self.assertEqual(
+            self.commands.actions(),
+            [["--no-block", "stop", f"switch-agent@{AGENT}.service"]],
+        )
+        self.supervisor._observe()
+        self.assertEqual(self.state()["process_state"], "stopped")
+
+    def test_same_revision_only_corrects_the_running_state(self):
+        unit = f"switch-agent@{AGENT}.service"
+        self.supervisor.reconcile([valid_agent()])
+        deployment = self.paths.agents_runtime / AGENT / "deployment.json"
+        inode = deployment.stat().st_ino
+        self.commands.clear()
+        self.supervisor.reconcile([valid_agent()])
+        self.assertEqual(self.commands.actions(), [["--no-block", "start", unit]])
+        self.commands.clear()
+        self.commands.units[AGENT] = {"ActiveState": "active", "SubState": "running"}
+        self.supervisor.reconcile([valid_agent()])
+        self.assertEqual(self.commands.actions(), [])
+        self.supervisor.reconcile([valid_agent(desired_state="stopped")])
+        self.assertEqual(self.commands.actions(), [["--no-block", "stop", unit]])
+        self.commands.clear()
+        self.commands.units[AGENT] = {
+            "ActiveState": "failed",
+            "Result": "start-limit-hit",
+        }
+        self.supervisor.reconcile([valid_agent()])
+        self.assertEqual(self.commands.actions(), [])
+        self.assertEqual(deployment.stat().st_ino, inode)
+
+    def test_revision_change_rewrites_files_and_resets_a_crashed_unit(self):
+        unit = f"switch-agent@{AGENT}.service"
+        self.supervisor.reconcile([valid_agent()])
+        self.commands.clear()
+        self.commands.units[AGENT] = {
+            "ActiveState": "failed",
+            "Result": "start-limit-hit",
+        }
+        self.supervisor.reconcile(
+            [valid_agent(revision=4, worker_capability="wcap-test-1111111111111111")]
+        )
+        self.assertEqual(
+            self.commands.actions(),
+            [["reset-failed", unit], ["--no-block", "restart", unit]],
+        )
+        directory = self.paths.agents_runtime / AGENT
+        self.assertEqual(
+            json.loads((directory / "deployment.json").read_text())["revision"], 4
+        )
+        self.assertEqual(
+            (directory / "worker-capability").read_text(),
+            "wcap-test-1111111111111111",
+        )
+
+    def test_verbatim_fixture_agent_is_reported_failed_and_not_started(self):
+        with self.assertLogs(worker.logger, "ERROR"):
+            self.supervisor.reconcile(fixture("agents.json")["agents"])
+        self.assertEqual(
+            self.commands.actions(),
+            [["--no-block", "stop", f"switch-agent@{AGENT}.service"]],
+        )
+        self.assertFalse((self.paths.agents_runtime / AGENT).exists())
+        self.supervisor._observe()
+        self.assertEqual(
+            self.state(),
+            {
+                "launch_id": "req-0000000000000001",
+                "agent_id": AGENT,
+                "revision": 3,
+                "process_state": "failed",
+                "restarts": 0,
+                "oom_kills": 0,
+                "exit": {"code": None, "signal": None, "result": "invalid-config"},
+                "since": "2026-01-01T00:00:00Z",
+            },
+        )
+
+    def test_invalid_revision_stops_a_running_agent_but_keeps_its_data(self):
+        self.supervisor.reconcile([valid_agent()])
+        self.commands.clear()
+        with self.assertLogs(worker.logger, "ERROR"):
+            self.supervisor.reconcile(
+                [valid_agent(revision=4, provider_credential_kind="oauth")]
+            )
+        self.assertEqual(
+            self.commands.actions(),
+            [["--no-block", "stop", f"switch-agent@{AGENT}.service"]],
+        )
+        self.assertFalse((self.paths.agents_runtime / AGENT).exists())
+        self.assertTrue((self.paths.agents / AGENT).exists())
+
+    def test_duplicate_agents_are_all_invalid(self):
+        with self.assertLogs(worker.logger, "ERROR"):
+            self.supervisor.reconcile(
+                [valid_agent(), valid_agent(launch_id="req-0000000000000009")]
+            )
+        self.supervisor._observe()
+        states = self.supervisor.heartbeat_body()["agents"]
+        self.assertEqual(
+            [agent["exit"]["result"] for agent in states], ["invalid-config"] * 2
+        )
+        self.assertFalse((self.paths.agents_runtime / AGENT).exists())
+
+    def test_entries_without_identity_are_left_out(self):
+        with self.assertLogs(worker.logger, "ERROR"):
+            self.supervisor.reconcile([{"agent_id": AGENT}, "junk"])
+        self.supervisor._observe()
+        self.assertEqual(self.supervisor.heartbeat_body()["agents"], [])
+        self.assertEqual(self.commands.actions(), [])
+
+    def test_setup_failure_is_reported(self):
+        (self.paths.worktrees / AGENT).mkdir(mode=0o755)
+        with self.assertLogs(worker.logger, "ERROR"):
+            self.supervisor.reconcile([valid_agent()])
+        self.supervisor._observe()
+        self.assertEqual(self.state()["process_state"], "failed")
+        self.assertEqual(self.state()["exit"]["result"], "setup-failed")
+        self.assertEqual(self.commands.actions(), [])
+
+    def test_absent_agent_is_removed_and_mirrors_are_kept(self):
+        self.supervisor.reconcile([valid_agent(), second_agent()])
+        mirror = self.paths.repos / "example-org/example-repo.git"
+        mirror.mkdir(parents=True)
+        (self.paths.agents / AGENT / "home/notes").write_text("x")
+        (self.paths.agents / "not-a-uuid").mkdir()
+        self.commands.clear()
+        with self.assertLogs(worker.logger, "WARNING") as logs:
+            self.supervisor.reconcile([second_agent()])
+        actions = self.commands.actions()
+        self.assertIn(["stop", f"switch-agent@{AGENT}.service"], actions)
+        self.assertNotIn(["stop", f"switch-agent@{AGENT_2}.service"], actions)
+        self.assertFalse((self.paths.agents_runtime / AGENT).exists())
+        self.assertFalse((self.paths.agents / AGENT).exists())
+        self.assertFalse((self.paths.worktrees / AGENT).exists())
+        self.assertTrue((self.paths.agents / AGENT_2).exists())
+        self.assertTrue((self.paths.agents / "not-a-uuid").exists())
+        self.assertTrue(mirror.exists())
+        worktree = self.paths.worktrees / AGENT / "example-org/example-repo"
+        self.assertEqual(
+            self.harness.git.calls,
+            [
+                (mirror, ["worktree", "remove", "--force", str(worktree)]),
+                (mirror, ["worktree", "prune"]),
+            ],
+        )
+        self.assertTrue(any("not-a-uuid" in line for line in logs.output))
+
+    def test_worktree_without_mirror_skips_git(self):
+        self.supervisor.reconcile([valid_agent()])
+        with self.assertLogs(worker.logger, "WARNING"):
+            self.supervisor.reconcile([])
+        self.assertEqual(self.harness.git.calls, [])
+        self.assertFalse((self.paths.worktrees / AGENT).exists())
+
+    def test_failed_removal_is_logged_and_retried(self):
+        self.supervisor.reconcile([valid_agent()])
+        failing = [True]
+        original = self.commands.run
+
+        def run(arguments, capture=True):
+            if arguments[1] == "stop" and failing and failing.pop():
+                raise worker.WorkerError("Required host operation failed: systemctl.")
+            return original(arguments, capture)
+
+        self.commands.run = run
+        with self.assertLogs(worker.logger, "ERROR"):
+            self.supervisor.reconcile([])
+        self.assertTrue((self.paths.agents / AGENT).exists())
+        with self.assertLogs(worker.logger, "WARNING"):
+            self.supervisor.reconcile([])
+        self.assertFalse((self.paths.agents / AGENT).exists())
+
+    def test_stale_temporary_runtime_directories_are_cleaned(self):
+        stale = self.paths.agents_runtime / ".tmp-crashed"
+        stale.mkdir(mode=0o750)
+        (stale / "switch.json").write_text("{}")
+        self.supervisor.reconcile([])
+        self.assertFalse(stale.exists())
+
+    def test_slice_memory_is_total_minus_one_gibibyte(self):
+        self.supervisor.limit_slice()
+        self.assertEqual(
+            self.commands.actions(),
+            [
+                [
+                    "set-property",
+                    "--runtime",
+                    "switch-agents.slice",
+                    f"MemoryMax={16 * 1024**3 - 1024**3}",
+                ]
+            ],
+        )
+
+
+class ProcessStateTests(RootPatched):
+    def setUp(self):
+        super().setUp()
+        self.harness = Harness(self.temporary / "machine")
+        self.supervisor = self.harness.supervisor
+        self.commands = self.harness.commands
+
+    def observe(self, desired="running", touched=False, **properties):
+        held = worker.HeldAgent("req-1", AGENT, 3, desired, None)
+        self.commands.units[AGENT] = properties
+        if touched:
+            self.supervisor._touched.add(AGENT)
+        else:
+            self.supervisor._touched.discard(AGENT)
+        return self.supervisor._unit_state(held)
+
+    def test_systemd_states_map_to_process_states(self):
+        cases = [
+            ({"ActiveState": "activating", "SubState": "start"}, "starting"),
+            ({"ActiveState": "active", "SubState": "running"}, "running"),
+            ({"ActiveState": "reloading", "SubState": "reload"}, "running"),
+            ({"ActiveState": "activating", "SubState": "auto-restart"}, "restarting"),
+            (
+                {"ActiveState": "activating", "SubState": "auto-restart-queued"},
+                "restarting",
+            ),
+            ({"ActiveState": "deactivating", "SubState": "stop-sigterm"}, "stopping"),
+            ({"ActiveState": "failed", "Result": "start-limit-hit"}, "crashed"),
+            ({"ActiveState": "failed", "Result": "exit-code"}, "failed"),
+            ({"ActiveState": "failed", "Result": "oom-kill"}, "failed"),
+            ({"ActiveState": "inactive"}, "pending"),
+        ]
+        for properties, expected in cases:
+            with self.subTest(properties=properties):
+                self.assertEqual(self.observe(**properties)[0], expected)
+        self.assertEqual(self.observe(touched=True)[0], "stopped")
+        self.assertEqual(self.observe(desired="stopped")[0], "stopped")
+        self.assertEqual(self.observe(ExecMainExitTimestampMonotonic="5")[0], "stopped")
+        with self.assertRaisesRegex(worker.WorkerError, "unknown unit state"):
+            self.observe(ActiveState="maintenance")
+
+    def test_restarts_and_exit_shape(self):
+        state, restarts, exit_value = self.observe(
+            ActiveState="failed",
+            Result="start-limit-hit",
+            NRestarts="5",
+            ExecMainCode="2",
+            ExecMainStatus="9",
+            ExecMainExitTimestampMonotonic="100",
+        )
+        self.assertEqual((state, restarts), ("crashed", 5))
+        self.assertEqual(
+            exit_value, {"code": None, "signal": 9, "result": "start-limit-hit"}
+        )
+        _, _, exit_value = self.observe(
+            ActiveState="activating",
+            SubState="auto-restart",
+            Result="exit-code",
+            ExecMainCode="1",
+            ExecMainStatus="3",
+            ExecMainExitTimestampMonotonic="100",
+        )
+        self.assertEqual(exit_value, {"code": 3, "signal": None, "result": "exit-code"})
+        _, _, exit_value = self.observe(
+            ActiveState="active",
+            SubState="running",
+            ExecMainCode="1",
+            ExecMainStatus="3",
+        )
+        self.assertIsNone(exit_value)
+        self.assertIsNone(self.observe()[2])
+
+    def test_oom_kills_are_counted_once_per_exit_and_persisted(self):
+        self.supervisor.reconcile([valid_agent()])
+        oom = {
+            "ActiveState": "activating",
+            "SubState": "auto-restart",
+            "Result": "oom-kill",
+            "ExecMainCode": "2",
+            "ExecMainStatus": "9",
+        }
+        units = self.commands.units
+        units[AGENT] = {**oom, "ExecMainExitTimestampMonotonic": "100"}
+        self.supervisor._observe()
+        self.supervisor._observe()
+        units[AGENT] = {
+            "ActiveState": "active",
+            "SubState": "running",
+            "ExecMainExitTimestampMonotonic": "100",
+        }
+        self.supervisor._observe()
+        units[AGENT] = {**oom, "ExecMainExitTimestampMonotonic": "200"}
+        self.supervisor._observe()
+        records = self.harness.paths.agent_records
+        self.assertEqual(stat.S_IMODE(records.stat().st_mode), 0o600)
+        self.assertEqual(
+            json.loads(records.read_text()),
+            {
+                "version": 1,
+                "agents": {AGENT: {"oomKills": 2, "lastOomExit": f"{BOOT_1}:200"}},
+            },
+        )
+        restarted = self.harness.build()
+        restarted.reconcile([valid_agent()])
+        restarted._observe()
+        self.assertEqual(restarted.heartbeat_body()["agents"][0]["oom_kills"], 2)
+        with self.assertLogs(worker.logger, "WARNING"):
+            restarted.reconcile([])
+        self.assertEqual(json.loads(records.read_text()), {"version": 1, "agents": {}})
+
+    def test_invalid_records_file_fails_loud(self):
+        worker._write_root_json(self.harness.paths.agent_records, {"version": 9})
+        with self.assertRaisesRegex(worker.WorkerError, "records"):
+            self.harness.build()
+
+    def test_since_changes_only_with_the_process_state(self):
+        self.supervisor.reconcile([valid_agent()])
+        self.commands.units[AGENT] = {"ActiveState": "active", "SubState": "running"}
+        self.assertTrue(self.supervisor._observe())
+        self.harness.clock_value = datetime(2026, 1, 1, 0, 5, tzinfo=UTC)
+        self.assertFalse(self.supervisor._observe())
+        self.assertEqual(
+            self.supervisor.heartbeat_body()["agents"][0]["since"],
+            "2026-01-01T00:00:00Z",
+        )
+        self.commands.units[AGENT] = {"ActiveState": "deactivating"}
+        self.assertTrue(self.supervisor._observe())
+        self.assertEqual(
+            self.supervisor.heartbeat_body()["agents"][0]["since"],
+            "2026-01-01T00:05:00Z",
+        )
+
+    def test_heartbeat_body_matches_the_contract_fixture(self):
+        worker._write_root_json(
+            self.harness.paths.agent_records,
+            {
+                "version": 1,
+                "agents": {AGENT: {"oomKills": 1, "lastOomExit": f"{BOOT_1}:50"}},
+            },
+        )
+        supervisor = self.harness.build()
+        supervisor.reconcile([valid_agent()])
+        self.commands.units[AGENT] = {
+            "ActiveState": "failed",
+            "SubState": "failed",
+            "Result": "start-limit-hit",
+            "NRestarts": "5",
+            "ExecMainCode": "2",
+            "ExecMainStatus": "9",
+            "ExecMainExitTimestampMonotonic": "100",
+        }
+        supervisor._observe()
+        expected = fixture("heartbeat-request.json")
+        self.assertEqual(expected["disk"]["path"], "/data")
+        expected["disk"]["path"] = str(self.harness.paths.data)
+        self.assertEqual(supervisor.heartbeat_body(), expected)
+
+
+class LoopTests(RootPatched):
+    def setUp(self):
+        super().setUp()
+        self.harness = Harness(self.temporary / "machine")
+        self.supervisor = self.harness.supervisor
+        self.client = self.harness.client
+        self.commands = self.harness.commands
+
+    def test_boot_fetches_reconciles_and_heartbeats(self):
+        self.client.listings.append(listing(valid_agent()))
+        self.supervisor.tick()
+        self.assertEqual(self.client.list_calls, 1)
+        self.assertEqual(len(self.client.bodies), 1)
+        self.assertEqual(self.client.bodies[0]["agents"][0]["process_state"], "stopped")
+        self.harness.now = 3
+        self.supervisor.tick()
+        self.assertEqual(len(self.client.bodies), 1)
+        self.commands.units[AGENT] = {"ActiveState": "active", "SubState": "running"}
+        self.harness.now = 6
+        self.supervisor.tick()
+        self.assertEqual(len(self.client.bodies), 2)
+        self.assertEqual(self.client.bodies[1]["agents"][0]["process_state"], "running")
+        self.harness.now = 6 + 15
+        self.supervisor.tick()
+        self.assertEqual(len(self.client.bodies), 3)
+        self.assertEqual(self.client.list_calls, 1)
+
+    def test_heartbeat_interval_comes_from_the_response(self):
+        self.client.listings.append(listing())
+        self.client.heartbeats.append(
+            {
+                "agents_version": 7,
+                "machine_desired_state": "stopped",
+                "heartbeat_every_s": 30,
+            }
+        )
+        self.supervisor.tick()
+        self.harness.now = 20
+        self.supervisor.tick()
+        self.assertEqual(len(self.client.bodies), 1)
+        self.assertEqual(self.commands.actions(), [])
+        self.harness.now = 30
+        self.supervisor.tick()
+        self.assertEqual(len(self.client.bodies), 2)
+
+    def test_changed_agents_version_refetches(self):
+        self.client.listings += [listing(), listing(valid_agent(), version=8)]
+        self.client.heartbeats.append(
+            {
+                "agents_version": 8,
+                "machine_desired_state": "running",
+                "heartbeat_every_s": 15,
+            }
+        )
+        self.supervisor.tick()
+        self.assertEqual(self.client.list_calls, 2)
+        self.assertEqual(
+            self.commands.actions()[-1],
+            ["--no-block", "restart", f"switch-agent@{AGENT}.service"],
+        )
+
+    def test_exit_75_refetches_the_list(self):
+        self.client.listings += [listing(valid_agent()), listing(valid_agent())]
+        self.supervisor.tick()
+        self.commands.units[AGENT] = {
+            "ActiveState": "failed",
+            "Result": "exit-code",
+            "ExecMainCode": "1",
+            "ExecMainStatus": "75",
+            "ExecMainExitTimestampMonotonic": "100",
+        }
+        self.harness.now = 3
+        with self.assertLogs(worker.logger, "WARNING"):
+            self.supervisor.tick()
+        self.assertEqual(self.client.list_calls, 2)
+        self.harness.now = 6
+        self.supervisor.tick()
+        self.assertEqual(self.client.list_calls, 2)
+
+    def test_failed_fetch_is_retried(self):
+        self.client.listings += [worker.CoreUnavailable("down"), listing()]
+        with self.assertLogs(worker.logger, "WARNING"):
+            self.supervisor.tick()
+        self.harness.now = 3
+        self.supervisor.tick()
+        self.assertEqual(self.client.list_calls, 1)
+        self.harness.now = 15
+        self.supervisor.tick()
+        self.assertEqual(self.client.list_calls, 2)
+
+    def test_failed_heartbeat_is_retried_next_interval(self):
+        self.client.listings.append(listing())
+        self.client.heartbeats.append(worker.CoreUnavailable("down"))
+        with self.assertLogs(worker.logger, "WARNING"):
+            self.supervisor.tick()
+        self.harness.now = 15
+        self.supervisor.tick()
+        self.assertEqual(len(self.client.bodies), 2)
+
+    def test_401_stops_the_supervisor(self):
+        self.client.listings.append(worker.WorkerError("rejected"))
+        with self.assertRaises(worker.WorkerError):
+            self.supervisor.tick()
+
+    def test_410_stops_all_agents_idles_and_resumes(self):
+        stop_all = ["stop", "switch-agent@*.service"]
+        self.client.listings += [listing(valid_agent()), listing(valid_agent())]
+        self.client.heartbeats += [
+            worker.MachineRetired(),
+            worker.MachineRetired(),
+            fixture("heartbeat-response.json"),
+        ]
+        with self.assertLogs(worker.logger, "WARNING"):
+            self.supervisor.tick()
+        self.assertEqual(self.commands.actions()[-1], stop_all)
+        self.assertEqual(len(self.client.bodies), 1)
+        self.harness.now = 59
+        self.supervisor.tick()
+        self.assertEqual(len(self.client.bodies), 1)
+        self.harness.now = 60
+        self.supervisor.tick()
+        self.assertEqual(len(self.client.bodies), 2)
+        self.assertEqual(self.commands.actions().count(stop_all), 1)
+        self.assertEqual(self.client.bodies[1]["agents"][0]["process_state"], "stopped")
+        self.harness.now = 120
+        with self.assertLogs(worker.logger, "WARNING"):
+            self.supervisor.tick()
+        self.assertEqual(len(self.client.bodies), 3)
+        self.assertEqual(self.client.list_calls, 1)
+        self.harness.now = 123
+        self.supervisor.tick()
+        self.assertEqual(self.client.list_calls, 2)
+        self.assertEqual(
+            self.commands.actions()[-1],
+            ["--no-block", "start", f"switch-agent@{AGENT}.service"],
+        )
+
+    def test_410_on_the_list_retires_and_401_while_retired_exits(self):
+        self.client.listings.append(worker.MachineRetired())
+        self.client.heartbeats.append(worker.WorkerError("rejected"))
+        with self.assertLogs(worker.logger, "WARNING"):
+            self.supervisor.tick()
+        self.assertEqual(self.commands.actions(), [["stop", "switch-agent@*.service"]])
+        self.assertEqual(self.client.bodies, [])
+        self.harness.now = 60
+        with self.assertRaises(worker.WorkerError):
+            self.supervisor.tick()
+
+
+class GitTests(RootPatched):
+    def setUp(self):
+        super().setUp()
+        real_git = shutil.which("git")
+        if real_git is None:
+            self.skipTest("git is not installed")
+        self.real_git = real_git
+        tools = self.temporary / "tools"
+        tools.mkdir()
+        self.flock = tools / "flock"
+        self.flock.write_text(
+            f"#!{sys.executable}\n"
+            "import fcntl, os, sys\n"
+            "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+            "os.set_inheritable(fd, True)\n"
+            "os.execv(sys.argv[2], sys.argv[2:])\n"
+        )
+        self.record = tools / "record"
+        self.git = tools / "git"
+        self.git.write_text(
+            f"#!{sys.executable}\n"
+            "import fcntl, os, sys\n"
+            "arguments = sys.argv[1:]\n"
+            "mirror = arguments[arguments.index('-C') + 1]\n"
+            "fd = os.open(mirror + '.lock', os.O_RDWR)\n"
+            "try:\n"
+            "    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+            "    held = 'free'\n"
+            "except BlockingIOError:\n"
+            "    held = 'held'\n"
+            "os.close(fd)\n"
+            f"with open({str(self.record)!r}, 'a') as handle:\n"
+            "    handle.write(held + ' ' + ' '.join(arguments[2:4]) + '\\n')\n"
+            f"os.execv({real_git!r}, [{real_git!r}] + arguments)\n"
+        )
+        for path in (self.flock, self.git):
+            path.chmod(0o755)
+        self.runner = worker.GitRunner([], str(self.flock), str(self.git))
+
+    def git_setup(self, *arguments):
+        subprocess.run(
+            [self.real_git, *arguments],
+            check=True,
+            capture_output=True,
+            env={
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "HOME": str(self.temporary),
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": "/dev/null",
+            },
+        )
+
+    def git_output(self, *arguments) -> str:
+        return subprocess.run(
+            [self.real_git, *arguments], check=True, capture_output=True, text=True
+        ).stdout
+
+    def test_removal_runs_real_git_under_the_mirror_lock(self):
+        harness = Harness(self.temporary / "machine", git=self.runner)
+        harness.supervisor.reconcile([valid_agent()])
+        source = self.temporary / "source"
+        self.git_setup("init", "-q", str(source))
+        self.git_setup(
+            "-C",
+            str(source),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.test",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        )
+        mirror = harness.paths.repos / "example-org/example-repo.git"
+        mirror.parent.mkdir(mode=0o700)
+        self.git_setup("clone", "-q", "--bare", str(source), str(mirror))
+        worktree = harness.paths.worktrees / AGENT / "example-org/example-repo"
+        self.git_setup(
+            "-C",
+            str(mirror),
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            f"switch/{AGENT}",
+            str(worktree),
+        )
+        (worktree / "work.txt").write_text("uncommitted")
+        self.assertIn(
+            str(worktree), self.git_output("-C", str(mirror), "worktree", "list")
+        )
+        harness.commands.clear()
+        with self.assertLogs(worker.logger, "WARNING"):
+            harness.supervisor.reconcile([])
+        self.assertEqual(
+            harness.commands.actions(), [["stop", f"switch-agent@{AGENT}.service"]]
+        )
+        self.assertFalse(worktree.exists())
+        self.assertFalse((harness.paths.worktrees / AGENT).exists())
+        self.assertFalse((harness.paths.agents / AGENT).exists())
+        self.assertTrue(mirror.exists())
+        self.assertEqual(
+            self.record.read_text().splitlines(),
+            ["held worktree remove", "held worktree prune"],
+        )
+        self.assertNotIn(
+            str(worktree), self.git_output("-C", str(mirror), "worktree", "list")
+        )
+        self.assertIn(
+            f"switch/{AGENT}",
+            self.git_output("-C", str(mirror), "branch", "--list", f"switch/{AGENT}"),
+        )
+
+    def test_git_waits_for_a_concurrent_lock_holder(self):
+        mirror = self.temporary / "mirror.git"
+        self.git_setup("init", "-q", "--bare", str(mirror))
+        descriptor = os.open(f"{mirror}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        done = threading.Event()
+        errors: list[BaseException] = []
+
+        def run():
+            try:
+                self.runner.run(mirror, ["worktree", "prune"])
+            except BaseException as error:
+                errors.append(error)
+            done.set()
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        try:
+            self.assertFalse(done.wait(0.5))
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+        self.assertTrue(done.wait(30))
+        thread.join()
+        self.assertEqual(errors, [])
+
+    def test_git_failure_is_a_worker_error_with_detail(self):
+        (self.temporary / "missing.git.lock").write_text("")
+        with self.assertRaisesRegex(worker.WorkerError, "failed"):
+            self.runner.run(self.temporary / "missing.git", ["worktree", "prune"])
+
+    def test_setpriv_prefix_drops_everything(self):
+        self.assertEqual(
+            worker.setpriv_prefix(1001, 1002),
+            [
+                "/usr/bin/setpriv",
+                "--reuid=1001",
+                "--regid=1002",
+                "--clear-groups",
+                "--no-new-privs",
+                "--inh-caps=-all",
+                "--ambient-caps=-all",
+                "--bounding-set=-all",
+            ],
+        )
+
+
+def unit_file(name: str) -> configparser.ConfigParser:
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    parser.optionxform = str  # type: ignore[assignment,method-assign]
+    parser.read_string((HERE / name).read_text())
+    return parser
+
+
+class UnitFileTests(unittest.TestCase):
+    def test_agent_unit(self):
+        unit = unit_file("switch-agent@.service")
+        self.assertEqual(unit.sections(), ["Unit", "Service"])
+        self.assertEqual(
+            dict(unit["Unit"]),
+            {
+                "Description": "Switch agent %i",
+                "StartLimitIntervalSec": "600",
+                "StartLimitBurst": "5",
+                "AssertPathIsMountPoint": "/data",
+            },
+        )
+        service = unit["Service"]
+        expected = {
+            "Type": "simple",
+            "User": "switch-agent",
+            "Group": "switch-agent",
+            "Slice": "switch-agents.slice",
+            "EnvironmentFile": "/run/switch-hosted/agents/%i/env",
+            "ExecStart": f"{worker.UNIT_NODE_PATH} {worker.UNIT_BOOTSTRAP_PATH} /data/agents/%i /run/switch-hosted/agents/%i/deployment.json",
+            "WorkingDirectory": "/data/agents/%i",
+            "Restart": "on-failure",
+            "RestartSec": "10s",
+            "RestartPreventExitStatus": "75",
+            "MemoryMax": "75%",
+            "OOMPolicy": "stop",
+            "NoNewPrivileges": "yes",
+            "CapabilityBoundingSet": "",
+            "AmbientCapabilities": "",
+            "UMask": "0077",
+        }
+        for key, value in expected.items():
+            self.assertEqual(service[key], value, key)
+        self.assertNotIn("PartOf", service)
+
+    def test_slice_and_supervisor_units(self):
+        slice_unit = unit_file("switch-agents.slice")
+        self.assertEqual(slice_unit["Slice"]["MemoryAccounting"], "yes")
+        self.assertNotIn("MemoryMax", slice_unit["Slice"])
+        supervisor = unit_file("switch-hosted-worker.service")["Service"]
+        self.assertEqual(supervisor["User"], "root")
+        self.assertEqual(supervisor["Restart"], "always")
+        self.assertEqual(supervisor["RuntimeDirectory"], "switch-hosted")
+        self.assertEqual(supervisor["RuntimeDirectoryPreserve"], "yes")
+        self.assertIn("CAP_SETUID", supervisor["CapabilityBoundingSet"].split())
+        self.assertIn("CAP_SETGID", supervisor["CapabilityBoundingSet"].split())
+
+    def test_install_ships_units_and_runtime_matches_the_unit(self):
+        install = (HERE / "install.sh").read_text()
+        for name in (
+            "switch-agent@.service",
+            "switch-agents.slice",
+            "switch-hosted-worker.service",
+        ):
+            self.assertIn(f'"$source_dir/{name}" /etc/systemd/system/{name}', install)
+        for command in ("flock", "systemctl", "systemd-mount"):
+            self.assertRegex(install, rf"for command in [^\n]* {command}[ ;]")
+        self.assertIn("systemctl daemon-reload", install)
+        runtime = json.loads((HERE / "runtime.json").read_text())
+        self.assertEqual(runtime["nodePath"], worker.UNIT_NODE_PATH)
+        self.assertEqual(runtime["bootstrapPath"], worker.UNIT_BOOTSTRAP_PATH)
 
 
 if __name__ == "__main__":
