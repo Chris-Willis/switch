@@ -20,9 +20,15 @@ case "$expected_node_sha$expected_provider_sha" in
   *[!0-9a-f]*) echo "node and provider SHA256 values must be lowercase 64-character hashes" >&2; exit 1 ;;
 esac
 
-for command in python3 setpriv lsblk wipefs udevadm mkfs.ext4 mount findmnt sha256sum git gh; do
+for command in python3 setpriv lsblk wipefs udevadm mkfs.ext4 mount findmnt sha256sum git gh flock systemctl systemd-mount; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "missing required AMI command: $command" >&2
+    exit 1
+  }
+done
+for executable in /usr/bin/setpriv /usr/bin/lsblk /usr/sbin/wipefs /usr/bin/udevadm /usr/sbin/mkfs.ext4 /usr/bin/findmnt /usr/bin/git /usr/bin/flock /usr/bin/systemctl /usr/bin/systemd-mount; do
+  [ -x "$executable" ] || {
+    echo "the supervisor requires $executable" >&2
     exit 1
   }
 done
@@ -98,6 +104,8 @@ shared_sha=$(sha256sum /opt/switch/agent-providers/shared-host-daemon.mjs | cut 
 source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 install -o root -g root -m 0755 "$source_dir/switch_hosted_worker.py" /usr/local/libexec/switch-hosted-worker
 install -o root -g root -m 0644 "$source_dir/switch-hosted-worker.service" /etc/systemd/system/switch-hosted-worker.service
+install -o root -g root -m 0644 "$source_dir/switch-agent@.service" /etc/systemd/system/switch-agent@.service
+install -o root -g root -m 0644 "$source_dir/switch-agents.slice" /etc/systemd/system/switch-agents.slice
 python3 - "$actual_node_sha" "$bootstrap_sha" "$shared_sha" "$actual_provider_sha" "$runtime_build" <<'PY'
 import hashlib
 import json
