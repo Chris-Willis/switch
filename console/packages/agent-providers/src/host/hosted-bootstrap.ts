@@ -5,6 +5,7 @@ import {
   link,
   mkdir,
   open,
+  readdir,
   readFile,
   realpath,
   rename,
@@ -553,7 +554,8 @@ export async function prepareHostedDeployment(
   if (spec.revision > plan.spec.revision) {
     // The plan is the commit point: a crash before it is replaced repeats this revision.
     const revised = { version: 1 as const, spec, config: expectedConfig };
-    await writeDefinition(spec, true);
+    // An empty workspace may still become a worktree, which needs it empty; the launch writes it.
+    if ((await readdir(spec.workspacePath)).length > 0) await writeDefinition(spec, true);
     await replaceJson(configPath, revised.config);
     await replaceJson(planPath, revised);
     await syncDirectory(root);

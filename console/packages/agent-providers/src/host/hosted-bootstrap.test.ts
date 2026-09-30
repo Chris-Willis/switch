@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import {
   chmod,
   mkdir,
@@ -10,7 +11,9 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { WorkerObsoleteError } from './exit-codes';
 import {
@@ -23,6 +26,11 @@ import {
 import { githubLaunchEnvironment } from './hosted-github';
 import { hostedSkillsDirectory } from './hosted-skills';
 import type { superviseSharedHost } from './supervisor';
+
+const WORKER_DEPLOYMENT = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../../../../deploy/hosted/worker/testdata/deployment.json'
+);
 
 const roots: string[] = [];
 
@@ -371,6 +379,13 @@ it('accepts only version 2 and requires an absolute mirror path with a repositor
   ).toBe(true);
 });
 
+it('accepts the deployment the root supervisor writes for the Core agent list', async () => {
+  const written: unknown = JSON.parse(await readFile(WORKER_DEPLOYMENT, 'utf8'));
+  const parsed = hostedDeploymentSpecSchema.safeParse(written);
+  expect(parsed.error).toBeUndefined();
+  expect(parsed.data).toEqual(written);
+});
+
 it('sanitizes GitHub validation rejection and does not launch or persist a plan', async () => {
   const input = await fixture();
   await configureGitHub(input);
@@ -704,6 +719,103 @@ it('maps each skills-capable provider to the directory its agent reads', () => {
   expect(hostedSkillsDirectory('codex', env)).toBe('/r/home/.codex/skills');
   expect(hostedSkillsDirectory('opencode', env)).toBe('/r/xdg/opencode/skills');
   expect(() => hostedSkillsDirectory('opencode', { HOME: '/r/home' })).toThrow(/not configured/);
+});
+
+it('adds the worktree on a later revision after the first repository setup failed', async () => {
+  const input = await fixture();
+  const workspace = join(input.root, 'worktrees', 'agent-id', 'example', 'project');
+  await mkdir(workspace, { recursive: true });
+  input.spec.workspacePath = workspace;
+  input.spec.provider.definition = { name: 'helper', content: 'helper definition' };
+  input.spec.github = {
+    credentialPath: join(input.root, 'run', 'agents', 'agent-id', 'github'),
+    repository: 'example/project',
+    refresh: true,
+    mirrorPath: mirrorPath(input),
+  };
+  await writeFile(input.specPath, JSON.stringify(input.spec));
+  const bin = join(input.root, 'bin');
+  await mkdir(bin);
+  await writeFile(
+    join(bin, 'flock'),
+    [
+      '#!/usr/bin/env python3',
+      'import fcntl, os, sys',
+      'fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)',
+      'os.set_inheritable(fd, True)',
+      'fcntl.flock(fd, fcntl.LOCK_EX)',
+      'os.execvp(sys.argv[2], sys.argv[2:])',
+      '',
+    ].join('\n'),
+    { mode: 0o755 }
+  );
+  vi.stubEnv('PATH', `${bin}:${process.env.PATH}`);
+  const upstream = join(input.root, 'upstream');
+  await mkdir(join(input.state, 'home'), { recursive: true, mode: 0o700 });
+  await writeFile(
+    join(input.state, 'home', '.gitconfig'),
+    `[url "file://${upstream}/"]\n\tinsteadOf = https://github.com/\n`
+  );
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string | URL | Request) => {
+      const path = String(url);
+      if (path.endsWith('/hosted/provider-credential'))
+        return new Response(
+          JSON.stringify({
+            status: 'connected',
+            revision: 'test-revision',
+            provider: 'claude',
+            kind: 'api-key',
+            credential: 'provider-secret-value',
+          })
+        );
+      if (path.endsWith('/hosted/github-credential'))
+        return new Response(
+          JSON.stringify({
+            token: 'renewed-github-secret',
+            repository: 'example/project',
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          })
+        );
+      return new Response('{}');
+    })
+  );
+  const supervise = vi.fn<typeof superviseSharedHost>(async () => {});
+
+  await expect(run(input, { supervise })).rejects.toThrow(
+    'Could not prepare the selected GitHub repository'
+  );
+  expect(await readdir(workspace)).toEqual([]);
+
+  const git = (...args: string[]) =>
+    promisify(execFile)('git', args, {
+      env: {
+        ...process.env,
+        GIT_CONFIG_NOSYSTEM: '1',
+        GIT_AUTHOR_NAME: 'Fixture',
+        GIT_AUTHOR_EMAIL: 'fixture@example.test',
+        GIT_COMMITTER_NAME: 'Fixture',
+        GIT_COMMITTER_EMAIL: 'fixture@example.test',
+      },
+    });
+  const remote = join(upstream, 'example', 'project.git');
+  const seed = join(input.root, 'seed');
+  await git('init', '--bare', '-b', 'main', remote);
+  await git('init', '-b', 'main', seed);
+  await writeFile(join(seed, 'README.md'), 'seed\n');
+  await git('-C', seed, 'add', 'README.md');
+  await git('-C', seed, 'commit', '-m', 'seed');
+  await git('-C', seed, 'push', '-q', remote, 'main');
+  input.spec.revision = 4;
+  await writeFile(input.specPath, JSON.stringify(input.spec));
+
+  await run(input, { supervise });
+  expect(supervise).toHaveBeenCalledOnce();
+  expect(await readFile(join(workspace, 'README.md'), 'utf8')).toBe('seed\n');
+  expect(await readFile(join(workspace, '.claude', 'agents', 'helper.md'), 'utf8')).toBe(
+    'helper definition'
+  );
 });
 
 it('redacts raw and encoded GitHub credentials from launcher failures', async () => {
