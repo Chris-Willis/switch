@@ -14,6 +14,7 @@ from switch_core.config import SwitchConfig
 from switch_core.db.models import (
     HostedLaunch,
     HostedMachine,
+    HostedOperation,
     TenantMember,
     require_tenant_id,
 )
@@ -217,6 +218,26 @@ async def _sweep(
         HostedMachineStore().stop(machine, "idle", now)
 
 
+async def _expire_operations(session: AsyncSession) -> None:
+    launch_ids = list(
+        await session.scalars(
+            select(HostedOperation.launch_id)
+            .where(
+                HostedOperation.tenant_id == require_tenant_id(),
+                HostedOperation.state.in_(["queued", "claimed"]),
+            )
+            .distinct()
+        )
+    )
+    for launch_id in launch_ids:
+        launch, _ = await HostedMachineStore().locked_launch(session, launch_id)
+        if launch is not None:
+            await HostedLaunchStore().fail_stale_operations(
+                session, launch.id, launch.revision
+            )
+        await session.commit()
+
+
 @router.get("/machines")
 async def machines(
     session: Annotated[AsyncSession, Depends(controller_session)],
@@ -245,6 +266,7 @@ async def machines(
                 session, machine, protocol, config.hosted_idle_stop_minutes, now
             )
         await session.commit()
+    await _expire_operations(session)
     rows = await session.scalars(
         select(HostedMachine)
         .where(

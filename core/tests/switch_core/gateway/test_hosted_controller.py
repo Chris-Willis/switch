@@ -530,6 +530,51 @@ async def test_retention_sweep_keeps_a_machine_inside_its_window(controller_app)
     assert item["retain_until"] == until.isoformat()
 
 
+async def test_machines_sweep_expires_unconfirmed_and_superseded_operations(
+    controller_app,
+):
+    client, request_id, _, _, factory, _ = controller_app
+    await update_launch(factory, request_id, revision=2)
+    now = datetime.now(UTC)
+    operations = {
+        "expired_claim": (2, "claimed", now - timedelta(minutes=6)),
+        "fresh_claim": (2, "claimed", now),
+        "current_queued": (2, "queued", now),
+        "old_queued": (1, "queued", now),
+        "old_claim": (1, "claimed", now),
+    }
+    ids = {name: str(uuid4()) for name in operations}
+    async with factory() as session:
+        for name, (revision, state, updated_at) in operations.items():
+            session.add(
+                HostedOperation(
+                    id=ids[name],
+                    launch_id=request_id,
+                    launch_revision=revision,
+                    session_id=str(uuid4()),
+                    action="start",
+                    state=state,
+                    updated_at=updated_at,
+                )
+            )
+        await session.commit()
+    await list_machines(client)
+    async with factory() as session:
+        states = {
+            name: (
+                await session.get(HostedOperation, (require_tenant_id(), ids[name]))
+            ).state
+            for name in operations
+        }
+    assert states == {
+        "expired_claim": "unknown",
+        "fresh_claim": "claimed",
+        "current_queued": "queued",
+        "old_queued": "failed",
+        "old_claim": "unknown",
+    }
+
+
 async def test_prepare_is_idempotent_per_revision_and_rotates_on_a_new_one(
     controller_app,
 ):
