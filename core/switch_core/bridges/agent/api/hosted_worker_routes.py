@@ -392,6 +392,7 @@ NoticeReason = Literal[
 
 #: Reasons only Core posts, for outcomes only the wake mailbox knows.
 CoreNoticeReason = Literal[
+    "removed",
     "started_before_stop",
     "started_before_expiry",
     "expired_uncertain",

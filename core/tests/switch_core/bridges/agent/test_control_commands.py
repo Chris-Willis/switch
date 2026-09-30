@@ -13,6 +13,7 @@ from switch_core.bridges.agent.commands import (
     _cmd_reset,
 )
 from switch_core.bridges.agent.protocol.types import AgentStatus
+from switch_core.db.models import HostedLaunch, HostedMachine
 from switch_core.events import CommandEvent
 
 
@@ -384,9 +385,19 @@ def test_an_interrupt_names_the_current_turn() -> None:
     assert frame["body"] == {"type": "turn.interrupt", "turnId": "current"}
 
 
-def _patch_launch(monkeypatch: pytest.MonkeyPatch, launch: Any) -> None:
+def _patch_launch(monkeypatch: pytest.MonkeyPatch, sleeping: bool) -> None:
+    launch = SimpleNamespace(desired_state="running", machine_id="machine-1")
+    machine = SimpleNamespace(
+        desired_state="stopped" if sleeping else "running",
+        stop_reason="idle" if sleeping else None,
+    )
+
     class _Session:
-        async def get(self, _model: Any, key: Any) -> Any:
+        async def get(self, model: Any, key: Any) -> Any:
+            if model is HostedMachine:
+                assert key == ("tenant-1", "machine-1")
+                return machine
+            assert model is HostedLaunch
             assert key == ("tenant-1", "launch-1")
             return launch
 
@@ -410,7 +421,7 @@ async def test_reset_of_a_sleeping_hosted_agent_wakes_it_and_queues_nothing(
     woke: list[Any] = []
     enqueue: list[Any] = []
     monkeypatch.setattr(commands, "_reply", reply)
-    _patch_launch(monkeypatch, SimpleNamespace(sleeping=True))
+    _patch_launch(monkeypatch, sleeping=True)
 
     await _cmd_reset(
         _client(
@@ -442,7 +453,7 @@ async def test_reset_whose_worker_went_away_after_placement_still_wakes(
     woke: list[Any] = []
     monkeypatch.setattr(commands, "_reply", reply)
     monkeypatch.setattr(commands, "_room_surface", _no_surface)
-    _patch_launch(monkeypatch, SimpleNamespace(sleeping=True))
+    _patch_launch(monkeypatch, sleeping=True)
 
     await _cmd_reset(
         _client(
@@ -469,7 +480,7 @@ async def test_interrupt_of_a_sleeping_hosted_agent_does_not_wake_it(
     reply = _Reply()
     woke: list[Any] = []
     monkeypatch.setattr(commands, "_reply", reply)
-    _patch_launch(monkeypatch, SimpleNamespace(sleeping=True))
+    _patch_launch(monkeypatch, sleeping=True)
 
     await _cmd_interrupt(
         _client(
@@ -524,7 +535,7 @@ async def test_an_awake_hosted_agent_with_no_worker_is_told_so(
     woke: list[Any] = []
     monkeypatch.setattr(commands, "_reply", reply)
     monkeypatch.setattr(commands, "_room_surface", _no_surface)
-    _patch_launch(monkeypatch, SimpleNamespace(sleeping=False))
+    _patch_launch(monkeypatch, sleeping=False)
 
     await _cmd_reset(
         _client(

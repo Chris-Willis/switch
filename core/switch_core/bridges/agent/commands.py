@@ -21,9 +21,10 @@ from switch_core.bridges.agent.protocol.types import (
     CommandPayload,
 )
 from switch_core.clients.mentions import mention_tokens as _mention_tokens
-from switch_core.db.models import CollaborationBridge, HostedLaunch, Room
+from switch_core.db.models import CollaborationBridge, HostedLaunch, HostedMachine, Room
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
+from switch_core.db.stores.hosted_machine_store import idle_sleeping
 from switch_core.events import CommandEvent
 from switch_core.gateway.known_agents import known_agent_for
 from switch_core.transport import RoomRef
@@ -413,7 +414,17 @@ async def _reply_hosted_asleep(
     """
     async with tenant_session(client.session_factory, client.tenant_id) as session:
         launch = await session.get(HostedLaunch, (agent.tenant_id, launch_id))
-    if launch is None or not launch.sleeping:
+        machine = (
+            None
+            if launch is None or launch.machine_id is None
+            else await session.get(HostedMachine, (agent.tenant_id, launch.machine_id))
+        )
+    if (
+        launch is None
+        or machine is None
+        or not idle_sleeping(machine)
+        or launch.desired_state != "running"
+    ):
         return False
     if command == "reset":
         hosted = await client._note_hosted_addressed(agent, None)

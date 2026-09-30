@@ -11,6 +11,7 @@ from switch_core.bridges.agent.protocol.hosted_workers import NOTICE_MESSAGES
 from switch_core.clients.admin_messages import PLATFORM_MARKER
 from switch_core.clients.agent_client import (
     _HOSTED_ERROR_MESSAGE,
+    _HOSTED_MACHINE_STOPPED_MESSAGE,
     _HOSTED_REMOVED_MESSAGE,
     _HOSTED_STOPPED_MESSAGE,
     _STARTING_SESSION_MESSAGE,
@@ -295,7 +296,12 @@ async def test_a_kickoff_that_wants_the_channel_gets_its_reply_at_top_level() ->
     assert send_message.calls[0]["body"].startswith("@dantas.abel ")
 
 
-def _hosted(send_message: _Recorder, **launch: object) -> SimpleNamespace:
+RUNNING_MACHINE = {"desired_state": "running", "state": "ready", "stop_reason": None}
+
+
+def _hosted(
+    send_message: _Recorder, machine: dict[str, object], **launch: object
+) -> SimpleNamespace:
     fake = _fake_self(
         send_message, unavailable_reply="cd /data/workspace && claude ..."
     )
@@ -304,6 +310,7 @@ def _hosted(send_message: _Recorder, **launch: object) -> SimpleNamespace:
             launch=SimpleNamespace(  # type: ignore[arg-type]
                 id="launch-1", agent_id="agent-1", revision=8, **launch
             ),
+            machine=SimpleNamespace(revision=3, **machine),  # type: ignore[arg-type]
             refusal=None,
             deliver=True,
         )
@@ -316,41 +323,54 @@ def _hosted(send_message: _Recorder, **launch: object) -> SimpleNamespace:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("launch", "notice"),
+    ("launch", "machine", "notice"),
     [
         (
-            {"desired_state": "stopped", "sleeping": False, "state": "stopped"},
+            {"desired_state": "stopped", "state": "stopped"},
+            RUNNING_MACHINE,
             _HOSTED_STOPPED_MESSAGE,
         ),
         (
-            {"desired_state": "deleted", "sleeping": False, "state": "deleting"},
+            {"desired_state": "deleted", "state": "deleting"},
+            RUNNING_MACHINE,
             _HOSTED_REMOVED_MESSAGE,
         ),
         (
-            {"desired_state": "running", "sleeping": False, "state": "error"},
+            {"desired_state": "running", "state": "error"},
+            RUNNING_MACHINE,
             _HOSTED_ERROR_MESSAGE,
         ),
         (
-            {"desired_state": "running", "sleeping": True, "state": "queued"},
+            {"desired_state": "running", "state": "ready"},
+            {"desired_state": "stopped", "state": "stopped", "stop_reason": "owner"},
+            _HOSTED_MACHINE_STOPPED_MESSAGE,
+        ),
+        (
+            {"desired_state": "running", "state": "stopped"},
+            {"desired_state": "running", "state": "stopped", "stop_reason": None},
             _WAKING_MESSAGE,
         ),
         (
-            {"desired_state": "running", "sleeping": False, "state": "provisioning"},
-            NOTICE_MESSAGES["unreachable"],
+            {"desired_state": "running", "state": "provisioning"},
+            RUNNING_MACHINE,
+            _WAKING_MESSAGE,
         ),
         (
-            {"desired_state": "running", "sleeping": False, "state": "ready"},
+            {"desired_state": "running", "state": "ready"},
+            RUNNING_MACHINE,
             NOTICE_MESSAGES["unreachable"],
         ),
     ],
 )
 async def test_an_unavailable_hosted_agent_says_what_its_worker_is_doing(
-    launch: dict[str, object], notice: str
+    launch: dict[str, object], machine: dict[str, object], notice: str
 ) -> None:
     # Not the local terminal command: the agent runs on a cloud worker.
     send_message = _Recorder()
     await AgentClient.on_message(
-        _hosted(send_message, **launch), RoomRef(room_id="!matrix:server"), _event(None)
+        _hosted(send_message, machine, **launch),
+        RoomRef(room_id="!matrix:server"),
+        _event(None),
     )
 
     assert [call["body"] for call in send_message.calls] == [f"@louisa {notice}"]
@@ -361,7 +381,9 @@ async def test_an_unconnected_hosted_worker_is_announced_once_per_room_and_revis
     None
 ):
     send_message = _Recorder()
-    fake = _hosted(send_message, desired_state="running", sleeping=False, state="ready")
+    fake = _hosted(
+        send_message, RUNNING_MACHINE, desired_state="running", state="ready"
+    )
     room = RoomRef(room_id="!matrix:server")
 
     await AgentClient.on_message(fake, room, _event(None))
@@ -375,7 +397,9 @@ async def test_an_unconnected_hosted_worker_is_announced_once_per_room_and_revis
 @pytest.mark.asyncio
 async def test_a_connected_hosted_worker_is_not_called_unreachable() -> None:
     send_message = _Recorder()
-    fake = _hosted(send_message, desired_state="running", sleeping=False, state="ready")
+    fake = _hosted(
+        send_message, RUNNING_MACHINE, desired_state="running", state="ready"
+    )
     fake._connections = SimpleNamespace(
         attached_worker=lambda _agent_id: SimpleNamespace(
             worker=SimpleNamespace(launch_id="launch-1", launch_revision=8)

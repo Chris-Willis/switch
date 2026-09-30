@@ -12,9 +12,7 @@ from switch_core.bridges.agent import hosted_mailbox
 from switch_core.bridges.agent.hosted_mailbox import mailbox_upkeep
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from tests.switch_core.bridges.agent.protocol.registration_harness import make_service
-from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
-    controller_app,
-)
+from tests.switch_core.gateway.test_hosted_workers import worker_app  # noqa: F401
 
 
 @pytest.fixture
@@ -46,10 +44,10 @@ async def test_unconfigured_server_with_no_hosted_work_skips_the_pass(
 
 
 async def test_unconfigured_server_still_tends_retained_hosted_work(
-    controller_app,  # noqa: F811
+    worker_app,  # noqa: F811
     reclaim,
 ):
-    _, _, _, service, _, _ = controller_app
+    _, _, _, service, _, _ = worker_app
     _unconfigured(service.config)
 
     await mailbox_upkeep(service, datetime.now(UTC))

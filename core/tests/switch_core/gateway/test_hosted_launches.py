@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -9,14 +9,46 @@ from fastapi import FastAPI
 from sqlalchemy import func, select
 
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.service import AgentExistsError
 from switch_core.crypto import encrypt_token
-from switch_core.db.models import HostedLaunch, HostedOperation, User, require_tenant_id
+from switch_core.db.models import (
+    Agent,
+    HostedLaunch,
+    HostedMachine,
+    HostedOperation,
+    User,
+    require_tenant_id,
+)
+from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_config, get_protocol, get_session
 from switch_core.gateway.hosted_launches import router
 from switch_core.providers.claude_verifier import ClaudeVerificationError
+from tests.switch_core.bridges.agent.protocol.registration_harness import (
+    make_service,
+    register,
+)
+from tests.switch_core.hosted_machine_helpers import seed_machine
+
+SUMMARY_KEYS = {
+    "request_id",
+    "name",
+    "provider",
+    "state",
+    "agent_id",
+    "error",
+    "error_code",
+    "desired_state",
+    "revision",
+    "sleeping",
+    "machine_id",
+    "process_state",
+    "process_restarts",
+    "oom_kills",
+}
 
 
 @pytest.fixture
@@ -46,13 +78,21 @@ async def launch_app(session_factory, monkeypatch):
     app.state.github_connections = object()
     app.state.hosted_controller_settings = SimpleNamespace(
         tenant_id=require_tenant_id(),
-        agent_ids=["00000000-0000-4000-8000-000000000001"],
+        machine_slots=["slot-a", "slot-b"],
     )
     config = SimpleNamespace(
         hosted_launch_capacity=1,
         hosted_agents_per_owner=3,
         hosted_sessions_per_agent=2,
+        hosted_disk_retention_days=7,
         jwt_secret_key="SYNTHETIC-KEY",
+    )
+    protocol = make_service(session_factory)
+    protocol.connections = ConnectionRegistry()
+    protocol.event_buffer = EventBuffer(sequence_base=1 << 32)
+    protocol.client_lifecycle.stop = AsyncMock()
+    protocol.client_lifecycle.delete_record = AsyncMock(
+        side_effect=ClientStore().delete
     )
     identity = {"user": owner}
 
@@ -63,9 +103,7 @@ async def launch_app(session_factory, monkeypatch):
     app.dependency_overrides[get_current_user] = lambda: identity["user"]
     app.dependency_overrides[get_session] = sessions
     app.dependency_overrides[get_config] = lambda: config
-    app.dependency_overrides[get_protocol] = lambda: SimpleNamespace(
-        connections=ConnectionRegistry()
-    )
+    app.dependency_overrides[get_protocol] = lambda: protocol
     access = AsyncMock(
         return_value={
             "installations": [
@@ -74,7 +112,7 @@ async def launch_app(session_factory, monkeypatch):
                     "repositories": [
                         {
                             "id": 456,
-                            "name": "example/project",
+                            "name": "Example/Project",
                             "permissions": {"push": True},
                         }
                     ],
@@ -86,18 +124,26 @@ async def launch_app(session_factory, monkeypatch):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="https://switch.example.com"
     ) as client:
-        yield client, verifier, access, config, identity, session_factory
+        yield SimpleNamespace(
+            client=client,
+            verifier=verifier,
+            access=access,
+            config=config,
+            identity=identity,
+            factory=session_factory,
+            protocol=protocol,
+        )
 
 
-def body():
+def body(name: str = "helper"):
     return {
         "request_id": str(uuid4()),
-        "name": "helper",
+        "name": name,
         "description": "Repository helper",
         "display_name": None,
         "icon_url": None,
         "instructions": "",
-        "definition": "---\nname: helper\ndescription: Repository helper\n---\nRepository helper\n",
+        "definition": f"---\nname: {name}\ndescription: Repository helper\n---\nRepository helper\n",
         "installation_id": 123,
         "repository_id": 456,
         "definition_attributes": {"model": "sonnet"},
@@ -107,54 +153,221 @@ def body():
     }
 
 
+async def _launch(factory, request_id: str) -> HostedLaunch:
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        assert launch is not None
+        return launch
+
+
+async def _machine(factory, machine_id: str) -> HostedMachine:
+    async with factory() as session:
+        machine = await session.get(HostedMachine, (require_tenant_id(), machine_id))
+        assert machine is not None
+        return machine
+
+
+async def _update(factory, model, key: str, **values) -> None:
+    async with factory() as session:
+        row = await session.get(model, (require_tenant_id(), key))
+        assert row is not None
+        for name, value in values.items():
+            setattr(row, name, value)
+        await session.commit()
+
+
+async def _lifecycle(app, request_id: str, action: str, revision: int):
+    return await app.client.post(
+        f"/hosted-launches/{request_id}/lifecycle",
+        json={"action": action, "revision": revision},
+    )
+
+
 async def test_request_is_durable_idempotent_and_never_returns_credentials(launch_app):
-    client, verifier, access, _, identity, factory = launch_app
+    app = launch_app
     request = body()
-    result = await client.post("/hosted-launches", json=request)
+    result = await app.client.post("/hosted-launches", json=request)
     assert result.status_code == 202
     assert result.json()["state"] == "queued"
     assert "SYNTHETIC" not in result.text
-    verifier.verify.assert_awaited_once_with("setup-token", "SYNTHETIC-CREDENTIAL")
-    second = await client.post("/hosted-launches", json=request)
+    app.verifier.verify.assert_awaited_once_with("setup-token", "SYNTHETIC-CREDENTIAL")
+    second = await app.client.post("/hosted-launches", json=request)
     assert second.json() == result.json()
-    assert verifier.verify.await_count == 1
-    assert access.await_count == 1
-    async with factory() as session:
+    assert app.verifier.verify.await_count == 1
+    assert app.access.await_count == 1
+    async with app.factory() as session:
         assert await session.scalar(select(func.count()).select_from(HostedLaunch)) == 1
-    identity["user"] = SimpleNamespace(id="someone-else")
+        assert await session.scalar(select(func.count()).select_from(Agent)) == 1
+    app.identity["user"] = SimpleNamespace(id="someone-else")
     assert (
-        await client.get("/hosted-launches/" + request["request_id"])
+        await app.client.get("/hosted-launches/" + request["request_id"])
     ).status_code == 404
 
 
+async def test_create_claims_a_machine_and_registers_the_identity(launch_app):
+    app = launch_app
+    created = await app.client.post("/hosted-launches", json=body())
+    assert created.status_code == 202, created.text
+    summary = created.json()
+    assert set(summary) == SUMMARY_KEYS
+    assert summary["sleeping"] is False
+    assert summary["process_restarts"] == 0 and summary["oom_kills"] == 0
+    agent_id = summary["agent_id"]
+    assert agent_id is not None
+    launch = await _launch(app.factory, summary["request_id"])
+    assert launch.repository == "Example/Project"
+    assert launch.machine_id == summary["machine_id"]
+    async with app.factory() as session:
+        agent = await session.get(Agent, agent_id)
+        assert agent is not None and agent.name == "helper"
+        assert agent.metadata_["hosted_launch_id"] == launch.id
+        assert (
+            agent.metadata_["known_agent_options"]["repo_dir"]
+            == f"/data/worktrees/{agent_id}/example/project"
+        )
+    machine = await _machine(app.factory, summary["machine_id"])
+    assert (machine.slot_id, machine.state, machine.desired_state) == (
+        "slot-a",
+        "queued",
+        "running",
+    )
+    versions = machine.agents_version
+    assert versions >= 1
+
+    other = await app.client.post("/hosted-launches", json=body("reviewer"))
+    assert other.status_code == 202, other.text
+    assert other.json()["machine_id"] == machine.id
+    assert (await _machine(app.factory, machine.id)).agents_version > versions
+
+
+async def test_create_refuses_without_a_machine(session_factory, launch_app):
+    app = launch_app
+    async with app.factory() as session:
+        session.add(
+            User(
+                id="other-owner",
+                name="Other",
+                email="other@example.com",
+                role="user",
+                password_hash="unused",
+            )
+        )
+        await session.flush()
+        await seed_machine(
+            session,
+            owner_id="other-owner",
+            slot_id="slot-a",
+            state="ready",
+            desired_state="running",
+            stop_reason=None,
+            revision=1,
+            generation=1,
+        )
+        await session.commit()
+    full = await app.client.post("/hosted-launches", json=body())
+    assert full.status_code == 409
+    assert full.json()["detail"] == "no machine slot available"
+
+    app.config.hosted_launch_capacity = 2
+    created = await app.client.post("/hosted-launches", json=body())
+    assert created.status_code == 202, created.text
+    await _update(
+        app.factory, HostedMachine, created.json()["machine_id"], state="error"
+    )
+    broken = await app.client.post("/hosted-launches", json=body("reviewer"))
+    assert broken.status_code == 409
+    assert broken.json()["detail"] == "machine needs attention"
+
+
+async def test_identity_failure_is_an_error_that_retry_registers(
+    launch_app, monkeypatch
+):
+    app = launch_app
+    register_agent = app.protocol.register_agent
+    monkeypatch.setattr(
+        app.protocol,
+        "register_agent",
+        AsyncMock(side_effect=RuntimeError("synthetic registration failure")),
+        raising=False,
+    )
+    created = await app.client.post("/hosted-launches", json=body())
+    assert created.status_code == 202, created.text
+    failed = created.json()
+    assert (failed["state"], failed["error_code"], failed["agent_id"]) == (
+        "error",
+        "identity_failed",
+        None,
+    )
+    assert failed["error"]
+    async with app.factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Agent)) == 0
+
+    monkeypatch.setattr(app.protocol, "register_agent", register_agent, raising=False)
+    retried = await _lifecycle(app, failed["request_id"], "retry", failed["revision"])
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["state"] == "queued"
+    assert retried.json()["error_code"] is None
+    assert retried.json()["agent_id"] is not None
+    async with app.factory() as session:
+        assert await session.get(Agent, retried.json()["agent_id"]) is not None
+
+
+async def test_a_taken_name_is_refused(launch_app, monkeypatch):
+    app = launch_app
+    await register(app.protocol, "helper", "cloud-owner")
+    refused = await app.client.post("/hosted-launches", json=body())
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == "An agent already uses this name."
+
+    monkeypatch.setattr(
+        app.protocol,
+        "register_agent",
+        AsyncMock(side_effect=AgentExistsError("taken meanwhile")),
+        raising=False,
+    )
+    request = body("reviewer")
+    raced = await app.client.post("/hosted-launches", json=request)
+    assert raced.status_code == 422
+    launch = await _launch(app.factory, request["request_id"])
+    assert (launch.state, launch.error_code, launch.agent_id) == (
+        "error",
+        "identity_failed",
+        None,
+    )
+
+
 async def test_disabled_server_refuses_before_verifying_credentials(launch_app):
-    client, verifier, _, config, _, _ = launch_app
-    config.hosted_launch_capacity = 0
-    assert (await client.post("/hosted-launches", json=body())).status_code == 503
-    verifier.verify.assert_not_called()
+    app = launch_app
+    app.config.hosted_launch_capacity = 0
+    assert (await app.client.post("/hosted-launches", json=body())).status_code == 503
+    app.verifier.verify.assert_not_called()
 
 
 async def test_expired_claude_or_missing_repository_never_queues(launch_app):
-    client, verifier, access, _, _, factory = launch_app
-    verifier.verify.side_effect = ClaudeVerificationError("Credential no longer works.")
-    assert (await client.post("/hosted-launches", json=body())).status_code == 422
-    access.assert_not_called()
-    verifier.verify.side_effect = None
-    access.return_value = {"installations": []}
-    assert (await client.post("/hosted-launches", json=body())).status_code == 422
-    async with factory() as session:
+    app = launch_app
+    app.verifier.verify.side_effect = ClaudeVerificationError(
+        "Credential no longer works."
+    )
+    assert (await app.client.post("/hosted-launches", json=body())).status_code == 422
+    app.access.assert_not_called()
+    app.verifier.verify.side_effect = None
+    app.access.return_value = {"installations": []}
+    assert (await app.client.post("/hosted-launches", json=body())).status_code == 422
+    async with app.factory() as session:
         assert await session.scalar(select(func.count()).select_from(HostedLaunch)) == 0
 
 
 async def test_changed_request_and_unexpected_credentials_are_rejected(launch_app):
-    client, _, _, _, _, _ = launch_app
+    app = launch_app
     request = body()
-    assert (await client.post("/hosted-launches", json=request)).status_code == 202
+    assert (await app.client.post("/hosted-launches", json=request)).status_code == 202
     assert (
-        await client.post("/hosted-launches", json=request | {"name": "different"})
+        await app.client.post("/hosted-launches", json=request | {"name": "different"})
     ).status_code == 409
     assert (
-        await client.post("/hosted-launches", json=body() | {"credential": "SYNTHETIC"})
+        await app.client.post(
+            "/hosted-launches", json=body() | {"credential": "SYNTHETIC"}
+        )
     ).status_code == 422
 
 
@@ -162,80 +375,150 @@ async def test_changed_request_and_unexpected_credentials_are_rejected(launch_ap
 async def test_rejects_unlaunchable_configuration_before_verifying_credentials(
     launch_app, change
 ):
-    client, verifier, access, *_ = launch_app
-    response = await client.post("/hosted-launches", json=body() | change)
+    app = launch_app
+    response = await app.client.post("/hosted-launches", json=body() | change)
     assert response.status_code == 422
-    verifier.verify.assert_not_awaited()
-    access.assert_not_awaited()
+    app.verifier.verify.assert_not_awaited()
+    app.access.assert_not_awaited()
 
 
 async def test_manual_cloud_agents_are_supported(launch_app):
-    client, *_ = launch_app
+    app = launch_app
     assert (
-        await client.post("/hosted-launches", json=body() | {"auto_session": False})
+        await app.client.post("/hosted-launches", json=body() | {"auto_session": False})
     ).status_code == 202
 
 
-async def test_lifecycle_owner_revision_and_removal_guards(launch_app):
-    client, _, _, _, identity, factory = launch_app
-    request = body()
-    created = (await client.post("/hosted-launches", json=request)).json()
-    url = f"/hosted-launches/{request['request_id']}/lifecycle"
-    owner = identity["user"]
-    identity["user"] = SimpleNamespace(id="someone-else")
-    assert (
-        await client.post(url, json={"action": "stop", "revision": 1})
-    ).status_code == 404
-    identity["user"] = owner
-    assert (
-        await client.post(url, json={"action": "remove", "revision": 1})
-    ).status_code == 409
-    stopped = await client.post(url, json={"action": "stop", "revision": 1})
+async def test_lifecycle_owner_and_revision_guards(launch_app):
+    app = launch_app
+    created = (await app.client.post("/hosted-launches", json=body())).json()
+    request_id = created["request_id"]
+    owner = app.identity["user"]
+    app.identity["user"] = SimpleNamespace(id="someone-else")
+    assert (await _lifecycle(app, request_id, "stop", 1)).status_code == 404
+    app.identity["user"] = owner
+    stopped = await _lifecycle(app, request_id, "stop", 1)
     assert stopped.json()["desired_state"] == "stopped"
+    assert stopped.json()["state"] == "stopping"
     assert stopped.json()["revision"] == 2
-    assert (
-        await client.post(url, json={"action": "start", "revision": 1})
-    ).status_code == 409
-    async with factory() as session:
-        launch = await session.get(
-            HostedLaunch, (require_tenant_id(), created["request_id"])
-        )
-        launch.state = "stopped"
-        await session.commit()
-    removed = await client.post(url, json={"action": "remove", "revision": 2})
-    assert removed.json()["desired_state"] == "deleted"
-    assert (
-        await client.post(url, json={"action": "start", "revision": 3})
-    ).status_code == 409
-
-
-async def test_lifecycle_action_ends_an_idle_sleep(launch_app):
-    client, _, _, _, _, factory = launch_app
-    request = body()
-    await client.post("/hosted-launches", json=request)
-    async with factory() as session:
-        launch = await session.get(
-            HostedLaunch, (require_tenant_id(), request["request_id"])
-        )
-        launch.desired_state = "stopped"
-        launch.state = "stopped"
-        launch.sleeping = True
-        await session.commit()
-    url = f"/hosted-launches/{request['request_id']}"
-    assert (await client.get(url)).json()["sleeping"] is True
-    started = await client.post(
-        url + "/lifecycle", json={"action": "start", "revision": 1}
+    assert (await _lifecycle(app, request_id, "start", 1)).status_code == 409
+    assert (await _lifecycle(app, request_id, "restart", 2)).status_code == 409
+    assert (await _lifecycle(app, request_id, "retry", 2)).status_code == 409
+    started = await _lifecycle(app, request_id, "start", 2)
+    assert (started.json()["desired_state"], started.json()["state"]) == (
+        "running",
+        "queued",
     )
+    await _update(app.factory, HostedLaunch, request_id, state="ready")
+    restarted = await _lifecycle(app, request_id, "restart", 3)
+    assert restarted.status_code == 200, restarted.text
+    assert (restarted.json()["state"], restarted.json()["revision"]) == ("queued", 4)
+
+
+async def test_start_wakes_a_stopped_machine(launch_app):
+    app = launch_app
+    created = (await app.client.post("/hosted-launches", json=body())).json()
+    machine_id = created["machine_id"]
+    await _update(
+        app.factory,
+        HostedMachine,
+        machine_id,
+        desired_state="stopped",
+        stop_reason="idle",
+        state="stopped",
+        revision=2,
+    )
+    url = f"/hosted-launches/{created['request_id']}"
+    assert (await app.client.get(url)).json()["sleeping"] is True
+    listed = (await app.client.get("/hosted-launches")).json()
+    assert [launch["sleeping"] for launch in listed] == [True]
+    stopped = await _lifecycle(app, created["request_id"], "stop", 1)
+    assert (stopped.json()["state"], stopped.json()["sleeping"]) == ("stopped", True)
+    await _update(app.factory, HostedMachine, machine_id, stop_reason="owner")
+    started = await _lifecycle(app, created["request_id"], "start", 2)
     assert started.json()["desired_state"] == "running"
     assert started.json()["sleeping"] is False
+    machine = await _machine(app.factory, machine_id)
+    assert (machine.desired_state, machine.stop_reason, machine.revision) == (
+        "running",
+        None,
+        3,
+    )
+
+
+async def test_retry_resets_the_process_counters(launch_app):
+    app = launch_app
+    created = (await app.client.post("/hosted-launches", json=body())).json()
+    request_id = created["request_id"]
+    await _update(
+        app.factory,
+        HostedLaunch,
+        request_id,
+        state="error",
+        error="The agent keeps crashing.",
+        error_code="agent_crashed",
+        process_restarts=5,
+        process_oom_kills=2,
+    )
+    failed = (await app.client.get(f"/hosted-launches/{request_id}")).json()
+    assert (failed["process_restarts"], failed["oom_kills"]) == (5, 2)
+    retried = await _lifecycle(app, request_id, "retry", 1)
+    assert retried.status_code == 200, retried.text
+    summary = retried.json()
+    assert (summary["state"], summary["error"], summary["error_code"]) == (
+        "queued",
+        None,
+        None,
+    )
+    assert (summary["process_restarts"], summary["oom_kills"]) == (0, 0)
+    assert summary["agent_id"] == created["agent_id"]
+
+
+async def test_remove_in_any_state_retains_the_machine_only_when_empty(launch_app):
+    app = launch_app
+    app.config.hosted_agents_per_owner = 3
+    first = (await app.client.post("/hosted-launches", json=body())).json()
+    second = (await app.client.post("/hosted-launches", json=body("reviewer"))).json()
+    machine_id = first["machine_id"]
+
+    removed = await _lifecycle(app, first["request_id"], "remove", 1)
+    assert removed.status_code == 200, removed.text
+    assert (removed.json()["state"], removed.json()["name"]) == (
+        "deleted",
+        "removed:" + first["request_id"],
+    )
+    assert (await _machine(app.factory, machine_id)).desired_state == "running"
+    async with app.factory() as session:
+        assert await session.get(Agent, first["agent_id"]) is None
+    assert (await _lifecycle(app, first["request_id"], "start", 2)).status_code == 409
+
+    await _update(
+        app.factory,
+        HostedLaunch,
+        second["request_id"],
+        state="error",
+        error_code="agent_failed",
+    )
+    last = await _lifecycle(app, second["request_id"], "remove", 1)
+    assert last.status_code == 200, last.text
+    machine = await _machine(app.factory, machine_id)
+    assert machine.desired_state == "retained"
+    retention = machine.retain_until - datetime.now(UTC)
+    assert timedelta(days=7) - timedelta(minutes=1) < retention <= timedelta(days=7)
+    async with app.factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Agent)) == 0
+    reclaimed = await app.client.post("/hosted-launches", json=body("helper"))
+    assert reclaimed.status_code == 202, reclaimed.text
+    assert reclaimed.json()["machine_id"] == machine_id
+    assert (await _machine(app.factory, machine_id)).desired_state == "running"
 
 
 async def test_session_operation_status_is_owner_scoped(launch_app):
-    client, _, _, _, identity, factory = launch_app
+    app = launch_app
     request = body()
-    await client.post("/hosted-launches", json=request)
+    await app.client.post("/hosted-launches", json=request)
     operation_id = str(uuid4())
-    async with factory() as session:
+    async with app.factory() as session:
         session.add(
             HostedOperation(
                 id=operation_id,
@@ -247,47 +530,43 @@ async def test_session_operation_status_is_owner_scoped(launch_app):
         )
         await session.commit()
     url = f"/hosted-launches/{request['request_id']}/sessions/{operation_id}"
-    found = await client.get(url)
+    found = await app.client.get(url)
     assert found.status_code == 200
     assert found.json()["state"] == "queued"
-    identity["user"] = SimpleNamespace(id="someone-else")
-    assert (await client.get(url)).status_code == 404
+    app.identity["user"] = SimpleNamespace(id="someone-else")
+    assert (await app.client.get(url)).status_code == 404
 
 
-@pytest.mark.parametrize("stale", [False, True])
-async def test_stop_sleeping_worker_prevents_mention_wake(launch_app, stale):
-    client, _, _, _, _, factory = launch_app
-    request = body()
-    await client.post("/hosted-launches", json=request)
-    async with factory() as session:
-        launch = await session.get(
-            HostedLaunch, (require_tenant_id(), request["request_id"])
-        )
-        launch.desired_state = "stopped"
-        launch.state = "stopped"
-        launch.sleeping = True
-        launch.revision = 2
-        await session.commit()
-    stopped = await client.post(
-        f"/hosted-launches/{request['request_id']}/lifecycle",
-        json={"action": "stop", "revision": 1 if stale else 2},
+async def test_stop_on_a_sleeping_machine_prevents_mention_wake(launch_app):
+    app = launch_app
+    created = (await app.client.post("/hosted-launches", json=body())).json()
+    await _update(
+        app.factory,
+        HostedMachine,
+        created["machine_id"],
+        desired_state="stopped",
+        stop_reason="idle",
+        state="stopped",
+        revision=2,
     )
+    stopped = await _lifecycle(app, created["request_id"], "stop", 1)
     assert stopped.status_code == 200
-    assert stopped.json()["sleeping"] is False
     assert stopped.json()["state"] == "stopped"
-    async with factory() as session:
-        launch = await HostedLaunchStore().note_addressed(
-            session, request["request_id"]
+    async with app.factory() as session:
+        launch, machine = await HostedLaunchStore().note_addressed(
+            session, created["request_id"]
         )
-        assert launch.desired_state == "stopped"
-        assert launch.revision == 3
+        await session.commit()
+    assert launch.desired_state == "stopped"
+    assert launch.revision == 2
+    assert (machine.desired_state, machine.revision) == ("stopped", 2)
 
 
 async def test_read_only_repository_cannot_create_cloud_agent(launch_app):
-    client, _, access, _, _, _ = launch_app
-    access.return_value["installations"][0]["repositories"][0]["permissions"] = {
+    app = launch_app
+    app.access.return_value["installations"][0]["repositories"][0]["permissions"] = {
         "pull": True
     }
-    result = await client.post("/hosted-launches", json=body())
+    result = await app.client.post("/hosted-launches", json=body())
     assert result.status_code == 422
     assert "needs write access" in result.json()["detail"]
