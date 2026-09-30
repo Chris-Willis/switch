@@ -554,6 +554,63 @@ async def test_running_process_is_ready_only_once_its_worker_listens(supervisor)
     assert launch.active_at >= before
 
 
+async def post_running_report(supervisor, *, since: datetime, updated_at: datetime):
+    client, request_id, agent_id, _, factory, machine_id, headers = supervisor
+    await update_launch(
+        factory, request_id, state="provisioning", updated_at=updated_at
+    )
+    response = await client.post(
+        f"/hosted/machines/{machine_id}/heartbeat",
+        headers=headers,
+        json=heartbeat_body(
+            launch_id=request_id,
+            agent_id=agent_id,
+            revision=1,
+            process_state="running",
+            exit=None,
+            since=since.isoformat(),
+        ),
+    )
+    assert response.status_code == 200, response.text
+    return await launch_row(factory, request_id)
+
+
+async def test_running_process_that_never_attaches_times_out(supervisor):
+    long_ago = datetime.now(UTC) - timedelta(minutes=11)
+    launch = await post_running_report(supervisor, since=long_ago, updated_at=long_ago)
+    assert launch.state == "error"
+    assert launch.error_code == "worker_attach_timeout"
+    assert launch.error == (
+        "The agent started but did not connect to Switch within 10 minutes. "
+        "Retry it in Switch Console, or check its provider login."
+    )
+    assert launch.updated_at > long_ago
+
+
+@pytest.mark.parametrize("recent", ["since", "updated_at"])
+async def test_running_process_within_the_attach_deadline_stays_provisioning(
+    supervisor, recent
+):
+    long_ago = datetime.now(UTC) - timedelta(minutes=11)
+    just_now = datetime.now(UTC) - timedelta(minutes=1)
+    times = {"since": long_ago, "updated_at": long_ago, recent: just_now}
+    launch = await post_running_report(supervisor, **times)
+    assert launch.state == "provisioning"
+    assert launch.error_code is None
+
+
+async def test_heartbeat_refuses_a_report_time_without_an_offset(supervisor):
+    client, request_id, agent_id, _, _, machine_id, headers = supervisor
+    response = await client.post(
+        f"/hosted/machines/{machine_id}/heartbeat",
+        headers=headers,
+        json=heartbeat_body(
+            launch_id=request_id, agent_id=agent_id, since="2026-01-01T00:00:00"
+        ),
+    )
+    assert response.status_code == 422
+
+
 async def test_stale_revision_report_writes_columns_but_not_state(supervisor):
     client, request_id, agent_id, _, factory, machine_id, headers = supervisor
     await update_launch(factory, request_id, revision=2)

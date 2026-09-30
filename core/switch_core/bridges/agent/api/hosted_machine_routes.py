@@ -8,12 +8,12 @@ check.
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.dependencies import (
@@ -45,6 +45,7 @@ router = APIRouter(prefix="/hosted/machines")
 HEARTBEAT_EVERY_S = 15
 DISK_FULL_BELOW_BYTES = 1 << 30
 RETIRED_STATES = {"retained", "deleting", "deleted"}
+WORKER_ATTACH_TIMEOUT = timedelta(minutes=10)
 
 
 @dataclass(frozen=True)
@@ -291,7 +292,7 @@ class AgentReport(BaseModel):
     restarts: int = Field(ge=0)
     oom_kills: int = Field(ge=0)
     exit: ProcessExit | None
-    since: datetime
+    since: AwareDatetime
 
 
 class Heartbeat(BaseModel):
@@ -307,6 +308,10 @@ class Heartbeat(BaseModel):
 CRASHED_ERROR = "The agent crashed 5 times in 10 minutes. Retry it in Switch Console."
 FAILED_ERROR = (
     "The agent stopped with an error and was not restarted. Retry it in Switch Console."
+)
+ATTACH_TIMEOUT_ERROR = (
+    "The agent started but did not connect to Switch within 10 minutes. "
+    "Retry it in Switch Console, or check its provider login."
 )
 
 
@@ -340,6 +345,15 @@ def _apply_process_state(
             launch.error = None
             launch.error_code = None
             launch.active_at = now
+        elif (
+            not listening
+            and launch.desired_state == "running"
+            and launch.state == "provisioning"
+            and now - max(report.since, launch.updated_at) > WORKER_ATTACH_TIMEOUT
+        ):
+            launch.state = "error"
+            launch.error_code = "worker_attach_timeout"
+            launch.error = ATTACH_TIMEOUT_ERROR
     elif report.process_state in {"crashed", "failed"}:
         crashed = report.process_state == "crashed"
         launch.state = "error"
