@@ -349,6 +349,8 @@ class Observation(BaseModel):
 
 ERROR_REPLACING_STATES = {"error", "retained", "deleting", "deleted"}
 
+STALE_ERROR_IGNORED_STATES = {"deleted", "queued", "provisioning"}
+
 OBSERVED_ERROR = "The cloud machine could not start. Retry it in Switch Console, or contact your administrator if it keeps failing."
 
 
@@ -370,7 +372,7 @@ async def observe(
             )
         elif (
             body.state == "error" or body.error is not None
-        ) and machine.state != "deleted":
+        ) and machine.state not in STALE_ERROR_IGNORED_STATES:
             machine.state = "error"
             machine.error = body.error or OBSERVED_ERROR
             machine.error_code = body.error_code

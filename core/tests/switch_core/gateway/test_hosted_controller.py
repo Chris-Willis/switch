@@ -745,6 +745,43 @@ async def test_stale_observation_is_ignored_unless_it_carries_an_error(
     assert saved.error_code == "machine_needs_attention"
 
 
+@pytest.mark.parametrize("state", ["queued", "provisioning"])
+async def test_stale_error_does_not_overwrite_a_newer_retry(controller_app, state):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    await update_machine(factory, machine.id, state=state, revision=2)
+    item = await observe(
+        client,
+        machine.id,
+        state="error",
+        revision=1,
+        error="The instance failed its status checks.",
+        error_code="machine_needs_attention",
+    )
+    assert item["state"] == state
+    saved = await machine_of(factory, request_id)
+    assert saved.state == state
+    assert saved.error is None
+    assert saved.error_code is None
+
+
+async def test_stale_error_is_recorded_on_a_ready_machine(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    await update_machine(factory, machine.id, state="ready", revision=2)
+    item = await observe(
+        client,
+        machine.id,
+        state="error",
+        revision=1,
+        error="The instance failed its status checks.",
+    )
+    assert item["state"] == "error"
+    assert (
+        await machine_of(factory, request_id)
+    ).error == "The instance failed its status checks."
+
+
 async def test_running_observation_waits_for_a_heartbeat(controller_app):
     client, request_id, _, _, factory, _ = controller_app
     machine = await machine_of(factory, request_id)
