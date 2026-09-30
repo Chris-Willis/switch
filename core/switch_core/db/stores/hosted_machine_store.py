@@ -161,7 +161,6 @@ class HostedMachineStore:
                 self.start(machine, now)
             else:
                 machine.active_at = now
-                machine.updated_at = now
             await session.flush()
             return machine
 
@@ -205,7 +204,6 @@ class HostedMachineStore:
             machine.stop_reason = None
             bump_revision(machine, now)
         machine.active_at = now
-        machine.updated_at = now
 
     def stop(
         self,

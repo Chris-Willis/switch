@@ -87,6 +87,42 @@ async def test_a_second_claim_reuses_the_owner_s_machine(factory):
     assert second.active_at >= first.active_at
 
 
+async def test_reusing_a_queued_machine_keeps_its_queued_clock(factory):
+    queued = await seed(
+        factory,
+        owner_id="owner-a",
+        slot_id="slot-a",
+        state="queued",
+        desired_state="running",
+        stop_reason=None,
+        revision=1,
+        generation=1,
+    )
+    long_ago = datetime.now(UTC) - timedelta(minutes=11)
+    async with factory() as session:
+        row = await HostedMachineStore().get(session, queued.id)
+        row.updated_at = long_ago
+        row.active_at = long_ago
+        await session.commit()
+    machine = await claim(factory, "owner-a")
+    assert machine.id == queued.id
+    assert machine.updated_at == long_ago
+    assert machine.active_at > long_ago
+
+
+async def test_starting_a_running_machine_only_renews_activity(factory):
+    machine = await claim(factory, "owner-a")
+    long_ago = datetime.now(UTC) - timedelta(minutes=11)
+    machine.updated_at = long_ago
+    now = datetime.now(UTC)
+    HostedMachineStore().start(machine, now)
+    assert (machine.updated_at, machine.active_at, machine.revision) == (
+        long_ago,
+        now,
+        1,
+    )
+
+
 async def test_a_retained_machine_is_reused_on_the_same_disk(factory):
     retained = await seed(
         factory,
