@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from botocore.exceptions import ClientError
@@ -12,6 +12,8 @@ from .model import DesiredState, Machine, ObservedState
 from .store import MachineStore, require_recovery_allowed
 
 logger = logging.getLogger(__name__)
+
+LAUNCH_VISIBILITY_GRACE = timedelta(minutes=15)
 
 
 class Reconciler:
@@ -92,7 +94,7 @@ class Reconciler:
                 self._cloud.validate_capacity()
                 if not self._unchanged(claim, DesiredState.RUNNING):
                     return self._store.cancel_queued_instance_launch(claim)
-                machine = self._store.mark_instance_launch_issued(claim)
+                machine = self._store.mark_instance_launch_issued(claim, utcnow())
                 if not self._same_claim(claim, machine):
                     return machine
             try:
@@ -265,6 +267,8 @@ class Reconciler:
             if instance is None:
                 instance = self._cloud.find_launched_instance(machine)
             if instance is None:
+                if not _launch_grace_expired(machine):
+                    return self._store.set_observed(claim, busy, None)
                 self._store.clear_unlaunched_instance(machine)
                 return None
             return self._store.record_instance(machine.machine_id, instance["InstanceId"])
@@ -324,6 +328,11 @@ def _fresh(machine: Machine, observed: ObservedState) -> bool:
         and machine.observed_revision == machine.desired_revision
         and machine.observed_operation_id == machine.operation_id
     )
+
+
+def _launch_grace_expired(machine: Machine) -> bool:
+    issued_at = machine.instance_launch_issued_at
+    return issued_at is not None and utcnow() - issued_at >= LAUNCH_VISIBILITY_GRACE
 
 
 def _bundle_ready(machine: Machine) -> bool:

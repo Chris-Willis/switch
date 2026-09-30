@@ -70,6 +70,7 @@ class MachineStore:
                 volume_create_issued INTEGER NOT NULL DEFAULT 0,
                 instance_launch_intent INTEGER NOT NULL DEFAULT 0,
                 instance_launch_issued INTEGER NOT NULL DEFAULT 0,
+                instance_launch_issued_at TEXT,
                 instance_terminate_issued INTEGER NOT NULL DEFAULT 0,
                 instance_terminal_observed INTEGER NOT NULL DEFAULT 0,
                 volume_delete_issued INTEGER NOT NULL DEFAULT 0,
@@ -305,7 +306,8 @@ class MachineStore:
             """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
             image_id = ?, previous_runtime_fingerprint = ?, instance_seq = instance_seq + 1,
             desired_revision = desired_revision + 1, operation_id = ?,
-            instance_launch_intent = 0, instance_launch_issued = 0, instance_terminate_issued = 0,
+            instance_launch_intent = 0, instance_launch_issued = 0, instance_launch_issued_at = NULL,
+            instance_terminate_issued = 0,
             instance_terminal_observed = 0, observed_state = 'stopped', error = NULL, updated_at = CURRENT_TIMESTAMP
             WHERE machine_id = ? AND desired_revision = ? AND operation_id = ?
             AND desired_state = 'stopped' AND instance_id = ? AND instance_terminal_observed = 1""",
@@ -337,7 +339,8 @@ class MachineStore:
             """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
             previous_runtime_fingerprint = NULL, instance_seq = instance_seq + 1,
             recovery_count = recovery_count + ?, instance_launch_intent = 0,
-            instance_launch_issued = 0, instance_terminate_issued = 0,
+            instance_launch_issued = 0, instance_launch_issued_at = NULL,
+            instance_terminate_issued = 0,
             instance_terminal_observed = 0,
             observed_state = 'provisioning', error = NULL, updated_at = CURRENT_TIMESTAMP
             WHERE machine_id = ? AND desired_revision = ? AND operation_id = ?
@@ -359,7 +362,8 @@ class MachineStore:
         self._connection.execute(
             """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
             previous_runtime_fingerprint = NULL, instance_seq = instance_seq + 1,
-            instance_launch_intent = 0, instance_launch_issued = 0, instance_terminate_issued = 0,
+            instance_launch_intent = 0, instance_launch_issued = 0, instance_launch_issued_at = NULL,
+            instance_terminate_issued = 0,
             instance_terminal_observed = 0, updated_at = CURRENT_TIMESTAMP
             WHERE machine_id = ? AND desired_revision = ? AND operation_id = ?
             AND desired_state = 'retained' AND instance_id = ? AND instance_terminal_observed = 1""",
@@ -373,8 +377,16 @@ class MachineStore:
     def mark_volume_create_issued(self, claim: Machine) -> Machine:
         return self._mark_intent(claim, "volume_create_issued")
 
-    def mark_instance_launch_issued(self, claim: Machine) -> Machine:
-        return self._mark_intent(claim, "instance_launch_issued")
+    def mark_instance_launch_issued(self, claim: Machine, issued_at: datetime) -> Machine:
+        self._connection.execute(
+            """
+            UPDATE machines SET instance_launch_issued = 1, instance_launch_issued_at = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE machine_id = ? AND desired_revision = ? AND operation_id = ?
+            """,
+            (_timestamp(issued_at), claim.machine_id, claim.desired_revision, claim.operation_id),
+        )
+        return self.get(claim.machine_id)
 
     def cancel_queued_volume_create(self, claim: Machine) -> Machine:
         if claim.volume_create_issued:
@@ -401,7 +413,8 @@ class MachineStore:
         """Forget an issued launch of `claim.instance_seq` that produced no instance."""
         self._connection.execute(
             """
-            UPDATE machines SET instance_launch_issued = 0, updated_at = CURRENT_TIMESTAMP
+            UPDATE machines SET instance_launch_issued = 0, instance_launch_issued_at = NULL,
+                updated_at = CURRENT_TIMESTAMP
             WHERE machine_id = ? AND instance_seq = ? AND instance_id IS NULL
             AND instance_launch_issued = 1
             """,
@@ -525,7 +538,6 @@ class MachineStore:
             "volume_create_intent",
             "volume_create_issued",
             "instance_launch_intent",
-            "instance_launch_issued",
             "instance_terminate_issued",
             "volume_delete_issued",
         }:
@@ -622,6 +634,11 @@ def _machine(row: sqlite3.Row) -> Machine:
         volume_create_issued=bool(row["volume_create_issued"]),
         instance_launch_intent=bool(row["instance_launch_intent"]),
         instance_launch_issued=bool(row["instance_launch_issued"]),
+        instance_launch_issued_at=(
+            datetime.fromisoformat(row["instance_launch_issued_at"])
+            if row["instance_launch_issued_at"]
+            else None
+        ),
         instance_terminate_issued=bool(row["instance_terminate_issued"]),
         instance_terminal_observed=bool(row["instance_terminal_observed"]),
         volume_delete_issued=bool(row["volume_delete_issued"]),

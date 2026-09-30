@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from unittest.mock import patch
 from uuid import NAMESPACE_URL, uuid5
 
@@ -227,7 +228,7 @@ def launched(tmp_path, *, instance_launch_issued: bool = False):
     sync(gateway, core)
     if instance_launch_issued:
         machine = store.mark_instance_launch_intent(store.get(MACHINE_ID))
-        machine = store.mark_instance_launch_issued(machine)
+        machine = store.mark_instance_launch_issued(machine, datetime.now(UTC))
         store.record_instance(MACHINE_ID, INSTANCE_ID)
     assert store.get(MACHINE_ID).instance_launch_issued is instance_launch_issued
     return store, secrets, core, gateway

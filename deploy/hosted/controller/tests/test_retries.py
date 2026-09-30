@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -103,8 +104,9 @@ def test_definitely_rejected_launch_is_forgotten(tmp_path: Path, code, status, c
     store.set_desired(machine.machine_id, DesiredState.RETAINED, None)
     cloud.run_instance.reset_mock()
     retained = Reconciler(store, cloud).reconcile(machine.machine_id)
-    assert retained.observed_state is ObservedState.RETAINED
-    assert not retained.instance_launch_issued
+    expected = ObservedState.RETAINED if cleared else ObservedState.STOPPING
+    assert retained.observed_state is expected
+    assert retained.instance_launch_issued is not cleared
     cloud.run_instance.assert_not_called()
     store.close()
 
@@ -124,10 +126,48 @@ def test_ambiguous_launch_is_replayed_with_the_same_sequence(tmp_path: Path):
     store.close()
 
 
+def unresolved_launch(tmp_path: Path, desired: DesiredState, issued_ago: timedelta):
+    _, store, machine, cloud = ready_to_launch(tmp_path)
+    machine = store.mark_instance_launch_intent(machine)
+    store.mark_instance_launch_issued(machine, datetime.now(UTC) - issued_ago)
+    if desired is DesiredState.DELETED:
+        machine = store.set_desired(machine.machine_id, DesiredState.RETAINED, None)
+        store.set_observed(machine, ObservedState.RETAINED, None)
+    store.set_desired(machine.machine_id, desired, None)
+    return store, machine, cloud
+
+
+@pytest.mark.parametrize("desired", [DesiredState.RETAINED, DesiredState.DELETED])
+def test_recent_unresolved_launch_is_not_forgotten(tmp_path: Path, desired):
+    store, machine, cloud = unresolved_launch(tmp_path, desired, timedelta(minutes=1))
+    busy = ObservedState.STOPPING if desired is DesiredState.RETAINED else ObservedState.DELETING
+
+    waiting = Reconciler(store, cloud).reconcile(machine.machine_id)
+    assert waiting.observed_state is busy
+    assert waiting.instance_launch_issued
+    assert waiting.instance_launch_issued_at is not None
+    cloud.delete_volume.assert_not_called()
+    store.close()
+
+
+@pytest.mark.parametrize("desired", [DesiredState.RETAINED, DesiredState.DELETED])
+def test_old_unresolved_launch_is_forgotten(tmp_path: Path, desired):
+    store, machine, cloud = unresolved_launch(tmp_path, desired, timedelta(minutes=20))
+
+    forgotten = Reconciler(store, cloud).reconcile(machine.machine_id)
+    assert not forgotten.instance_launch_issued
+    assert forgotten.instance_launch_issued_at is None
+    if desired is DesiredState.RETAINED:
+        assert forgotten.observed_state is ObservedState.RETAINED
+    else:
+        cloud.delete_volume.assert_called_once()
+    store.close()
+
+
 def test_retention_adopts_an_instance_found_by_launch_token(tmp_path: Path):
     cfg, store, machine, cloud = ready_to_launch(tmp_path)
     machine = store.mark_instance_launch_intent(machine)
-    store.mark_instance_launch_issued(machine)
+    store.mark_instance_launch_issued(machine, datetime.now(UTC))
     store.set_desired(machine.machine_id, DesiredState.RETAINED, None)
     worker = instance(cfg, machine, "terminated")
     cloud.find_launched_instance.return_value = worker

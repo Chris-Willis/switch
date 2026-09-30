@@ -299,7 +299,7 @@ def test_uncertain_launch_then_stop_waits_for_late_instance(tmp_path: Path):
         machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone
     )
     machine = store.mark_instance_launch_intent(machine)
-    store.mark_instance_launch_issued(machine)
+    store.mark_instance_launch_issued(machine, datetime.now(UTC))
     store.set_desired(machine.machine_id, DesiredState.STOPPED, None)
 
     client = ec2_client()
