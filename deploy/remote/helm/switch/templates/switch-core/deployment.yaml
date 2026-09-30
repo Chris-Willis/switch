@@ -58,6 +58,10 @@ spec:
               value: {{ .Values.switchCore.hostedProviderVerificationEnabled | quote }}
             - name: HOSTED_LAUNCH_CAPACITY
               value: {{ .Values.switchCore.hostedLaunchCapacity | quote }}
+            - name: HOSTED_DISK_RETENTION_DAYS
+              value: {{ .Values.switchCore.hostedDiskRetentionDays | quote }}
+            - name: HOSTED_IDLE_STOP_MINUTES
+              value: {{ .Values.switchCore.hostedIdleStopMinutes | quote }}
             {{- end }}
             {{- if .Values.switchCore.githubConnectionsSecret }}
             - name: HOSTED_GITHUB_CONFIG_PATH

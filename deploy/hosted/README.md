@@ -7,8 +7,10 @@ those requests and maintains its own durable AWS assignment database. Operator
 commands remain available for lifecycle management.
 
 Start from [the architecture proposal](../../docs/planning/hosted-execution-backend-proposal.md).
-One ordinary EC2 VM runs one agent with a retained encrypted EBS data disk.
-The shared watcher starts a separate session for each addressed room on that VM.
+One ordinary EC2 VM (a machine) runs all cloud agents of one user, with a
+retained encrypted EBS data disk. Each machine uses one machine slot from the
+operator-configured pool. The watcher starts a separate session for each addressed
+room on that VM.
 Creating an agent does not create a room. The controller runs on existing EKS;
 workers never join that cluster.
 
@@ -42,24 +44,23 @@ request write access. Credentials must stay on the backend and in the worker's
 private credential transport, never in Console responses or persisted launch specs.
 
 Console uses the shared New Agent form, a saved provider connection and a selected
-GitHub repository. The gateway reserves an identity from the operator-configured
-pool. The controller creates the data volume, writes the assignment secret with
-that volume ID, and then starts the VM. A worker is ready only after its shared
-watcher connects. Agents can start sessions automatically when addressed or use
+GitHub repository. A user's first cloud agent reserves a machine slot from the
+operator-configured pool. The controller creates the data volume, writes the
+assignment secret with that volume ID, and then starts the VM. Later agents of the
+same user run on that machine. An agent is ready only after its watcher connects. Agents can start sessions automatically when addressed or use
 manual sessions. Both paths use the existing session form and conversation view.
 
 Cloud sessions appear in the agent sidebar and under their connected rooms.
 The conversation supports messages, permission requests, interruption, stop,
 resume and restart. Worker cards provide start, stop, restart, retry and removal.
-Removal retains the data disk and history. Uncertain operations are reported
-explicitly and are not automatically repeated.
+See [machine lifecycle](#machine-lifecycle) for what removal does to the machine
+and its disk. Uncertain operations are reported explicitly and are not
+automatically repeated.
 
-`HOSTED_AGENTS_PER_OWNER` limits agents per user (default 3).
-`HOSTED_SESSIONS_PER_AGENT` limits sessions per worker (default 8).
-`HOSTED_IDLE_STOP_MINUTES` stops an auto-session worker after that many idle
-minutes (default 0, off); addressing the agent starts it again.
-The server launch capacity and controller assignment pool impose separate global
-limits. Each agent has its own VM, encrypted disk and scoped credentials.
+Each user has their own VM, encrypted disk and scoped machine credentials. All
+agents of that user share them. The server launch capacity and the controller's
+machine slot pool impose separate global limits. See
+[machine lifecycle](#machine-lifecycle) for the settings.
 
 Managed workers request a fresh installation token before checkout and each Git
 or GitHub CLI command. The agent-authenticated renewal route checks the saved
@@ -69,18 +70,25 @@ accepts a caller-selected repository. Personal tokens remain an operator option.
 ### Enable Console launches
 
 Mount a private backend JSON file through `HOSTED_CONTROLLER_CONFIG_PATH` with
-`tenant_id`, a dedicated `token` of at least 32 characters, reserved UUID
-`agent_ids`, `github_private_key_path` and the HTTPS `agent_api_endpoint`.
-Set `HOSTED_LAUNCH_CAPACITY` no higher than that pool. Zero disables creation.
-The backend chart exposes `switchCore.hostedControllerSecret` (files
-`controller.json` and the referenced key) and `switchCore.hostedLaunchCapacity`.
+`tenant_id`, a dedicated `token` of at least 32 characters, `machine_slots`,
+`github_private_key_path` and the HTTPS `agent_api_endpoint`. `machine_slots` is
+a list of 1–100 unique slot IDs. The IDs must match the keys of the Terraform
+`machine_slots` variable. Core rejects a file with the old `agent_ids` key at
+startup. Set `HOSTED_LAUNCH_CAPACITY` no higher than the number of machine slots.
+Zero disables creation. The backend chart exposes
+`switchCore.hostedControllerSecret` (files `controller.json` and the referenced
+key), `switchCore.hostedLaunchCapacity`, `switchCore.hostedIdleStopMinutes` and
+`switchCore.hostedDiskRetentionDays`.
 
 Mount a controller secret with `gateway.json` containing `origin`, the matching
-`token` and an allowed `instance_type`. Set the controller
-chart's `gatewaySecretName` to that secret. The token authorizes only the hosted
-controller routes for its configured tenant. It is not a user or agent API key.
-The assignment UUIDs must match the Terraform and controller configurations.
-Keep all values and private keys outside this public repository.
+`token` and `instance_type`. The controller uses `instance_type` for every new
+machine. It must be one of `allowed_instance_types` in both the Terraform and the
+controller configuration. The recommended value, and the Terraform default, is
+`c7i.2xlarge`. Set the controller chart's `gatewaySecretName` to that secret. The
+token authorizes only the hosted controller routes for its configured tenant. It
+is not a user or agent API key. The machine slot IDs must match in the Terraform,
+controller and Core configurations. Keep all values and private keys outside this
+public repository.
 
 ## Prepare a deployable environment
 
@@ -98,16 +106,18 @@ Keep all values and private keys outside this public repository.
    and an approved source-snapshot encryption key. This slice creates disks with
    `alias/aws/ebs`; customer-managed EBS keys need additional reviewed permissions.
    No provider credential is baked in.
-3. Create a distinct assignment secret per agent outside Terraform using the worker
-   secret schema. Use synthetic credentials for transport tests first. Keep the
-   secret ARN stable on rotation. Reserve its ARN before provisioning, then populate
-   the bundle with the controller-reported data volume ID; until those identities
-   match, the worker refuses to start and retries. The model key and Switch credential are separate
-   values in the bundle, scoped to that assignment.
+3. Create one assignment secret per machine slot outside Terraform. Keep the
+   secret ARN stable. Do not put a value in it. The controller writes the bundle
+   itself:
+   `{"version":2,"machineId","assignment":{…},"machineCapability","apiEndpoint"}`.
+   The bundle holds the machine and slot identity, the data volume ID, an opaque
+   machine credential and the Switch API endpoint, and nothing else. The worker
+   refuses to start until the bundle matches its attached data volume.
 4. Configure Terraform in the **private deployment overlay**, selecting the worker
    AMI/AZ, CIDRs, allowed instance types, controller namespace/service account and
-   per-agent secret/KMS references. Review its plan before applying. The module does
-   not create secret values, and workers can read only their assignment's secret.
+   the per-slot secret/KMS references in `machine_slots`. Review its plan before
+   applying. The module does not create secret values, and each machine can read
+   only its own slot's secret.
 5. Build the controller image and record its immutable digest. Put Terraform's
    worker subnet/security-group/AZ/role outputs into the controller configuration;
    root/data disk sizes must match the Terraform policy bounds. Deploy its chart
@@ -126,8 +136,9 @@ model-provider APIs and package registries. They cannot reach a Kubernetes-only
 Service or private control-plane database. There is no peering, SSH ingress,
 Git-over-SSH egress, host Docker socket or blanket sudo for repository scripts.
 The dedicated network blocks RFC1918 outbound traffic, but VPC NACLs do not block
-IMDS or the AWS DNS resolver. Treat access to the assignment's instance role as
-possible for code in that assignment, and grant it no infrastructure authority.
+IMDS or the AWS DNS resolver. Treat access to the machine's instance role as
+possible for code of every agent on that machine, and grant it no infrastructure
+authority.
 DNS/private-address access and any organization-specific address ranges still
 require live isolation tests. Workloads requiring other ports need a reviewed
 supported-environment change.
@@ -137,9 +148,16 @@ supported-environment change.
 The chart accepts a non-secret `controllerConfig` map with:
 
 - `installation_id`, `region`, `availability_zone`, `subnet_id`, `security_group_ids`
-- `image_id`, `root_device_name`, `allowed_instance_types`, `max_agents`
+- `image_id`, `root_device_name`, `allowed_instance_types`
+- `max_machines`: 1–100, and no more than the number of machine slots. It caps
+  both the machines that are not deleted and the active EC2 instances.
 - `root_volume_gib`, `data_volume_gib`, `poll_interval_seconds`
-- `worker_assignments`: agent ID to `{instance_profile_arn, assignment_secret_arn}`
+- `machine_slots`: slot ID to `{instance_profile_arn, assignment_secret_arn}`.
+  Copy it from the Terraform output `machine_slots`.
+
+The instance type of a new machine comes from `instance_type` in the controller's
+`gateway.json` (see [Enable Console launches](#enable-console-launches)). It must
+be one of `allowed_instance_types`. The recommended value is `c7i.2xlarge`.
 
 The chart fixes `state_db_path` and `lock_path` on the same retained PVC. A standalone
 operator installation must supply absolute paths for both. Keep the database and
@@ -153,26 +171,30 @@ Before a standalone controller upgrade, stop the old reconciler and back up its
 SQLite database. The Helm chart uses Recreate so the old pod stops before the new
 one starts. The observation-schema upgrade preserves assignment and cloud resource
 identities, but old observations must be refreshed before they can authorize deletion.
-Do not run an older controller binary against the upgraded database.
+Do not run an older controller binary against the upgraded database. To upgrade
+from a per-agent controller, follow
+[Moving to one machine per user](#moving-to-one-machine-per-user).
 
-The controller is trusted to provision all configured assignments. Its IAM role
+The controller is trusted to provision all configured machine slots. Its IAM role
 can pass the configured worker roles; IAM is not a substitute for the controller's
-agent-to-role binding checks. Audit secret resource policies and KMS key policies
+slot-to-role binding checks. Audit secret resource policies and KMS key policies
 as well as the supplied identity policies; an external broad resource policy can
-invalidate the intended cross-agent denial.
+invalidate the intended cross-machine denial.
 
 ## Operator commands
 
 Install the controller with its locked dependencies, then supply an absolute path
 to the private controller JSON. In Kubernetes, run state commands inside the
 controller pod using the same config and database; they queue desired state for
-the resident reconciler.
+the resident reconciler. Each command takes a machine slot ID.
 
 ```sh
-switch-hosted-controller --config /etc/switch-hosted/controller.json create example-agent --instance-type m7i.large
-switch-hosted-controller --config /etc/switch-hosted/controller.json status example-agent
-switch-hosted-controller --config /etc/switch-hosted/controller.json stop example-agent
-switch-hosted-controller --config /etc/switch-hosted/controller.json start example-agent
+switch-hosted-controller --config /etc/switch-hosted/controller.json create example-slot --instance-type c7i.2xlarge
+switch-hosted-controller --config /etc/switch-hosted/controller.json status example-slot
+switch-hosted-controller --config /etc/switch-hosted/controller.json stop example-slot
+switch-hosted-controller --config /etc/switch-hosted/controller.json start example-slot
+switch-hosted-controller --config /etc/switch-hosted/controller.json delete example-slot --confirm-slot-id example-slot --retain-volume
+switch-hosted-controller --config /etc/switch-hosted/controller.json list
 ```
 
 For standalone reconciliation:
@@ -192,8 +214,9 @@ status and Switch session state before calling the coding agent ready. Stop/star
 retains disk contents and native state; it does not promise to resume an interrupted
 provider action or automatically replay a room message.
 
-Deletion requires a matching confirmation ID and an explicit retain/delete-volume
-choice; consult `delete --help` and the controller's documented stop precondition.
+Deletion requires `--confirm-slot-id` with the same slot ID and exactly one of
+`--retain-volume` or `--delete-volume`; consult `delete --help` and the
+controller's documented stop precondition.
 Retaining a disk retains its charges and sensitive state. Deleting compute/disk
 through this controller does not remove Secrets Manager documents, snapshots, IAM
 roles, NAT gateways or the controller's own database. Their lifecycle remains the
@@ -201,6 +224,57 @@ private deployment workflow's responsibility.
 
 See [the implementation verification record](VERIFICATION.md) for local results and
 remaining acceptance gates.
+
+## Moving to one machine per user
+
+Earlier versions ran one EC2 VM per cloud agent. This version runs one VM per
+user. There is no in-place migration: you remove the old cloud agents, upgrade,
+and create the agents again. Do these steps in order.
+
+1. Before you upgrade, record the settings of each cloud agent: name, provider,
+   instructions, repository, and the auto-session and approval settings. You need
+   them to create the agent again in step 9.
+2. In Switch Console on the old version, stop each cloud agent, then remove it.
+   Run `list` on the old controller. Wait until every row shows desired state
+   `deleted` and observed state `deleted`.
+3. Removal kept each old data disk. These disks use the one-agent layout, and the
+   new worker refuses them. Snapshot each disk that holds data you need, then
+   delete the disks. Then wait at least 24 hours before you create a new cloud
+   agent. The reason: a slot keeps its old key and starts again at generation 1,
+   so its new EC2 idempotency tokens can match the tokens of the old resources.
+   EC2 honours a client token for at least 24 hours, so a matching token does not
+   create a new resource.
+4. Stop the controller. Back up its SQLite database.
+5. In the Terraform overlay, rename the variable `assignments` to `machine_slots`.
+   Keep the keys, so no role, instance profile or secret is replaced. The output
+   `worker_assignments` is now `machine_slots`. Run a plan and review it: only
+   policy conditions, IAM tags and defaults change. The `data_volume_gib` default
+   is now 200. It must equal the controller's `data_volume_gib`. If the overlay
+   does not set it, set it to the controller's current value. Apply.
+   The controller binds its database to `data_volume_gib`,
+   `allowed_instance_types` and the other disk and network settings, and refuses
+   to start when one of them changes. To change them, for example to use 200 GiB
+   disks or to allow `c7i.2xlarge`, start the new controller on a new, empty
+   database. This is safe here because every old row is deleted.
+6. Update the configuration files:
+   - `controller.json`: replace `worker_assignments` with `machine_slots` (copy
+     it from the Terraform output `machine_slots`), and `max_agents` with
+     `max_machines`.
+   - Core controller settings file: replace `agent_ids` with `machine_slots`,
+     the list of slot IDs.
+   - `gateway.json`: set `instance_type`, for example `c7i.2xlarge`.
+   - Set `HOSTED_DISK_RETENTION_DAYS` and `HOSTED_IDLE_STOP_MINUTES` if you do
+     not want the defaults.
+7. Build and roll out the new worker AMI. Set `image_id` in `controller.json` and
+   `worker_image_id` in the Terraform overlay to the new AMI, and apply Terraform.
+8. Upgrade Core. Its database migration refuses to run while any cloud agent is
+   not removed, and names this section. Then upgrade the controller. It refuses
+   to start while its database holds per-agent rows that are not deleted, and
+   also names this section. The controller keeps the old `agents` table; it does
+   not drop it.
+9. Create each agent again in Switch Console with the settings from step 1. The
+   first agent of a user creates that user's machine. Later agents of the same
+   user share it.
 
 ## Verification and rollout boundary
 
@@ -310,15 +384,33 @@ GitHub. Authorization attempts expire after ten minutes and on backend restart.
 Workers receive repository-scoped installation tokens. GitHub uninstall and suspend
 webhooks are not implemented; access is checked again when tokens are issued.
 
-### Removed worker retention
+### Machine lifecycle
 
-Removing a stopped worker revokes its Switch API key, removes its agent and room
-memberships, and frees the agent name. Server-side sessions are removed with the
-agent. The worker data disk remains available for administrator recovery.
+Removing a cloud agent removes it at once, in any state. Removal revokes its
+Switch API key, removes its agent and room memberships, and frees the agent name.
+Server-side sessions are removed with the agent.
 
-A removed worker keeps its pool identity reserved. Do not assign that identity or
-its retained disk to a new owner. To add capacity, create a new worker assignment
-with a new identity and fresh disk. Automatic identity recycling is not supported.
+When the last agent on a user's machine is removed, the instance is terminated.
+The data disk is kept for `HOSTED_DISK_RETENTION_DAYS` days. If the same user
+creates a new agent within that time, the machine starts again on the kept disk.
+After that time, the disk is deleted and the slot returns to the pool. A reused
+slot gets a new generation. Do not attach a kept disk to another user's machine.
+A kept disk keeps its charges and sensitive state.
+
+A machine stops when its agents are idle for `HOSTED_IDLE_STOP_MINUTES`. It starts
+again when an agent is started or addressed, or when the user creates an agent.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `HOSTED_AGENTS_PER_OWNER` | 3 | Cloud agents per user. They share the user's machine. |
+| `HOSTED_SESSIONS_PER_AGENT` | 8 | Sessions per agent. |
+| `HOSTED_IDLE_STOP_MINUTES` | 30 | Idle minutes before a machine stops. 0 disables. Maximum 1440. |
+| `HOSTED_DISK_RETENTION_DAYS` | 7 | Days a data disk is kept after its last agent is removed. 1–90. |
+| `HOSTED_LAUNCH_CAPACITY` | 0 | Maximum live machines. No more than the number of machine slots. 0 disables creation. |
+
+In the backend Helm chart, `switchCore.hostedIdleStopMinutes`,
+`switchCore.hostedDiskRetentionDays` and `switchCore.hostedLaunchCapacity` set
+these values when `switchCore.hostedControllerSecret` is set.
 
 ### GitHub sign-in availability
 
@@ -358,8 +450,8 @@ The controller uses an attached managed policy for assignment secret access.
 The deploy identity needs IAM policy create, version, attach, detach, and delete
 permissions for that policy. The pool is limited by AWS policy size: 6,144
 characters for assignment access and 10,240 for inline controller permissions.
-Terraform checks these limits during planning. The supported assignment count
-depends on ARN lengths; use a smaller pool if a size check fails.
+Terraform checks these limits during planning. The supported number of machine
+slots depends on ARN lengths; use a smaller pool if a size check fails.
 
 The loopback callback URL can remain in browser history. Its authorization code
 is single-use, consumed during sign-in, and bound to the flow's PKCE verifier.

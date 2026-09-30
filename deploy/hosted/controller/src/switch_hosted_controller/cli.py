@@ -8,7 +8,8 @@ import re
 import signal
 import sys
 import threading
-from dataclasses import asdict, replace
+import uuid
+from dataclasses import replace
 from pathlib import Path
 from time import time
 from typing import Any
@@ -16,13 +17,13 @@ from typing import Any
 import boto3
 
 from .cloud import Ec2Cloud
-from .config import ConfigError, ControllerConfig, validate_agent_id
+from .config import ConfigError, ControllerConfig, validate_slot_id
 from .gateway import Gateway, GatewayConfig
 from .health import check_health
 from .lock import ControllerAlreadyRunning, ControllerLock
-from .model import Agent, DesiredState
+from .model import DesiredState, Machine
 from .reconciler import Reconciler
-from .store import AgentStore, StoreError
+from .store import MachineStore, StoreError
 from .verification import VerificationWorkers
 
 
@@ -32,17 +33,17 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--gateway-config", type=Path)
     subparsers = result.add_subparsers(dest="command", required=True)
 
-    create = subparsers.add_parser("create", help="reserve and request one configured agent")
-    create.add_argument("agent_id")
+    create = subparsers.add_parser("create", help="create a machine in one configured slot")
+    create.add_argument("slot_id")
     create.add_argument("--instance-type", required=True)
 
     for command in ("start", "stop", "status"):
         child = subparsers.add_parser(command)
-        child.add_argument("agent_id")
+        child.add_argument("slot_id")
 
     delete = subparsers.add_parser("delete")
-    delete.add_argument("agent_id")
-    delete.add_argument("--confirm-agent-id", required=True)
+    delete.add_argument("slot_id")
+    delete.add_argument("--confirm-slot-id", required=True)
     cleanup = delete.add_mutually_exclusive_group(required=True)
     cleanup.add_argument("--retain-volume", action="store_true")
     cleanup.add_argument("--delete-volume", action="store_true")
@@ -50,7 +51,7 @@ def parser() -> argparse.ArgumentParser:
     upgrade = subparsers.add_parser(
         "upgrade", help="use the configured image after the old worker is stopped and terminated"
     )
-    upgrade.add_argument("agent_id")
+    upgrade.add_argument("slot_id")
     upgrade.add_argument("--confirm-instance-id", required=True)
     upgrade.add_argument("--previous-runtime-fingerprint", required=True)
 
@@ -78,60 +79,64 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
-    store = AgentStore(
-        config.state_db_path,
-        config.fingerprint(),
-        legacy_fingerprint=config.fingerprint(legacy=True),
-    )
+    store = MachineStore(config.state_db_path, config.fingerprint())
     try:
         if args.command == "create":
-            agent_id = validate_agent_id(args.agent_id)
+            slot_id = validate_slot_id(args.slot_id)
             if args.instance_type not in config.allowed_instance_types:
                 raise ConfigError("instance type is not in allowed_instance_types")
-            assignment = config.assignment(agent_id)
-            agent = store.reserve_create(
-                agent_id=agent_id,
+            slot = config.slot(slot_id)
+            machine = store.insert(
+                machine_id=str(uuid.uuid4()),
+                slot_id=slot_id,
+                generation=store.next_generation(slot_id),
+                core_revision=0,
                 instance_type=args.instance_type,
                 image_id=config.image_id,
-                assignment_secret_arn=assignment.assignment_secret_arn,
-                instance_profile_arn=assignment.instance_profile_arn,
-                max_agents=config.max_agents,
+                assignment_secret_arn=slot.assignment_secret_arn,
+                instance_profile_arn=slot.instance_profile_arn,
+                max_machines=config.max_machines,
             )
-            _print_agent(agent)
+            _print_machine(machine)
+            return 0
+        if args.command == "list":
+            print(
+                json.dumps([_machine_output(machine) for machine in store.list()], sort_keys=True)
+            )
+            return 0
+        slot_id = validate_slot_id(args.slot_id)
+        machine = store.latest(slot_id)
+        if args.command == "status":
+            _print_machine(machine)
             return 0
         if args.command == "start":
-            agent = store.set_desired(validate_agent_id(args.agent_id), DesiredState.RUNNING)
-            _print_agent(agent)
+            _print_machine(store.set_desired(machine.machine_id, DesiredState.RUNNING, None))
             return 0
         if args.command == "stop":
-            agent = store.set_desired(validate_agent_id(args.agent_id), DesiredState.STOPPED)
-            _print_agent(agent)
+            _print_machine(store.set_desired(machine.machine_id, DesiredState.STOPPED, None))
             return 0
         if args.command == "delete":
-            agent_id = validate_agent_id(args.agent_id)
-            if args.confirm_agent_id != agent_id:
-                raise StoreError("--confirm-agent-id must exactly match agent_id")
-            agent = store.set_desired(
-                agent_id, DesiredState.DELETED, delete_volume=args.delete_volume
-            )
-            _print_agent(agent)
+            if args.confirm_slot_id != slot_id:
+                raise StoreError("--confirm-slot-id must exactly match slot_id")
+            desired = DesiredState.DELETED if args.delete_volume else DesiredState.RETAINED
+            _print_machine(store.set_desired(machine.machine_id, desired, None))
             return 0
         if args.command == "upgrade":
-            agent = store.get(validate_agent_id(args.agent_id))
             if (
-                agent.desired_state is not DesiredState.STOPPED
-                or agent.instance_id != args.confirm_instance_id
+                machine.desired_state is not DesiredState.STOPPED
+                or machine.instance_id is None
+                or machine.instance_id != args.confirm_instance_id
             ):
                 raise StoreError(
-                    "stop the assignment and confirm its recorded instance before upgrading"
+                    "stop the machine and confirm its recorded instance before upgrading"
                 )
             if not re.fullmatch(r"[0-9a-f]{64}", args.previous_runtime_fingerprint):
                 raise ConfigError(
                     "previous runtime fingerprint must be a SHA256 digest from the trusted disk marker"
                 )
             cloud = Ec2Cloud(boto3.client("ec2", region_name=config.region), config)
-            instance = cloud.get_instance(agent)
-            volume = cloud.get_volume(agent)
+            instance = cloud.get_instance(machine)
+            volume = cloud.get_volume(machine)
             if (
                 instance is None
                 or instance["State"]["Name"] != "terminated"
@@ -142,17 +147,11 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
                 raise StoreError(
                     "the old instance must be confirmed terminated and its retained disk detached"
                 )
-            cloud.validate_image(replace(agent, image_id=config.image_id))
-            claim = store.mark_instance_terminal_observed(agent.agent_id, agent.instance_id)
-            _print_agent(
+            cloud.validate_image(replace(machine, image_id=config.image_id))
+            claim = store.mark_instance_terminal_observed(machine.machine_id, machine.instance_id)
+            _print_machine(
                 store.upgrade_terminated(claim, config.image_id, args.previous_runtime_fingerprint)
             )
-            return 0
-        if args.command == "status":
-            _print_agent(store.get(validate_agent_id(args.agent_id)))
-            return 0
-        if args.command == "list":
-            print(json.dumps([_agent_output(agent) for agent in store.list()], sort_keys=True))
             return 0
         raise AssertionError(f"unhandled command {args.command}")
     finally:
@@ -161,11 +160,7 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
 
 def _reconcile_command(config: ControllerConfig, command: str, gateway_path: Path | None) -> int:
     with ControllerLock(config.lock_path):
-        store = AgentStore(
-            config.state_db_path,
-            config.fingerprint(),
-            legacy_fingerprint=config.fingerprint(legacy=True),
-        )
+        store = MachineStore(config.state_db_path, config.fingerprint())
         try:
             ec2 = boto3.client("ec2", region_name=config.region)
             reconciler = Reconciler(store, Ec2Cloud(ec2, config))
@@ -204,13 +199,13 @@ def _reconcile_command(config: ControllerConfig, command: str, gateway_path: Pat
                         )
                 if gateway:
                     try:
-                        gateway.accept_launches()
+                        gateway.sync_machines()
                     except Exception as error:
-                        logging.error("Cloud launch polling failed: %s", type(error).__name__)
+                        logging.error("Cloud machine polling failed: %s", type(error).__name__)
                 try:
                     reconciler.reconcile_all()
                 except Exception as error:
-                    logging.error("Cloud worker reconciliation failed: %s", type(error).__name__)
+                    logging.error("Cloud machine reconciliation failed: %s", type(error).__name__)
                 if gateway:
                     try:
                         gateway.report_observations()
@@ -241,22 +236,24 @@ def _health(max_age: float) -> int:
         raise ConfigError(str(error)) from error
 
 
-def _print_agent(agent: Agent) -> None:
-    print(json.dumps(_agent_output(agent), sort_keys=True))
+def _print_machine(machine: Machine) -> None:
+    print(json.dumps(_machine_output(machine), sort_keys=True))
 
 
-def _agent_output(agent: Agent) -> dict[str, Any]:
-    raw = asdict(agent)
+def _machine_output(machine: Machine) -> dict[str, Any]:
     return {
-        "agent_id": raw["agent_id"],
-        "generation": raw["generation"],
-        "desired_state": agent.desired_state.value,
-        "desired_revision": raw["desired_revision"],
-        "observed_state": agent.observed_state.value,
-        "instance_id": raw["instance_id"],
-        "volume_id": raw["volume_id"],
-        "last_error": raw["last_error"],
-        "delete_volume": raw["delete_volume"],
+        "machine_id": machine.machine_id,
+        "slot_id": machine.slot_id,
+        "generation": machine.generation,
+        "instance_type": machine.instance_type,
+        "desired_state": machine.desired_state.value,
+        "desired_revision": machine.desired_revision,
+        "observed_state": machine.observed_state.value,
+        "instance_id": machine.instance_id,
+        "instance_seq": machine.instance_seq,
+        "data_volume_id": machine.data_volume_id,
+        "retain_until": machine.retain_until.isoformat() if machine.retain_until else None,
+        "error": machine.error,
     }
 
 

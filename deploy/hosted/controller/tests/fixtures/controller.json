@@ -7,13 +7,13 @@
   "image_id": "ami-0123456789abcdef0",
   "root_device_name": "/dev/xvda",
   "allowed_instance_types": ["m6i.large"],
-  "max_agents": 1,
+  "max_machines": 1,
   "root_volume_gib": 20,
   "data_volume_gib": 40,
-  "worker_assignments": {
-    "agent-1": {
+  "machine_slots": {
+    "slot-a": {
       "instance_profile_arn": "arn:aws:iam::123456789012:instance-profile/test-worker",
-      "assignment_secret_arn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:test-agent"
+      "assignment_secret_arn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:test-slot"
     }
   },
   "state_db_path": "/var/lib/switch-hosted/state.db",

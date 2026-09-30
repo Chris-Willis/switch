@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 import boto3
@@ -9,18 +11,20 @@ from botocore.stub import Stubber
 
 from switch_hosted_controller.cloud import CloudCapacityError, CloudResourceError, Ec2Cloud
 from switch_hosted_controller.config import ConfigError, ControllerConfig
-from switch_hosted_controller.model import DesiredState, ObservedState
+from switch_hosted_controller.model import DesiredState, Machine, ObservedState
 from switch_hosted_controller.reconciler import Reconciler
-from switch_hosted_controller.store import AgentStore, CapacityError, StoreError
+from switch_hosted_controller.store import CapacityError, MachineStore, SlotInUseError, StoreError
+
+MACHINE_ID = "3f1c2b4a-0000-4000-8000-000000000001"
 
 
-def config(tmp_path: Path, *, max_agents: int = 1) -> ControllerConfig:
-    assignments = {
-        f"agent-{number}": {
+def config(tmp_path: Path, *, max_machines: int = 1) -> ControllerConfig:
+    slots = {
+        f"slot-{number}": {
             "instance_profile_arn": f"arn:aws:iam::123456789012:instance-profile/worker-{number}",
-            "assignment_secret_arn": f"arn:aws:secretsmanager:us-east-1:123456789012:secret:agent-{number}",
+            "assignment_secret_arn": f"arn:aws:secretsmanager:us-east-1:123456789012:secret:slot-{number}",
         }
-        for number in range(1, max_agents + 1)
+        for number in range(1, max_machines + 1)
     }
     return ControllerConfig.from_dict(
         {
@@ -32,10 +36,10 @@ def config(tmp_path: Path, *, max_agents: int = 1) -> ControllerConfig:
             "image_id": "ami-0123456789abcdef0",
             "root_device_name": "/dev/xvda",
             "allowed_instance_types": ["m6i.large"],
-            "max_agents": max_agents,
+            "max_machines": max_machines,
             "root_volume_gib": 20,
             "data_volume_gib": 40,
-            "worker_assignments": assignments,
+            "machine_slots": slots,
             "state_db_path": str(tmp_path / "state.db"),
             "lock_path": str(tmp_path / "controller.lock"),
             "poll_interval_seconds": 1,
@@ -43,18 +47,26 @@ def config(tmp_path: Path, *, max_agents: int = 1) -> ControllerConfig:
     )
 
 
-def store_and_agent(cfg: ControllerConfig) -> tuple[AgentStore, object]:
-    store = AgentStore(cfg.state_db_path, cfg.fingerprint())
-    assignment = cfg.assignment("agent-1")
-    agent = store.reserve_create(
-        agent_id="agent-1",
+def insert_machine(
+    store: MachineStore, cfg: ControllerConfig, slot_id: str, generation: int, machine_id: str
+) -> Machine:
+    slot = cfg.slot(slot_id)
+    return store.insert(
+        machine_id=machine_id,
+        slot_id=slot_id,
+        generation=generation,
+        core_revision=1,
         instance_type="m6i.large",
         image_id=cfg.image_id,
-        assignment_secret_arn=assignment.assignment_secret_arn,
-        instance_profile_arn=assignment.instance_profile_arn,
-        max_agents=cfg.max_agents,
+        assignment_secret_arn=slot.assignment_secret_arn,
+        instance_profile_arn=slot.instance_profile_arn,
+        max_machines=cfg.max_machines,
     )
-    return store, agent
+
+
+def store_and_machine(cfg: ControllerConfig) -> tuple[MachineStore, Machine]:
+    store = MachineStore(cfg.state_db_path, cfg.fingerprint())
+    return store, insert_machine(store, cfg, "slot-1", 1, MACHINE_ID)
 
 
 def ec2_client():
@@ -67,7 +79,7 @@ def ec2_client():
     )
 
 
-def volume(cfg: ControllerConfig, agent, *, state: str = "available", attachments=None):
+def volume(cfg: ControllerConfig, machine, *, state: str = "available", attachments=None):
     return {
         "VolumeId": "vol-0123456789abcdef0",
         "AvailabilityZone": cfg.availability_zone,
@@ -79,17 +91,17 @@ def volume(cfg: ControllerConfig, agent, *, state: str = "available", attachment
         "Throughput": 125,
         "State": state,
         "Attachments": attachments or [],
-        "Tags": Ec2Cloud(ec2_client(), cfg)._tags(agent, "data"),
+        "Tags": Ec2Cloud(ec2_client(), cfg)._tags(machine, "data"),
     }
 
 
-def instance(cfg: ControllerConfig, agent, state: str):
+def instance(cfg: ControllerConfig, machine, state: str):
     return {
         "InstanceId": "i-0123456789abcdef0",
         "ImageId": cfg.image_id,
-        "InstanceType": agent.instance_type,
+        "InstanceType": machine.instance_type,
         "State": {"Name": state, "Code": 16 if state == "running" else 80},
-        "IamInstanceProfile": {"Arn": agent.instance_profile_arn, "Id": "AIPAEXAMPLE"},
+        "IamInstanceProfile": {"Arn": machine.instance_profile_arn, "Id": "AIPAEXAMPLE"},
         "Placement": {"AvailabilityZone": cfg.availability_zone},
         "SubnetId": cfg.subnet_id,
         "SecurityGroups": [{"GroupId": cfg.security_group_ids[0], "GroupName": "worker"}],
@@ -108,64 +120,141 @@ def instance(cfg: ControllerConfig, agent, state: str):
             "HttpPutResponseHopLimit": 1,
             "InstanceMetadataTags": "disabled",
         },
-        "Tags": Ec2Cloud(ec2_client(), cfg)._tags(agent, "worker"),
+        "Tags": Ec2Cloud(ec2_client(), cfg)._tags(machine, "worker"),
     }
 
 
 def test_store_persists_intent_and_rejects_changed_deployment(tmp_path: Path):
     cfg = config(tmp_path)
-    store, agent = store_and_agent(cfg)
-    agent = store.mark_volume_create_intent(agent)
-    store.mark_instance_launch_intent(agent)
+    store, machine = store_and_machine(cfg)
+    machine = store.mark_volume_create_intent(machine)
+    store.mark_instance_launch_intent(machine)
     store.close()
 
-    restarted = AgentStore(cfg.state_db_path, cfg.fingerprint())
-    assert restarted.get("agent-1").volume_create_intent
-    assert restarted.get("agent-1").instance_launch_intent
+    restarted = MachineStore(cfg.state_db_path, cfg.fingerprint())
+    assert restarted.get(MACHINE_ID).volume_create_intent
+    assert restarted.get(MACHINE_ID).instance_launch_intent
     restarted.close()
 
     changed = replace(cfg, installation_id="different-installation")
     with pytest.raises(StoreError, match="immutable configuration"):
-        AgentStore(cfg.state_db_path, changed.fingerprint())
+        MachineStore(cfg.state_db_path, changed.fingerprint())
 
 
-def test_capacity_and_immutable_spec_are_enforced(tmp_path: Path):
-    cfg = config(tmp_path)
-    store, _ = store_and_agent(cfg)
+def test_capacity_counts_machines_not_deleted(tmp_path: Path):
+    cfg = config(tmp_path, max_machines=2)
+    store, first = store_and_machine(cfg)
+    second_id = "3f1c2b4a-0000-4000-8000-000000000002"
+    second = insert_machine(store, cfg, "slot-2", 1, second_id)
     with pytest.raises(CapacityError):
-        store.reserve_create(
-            agent_id="agent-2",
+        store.insert(
+            machine_id="3f1c2b4a-0000-4000-8000-000000000003",
+            slot_id="slot-3",
+            generation=1,
+            core_revision=1,
             instance_type="m6i.large",
             image_id=cfg.image_id,
             assignment_secret_arn="arn:aws:secretsmanager:us-east-1:123456789012:secret:other",
             instance_profile_arn="arn:aws:iam::123456789012:instance-profile/other",
-            max_agents=1,
+            max_machines=2,
         )
-    with pytest.raises(StoreError, match="immutable"):
-        store.reserve_create(
-            agent_id="agent-1",
-            instance_type="m6i.xlarge",
-            image_id=cfg.image_id,
-            assignment_secret_arn=cfg.assignment("agent-1").assignment_secret_arn,
-            instance_profile_arn=cfg.assignment("agent-1").instance_profile_arn,
-            max_agents=1,
-        )
+    second = store.set_desired(second.machine_id, DesiredState.STOPPED, None)
+    second = store.set_observed(second, ObservedState.STOPPED, None)
+    store.set_desired(second.machine_id, DesiredState.DELETED, None)
+    third = store.insert(
+        machine_id="3f1c2b4a-0000-4000-8000-000000000003",
+        slot_id="slot-3",
+        generation=1,
+        core_revision=1,
+        instance_type="m6i.large",
+        image_id=cfg.image_id,
+        assignment_secret_arn="arn:aws:secretsmanager:us-east-1:123456789012:secret:other",
+        instance_profile_arn="arn:aws:iam::123456789012:instance-profile/other",
+        max_machines=2,
+    )
+    assert [machine.machine_id for machine in store.list()] == [
+        first.machine_id,
+        second_id,
+        third.machine_id,
+    ]
+    store.close()
+
+
+def test_slot_reuse_needs_a_newer_generation_after_the_old_one_is_deleted(tmp_path: Path):
+    cfg = config(tmp_path)
+    store, old = store_and_machine(cfg)
+    reuse_id = "3f1c2b4a-0000-4000-8000-000000000002"
+    old = store.set_desired(old.machine_id, DesiredState.STOPPED, None)
+    old = store.set_observed(old, ObservedState.STOPPED, None)
+    old = store.set_desired(old.machine_id, DesiredState.DELETED, None)
+    with pytest.raises(SlotInUseError, match="generation 1"):
+        insert_machine(store, cfg, "slot-1", 2, reuse_id)
+    store.set_observed(old, ObservedState.DELETED, None)
+    with pytest.raises(StoreError, match="not newer"):
+        insert_machine(store, cfg, "slot-1", 1, reuse_id)
+    with pytest.raises(StoreError, match="already exists"):
+        insert_machine(store, cfg, "slot-1", 2, old.machine_id)
+    assert store.next_generation("slot-1") == 2
+    reused = insert_machine(store, cfg, "slot-1", 2, reuse_id)
+    assert store.latest("slot-1") == reused
+    assert store.find("slot-1", 1).machine_id == old.machine_id
+    cloud = Ec2Cloud(ec2_client(), cfg)
+    assert cloud._token(old, "data-volume") != cloud._token(reused, "data-volume")
+    store.close()
+
+
+def test_deleted_machine_keeps_the_latest_retention_deadline(tmp_path: Path):
+    cfg = config(tmp_path)
+    store, machine = store_and_machine(cfg)
+    machine = store.set_desired(machine.machine_id, DesiredState.RETAINED, None)
+    with pytest.raises(StoreError, match="freshly observed"):
+        store.set_desired(machine.machine_id, DesiredState.DELETED, None)
+    machine = store.set_observed(machine, ObservedState.RETAINED, None)
+    later = datetime(2026, 1, 8, tzinfo=UTC)
+    earlier = datetime(2026, 1, 1, tzinfo=UTC)
+    machine = store.set_desired(machine.machine_id, DesiredState.DELETED, later)
+    assert (
+        store.set_desired(machine.machine_id, DesiredState.DELETED, earlier).retain_until == later
+    )
+    assert store.set_desired(machine.machine_id, DesiredState.DELETED, None).retain_until == later
+    with pytest.raises(StoreError, match="cannot be restarted"):
+        store.set_desired(machine.machine_id, DesiredState.RUNNING, None)
+    store.close()
+
+
+def test_retained_release_starts_the_next_instance_sequence(tmp_path: Path):
+    cfg = config(tmp_path)
+    store, machine = store_and_machine(cfg)
+    store.record_volume(machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone)
+    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0")
+    machine = store.set_desired(machine.machine_id, DesiredState.RETAINED, None)
+    with pytest.raises(StoreError, match="terminated"):
+        store.release_terminated(machine)
+    machine = store.mark_instance_terminal_observed(machine.machine_id, machine.instance_id)
+    released = store.release_terminated(machine)
+    assert released.instance_id is None
+    assert released.previous_instance_id == "i-0123456789abcdef0"
+    assert released.data_volume_id == "vol-0123456789abcdef0"
+    assert released.instance_seq == machine.instance_seq + 1
+    assert released.recovery_count == 0
     store.close()
 
 
 def test_uncertain_launch_then_stop_waits_for_late_instance(tmp_path: Path):
     cfg = config(tmp_path)
-    store, agent = store_and_agent(cfg)
-    agent = store.mark_volume_create_intent(agent)
-    agent = store.record_volume(agent.agent_id, "vol-0123456789abcdef0", cfg.availability_zone)
-    agent = store.mark_instance_launch_intent(agent)
-    store.mark_instance_launch_issued(agent)
-    store.set_desired(agent.agent_id, DesiredState.STOPPED)
+    store, machine = store_and_machine(cfg)
+    machine = store.mark_volume_create_intent(machine)
+    machine = store.record_volume(
+        machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone
+    )
+    machine = store.mark_instance_launch_intent(machine)
+    store.mark_instance_launch_issued(machine)
+    store.set_desired(machine.machine_id, DesiredState.STOPPED, None)
 
     client = ec2_client()
     cloud = Ec2Cloud(client, cfg)
-    filters = cloud._resource_filters(agent.agent_id, "worker")
-    worker = instance(cfg, store.get(agent.agent_id), "running")
+    filters = cloud._resource_filters(machine, "worker")
+    worker = instance(cfg, store.get(machine.machine_id), "running")
     stopped_worker = {**worker, "State": {"Name": "stopped", "Code": 80}}
     with Stubber(client) as stubber:
         stubber.add_response("describe_instances", {"Reservations": []}, {"Filters": filters})
@@ -189,18 +278,22 @@ def test_uncertain_launch_then_stop_waits_for_late_instance(tmp_path: Path):
         )
 
         reconciler = Reconciler(store, cloud)
-        assert reconciler.reconcile(agent.agent_id).observed_state is ObservedState.NEEDS_ATTENTION
-        adopted = reconciler.reconcile(agent.agent_id)
+        assert (
+            reconciler.reconcile(machine.machine_id).observed_state is ObservedState.NEEDS_ATTENTION
+        )
+        adopted = reconciler.reconcile(machine.machine_id)
         assert adopted.instance_id == worker["InstanceId"]
-        assert reconciler.reconcile(agent.agent_id).observed_state is ObservedState.STOPPING
-        assert reconciler.reconcile(agent.agent_id).observed_state is ObservedState.STOPPED
+        assert reconciler.reconcile(machine.machine_id).observed_state is ObservedState.STOPPING
+        assert reconciler.reconcile(machine.machine_id).observed_state is ObservedState.STOPPED
     store.close()
 
 
 def test_cloud_capacity_counts_all_pages(tmp_path: Path):
     cfg = config(tmp_path)
-    store, agent = store_and_agent(cfg)
-    agent = store.record_volume(agent.agent_id, "vol-0123456789abcdef0", cfg.availability_zone)
+    store, machine = store_and_machine(cfg)
+    machine = store.record_volume(
+        machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone
+    )
     client = ec2_client()
     cloud = Ec2Cloud(client, cfg)
     expected_filters = [
@@ -229,59 +322,59 @@ def test_cloud_capacity_counts_all_pages(tmp_path: Path):
 
 def test_foreign_recorded_instance_fails_closed(tmp_path: Path):
     cfg = config(tmp_path)
-    store, agent = store_and_agent(cfg)
-    agent = store.record_instance(agent.agent_id, "i-0123456789abcdef0")
-    foreign = instance(cfg, agent, "running")
+    store, machine = store_and_machine(cfg)
+    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0")
+    foreign = instance(cfg, machine, "running")
     foreign["Tags"] = [
         {"Key": "switch:installation-id", "Value": "other-installation"},
-        {"Key": "switch:agent-id", "Value": agent.agent_id},
+        {"Key": "switch:slot-id", "Value": machine.slot_id},
     ]
     client = ec2_client()
     with Stubber(client) as stubber:
         stubber.add_response(
             "describe_instances",
             {"Reservations": [{"Instances": [foreign]}]},
-            {"InstanceIds": [agent.instance_id]},
+            {"InstanceIds": [machine.instance_id]},
         )
         with pytest.raises(CloudResourceError, match="ownership tag"):
-            Ec2Cloud(client, cfg).get_instance(agent)
+            Ec2Cloud(client, cfg).get_instance(machine)
     store.close()
 
 
 def test_stop_and_start_use_only_recorded_instance(tmp_path: Path):
     cfg = config(tmp_path)
-    store, agent = store_and_agent(cfg)
-    agent = store.record_instance(agent.agent_id, "i-0123456789abcdef0")
+    store, machine = store_and_machine(cfg)
+    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0")
     client = ec2_client()
     with Stubber(client) as stubber:
         stubber.add_response(
             "stop_instances",
             {"StoppingInstances": []},
-            {"InstanceIds": [agent.instance_id], "Force": False},
+            {"InstanceIds": [machine.instance_id], "Force": False},
         )
         stubber.add_response(
-            "start_instances", {"StartingInstances": []}, {"InstanceIds": [agent.instance_id]}
+            "start_instances", {"StartingInstances": []}, {"InstanceIds": [machine.instance_id]}
         )
         cloud = Ec2Cloud(client, cfg)
-        cloud.stop_instance(agent)
-        cloud.start_instance(agent)
+        cloud.stop_instance(machine)
+        cloud.start_instance(machine)
     store.close()
 
 
 def test_config_rejects_duplicate_assignment_credentials(tmp_path: Path):
-    cfg = config(tmp_path, max_agents=2)
+    cfg = config(tmp_path, max_machines=2)
     raw = {
         **cfg.__dict__,
         "security_group_ids": list(cfg.security_group_ids),
         "allowed_instance_types": list(cfg.allowed_instance_types),
         "state_db_path": str(cfg.state_db_path),
         "lock_path": str(cfg.lock_path),
-        "worker_assignments": {
-            agent_id: {
-                "instance_profile_arn": assignment.instance_profile_arn,
-                "assignment_secret_arn": cfg.assignment("agent-1").assignment_secret_arn,
+        "machine_slots": {
+            slot_id: {
+                "instance_profile_arn": slot.instance_profile_arn,
+                "assignment_secret_arn": cfg.slot("slot-1").assignment_secret_arn,
             }
-            for agent_id, assignment in cfg.worker_assignments.items()
+            for slot_id, slot in cfg.machine_slots.items()
         },
     }
     with pytest.raises(ConfigError, match="secrets must be unique"):
@@ -290,23 +383,24 @@ def test_config_rejects_duplicate_assignment_credentials(tmp_path: Path):
 
 def test_recovery_requires_terminated_predecessor_and_retains_disk(tmp_path):
     cfg = config(tmp_path)
-    store, agent = store_and_agent(cfg)
-    store.record_volume(agent.agent_id, "vol-0123456789abcdef0", cfg.availability_zone)
-    agent = store.record_instance(agent.agent_id, "i-0123456789abcdef0")
+    store, machine = store_and_machine(cfg)
+    store.record_volume(machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone)
+    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0")
     with pytest.raises(StoreError, match="terminated"):
-        store.replace_terminated(agent)
-    agent = store.mark_instance_terminal_observed(agent.agent_id, agent.instance_id)
-    replacement = store.replace_terminated(agent)
+        store.replace_terminated(machine)
+    machine = store.mark_instance_terminal_observed(machine.machine_id, machine.instance_id)
+    replacement = store.replace_terminated(machine)
     assert replacement.instance_id is None
     assert replacement.previous_instance_id == "i-0123456789abcdef0"
-    assert replacement.volume_id == "vol-0123456789abcdef0"
+    assert replacement.data_volume_id == "vol-0123456789abcdef0"
     assert replacement.recovery_count == 1
+    assert replacement.instance_seq == 1
     assert not replacement.instance_launch_issued
     cloud = Ec2Cloud(ec2_client(), cfg)
-    assert cloud._token(agent, "instance-0") != cloud._token(replacement, "instance-1")
+    assert cloud._token(machine, "instance-0") != cloud._token(replacement, "instance-1")
     for index in range(2, 5):
-        current = store.record_instance(agent.agent_id, f"i-{index:017x}")
-        current = store.mark_instance_terminal_observed(agent.agent_id, current.instance_id)
+        current = store.record_instance(machine.machine_id, f"i-{index:017x}")
+        current = store.mark_instance_terminal_observed(machine.machine_id, current.instance_id)
         if index == 4:
             with pytest.raises(StoreError, match="limit"):
                 store.replace_terminated(current)
@@ -315,53 +409,90 @@ def test_recovery_requires_terminated_predecessor_and_retains_disk(tmp_path):
     store.close()
 
 
-def test_capacity_and_image_can_change_after_verified_legacy_migration(tmp_path):
-    cfg = config(tmp_path)
-    old = AgentStore(cfg.state_db_path, cfg.fingerprint(legacy=True))
-    old.close()
-    migrated = AgentStore(
-        cfg.state_db_path, cfg.fingerprint(), legacy_fingerprint=cfg.fingerprint(legacy=True)
+def legacy_database(path: Path, rows: list[tuple[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "CREATE TABLE agents (agent_id TEXT PRIMARY KEY, desired_state TEXT, observed_state TEXT)"
     )
-    migrated.close()
-    expanded = config(tmp_path, max_agents=2)
-    current = AgentStore(expanded.state_db_path, expanded.fingerprint())
+    connection.executemany(
+        "INSERT INTO agents VALUES (?, ?, ?)",
+        [(f"agent-{index}", *row) for index, row in enumerate(rows)],
+    )
+    connection.commit()
+    connection.close()
+
+
+@pytest.mark.parametrize(
+    "row", [("running", "running"), ("deleted", "deleting"), ("stopped", "deleted")]
+)
+def test_store_refuses_live_legacy_agent_rows(tmp_path, row):
+    cfg = config(tmp_path)
+    legacy_database(cfg.state_db_path, [("deleted", "deleted"), row])
+    with pytest.raises(StoreError) as raised:
+        MachineStore(cfg.state_db_path, cfg.fingerprint())
+    assert str(raised.value) == (
+        "legacy per-agent rows present; see 'Moving to one machine per user' in deploy/hosted/README.md"
+    )
+
+
+def test_store_opens_beside_deleted_legacy_rows_and_keeps_them(tmp_path):
+    cfg = config(tmp_path)
+    legacy_database(cfg.state_db_path, [("deleted", "deleted"), ("deleted", "deleted")])
+    store, machine = store_and_machine(cfg)
+    assert machine.generation == 1
+    store.close()
+    connection = sqlite3.connect(cfg.state_db_path)
+    assert connection.execute("SELECT COUNT(*) FROM agents").fetchone()[0] == 2
+    connection.close()
+
+
+def test_capacity_and_image_can_change_but_placement_cannot(tmp_path):
+    cfg = config(tmp_path)
+    MachineStore(cfg.state_db_path, cfg.fingerprint()).close()
+    expanded = config(tmp_path, max_machines=2)
+    current = MachineStore(expanded.state_db_path, expanded.fingerprint())
     current.close()
+    new_image = replace(expanded, image_id="ami-11111111111111111")
+    MachineStore(new_image.state_db_path, new_image.fingerprint()).close()
     incompatible = replace(expanded, subnet_id="subnet-11111111111111111")
     with pytest.raises(StoreError, match="immutable"):
-        AgentStore(incompatible.state_db_path, incompatible.fingerprint())
+        MachineStore(incompatible.state_db_path, incompatible.fingerprint())
 
 
 def test_image_upgrade_requires_stopped_terminal_claim_and_preserves_disk(tmp_path):
     cfg = config(tmp_path)
-    store, agent = store_and_agent(cfg)
-    store.record_volume(agent.agent_id, "vol-0123456789abcdef0", cfg.availability_zone)
-    agent = store.record_instance(agent.agent_id, "i-0123456789abcdef0")
+    store, machine = store_and_machine(cfg)
+    store.record_volume(machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone)
+    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0")
     with pytest.raises(StoreError, match="stopped"):
-        store.upgrade_terminated(agent, "ami-11111111111111111", "a" * 64)
-    agent = store.set_desired(agent.agent_id, DesiredState.STOPPED)
+        store.upgrade_terminated(machine, "ami-11111111111111111", "a" * 64)
+    machine = store.set_desired(machine.machine_id, DesiredState.STOPPED, None)
     with pytest.raises(StoreError, match="terminated"):
-        store.upgrade_terminated(agent, "ami-11111111111111111", "a" * 64)
-    agent = store.mark_instance_terminal_observed(agent.agent_id, agent.instance_id)
-    upgraded = store.upgrade_terminated(agent, "ami-11111111111111111", "a" * 64)
+        store.upgrade_terminated(machine, "ami-11111111111111111", "a" * 64)
+    machine = store.mark_instance_terminal_observed(machine.machine_id, machine.instance_id)
+    upgraded = store.upgrade_terminated(machine, "ami-11111111111111111", "a" * 64)
     assert upgraded.instance_id is None
-    assert upgraded.previous_instance_id == agent.instance_id
-    assert upgraded.volume_id == agent.volume_id
+    assert upgraded.previous_instance_id == machine.instance_id
+    assert upgraded.data_volume_id == machine.data_volume_id
     assert upgraded.previous_runtime_fingerprint == "a" * 64
     assert upgraded.desired_state is DesiredState.STOPPED
-    assert upgraded.image_id != agent.image_id
+    assert upgraded.image_id != machine.image_id
     with pytest.raises(StoreError, match="changed"):
-        store.upgrade_terminated(agent, "ami-11111111111111111", "a" * 64)
+        store.upgrade_terminated(machine, "ami-11111111111111111", "a" * 64)
     store.close()
 
 
 @pytest.mark.parametrize("desired", [DesiredState.RUNNING, DesiredState.STOPPED])
 def test_terminating_worker_waits_without_profile_or_replacement(tmp_path, desired):
     cfg = config(tmp_path)
-    store, agent = store_and_agent(cfg)
-    agent = store.record_volume(agent.agent_id, "vol-0123456789abcdef0", cfg.availability_zone)
-    agent = store.record_instance(agent.agent_id, "i-0123456789abcdef0")
-    agent = store.set_desired(agent.agent_id, desired)
-    worker = instance(cfg, agent, "shutting-down")
+    store, machine = store_and_machine(cfg)
+    machine = store.record_volume(
+        machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone
+    )
+    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0")
+    machine = store.set_desired(machine.machine_id, desired, None)
+    worker = instance(cfg, machine, "shutting-down")
     worker.pop("IamInstanceProfile")
     worker.pop("NetworkInterfaces")
     client = ec2_client()
@@ -369,22 +500,22 @@ def test_terminating_worker_waits_without_profile_or_replacement(tmp_path, desir
         if desired is DesiredState.RUNNING:
             stubber.add_response(
                 "describe_volumes",
-                {"Volumes": [volume(cfg, agent)]},
-                {"VolumeIds": [agent.volume_id]},
+                {"Volumes": [volume(cfg, machine)]},
+                {"VolumeIds": [machine.data_volume_id]},
             )
         stubber.add_response(
             "describe_instances",
             {"Reservations": [{"Instances": [worker]}]},
-            {"InstanceIds": [agent.instance_id]},
+            {"InstanceIds": [machine.instance_id]},
         )
-        result = Reconciler(store, Ec2Cloud(client, cfg)).reconcile(agent.agent_id)
+        result = Reconciler(store, Ec2Cloud(client, cfg)).reconcile(machine.machine_id)
         expected = (
             ObservedState.PROVISIONING
             if desired is DesiredState.RUNNING
             else ObservedState.STOPPING
         )
         assert result.observed_state is expected
-        assert result.instance_id == agent.instance_id
-        assert result.last_error is None
+        assert result.instance_id == machine.instance_id
+        assert result.error is None
         stubber.assert_no_pending_responses()
     store.close()
