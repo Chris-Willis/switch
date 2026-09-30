@@ -197,18 +197,20 @@ def _reconcile_command(config: ControllerConfig, command: str, gateway_path: Pat
                         logging.error(
                             "Provider verification reconciliation failed: %s", type(error).__name__
                         )
+                listed = None
                 if gateway:
                     try:
-                        gateway.sync_machines()
+                        listed = gateway.machines()
+                        gateway.sync_machines(listed)
                     except Exception as error:
                         logging.error("Cloud machine polling failed: %s", type(error).__name__)
                 try:
                     reconciler.reconcile_all()
                 except Exception as error:
                     logging.error("Cloud machine reconciliation failed: %s", type(error).__name__)
-                if gateway:
+                if gateway and listed is not None:
                     try:
-                        gateway.report_observations()
+                        gateway.report_observations(listed)
                     except Exception as error:
                         logging.error(
                             "Cloud observation reporting failed: %s", type(error).__name__

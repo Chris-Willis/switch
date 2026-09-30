@@ -340,9 +340,9 @@ def test_sleep_wake_refreshes_the_bundle_before_the_instance_starts(tmp_path):
     reconciler = Reconciler(store, cloud)
 
     def poll() -> None:
-        gateway.sync_machines()
+        gateway.sync_machines(gateway.machines())
         reconciler.reconcile_all()
-        gateway.report_observations()
+        gateway.report_observations(gateway.machines())
 
     for _ in range(4):
         poll()
