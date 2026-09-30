@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
-from .model import Agent, DesiredState, ObservedState
+from .model import DesiredState, Machine, ObservedState
+
+LEGACY_ROWS_MESSAGE = (
+    "legacy per-agent rows present; see 'Moving to one machine per user' in deploy/hosted/README.md"
+)
 
 
 class StoreError(RuntimeError):
@@ -15,100 +20,90 @@ class CapacityError(StoreError):
     pass
 
 
-class ImmutableSpecError(StoreError):
+class SlotInUseError(StoreError):
     pass
 
 
-class AgentNotFoundError(StoreError):
+class MachineNotFoundError(StoreError):
     pass
 
 
-class AgentStore:
-    def __init__(
-        self, path: Path, controller_fingerprint: str, *, legacy_fingerprint: str | None = None
-    ):
+class MachineStore:
+    def __init__(self, path: Path, controller_fingerprint: str):
         path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(path, timeout=30, isolation_level=None)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute("PRAGMA synchronous=FULL")
         self._connection.execute("PRAGMA foreign_keys=ON")
+        self._refuse_legacy_rows()
         self._connection.executescript(
             """
-            CREATE TABLE IF NOT EXISTS agents (
-                agent_id TEXT PRIMARY KEY,
-                generation INTEGER NOT NULL CHECK (generation > 0),
-                desired_state TEXT NOT NULL,
+            CREATE TABLE IF NOT EXISTS machines (
+                machine_id TEXT NOT NULL UNIQUE,
+                slot_id TEXT NOT NULL,
+                generation INTEGER NOT NULL CHECK (generation >= 1),
+                desired_state TEXT NOT NULL
+                    CHECK (desired_state IN ('running', 'stopped', 'retained', 'deleted')),
+                observed_state TEXT NOT NULL,
+                core_revision INTEGER NOT NULL CHECK (core_revision >= 0),
                 desired_revision INTEGER NOT NULL CHECK (desired_revision > 0),
                 operation_id TEXT NOT NULL,
                 instance_type TEXT NOT NULL,
                 image_id TEXT NOT NULL,
                 assignment_secret_arn TEXT NOT NULL,
                 instance_profile_arn TEXT NOT NULL,
-                instance_id TEXT,
-                volume_id TEXT,
+                instance_seq INTEGER NOT NULL DEFAULT 0,
+                recovery_count INTEGER NOT NULL DEFAULT 0,
+                data_volume_id TEXT,
                 volume_az TEXT,
-                observed_state TEXT NOT NULL,
+                instance_id TEXT,
+                previous_instance_id TEXT,
+                previous_runtime_fingerprint TEXT,
+                retain_until TEXT,
                 observed_revision INTEGER NOT NULL DEFAULT 0,
                 observed_operation_id TEXT,
-                last_error TEXT,
-                delete_volume INTEGER NOT NULL DEFAULT 0,
                 volume_create_intent INTEGER NOT NULL DEFAULT 0,
                 volume_create_issued INTEGER NOT NULL DEFAULT 0,
                 instance_launch_intent INTEGER NOT NULL DEFAULT 0,
                 instance_launch_issued INTEGER NOT NULL DEFAULT 0,
                 instance_terminal_observed INTEGER NOT NULL DEFAULT 0,
                 volume_delete_issued INTEGER NOT NULL DEFAULT 0,
+                required_bundle_revision INTEGER,
+                required_bundle_token TEXT,
+                bundle_token TEXT,
+                error TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (slot_id, generation)
             );
+            CREATE UNIQUE INDEX IF NOT EXISTS machines_one_live_row_per_slot
+                ON machines (slot_id) WHERE observed_state <> 'deleted';
             CREATE TABLE IF NOT EXISTS controller_metadata (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
             """
         )
-        self._migrate_schema()
-        self._bind_fingerprint(controller_fingerprint, legacy_fingerprint)
+        self._bind_fingerprint(controller_fingerprint)
 
     def close(self) -> None:
         self._connection.close()
 
-    def _migrate_schema(self) -> None:
-        self._connection.execute("BEGIN IMMEDIATE")
-        try:
-            columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(agents)")}
-            if "previous_instance_id" not in columns:
-                self._connection.execute("ALTER TABLE agents ADD COLUMN previous_instance_id TEXT")
-            if "previous_runtime_fingerprint" not in columns:
-                self._connection.execute(
-                    "ALTER TABLE agents ADD COLUMN previous_runtime_fingerprint TEXT"
-                )
-            if "recovery_count" not in columns:
-                self._connection.execute(
-                    "ALTER TABLE agents ADD COLUMN recovery_count INTEGER NOT NULL DEFAULT 0"
-                )
-            if "observed_revision" not in columns:
-                self._connection.execute(
-                    "ALTER TABLE agents ADD COLUMN observed_revision INTEGER NOT NULL DEFAULT 0"
-                )
-            if "observed_operation_id" not in columns:
-                self._connection.execute("ALTER TABLE agents ADD COLUMN observed_operation_id TEXT")
-            if "required_bundle_revision" not in columns:
-                self._connection.execute(
-                    "ALTER TABLE agents ADD COLUMN required_bundle_revision INTEGER"
-                )
-            if "required_bundle_token" not in columns:
-                self._connection.execute("ALTER TABLE agents ADD COLUMN required_bundle_token TEXT")
-            if "bundle_token" not in columns:
-                self._connection.execute("ALTER TABLE agents ADD COLUMN bundle_token TEXT")
-            self._connection.execute("COMMIT")
-        except Exception:
-            if self._connection.in_transaction:
-                self._connection.execute("ROLLBACK")
-            raise
+    def _refuse_legacy_rows(self) -> None:
+        legacy = self._connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agents'"
+        ).fetchone()
+        if legacy is None:
+            return
+        live = self._connection.execute(
+            "SELECT COUNT(*) FROM agents WHERE desired_state <> 'deleted' OR observed_state <> 'deleted'"
+        ).fetchone()[0]
+        if live:
+            self._connection.close()
+            raise StoreError(LEGACY_ROWS_MESSAGE)
 
-    def _bind_fingerprint(self, fingerprint: str, legacy_fingerprint: str | None) -> None:
+    def _bind_fingerprint(self, fingerprint: str) -> None:
         self._connection.execute("BEGIN IMMEDIATE")
         try:
             row = self._connection.execute(
@@ -120,11 +115,6 @@ class AgentStore:
                     "INSERT INTO controller_metadata (key, value) VALUES (?, ?)",
                     ("controller_fingerprint", fingerprint),
                 )
-            elif row["value"] == legacy_fingerprint:
-                self._connection.execute(
-                    "UPDATE controller_metadata SET value = ? WHERE key = 'controller_fingerprint'",
-                    (fingerprint,),
-                )
             elif row["value"] != fingerprint:
                 raise StoreError(
                     "controller immutable configuration differs from the state database"
@@ -135,290 +125,360 @@ class AgentStore:
                 self._connection.execute("ROLLBACK")
             raise
 
-    def reserve_create(
+    def insert(
         self,
         *,
-        agent_id: str,
+        machine_id: str,
+        slot_id: str,
+        generation: int,
+        core_revision: int,
         instance_type: str,
         image_id: str,
         assignment_secret_arn: str,
         instance_profile_arn: str,
-        max_agents: int,
-    ) -> Agent:
+        max_machines: int,
+    ) -> Machine:
+        """Insert a machine for a slot whose earlier generations are all observed deleted."""
         self._connection.execute("BEGIN IMMEDIATE")
         try:
-            row = self._connection.execute(
-                "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
+            if self._connection.execute(
+                "SELECT 1 FROM machines WHERE machine_id = ?", (machine_id,)
+            ).fetchone():
+                raise StoreError(f"machine {machine_id!r} already exists")
+            latest = self._connection.execute(
+                "SELECT MAX(generation) FROM machines WHERE slot_id = ?", (slot_id,)
+            ).fetchone()[0]
+            if latest is not None and generation <= latest:
+                raise StoreError(
+                    f"slot {slot_id!r} generation {generation} is not newer than stored generation {latest}"
+                )
+            live = self._connection.execute(
+                "SELECT generation FROM machines WHERE slot_id = ? AND observed_state <> ?",
+                (slot_id, ObservedState.DELETED.value),
             ).fetchone()
-            if row is not None:
-                existing = _agent(row)
-                expected = (
-                    instance_type,
-                    image_id,
-                    assignment_secret_arn,
-                    instance_profile_arn,
+            if live is not None:
+                raise SlotInUseError(
+                    f"slot {slot_id!r} still has generation {live['generation']} that is not deleted"
                 )
-                actual = (
-                    existing.instance_type,
-                    existing.image_id,
-                    existing.assignment_secret_arn,
-                    existing.instance_profile_arn,
-                )
-                if existing.desired_state is DesiredState.DELETED:
-                    raise ImmutableSpecError("deleted agent IDs cannot be reused")
-                if actual != expected:
-                    raise ImmutableSpecError("an existing agent's immutable spec cannot be changed")
-                self._connection.execute("COMMIT")
-                return existing
             count = self._connection.execute(
-                "SELECT COUNT(*) FROM agents WHERE desired_state != ?",
+                "SELECT COUNT(*) FROM machines WHERE desired_state != ?",
                 (DesiredState.DELETED.value,),
             ).fetchone()[0]
-            if count >= max_agents:
-                raise CapacityError(f"configured capacity of {max_agents} agents is exhausted")
+            if count >= max_machines:
+                raise CapacityError(f"configured capacity of {max_machines} machines is exhausted")
             operation_id = str(uuid.uuid4())
             self._connection.execute(
                 """
-                INSERT INTO agents (
-                    agent_id, generation, desired_state, desired_revision, operation_id,
-                    instance_type, image_id, assignment_secret_arn, instance_profile_arn,
-                    observed_state, observed_revision, observed_operation_id
-                ) VALUES (?, 1, ?, 1, ?, ?, ?, ?, ?, ?, 1, ?)
+                INSERT INTO machines (
+                    machine_id, slot_id, generation, desired_state, observed_state,
+                    core_revision, desired_revision, operation_id, instance_type, image_id,
+                    assignment_secret_arn, instance_profile_arn, observed_revision,
+                    observed_operation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 1, ?)
                 """,
                 (
-                    agent_id,
+                    machine_id,
+                    slot_id,
+                    generation,
                     DesiredState.RUNNING.value,
+                    ObservedState.PENDING.value,
+                    core_revision,
                     operation_id,
                     instance_type,
                     image_id,
                     assignment_secret_arn,
                     instance_profile_arn,
-                    ObservedState.PENDING.value,
                     operation_id,
                 ),
             )
             self._connection.execute("COMMIT")
-            return self.get(agent_id)
+            return self.get(machine_id)
         except Exception:
             if self._connection.in_transaction:
                 self._connection.execute("ROLLBACK")
             raise
 
+    def next_generation(self, slot_id: str) -> int:
+        latest = self._connection.execute(
+            "SELECT MAX(generation) FROM machines WHERE slot_id = ?", (slot_id,)
+        ).fetchone()[0]
+        return 1 if latest is None else latest + 1
+
+    def record_core_revision(self, machine_id: str, revision: int) -> Machine:
+        """Record Core's revision; an older one than already recorded leaves the machine unchanged."""
+        self._connection.execute(
+            """
+            UPDATE machines SET core_revision = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE machine_id = ? AND core_revision < ?
+            """,
+            (revision, machine_id, revision),
+        )
+        return self.get(machine_id)
+
     def set_desired(
-        self, agent_id: str, desired: DesiredState, *, delete_volume: bool = False
-    ) -> Agent:
+        self, machine_id: str, desired: DesiredState, retain_until: datetime | None
+    ) -> Machine:
+        """Change the desired state, and with it the retention deadline.
+
+        Once a machine is desired deleted its deadline only ever moves later, so
+        nothing can bring its volume deletion forward.
+        """
         self._connection.execute("BEGIN IMMEDIATE")
         try:
-            current = self._get_row(agent_id)
+            current = self._get_row(machine_id)
             if current.desired_state is DesiredState.DELETED:
                 if desired is not DesiredState.DELETED:
-                    raise StoreError("a deleted agent cannot be restarted")
+                    raise StoreError("a deleted machine cannot be restarted")
+                later = _later(current.retain_until, retain_until)
+                if later != current.retain_until:
+                    self._update_retain_until(machine_id, later)
                 self._connection.execute("COMMIT")
-                return current
-            if desired is DesiredState.DELETED and (
-                current.desired_state is not DesiredState.STOPPED
-                or current.observed_state is not ObservedState.STOPPED
-                or current.observed_revision != current.desired_revision
-                or current.observed_operation_id != current.operation_id
+                return self.get(machine_id)
+            if desired is DesiredState.DELETED and not (
+                current.desired_state in {DesiredState.STOPPED, DesiredState.RETAINED}
+                and current.observed_state.value == current.desired_state.value
+                and current.observed_revision == current.desired_revision
+                and current.observed_operation_id == current.operation_id
             ):
                 raise StoreError(
-                    "agent must be desired and freshly observed stopped before deletion"
+                    "machine must be desired and freshly observed stopped or retained before deletion"
                 )
-            if desired is current.desired_state and (
-                desired is not DesiredState.DELETED or delete_volume == current.delete_volume
-            ):
+            if desired is current.desired_state:
+                if retain_until != current.retain_until:
+                    self._update_retain_until(machine_id, retain_until)
                 self._connection.execute("COMMIT")
-                return current
+                return self.get(machine_id)
             operation_id = str(uuid.uuid4())
             self._connection.execute(
                 """
-                UPDATE agents
+                UPDATE machines
                 SET desired_state = ?, desired_revision = desired_revision + 1,
-                    operation_id = ?, delete_volume = ?, observed_state = ?,
+                    operation_id = ?, retain_until = ?, observed_state = ?,
                     observed_revision = desired_revision + 1,
-                    observed_operation_id = ?, last_error = NULL,
+                    observed_operation_id = ?, error = NULL,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE agent_id = ?
+                WHERE machine_id = ?
                 """,
                 (
                     desired.value,
                     operation_id,
-                    int(delete_volume),
+                    _timestamp(retain_until),
                     ObservedState.PENDING.value,
                     operation_id,
-                    agent_id,
+                    machine_id,
                 ),
             )
             self._connection.execute("COMMIT")
-            return self.get(agent_id)
+            return self.get(machine_id)
         except Exception:
             if self._connection.in_transaction:
                 self._connection.execute("ROLLBACK")
             raise
 
-    def mark_volume_create_intent(self, claim: Agent) -> Agent:
+    def _update_retain_until(self, machine_id: str, retain_until: datetime | None) -> None:
+        self._connection.execute(
+            "UPDATE machines SET retain_until = ?, updated_at = CURRENT_TIMESTAMP WHERE machine_id = ?",
+            (_timestamp(retain_until), machine_id),
+        )
+
+    def mark_volume_create_intent(self, claim: Machine) -> Machine:
         return self._mark_intent(claim, "volume_create_intent")
 
     def upgrade_terminated(
-        self, claim: Agent, image_id: str, previous_runtime_fingerprint: str
-    ) -> Agent:
+        self, claim: Machine, image_id: str, previous_runtime_fingerprint: str
+    ) -> Machine:
         if (
             claim.desired_state is not DesiredState.STOPPED
             or not claim.instance_id
             or not claim.instance_terminal_observed
         ):
             raise StoreError(
-                "image upgrades require a stopped assignment and confirmed terminated predecessor"
+                "image upgrades require a stopped machine and confirmed terminated predecessor"
             )
         if image_id == claim.image_id:
-            raise StoreError("the worker already uses this image")
+            raise StoreError("the machine already uses this image")
         cursor = self._connection.execute(
-            """UPDATE agents SET previous_instance_id = instance_id, instance_id = NULL,
-            image_id = ?, previous_runtime_fingerprint = ?, recovery_count = recovery_count + 1,
+            """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
+            image_id = ?, previous_runtime_fingerprint = ?, instance_seq = instance_seq + 1,
             desired_revision = desired_revision + 1, operation_id = ?,
             instance_launch_intent = 0, instance_launch_issued = 0, instance_terminal_observed = 0,
-            observed_state = 'stopped', last_error = NULL, updated_at = CURRENT_TIMESTAMP
-            WHERE agent_id = ? AND desired_revision = ? AND operation_id = ?
+            observed_state = 'stopped', error = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE machine_id = ? AND desired_revision = ? AND operation_id = ?
             AND desired_state = 'stopped' AND instance_id = ? AND instance_terminal_observed = 1""",
             (
                 image_id,
                 previous_runtime_fingerprint,
                 str(uuid.uuid4()),
-                claim.agent_id,
+                claim.machine_id,
                 claim.desired_revision,
                 claim.operation_id,
                 claim.instance_id,
             ),
         )
         if cursor.rowcount != 1:
-            raise StoreError("worker state changed during image upgrade; refresh before retrying")
-        return self.get(claim.agent_id)
+            raise StoreError("machine state changed during image upgrade; refresh before retrying")
+        return self.get(claim.machine_id)
 
-    def replace_terminated(self, claim: Agent) -> Agent:
+    def replace_terminated(self, claim: Machine) -> Machine:
         if not claim.instance_terminal_observed or not claim.instance_id:
             raise StoreError("replacement requires a confirmed terminated predecessor")
         if claim.recovery_count >= 3:
             raise StoreError("automatic worker recovery limit reached; operator review is required")
         self._connection.execute(
-            """UPDATE agents SET previous_instance_id = instance_id, instance_id = NULL,
-            previous_runtime_fingerprint = NULL, recovery_count = recovery_count + 1, instance_launch_intent = 0, instance_launch_issued = 0,
-            instance_terminal_observed = 0, observed_state = 'provisioning', last_error = NULL,
-            updated_at = CURRENT_TIMESTAMP
-            WHERE agent_id = ? AND desired_revision = ? AND operation_id = ?
+            """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
+            previous_runtime_fingerprint = NULL, instance_seq = instance_seq + 1,
+            recovery_count = recovery_count + 1, instance_launch_intent = 0,
+            instance_launch_issued = 0, instance_terminal_observed = 0,
+            observed_state = 'provisioning', error = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE machine_id = ? AND desired_revision = ? AND operation_id = ?
             AND desired_state = 'running' AND instance_id = ? AND instance_terminal_observed = 1""",
-            (claim.agent_id, claim.desired_revision, claim.operation_id, claim.instance_id),
+            (claim.machine_id, claim.desired_revision, claim.operation_id, claim.instance_id),
         )
-        return self.get(claim.agent_id)
+        return self.get(claim.machine_id)
 
-    def mark_instance_launch_intent(self, claim: Agent) -> Agent:
+    def release_terminated(self, claim: Machine) -> Machine:
+        """Forget a retained machine's terminated instance so a later start launches a new one."""
+        if not claim.instance_terminal_observed or not claim.instance_id:
+            raise StoreError("release requires a confirmed terminated instance")
+        self._connection.execute(
+            """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
+            previous_runtime_fingerprint = NULL, instance_seq = instance_seq + 1,
+            instance_launch_intent = 0, instance_launch_issued = 0,
+            instance_terminal_observed = 0, updated_at = CURRENT_TIMESTAMP
+            WHERE machine_id = ? AND desired_revision = ? AND operation_id = ?
+            AND desired_state = 'retained' AND instance_id = ? AND instance_terminal_observed = 1""",
+            (claim.machine_id, claim.desired_revision, claim.operation_id, claim.instance_id),
+        )
+        return self.get(claim.machine_id)
+
+    def mark_instance_launch_intent(self, claim: Machine) -> Machine:
         return self._mark_intent(claim, "instance_launch_intent")
 
-    def mark_volume_create_issued(self, claim: Agent) -> Agent:
+    def mark_volume_create_issued(self, claim: Machine) -> Machine:
         return self._mark_intent(claim, "volume_create_issued")
 
-    def mark_instance_launch_issued(self, claim: Agent) -> Agent:
+    def mark_instance_launch_issued(self, claim: Machine) -> Machine:
         return self._mark_intent(claim, "instance_launch_issued")
 
-    def cancel_queued_volume_create(self, claim: Agent) -> Agent:
+    def cancel_queued_volume_create(self, claim: Machine) -> Machine:
         if claim.volume_create_issued:
             raise StoreError("cannot cancel an issued volume create")
         return self._cas_update(claim, "volume_create_intent = 0")
 
-    def cancel_queued_instance_launch(self, claim: Agent) -> Agent:
+    def cancel_queued_instance_launch(self, claim: Machine) -> Machine:
         if claim.instance_launch_issued:
             raise StoreError("cannot cancel an issued instance launch")
         return self._cas_update(claim, "instance_launch_intent = 0")
 
-    def mark_volume_delete_issued(self, claim: Agent) -> Agent:
+    def mark_volume_delete_issued(self, claim: Machine) -> Machine:
         return self._mark_intent(claim, "volume_delete_issued")
 
-    def record_volume(self, agent_id: str, volume_id: str, availability_zone: str) -> Agent:
-        self._set_once(agent_id, "volume_id", volume_id, extra=("volume_az", availability_zone))
-        return self.get(agent_id)
+    def record_volume(self, machine_id: str, volume_id: str, availability_zone: str) -> Machine:
+        self._set_once(
+            machine_id, "data_volume_id", volume_id, extra=("volume_az", availability_zone)
+        )
+        return self.get(machine_id)
 
-    def record_instance(self, agent_id: str, instance_id: str) -> Agent:
-        self._set_once(agent_id, "instance_id", instance_id)
-        return self.get(agent_id)
+    def record_instance(self, machine_id: str, instance_id: str) -> Machine:
+        self._set_once(machine_id, "instance_id", instance_id)
+        return self.get(machine_id)
 
-    def mark_instance_terminal_observed(self, agent_id: str, instance_id: str) -> Agent:
+    def mark_instance_terminal_observed(self, machine_id: str, instance_id: str) -> Machine:
         cursor = self._connection.execute(
             """
-            UPDATE agents SET instance_terminal_observed = 1, updated_at = CURRENT_TIMESTAMP
-            WHERE agent_id = ? AND instance_id = ?
+            UPDATE machines SET instance_terminal_observed = 1, updated_at = CURRENT_TIMESTAMP
+            WHERE machine_id = ? AND instance_id = ?
             """,
-            (agent_id, instance_id),
+            (machine_id, instance_id),
         )
-        current = self.get(agent_id)
+        current = self.get(machine_id)
         if cursor.rowcount != 1 and current.instance_id != instance_id:
             raise StoreError("terminal observation does not match recorded instance")
         return current
 
     def set_observed(
-        self, claim: Agent, observed: ObservedState, last_error: str | None = None
-    ) -> Agent:
+        self, claim: Machine, observed: ObservedState, error: str | None = None
+    ) -> Machine:
         self._connection.execute(
             """
-            UPDATE agents
+            UPDATE machines
             SET observed_state = ?, observed_revision = ?, observed_operation_id = ?,
-                last_error = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE agent_id = ? AND desired_revision = ? AND operation_id = ?
+                error = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE machine_id = ? AND desired_revision = ? AND operation_id = ?
             """,
             (
                 observed.value,
                 claim.desired_revision,
                 claim.operation_id,
-                last_error,
-                claim.agent_id,
+                error,
+                claim.machine_id,
                 claim.desired_revision,
                 claim.operation_id,
             ),
         )
-        return self.get(claim.agent_id)
+        return self.get(claim.machine_id)
 
-    def require_bundle(self, agent_id: str, revision: int, token: str) -> Agent:
-        """Require the bundle of `revision` before the worker may launch or start.
+    def require_bundle(self, machine_id: str, revision: int, token: str) -> Machine:
+        """Require the bundle of `revision` before the machine may launch or start.
 
-        A revision older than the one already required leaves the agent unchanged.
+        A revision older than the one already required leaves the machine unchanged.
         """
         self._connection.execute(
             """
-            UPDATE agents SET required_bundle_revision = ?, required_bundle_token = ?,
+            UPDATE machines SET required_bundle_revision = ?, required_bundle_token = ?,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE agent_id = ?
+            WHERE machine_id = ?
             AND (required_bundle_revision IS NULL OR required_bundle_revision <= ?)
             """,
-            (revision, token, agent_id, revision),
+            (revision, token, machine_id, revision),
         )
-        return self.get(agent_id)
+        return self.get(machine_id)
 
-    def record_bundle(self, agent_id: str, token: str) -> Agent:
+    def record_bundle(self, machine_id: str, token: str) -> Machine:
         self._connection.execute(
             """
-            UPDATE agents SET bundle_token = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE agent_id = ? AND required_bundle_token = ?
+            UPDATE machines SET bundle_token = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE machine_id = ? AND required_bundle_token = ?
             """,
-            (token, agent_id, token),
+            (token, machine_id, token),
         )
-        return self.get(agent_id)
+        return self.get(machine_id)
 
-    def get(self, agent_id: str) -> Agent:
-        return self._get_row(agent_id)
+    def get(self, machine_id: str) -> Machine:
+        return self._get_row(machine_id)
 
-    def list(self) -> list[Agent]:
-        return [
-            _agent(row)
-            for row in self._connection.execute("SELECT * FROM agents ORDER BY agent_id")
-        ]
-
-    def _get_row(self, agent_id: str) -> Agent:
+    def find(self, slot_id: str, generation: int) -> Machine | None:
         row = self._connection.execute(
-            "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
+            "SELECT * FROM machines WHERE slot_id = ? AND generation = ?", (slot_id, generation)
+        ).fetchone()
+        return None if row is None else _machine(row)
+
+    def latest(self, slot_id: str) -> Machine:
+        row = self._connection.execute(
+            "SELECT * FROM machines WHERE slot_id = ? ORDER BY generation DESC LIMIT 1",
+            (slot_id,),
         ).fetchone()
         if row is None:
-            raise AgentNotFoundError(f"unknown agent {agent_id!r}")
-        return _agent(row)
+            raise MachineNotFoundError(f"no machine for slot {slot_id!r}")
+        return _machine(row)
 
-    def _mark_intent(self, claim: Agent, column: str) -> Agent:
+    def list(self) -> list[Machine]:
+        return [
+            _machine(row)
+            for row in self._connection.execute(
+                "SELECT * FROM machines ORDER BY slot_id, generation"
+            )
+        ]
+
+    def _get_row(self, machine_id: str) -> Machine:
+        row = self._connection.execute(
+            "SELECT * FROM machines WHERE machine_id = ?", (machine_id,)
+        ).fetchone()
+        if row is None:
+            raise MachineNotFoundError(f"unknown machine {machine_id!r}")
+        return _machine(row)
+
+    def _mark_intent(self, claim: Machine, column: str) -> Machine:
         if column not in {
             "volume_create_intent",
             "volume_create_issued",
@@ -429,24 +489,24 @@ class AgentStore:
             raise ValueError("invalid intent column")
         return self._cas_update(claim, f"{column} = 1")
 
-    def _cas_update(self, claim: Agent, assignment: str) -> Agent:
+    def _cas_update(self, claim: Machine, assignment: str) -> Machine:
         self._connection.execute(
             f"""
-            UPDATE agents SET {assignment}, updated_at = CURRENT_TIMESTAMP
-            WHERE agent_id = ? AND desired_revision = ? AND operation_id = ?
+            UPDATE machines SET {assignment}, updated_at = CURRENT_TIMESTAMP
+            WHERE machine_id = ? AND desired_revision = ? AND operation_id = ?
             """,
-            (claim.agent_id, claim.desired_revision, claim.operation_id),
+            (claim.machine_id, claim.desired_revision, claim.operation_id),
         )
-        return self.get(claim.agent_id)
+        return self.get(claim.machine_id)
 
     def _set_once(
-        self, agent_id: str, column: str, value: str, extra: tuple[str, str] | None = None
+        self, machine_id: str, column: str, value: str, extra: tuple[str, str] | None = None
     ) -> None:
-        if column not in {"instance_id", "volume_id"}:
+        if column not in {"instance_id", "data_volume_id"}:
             raise ValueError("invalid set-once column")
         self._connection.execute("BEGIN IMMEDIATE")
         try:
-            current = self._get_row(agent_id)
+            current = self._get_row(machine_id)
             existing = getattr(current, column)
             if existing is not None and existing != value:
                 raise StoreError(f"refusing to replace recorded {column}")
@@ -458,9 +518,9 @@ class AgentStore:
                     raise ValueError("invalid extra column")
                 assignments.insert(1, f"{extra_column} = ?")
                 values.append(extra_value)
-            values.append(agent_id)
+            values.append(machine_id)
             self._connection.execute(
-                f"UPDATE agents SET {', '.join(assignments)} WHERE agent_id = ?", values
+                f"UPDATE machines SET {', '.join(assignments)} WHERE machine_id = ?", values
             )
             self._connection.execute("COMMIT")
         except Exception:
@@ -469,13 +529,32 @@ class AgentStore:
             raise
 
 
-def _agent(row: sqlite3.Row) -> Agent:
-    return Agent(
-        agent_id=row["agent_id"],
+def _later(stored: datetime | None, requested: datetime | None) -> datetime | None:
+    if stored is None:
+        return requested
+    if requested is None:
+        return stored
+    return max(stored, requested)
+
+
+def _timestamp(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        raise StoreError("retain_until must carry a time zone")
+    return value.astimezone(UTC).isoformat()
+
+
+def _machine(row: sqlite3.Row) -> Machine:
+    return Machine(
+        machine_id=row["machine_id"],
+        slot_id=row["slot_id"],
         generation=row["generation"],
         desired_state=DesiredState(row["desired_state"]),
         desired_revision=row["desired_revision"],
         operation_id=row["operation_id"],
+        core_revision=row["core_revision"],
+        retain_until=(datetime.fromisoformat(row["retain_until"]) if row["retain_until"] else None),
         instance_type=row["instance_type"],
         image_id=row["image_id"],
         assignment_secret_arn=row["assignment_secret_arn"],
@@ -483,14 +562,14 @@ def _agent(row: sqlite3.Row) -> Agent:
         instance_id=row["instance_id"],
         previous_instance_id=row["previous_instance_id"],
         previous_runtime_fingerprint=row["previous_runtime_fingerprint"],
+        instance_seq=row["instance_seq"],
         recovery_count=row["recovery_count"],
-        volume_id=row["volume_id"],
+        data_volume_id=row["data_volume_id"],
         volume_az=row["volume_az"],
         observed_state=ObservedState(row["observed_state"]),
         observed_revision=row["observed_revision"],
         observed_operation_id=row["observed_operation_id"],
-        last_error=row["last_error"],
-        delete_volume=bool(row["delete_volume"]),
+        error=row["error"],
         volume_create_intent=bool(row["volume_create_intent"]),
         volume_create_issued=bool(row["volume_create_issued"]),
         instance_launch_intent=bool(row["instance_launch_intent"]),

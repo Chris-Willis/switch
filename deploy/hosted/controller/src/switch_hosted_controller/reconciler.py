@@ -2,93 +2,96 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import UTC, datetime
 from typing import Any
 
 from botocore.exceptions import ClientError
 
 from .cloud import CloudResourceError, Ec2Cloud
-from .model import Agent, DesiredState, ObservedState
-from .store import AgentStore
+from .model import DesiredState, Machine, ObservedState
+from .store import MachineStore
 
 logger = logging.getLogger(__name__)
 
 
 class Reconciler:
-    def __init__(self, store: AgentStore, cloud: Ec2Cloud):
+    def __init__(self, store: MachineStore, cloud: Ec2Cloud):
         self._store = store
         self._cloud = cloud
 
     def reconcile_all(self) -> None:
         for listed in self._store.list():
-            claim = self._store.get(listed.agent_id)
+            claim = self._store.get(listed.machine_id)
             try:
                 self._reconcile(claim)
             except Exception as exc:
                 message = _safe_error(exc)
-                logger.error("reconcile failed for agent %s: %s", claim.agent_id, message)
+                logger.error("reconcile failed for machine %s: %s", claim.machine_id, message)
                 self._store.set_observed(claim, ObservedState.NEEDS_ATTENTION, message)
 
-    def reconcile(self, agent_id: str) -> Agent:
-        return self._reconcile(self._store.get(agent_id))
+    def reconcile(self, machine_id: str) -> Machine:
+        return self._reconcile(self._store.get(machine_id))
 
-    def _reconcile(self, claim: Agent) -> Agent:
+    def _reconcile(self, claim: Machine) -> Machine:
         if claim.desired_state is DesiredState.RUNNING:
             return self._running(claim)
         if claim.desired_state is DesiredState.STOPPED:
             return self._stopped(claim)
+        if claim.desired_state is DesiredState.RETAINED:
+            return self._retained(claim)
         if claim.desired_state is DesiredState.DELETED:
             return self._deleted(claim)
         raise AssertionError(f"unhandled desired state {claim.desired_state}")
 
-    def _running(self, claim: Agent) -> Agent:
-        agent = claim
-        volume = self._cloud.get_volume(agent)
-        if agent.volume_id is None:
+    def _running(self, claim: Machine) -> Machine:
+        machine = claim
+        volume = self._cloud.get_volume(machine)
+        if machine.data_volume_id is None:
             if volume is not None:
                 return self._store.record_volume(
-                    agent.agent_id, volume["VolumeId"], volume["AvailabilityZone"]
+                    machine.machine_id, volume["VolumeId"], volume["AvailabilityZone"]
                 )
-            if not agent.volume_create_intent:
-                agent = self._store.mark_volume_create_intent(claim)
-                if not self._same_claim(claim, agent):
-                    return agent
-            if not agent.volume_create_issued:
+            if not machine.volume_create_intent:
+                machine = self._store.mark_volume_create_intent(claim)
+                if not self._same_claim(claim, machine):
+                    return machine
+            if not machine.volume_create_issued:
                 if not self._unchanged(claim, DesiredState.RUNNING):
                     return self._store.cancel_queued_volume_create(claim)
-                agent = self._store.mark_volume_create_issued(claim)
-                if not self._same_claim(claim, agent):
-                    return agent
-            volume_id = self._cloud.create_volume(agent)
+                machine = self._store.mark_volume_create_issued(claim)
+                if not self._same_claim(claim, machine):
+                    return machine
+            volume_id = self._cloud.create_volume(machine)
             return self._store.record_volume(
-                agent.agent_id, volume_id, self._cloud.availability_zone
+                machine.machine_id, volume_id, self._cloud.availability_zone
             )
         if volume is None:
             return self._attention(claim, "recorded data volume cannot be found")
 
-        instance = self._cloud.get_instance(agent)
-        if agent.instance_id is None:
+        instance = self._cloud.get_instance(machine)
+        if machine.instance_id is None:
             if instance is not None:
-                return self._store.record_instance(agent.agent_id, instance["InstanceId"])
+                return self._store.record_instance(machine.machine_id, instance["InstanceId"])
             if volume["State"] != "available" or (
-                not agent.instance_launch_issued and not _bundle_ready(agent)
+                not machine.instance_launch_issued and not _bundle_ready(machine)
             ):
                 return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
-            if not agent.instance_launch_intent:
-                agent = self._store.mark_instance_launch_intent(claim)
-                if not self._same_claim(claim, agent):
-                    return agent
-            if not agent.instance_launch_issued:
+            if not machine.instance_launch_intent:
+                machine = self._store.mark_instance_launch_intent(claim)
+                if not self._same_claim(claim, machine):
+                    return machine
+            if not machine.instance_launch_issued:
                 if not self._unchanged(claim, DesiredState.RUNNING):
                     return self._store.cancel_queued_instance_launch(claim)
-                self._cloud.validate_image(agent)
+                self._cloud.validate_image(machine)
                 self._cloud.validate_capacity()
                 if not self._unchanged(claim, DesiredState.RUNNING):
                     return self._store.cancel_queued_instance_launch(claim)
-                agent = self._store.mark_instance_launch_issued(claim)
-                if not self._same_claim(claim, agent):
-                    return agent
-            instance_id = self._cloud.run_instance(agent)
-            return self._store.record_instance(agent.agent_id, instance_id)
+                machine = self._store.mark_instance_launch_issued(claim)
+                if not self._same_claim(claim, machine):
+                    return machine
+            instance_id = self._cloud.run_instance(machine)
+            return self._store.record_instance(machine.machine_id, instance_id)
         if instance is None:
             return self._attention(
                 claim,
@@ -100,14 +103,14 @@ class Reconciler:
             if volume.get("State") != "available" or volume.get("Attachments"):
                 return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
             if not self._unchanged(claim, DesiredState.RUNNING):
-                return self._store.get(claim.agent_id)
+                return self._store.get(claim.machine_id)
             terminated = self._store.mark_instance_terminal_observed(
-                agent.agent_id, instance["InstanceId"]
+                machine.machine_id, instance["InstanceId"]
             )
             return self._store.replace_terminated(terminated)
         if state == "stopped":
-            if _bundle_ready(agent) and self._unchanged(claim, DesiredState.RUNNING):
-                self._cloud.start_instance(agent)
+            if _bundle_ready(machine) and self._unchanged(claim, DesiredState.RUNNING):
+                self._cloud.start_instance(machine)
             return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
         if state in {"pending", "stopping", "shutting-down"}:
             return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
@@ -117,47 +120,47 @@ class Reconciler:
         attachments = volume.get("Attachments", [])
         if volume["State"] == "available" and not attachments:
             if self._unchanged(claim, DesiredState.RUNNING):
-                self._cloud.attach_volume(agent)
+                self._cloud.attach_volume(machine)
             return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
         if len(attachments) != 1:
             return self._attention(claim, "data volume has an unexpected attachment count")
         attachment = attachments[0]
         if (
-            attachment.get("InstanceId") != agent.instance_id
+            attachment.get("InstanceId") != machine.instance_id
             or attachment.get("Device") != "/dev/sdf"
         ):
             return self._attention(claim, "data volume is attached to an unexpected target")
         if attachment.get("State") != "attached":
             return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
 
-        mapping = _volume_mapping(instance, agent.volume_id)
+        mapping = _volume_mapping(instance, machine.data_volume_id)
         if mapping is None:
             return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
         if mapping.get("DeleteOnTermination") is not False:
             if self._unchanged(claim, DesiredState.RUNNING):
-                self._cloud.enforce_data_retention(agent)
+                self._cloud.enforce_data_retention(machine)
             return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
         return self._store.set_observed(claim, ObservedState.RUNNING, None)
 
-    def _stopped(self, claim: Agent) -> Agent:
-        agent = claim
-        instance = self._cloud.get_instance(agent)
-        if agent.instance_id is None:
+    def _stopped(self, claim: Machine) -> Machine:
+        machine = claim
+        instance = self._cloud.get_instance(machine)
+        if machine.instance_id is None:
             if instance is not None:
-                return self._store.record_instance(agent.agent_id, instance["InstanceId"])
-            if agent.instance_launch_intent and not agent.instance_launch_issued:
+                return self._store.record_instance(machine.machine_id, instance["InstanceId"])
+            if machine.instance_launch_intent and not machine.instance_launch_issued:
                 self._store.cancel_queued_instance_launch(claim)
                 return self._store.set_observed(claim, ObservedState.STOPPED, None)
-            if agent.instance_launch_issued:
+            if machine.instance_launch_issued:
                 return self._attention(claim, "instance launch acceptance is unresolved")
             return self._store.set_observed(claim, ObservedState.STOPPED, None)
-        if instance is None and agent.instance_terminal_observed:
+        if instance is None and machine.instance_terminal_observed:
             return self._store.set_observed(claim, ObservedState.STOPPED, None)
         if instance is None:
             return self._attention(claim, "recorded instance state is unknown")
         state = instance["State"]["Name"]
         if state == "terminated":
-            self._store.mark_instance_terminal_observed(agent.agent_id, instance["InstanceId"])
+            self._store.mark_instance_terminal_observed(machine.machine_id, instance["InstanceId"])
             return self._store.set_observed(claim, ObservedState.STOPPED, None)
         if state == "stopped":
             return self._store.set_observed(claim, ObservedState.STOPPED, None)
@@ -165,85 +168,147 @@ class Reconciler:
             return self._store.set_observed(claim, ObservedState.STOPPING, None)
         if state == "running":
             if self._unchanged(claim, DesiredState.STOPPED):
-                self._cloud.stop_instance(agent)
+                self._cloud.stop_instance(machine)
             return self._store.set_observed(claim, ObservedState.STOPPING, None)
         return self._attention(claim, f"cannot safely stop instance in state {state}")
 
-    def _deleted(self, claim: Agent) -> Agent:
-        agent = claim
-        if (
-            agent.observed_state is ObservedState.DELETED
-            and agent.observed_revision == agent.desired_revision
-            and agent.observed_operation_id == agent.operation_id
-        ):
-            return agent
-        if agent.instance_id is None and agent.instance_launch_issued:
-            instance = self._cloud.discover_instance(agent)
-            if instance is None:
-                return self._store.set_observed(claim, ObservedState.DELETING, None)
-            return self._store.record_instance(agent.agent_id, instance["InstanceId"])
-        if agent.instance_id is not None:
-            instance = self._cloud.get_instance(agent)
-            if instance is None and not agent.instance_terminal_observed:
-                return self._attention(claim, "recorded instance state is unknown during deletion")
-            if instance is not None:
-                state = instance["State"]["Name"]
-                if state == "running":
-                    if self._unchanged(claim, DesiredState.DELETED):
-                        self._cloud.stop_instance(agent)
-                    return self._store.set_observed(claim, ObservedState.DELETING, None)
-                if state in {"pending", "stopping", "shutting-down"}:
-                    return self._store.set_observed(claim, ObservedState.DELETING, None)
-                if state == "stopped":
-                    if self._unchanged(claim, DesiredState.DELETED):
-                        self._cloud.terminate_instance(agent)
-                    return self._store.set_observed(claim, ObservedState.DELETING, None)
-                if state != "terminated":
-                    return self._attention(claim, f"cannot safely delete instance in state {state}")
-                self._store.mark_instance_terminal_observed(agent.agent_id, instance["InstanceId"])
+    def _retained(self, claim: Machine) -> Machine:
+        if _fresh(claim, ObservedState.RETAINED):
+            return claim
+        pending = self._terminate_instance(
+            claim, DesiredState.RETAINED, ObservedState.STOPPING, "retention"
+        )
+        if pending is not None:
+            return pending
+        machine = self._store.get(claim.machine_id)
+        if machine.instance_id is not None:
+            if not self._unchanged(claim, DesiredState.RETAINED):
+                return machine
+            machine = self._store.release_terminated(machine)
+        volume = self._cloud.get_volume(machine)
+        if machine.data_volume_id is None:
+            if volume is not None:
+                return self._store.record_volume(
+                    machine.machine_id, volume["VolumeId"], volume["AvailabilityZone"]
+                )
+            if machine.volume_create_issued:
+                return self._attention(claim, "volume create acceptance is unresolved")
+            if machine.volume_create_intent:
+                self._store.cancel_queued_volume_create(claim)
+            return self._store.set_observed(claim, ObservedState.RETAINED, None)
+        if volume is None:
+            return self._attention(claim, "recorded data volume cannot be found")
+        return self._store.set_observed(claim, ObservedState.RETAINED, None)
 
-        volume = self._cloud.get_volume(agent)
-        if volume is None and agent.volume_create_intent and not agent.volume_create_issued:
+    def _deleted(self, claim: Machine) -> Machine:
+        machine = claim
+        if _fresh(machine, ObservedState.DELETED):
+            return machine
+        pending = self._terminate_instance(
+            claim, DesiredState.DELETED, ObservedState.DELETING, "deletion"
+        )
+        if pending is not None:
+            return pending
+
+        volume = self._cloud.get_volume(machine)
+        if volume is None and machine.volume_create_intent and not machine.volume_create_issued:
             self._store.cancel_queued_volume_create(claim)
             return self._store.set_observed(claim, ObservedState.DELETED, None)
-        if volume is None and agent.volume_delete_issued:
+        if volume is None and machine.volume_delete_issued:
             return self._store.set_observed(claim, ObservedState.DELETED, None)
-        if volume is None and agent.volume_create_issued:
+        if volume is None and machine.volume_create_issued:
             return self._attention(claim, "volume create or deletion acceptance is unresolved")
-        if volume is not None and agent.volume_id is None:
+        if volume is not None and machine.data_volume_id is None:
             return self._store.record_volume(
-                agent.agent_id, volume["VolumeId"], volume["AvailabilityZone"]
+                machine.machine_id, volume["VolumeId"], volume["AvailabilityZone"]
             )
-        if not agent.delete_volume or volume is None:
+        if volume is None:
             return self._store.set_observed(claim, ObservedState.DELETED, None)
+        if not self._retention_expired(claim):
+            return self._store.set_observed(claim, ObservedState.DELETING, None)
         if volume["State"] != "available" or volume.get("Attachments"):
             return self._store.set_observed(claim, ObservedState.DELETING, None)
-        if self._unchanged(claim, DesiredState.DELETED):
-            if not agent.volume_delete_issued:
-                agent = self._store.mark_volume_delete_issued(claim)
-                if not self._same_claim(claim, agent):
-                    return agent
-            self._cloud.delete_volume(agent)
+        if self._unchanged(claim, DesiredState.DELETED) and self._retention_expired(claim):
+            if not machine.volume_delete_issued:
+                machine = self._store.mark_volume_delete_issued(claim)
+                if not self._same_claim(claim, machine):
+                    return machine
+            self._cloud.delete_volume(machine)
         return self._store.set_observed(claim, ObservedState.DELETING, None)
 
-    def _unchanged(self, claim: Agent, desired: DesiredState) -> bool:
-        current = self._store.get(claim.agent_id)
+    def _terminate_instance(
+        self, claim: Machine, desired: DesiredState, busy: ObservedState, activity: str
+    ) -> Machine | None:
+        """Drive the machine's instance to terminated.
+
+        Returns None once no instance is left, and otherwise the machine as
+        observed while the instance is still on its way down.
+        """
+        machine = claim
+        if machine.instance_id is None and machine.instance_launch_issued:
+            instance = self._cloud.discover_instance(machine)
+            if instance is None:
+                return self._store.set_observed(claim, busy, None)
+            return self._store.record_instance(machine.machine_id, instance["InstanceId"])
+        if machine.instance_id is None:
+            return None
+        instance = self._cloud.get_instance(machine)
+        if instance is None:
+            if machine.instance_terminal_observed:
+                return None
+            return self._attention(claim, f"recorded instance state is unknown during {activity}")
+        state = instance["State"]["Name"]
+        if state == "running":
+            if self._unchanged(claim, desired):
+                self._cloud.stop_instance(machine)
+            return self._store.set_observed(claim, busy, None)
+        if state in {"pending", "stopping", "shutting-down"}:
+            return self._store.set_observed(claim, busy, None)
+        if state == "stopped":
+            if self._unchanged(claim, desired):
+                self._cloud.terminate_instance(machine)
+            return self._store.set_observed(claim, busy, None)
+        if state != "terminated":
+            return self._attention(
+                claim, f"cannot safely terminate instance in state {state} during {activity}"
+            )
+        self._store.mark_instance_terminal_observed(machine.machine_id, instance["InstanceId"])
+        return None
+
+    def _retention_expired(self, claim: Machine) -> bool:
+        retain_until = self._store.get(claim.machine_id).retain_until
+        return retain_until is None or utcnow() >= retain_until
+
+    def _unchanged(self, claim: Machine, desired: DesiredState) -> bool:
+        current = self._store.get(claim.machine_id)
         return current.desired_state is desired and self._same_claim(claim, current)
 
-    def _same_claim(self, claim: Agent, current: Agent) -> bool:
+    def _same_claim(self, claim: Machine, current: Machine) -> bool:
         return (
             current.desired_revision == claim.desired_revision
             and current.operation_id == claim.operation_id
         )
 
-    def _attention(self, claim: Agent, message: str) -> Agent:
+    def _attention(self, claim: Machine, message: str) -> Machine:
         return self._store.set_observed(claim, ObservedState.NEEDS_ATTENTION, message)
 
 
-def _bundle_ready(agent: Agent) -> bool:
+def utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def _fresh(machine: Machine, observed: ObservedState) -> bool:
     return (
-        agent.required_bundle_token is not None
-        and agent.bundle_token == agent.required_bundle_token
+        machine.observed_state is observed
+        and machine.observed_revision == machine.desired_revision
+        and machine.observed_operation_id == machine.operation_id
+    )
+
+
+def _bundle_ready(machine: Machine) -> bool:
+    return (
+        machine.required_bundle_token is not None
+        and machine.bundle_token == machine.required_bundle_token
     )
 
 

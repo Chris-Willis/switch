@@ -1,59 +1,100 @@
-import importlib.util
 import json
-import sys
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from uuid import UUID, uuid4, uuid5
+from uuid import NAMESPACE_URL, uuid5
 
 import pytest
-from test_controller import config
+from test_controller import MACHINE_ID, config, insert_machine
 
 from switch_hosted_controller.config import ConfigError
 from switch_hosted_controller.gateway import (
-    WORKER_CAPABILITY_PATH,
+    CoreMachine,
     Gateway,
     GatewayConfig,
     GatewayError,
-    worker_attach_fields,
 )
 from switch_hosted_controller.model import DesiredState, ObservedState
-from switch_hosted_controller.store import AgentStore
+from switch_hosted_controller.store import CapacityError, MachineStore
+
+FIXTURES = Path(__file__).parent / "fixtures"
+VOLUME_ID = "vol-0123456789abcdef0"
+CAPABILITY = "SYNTHETIC-MACHINE-CAPABILITY-0123456789"
+OTHER_MACHINE_ID = "3f1c2b4a-0000-4000-8000-000000000002"
 
 
-def test_launch_retry_reuses_the_assignment_and_reservation(tmp_path):
-    cfg = config(tmp_path)
-    store = AgentStore(cfg.state_db_path, cfg.fingerprint())
-    request_id = str(uuid4())
-    job = {
-        "request_id": request_id,
-        "agent_id": "agent-1",
-        "state": "queued",
+def core_machine(**overrides) -> dict:
+    return {
+        "machine_id": MACHINE_ID,
+        "slot_id": "slot-1",
+        "generation": 1,
+        "state": "provisioning",
         "desired_state": "running",
         "revision": 1,
+        "data_volume_id": None,
+        "retain_until": None,
+        "bundle_revision": None,
+        **overrides,
     }
-    prepared = {
-        "agent_id": "agent-1",
+
+
+def prepared_machine(**overrides) -> dict:
+    return {
+        "machine_id": MACHINE_ID,
+        "slot_id": "slot-1",
+        "generation": 1,
         "revision": 1,
-        "provider_kind": "setup-token",
-        "provider_credential": "SYNTHETIC-PROVIDER",
-        "switch_credentials": {"env": {}},
-        "github_credential": "SYNTHETIC-GITHUB",
-        "worker_capability": "SYNTHETIC-WORKER-CAPABILITY",
-        "repository": "example/project",
-        "spec": {
-            "name": "helper",
-            "definition": "synthetic definition",
-            "instructions": "Help",
-            "auto_session": True,
-            "auto_approve": False,
-            "definition_attributes": {},
-        },
+        "bundle_revision": 1,
+        "machine_capability": CAPABILITY,
+        "api_endpoint": "https://switch.example.test/agent-api",
+        **overrides,
     }
+
+
+def make_gateway(cfg, store, secrets=None, instance_type="m6i.large") -> Gateway:
+    return Gateway(
+        GatewayConfig("https://switch.example.test", "SYNTHETIC-CONTROLLER", instance_type),
+        cfg,
+        store,
+        secrets if secrets is not None else Mock(),
+    )
+
+
+def open_store(cfg) -> MachineStore:
+    return MachineStore(cfg.state_db_path, cfg.fingerprint())
+
+
+def routed(machines: list[dict], prepared: dict | None = None) -> Mock:
+    def request(path, body=None):
+        if path == "/machines":
+            return {"machines": machines}
+        if path.endswith("/prepare"):
+            return prepared
+        return {}
+
+    return Mock(side_effect=request)
+
+
+def at_rest(store: MachineStore, machine_id: str, desired: DesiredState, observed: ObservedState):
+    claim = store.set_desired(machine_id, desired, None)
+    return store.set_observed(claim, observed, None)
+
+
+def delete_fully(store: MachineStore, machine_id: str) -> None:
+    at_rest(store, machine_id, DesiredState.STOPPED, ObservedState.STOPPED)
+    claim = store.set_desired(machine_id, DesiredState.DELETED, None)
+    store.set_observed(claim, ObservedState.DELETED, None)
+
+
+def test_launch_retry_reuses_the_slot_and_row(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
     saved = {}
 
     def put(**kwargs):
-        saved[kwargs["ClientRequestToken"]] = json.loads(kwargs["SecretString"])
+        saved[kwargs["ClientRequestToken"]] = kwargs["SecretString"]
         raise RuntimeError("Simulated crash after the secret write")
 
     secrets = SimpleNamespace(
@@ -64,268 +105,498 @@ def test_launch_retry_reuses_the_assignment_and_reservation(tmp_path):
         ),
         put_secret_value=Mock(side_effect=put),
     )
-    gateway = Gateway(
-        GatewayConfig(
-            "https://switch.example.com",
-            "SYNTHETIC-CONTROLLER",
-            "m6i.large",
-        ),
-        cfg,
-        store,
-        secrets,
-    )
-    gateway.request = Mock(side_effect=lambda path, body=None: [job] if path == "" else prepared)
-    gateway.accept_launches()
+    gateway = make_gateway(cfg, store, secrets)
+    gateway.request = routed([core_machine()], prepared_machine())
+    gateway.sync_machines()
     assert not saved
-    store.record_volume("agent-1", "vol-0123456789abcdef0", cfg.availability_zone)
-    try:
-        gateway.accept_launches()
-    except RuntimeError:
-        pass
-    assert len(saved) == 1
-    gateway.accept_launches()
-    gateway.accept_launches()
+    machine = store.get(MACHINE_ID)
+    assert (machine.slot_id, machine.generation, machine.instance_type) == (
+        "slot-1",
+        1,
+        "m6i.large",
+    )
+    assert machine.image_id == cfg.image_id
+    assert machine.assignment_secret_arn == cfg.slot("slot-1").assignment_secret_arn
+    assert machine.instance_profile_arn == cfg.slot("slot-1").instance_profile_arn
+    store.record_volume(MACHINE_ID, VOLUME_ID, cfg.availability_zone)
+    for _ in range(3):
+        gateway.sync_machines()
     assert len(store.list()) == 1
     assert secrets.put_secret_value.call_count == 1
     assert sum(call.args[0].endswith("/prepare") for call in gateway.request.call_args_list) == 1
-    token = str(uuid5(UUID(request_id), "1"))
-    assert store.get("agent-1").bundle_token == token
-    deployment = saved[token]["deployment"]
-    assert saved[token]["assignment"]["dataVolumeId"] == "vol-0123456789abcdef0"
-    assert deployment["watch"] is True
-    assert deployment["revision"] == 1
-    assert "room" not in deployment
-    assert "mcpRuntime" not in deployment
-    assert deployment["workerCapabilityPath"] == "/run/switch-hosted/secrets/worker-capability"
-    assert saved[token]["workerCapability"] == "SYNTHETIC-WORKER-CAPABILITY"
-    assert deployment["github"]["refresh"] is True
-    assert deployment["provider"]["definition"]["name"] == "helper"
+    token = str(uuid5(NAMESPACE_URL, f"{MACHINE_ID}:1"))
+    assert store.get(MACHINE_ID).bundle_token == token
+    assert json.loads(saved[token]) == {
+        "version": 2,
+        "machineId": MACHINE_ID,
+        "assignment": {
+            "installationId": cfg.installation_id,
+            "slotId": "slot-1",
+            "generation": 1,
+            "dataVolumeId": VOLUME_ID,
+        },
+        "machineCapability": CAPABILITY,
+        "apiEndpoint": "https://switch.example.test/agent-api",
+    }
+    store.close()
+
+
+def test_bundle_matches_the_shared_fixture(tmp_path):
+    cfg = replace(config(tmp_path), installation_id="inst-test")
+    store = open_store(cfg)
+    machine = replace(
+        insert_machine(store, cfg, "slot-1", 1, MACHINE_ID),
+        slot_id="slot-a",
+        generation=2,
+        data_volume_id=VOLUME_ID,
+    )
+    bundle = make_gateway(cfg, store).bundle(
+        prepared_machine(
+            slot_id="slot-a",
+            generation=2,
+            revision=4,
+            bundle_revision=4,
+            machine_capability="mcap-test-0000000000000000000000000000",
+        ),
+        machine,
+    )
+    fixture = (FIXTURES / "bundle.json").read_text().strip()
+    assert json.dumps(bundle, separators=(",", ":")) == fixture
+    store.close()
+
+
+@pytest.mark.parametrize("capability", [None, "", "short", "has space in it 0123", 7])
+def test_bundle_refuses_a_missing_or_malformed_capability(tmp_path, capability):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    machine = insert_machine(store, cfg, "slot-1", 1, MACHINE_ID)
+    prepared = prepared_machine(machine_capability=capability)
+    if capability is None:
+        del prepared["machine_capability"]
+    with pytest.raises(ConfigError, match="capability"):
+        make_gateway(cfg, store).bundle(prepared, machine)
+    store.close()
+
+
+@pytest.mark.parametrize("endpoint", [None, "http://switch.example.test/agent-api", "https://"])
+def test_bundle_refuses_an_invalid_api_endpoint(tmp_path, endpoint):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    machine = insert_machine(store, cfg, "slot-1", 1, MACHINE_ID)
+    with pytest.raises(ConfigError, match="API endpoint"):
+        make_gateway(cfg, store).bundle(prepared_machine(api_endpoint=endpoint), machine)
+    store.close()
+
+
+def test_machine_without_a_capability_writes_no_bundle(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    gateway = make_gateway(cfg, store)
+    prepared = prepared_machine()
+    del prepared["machine_capability"]
+    gateway.request = Mock(return_value=prepared)
+    gateway.secrets.describe_secret.return_value = {"VersionIdsToStages": {}}
+    core = CoreMachine.parse(core_machine())
+    gateway.sync_machine(core)
+    store.record_volume(MACHINE_ID, VOLUME_ID, cfg.availability_zone)
+    with pytest.raises(ConfigError):
+        gateway.sync_machine(core)
+    gateway.secrets.put_secret_value.assert_not_called()
+    assert store.get(MACHINE_ID).bundle_token is None
     store.close()
 
 
 @pytest.mark.parametrize(
-    "failure", [GatewayError(409), GatewayError(500), RuntimeError("Secret write failed")]
+    "prepared",
+    [
+        prepared_machine(machine_id=OTHER_MACHINE_ID),
+        prepared_machine(slot_id="slot-2"),
+        prepared_machine(generation=2),
+        prepared_machine(bundle_revision=0),
+    ],
 )
-def test_one_failed_launch_does_not_block_other_launches(tmp_path, failure):
-    cfg = config(tmp_path, max_agents=2)
-    store = AgentStore(cfg.state_db_path, cfg.fingerprint())
-    gateway = Gateway(
-        GatewayConfig("https://switch.example.test", "SYNTHETIC", "m6i.large"),
-        cfg,
-        store,
-        Mock(),
-    )
-    jobs = [
-        {
-            "request_id": str(uuid4()),
-            "agent_id": f"agent-{n}",
-            "revision": 1,
-            "desired_state": "running",
-        }
-        for n in [1, 2]
-    ]
-    gateway.request = Mock(side_effect=lambda path, body=None: jobs if path == "" else {})
-    gateway.accept_launch = Mock(side_effect=[failure, None])
-    gateway.accept_launches()
-    assert gateway.accept_launch.call_count == 2
-    assert gateway.request.call_count == 1
-    gateway.accept_launch.side_effect = [failure, None]
-    with patch(
-        "switch_hosted_controller.gateway.monotonic",
-        return_value=gateway.prepare_failures[jobs[0]["request_id"]] + 301,
-    ):
-        gateway.accept_launches()
-    reported = gateway.request.call_args_list[-1]
-    assert reported.args[0] == f"/{jobs[0]['request_id']}/observation"
-    assert reported.args[1]["state"] == "error"
+def test_prepare_for_a_different_machine_or_revision_fails_loud(tmp_path, prepared):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    gateway = make_gateway(cfg, store)
+    gateway.request = Mock(return_value=prepared)
+    gateway.secrets.describe_secret.return_value = {"VersionIdsToStages": {}}
+    with pytest.raises(ConfigError):
+        gateway.sync_machine(CoreMachine.parse(core_machine(data_volume_id=VOLUME_ID)))
+    gateway.secrets.put_secret_value.assert_not_called()
     store.close()
 
 
-WORKER_MODULE_PATH = Path(__file__).parents[2] / "worker" / "switch_hosted_worker.py"
-WORKER_CAPABILITY = "SYNTHETIC-WORKER-CAPABILITY-0123456789"
-
-
-def load_worker():
-    spec = importlib.util.spec_from_file_location("switch_hosted_worker", WORKER_MODULE_PATH)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-def prepared_launch(**overrides) -> dict:
-    return {
-        "agent_id": "agent-1",
-        "revision": 4,
-        "provider_kind": "setup-token",
-        "provider_credential": "SYNTHETIC-PROVIDER",
-        "switch_credentials": {
-            "env": {
-                "SWITCH_API_ENDPOINT": "https://switch.example.com/api/agent",
-                "SWITCH_API_TOKEN": "SYNTHETIC-AGENT-TOKEN",
-                "SWITCH_AGENT_ID": "agent-1",
-            }
-        },
-        "github_credential": "SYNTHETIC-GITHUB",
-        "worker_capability": WORKER_CAPABILITY,
-        "repository": "example/project",
-        "spec": {
-            "name": "helper",
-            "definition": "synthetic definition",
-            "instructions": "Help",
-            "auto_session": True,
-            "auto_approve": False,
-            "definition_attributes": {},
-        },
-        **overrides,
-    }
-
-
-def bundle_gateway(tmp_path) -> Gateway:
-    cfg = config(tmp_path)
-    return Gateway(
-        GatewayConfig("https://switch.example.com", "SYNTHETIC", "m6i.large"),
-        cfg,
-        AgentStore(cfg.state_db_path, cfg.fingerprint()),
-        Mock(),
+@pytest.mark.parametrize("failure", [GatewayError(500), RuntimeError("Secret write failed")])
+def test_one_failed_machine_does_not_block_other_machines(tmp_path, failure):
+    cfg = config(tmp_path, max_machines=2)
+    store = open_store(cfg)
+    gateway = make_gateway(cfg, store)
+    gateway.request = routed(
+        [core_machine(), core_machine(machine_id=OTHER_MACHINE_ID, slot_id="slot-2")]
     )
+    gateway.sync_machine = Mock(side_effect=[failure, None])
+    gateway.sync_machines()
+    assert gateway.sync_machine.call_count == 2
+    assert gateway.request.call_count == 1
+    gateway.sync_machine.side_effect = [failure, None]
+    with patch(
+        "switch_hosted_controller.gateway.monotonic",
+        return_value=gateway.prepare_failures[MACHINE_ID] + 301,
+    ):
+        gateway.sync_machines()
+    assert gateway.request.call_args_list[-1].args == (
+        f"/machines/{MACHINE_ID}/observation",
+        {
+            "state": "error",
+            "revision": 1,
+            "error": "Cloud machine setup failed. Retry; if it still fails, contact your administrator.",
+            "error_code": None,
+            "data_volume_id": None,
+            "instance_id": None,
+            "instance_type": None,
+        },
+    )
+    store.close()
 
 
-def test_worker_attach_fields_carry_the_prepared_capability():
-    deployment, bundle = worker_attach_fields(prepared_launch())
-    assert deployment == {"workerCapabilityPath": WORKER_CAPABILITY_PATH}
-    assert bundle == {"workerCapability": WORKER_CAPABILITY}
+def test_conflict_during_prepare_is_retried_without_reporting(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    gateway = make_gateway(cfg, store)
+    gateway.request = routed([core_machine()])
+    gateway.sync_machine = Mock(side_effect=GatewayError(409))
+    for _ in range(2):
+        with patch("switch_hosted_controller.gateway.monotonic", return_value=10_000):
+            gateway.sync_machines()
+    assert gateway.prepare_failures == {}
+    assert [call.args[0] for call in gateway.request.call_args_list] == ["/machines", "/machines"]
+    store.close()
 
 
-@pytest.mark.parametrize("capability", [None, "", "short", "has space in it 0123", 7])
-def test_worker_attach_fields_refuse_a_missing_or_malformed_capability(capability):
-    prepared = prepared_launch(worker_capability=capability)
-    if capability is None:
-        del prepared["worker_capability"]
-    with pytest.raises(ConfigError):
-        worker_attach_fields(prepared)
-
-
-def test_launch_without_a_capability_writes_no_bundle(tmp_path):
-    gateway = bundle_gateway(tmp_path)
-    prepared = prepared_launch()
-    del prepared["worker_capability"]
-    gateway.request = Mock(return_value=prepared)
+def test_rejected_prepare_stops_the_machine_and_reports_the_detail(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    gateway = make_gateway(cfg, store)
+    insert_machine(store, cfg, "slot-1", 1, MACHINE_ID)
+    store.record_volume(MACHINE_ID, VOLUME_ID, cfg.availability_zone)
     gateway.secrets.describe_secret.return_value = {"VersionIdsToStages": {}}
-    job = {
-        "request_id": str(uuid4()),
-        "agent_id": "agent-1",
-        "state": "queued",
-        "desired_state": "running",
-        "revision": 4,
-    }
-    gateway.accept_launch(job)
-    gateway.store.record_volume(
-        "agent-1", "vol-0123456789abcdef0", gateway.config.availability_zone
+
+    def request(path, body=None):
+        if path == "/machines":
+            return {"machines": [core_machine()]}
+        if path.endswith("/prepare"):
+            raise GatewayError(422, "Owner is no longer a member.")
+        return {}
+
+    gateway.request = Mock(side_effect=request)
+    gateway.sync_machines()
+    assert store.get(MACHINE_ID).desired_state is DesiredState.STOPPED
+    assert gateway.request.call_args_list[-1].args == (
+        f"/machines/{MACHINE_ID}/observation",
+        {
+            "state": "error",
+            "revision": 1,
+            "error": "Owner is no longer a member.",
+            "error_code": None,
+            "data_volume_id": VOLUME_ID,
+            "instance_id": None,
+            "instance_type": "m6i.large",
+        },
     )
-    with pytest.raises(ConfigError):
-        gateway.accept_launch(job)
-    gateway.secrets.put_secret_value.assert_not_called()
-    gateway.store.close()
+    store.close()
 
 
-def test_worker_accepts_the_bundle_and_materializes_its_capability_path(tmp_path):
-    worker = load_worker()
-    gateway = bundle_gateway(tmp_path)
-    bundle = gateway.bundle(prepared_launch(), "vol-0123456789abcdef0")
-    worker_config = worker.WorkerConfig(
-        installation_id=gateway.config.installation_id,
-        secret_id="arn:aws:secretsmanager:us-east-1:123456789012:secret:agent-1",
-        secret_region="us-east-1",
-        agent_id="agent-1",
-        generation=bundle["assignment"]["generation"],
-        volume_id="vol-0123456789abcdef0",
-        device_path="/dev/sdf",
-        runtime=worker.RuntimeConfig(
-            node_path="/opt/switch/node/bin/node",
-            bootstrap_path="/opt/switch/agent-providers/hosted-bootstrap.mjs",
-            shared_host_daemon_path="/opt/switch/agent-providers/shared-host-daemon.mjs",
-            provider_binary_path="/opt/switch/claude/bin/claude",
-            agent_user="switch-agent",
-            agent_group="switch-agent",
-            path="/opt/switch/node/bin:/usr/bin:/bin",
-            allow_initial_format=True,
-            artifact_sha256={
-                "node": "1" * 64,
-                "bootstrap": "2" * 64,
-                "sharedHostDaemon": "3" * 64,
-                "provider": "4" * 64,
-            },
-        ),
-    )
-    parsed = worker.parse_secret_document(json.dumps(bundle), worker_config)
-    assert parsed.worker_capability == WORKER_CAPABILITY
-    assert parsed.deployment["revision"] == 4
-    assert parsed.deployment["workerCapabilityPath"] == str(
-        worker.RUNTIME_DIRECTORY / "secrets" / "worker-capability"
-    )
-    gateway.store.close()
-
-
-def test_error_launch_being_deleted_is_still_reported(tmp_path):
-    cfg = config(tmp_path)
-    store = AgentStore(cfg.state_db_path, cfg.fingerprint())
-    assignment = cfg.assignment("agent-1")
-    store.reserve_create(
-        agent_id="agent-1",
-        instance_type="m6i.large",
-        image_id=cfg.image_id,
-        assignment_secret_arn=assignment.assignment_secret_arn,
-        instance_profile_arn=assignment.instance_profile_arn,
-        max_agents=cfg.max_agents,
-    )
-    stopped = store.set_desired("agent-1", DesiredState.STOPPED)
-    store.set_observed(stopped, ObservedState.STOPPED)
-    claim = store.set_desired("agent-1", DesiredState.DELETED)
-    store.set_observed(claim, ObservedState.DELETED)
-    gateway = Gateway(
-        GatewayConfig("https://switch.example.test", "SYNTHETIC", "m6i.large"),
-        cfg,
-        store,
-        Mock(),
-    )
-    deleting = {
-        "request_id": str(uuid4()),
-        "agent_id": "agent-1",
-        "state": "error",
-        "desired_state": "deleted",
-        "revision": 4,
-    }
-    failed = {**deleting, "request_id": str(uuid4()), "desired_state": "running"}
-    gateway.request = Mock(
-        side_effect=lambda path, body=None: [deleting, failed] if path == "" else {}
+def test_error_machine_being_deleted_is_still_reported(tmp_path):
+    cfg = config(tmp_path, max_machines=2)
+    store = open_store(cfg)
+    insert_machine(store, cfg, "slot-1", 1, MACHINE_ID)
+    delete_fully(store, MACHINE_ID)
+    insert_machine(store, cfg, "slot-2", 1, OTHER_MACHINE_ID)
+    gateway = make_gateway(cfg, store)
+    gateway.request = routed(
+        [
+            core_machine(state="error", desired_state="deleted", revision=4),
+            core_machine(machine_id=OTHER_MACHINE_ID, slot_id="slot-2", state="error", revision=4),
+        ]
     )
     gateway.report_observations()
-    reports = [call.args for call in gateway.request.call_args_list if call.args[0]]
+    reports = [call.args for call in gateway.request.call_args_list if call.args[0] != "/machines"]
     assert reports == [
         (
-            f"/{deleting['request_id']}/observation",
-            {"state": "deleted", "revision": 4, "error": None, "error_code": None},
+            f"/machines/{MACHINE_ID}/observation",
+            {
+                "state": "deleted",
+                "revision": 1,
+                "error": None,
+                "error_code": None,
+                "data_volume_id": None,
+                "instance_id": None,
+                "instance_type": "m6i.large",
+            },
         )
     ]
     store.close()
 
 
-def test_bundle_carries_granted_skills_only_when_present(tmp_path):
-    gateway = bundle_gateway(tmp_path)
-    skills = [{"slug": "github", "files": {"SKILL.md": "---\nname: github\n---\n"}}]
-    bundled = gateway.bundle(prepared_launch(skills=skills), "vol-0123456789abcdef0")
-    assert bundled["deployment"]["skills"] == skills
-    for prepared in (prepared_launch(skills=[]), prepared_launch()):
-        assert "skills" not in gateway.bundle(prepared, "vol-0123456789abcdef0")["deployment"]
-    gateway.store.close()
+def test_running_observation_matches_the_shared_fixture(tmp_path):
+    cfg = replace(config(tmp_path), allowed_instance_types=frozenset({"c7i.2xlarge"}))
+    store = open_store(cfg)
+    gateway = make_gateway(cfg, store, instance_type="c7i.2xlarge")
+    gateway.request = routed([core_machine(state="running", revision=4)])
+    machine = store.insert(
+        machine_id=MACHINE_ID,
+        slot_id="slot-1",
+        generation=1,
+        core_revision=4,
+        instance_type="c7i.2xlarge",
+        image_id=cfg.image_id,
+        assignment_secret_arn=cfg.slot("slot-1").assignment_secret_arn,
+        instance_profile_arn=cfg.slot("slot-1").instance_profile_arn,
+        max_machines=cfg.max_machines,
+    )
+    store.record_volume(MACHINE_ID, VOLUME_ID, cfg.availability_zone)
+    store.record_instance(MACHINE_ID, "i-0123456789abcdef0")
+    store.set_observed(machine, ObservedState.RUNNING, None)
+    gateway.report_observations()
+    path, body = gateway.request.call_args_list[-1].args
+    assert path == f"/machines/{MACHINE_ID}/observation"
+    fixture = (FIXTURES / "controller_observation.json").read_text().strip()
+    assert json.dumps(body, separators=(",", ":")) == fixture
+    store.close()
 
 
-def test_worker_accepts_a_bundle_with_granted_skills(tmp_path):
-    worker = load_worker()
-    gateway = bundle_gateway(tmp_path)
-    skills = [{"slug": "github", "files": {"SKILL.md": "---\nname: github\n---\n"}}]
-    bundle = gateway.bundle(prepared_launch(skills=skills), "vol-0123456789abcdef0")
-    worker._validate_skills(bundle["deployment"]["skills"])
-    gateway.store.close()
+@pytest.mark.parametrize(
+    ("observed", "state"),
+    [
+        (ObservedState.PENDING, "provisioning"),
+        (ObservedState.PROVISIONING, "provisioning"),
+        (ObservedState.RUNNING, "running"),
+        (ObservedState.STOPPING, "stopping"),
+        (ObservedState.STOPPED, "stopped"),
+        (ObservedState.RETAINED, "retained"),
+        (ObservedState.DELETING, "deleting"),
+        (ObservedState.DELETED, "deleted"),
+        (ObservedState.NEEDS_ATTENTION, "error"),
+    ],
+)
+def test_observed_states_map_onto_core_states(tmp_path, observed, state):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    machine = insert_machine(store, cfg, "slot-1", 1, MACHINE_ID)
+    store.set_observed(machine, observed, "internal detail")
+    gateway = make_gateway(cfg, store)
+    gateway.request = routed([core_machine()])
+    gateway.report_observations()
+    body = gateway.request.call_args_list[-1].args[1]
+    assert body["state"] == state
+    if state == "error":
+        assert body["error"] == (
+            "The cloud machine needs repair. Contact your server administrator."
+        )
+        assert body["error_code"] == "machine_needs_attention"
+    else:
+        assert body["error"] is None
+        assert body["error_code"] is None
+    store.close()
+
+
+def test_retained_on_the_way_to_deletion_is_reported_as_deleting(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    machine = insert_machine(store, cfg, "slot-1", 1, MACHINE_ID)
+    store.set_observed(machine, ObservedState.RETAINED, None)
+    gateway = make_gateway(cfg, store)
+    gateway.request = routed([core_machine(desired_state="deleted")])
+    gateway.report_observations()
+    assert gateway.request.call_args_list[-1].args[1]["state"] == "deleting"
+    store.close()
+
+
+def test_core_desired_states_map_onto_the_row(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    gateway = make_gateway(cfg, store)
+    gateway.sync_machine(CoreMachine.parse(core_machine()))
+    assert store.get(MACHINE_ID).desired_state is DesiredState.RUNNING
+    gateway.sync_machine(CoreMachine.parse(core_machine(desired_state="stopped", revision=2)))
+    assert store.get(MACHINE_ID).desired_state is DesiredState.STOPPED
+    retain_until = "2026-01-08T00:00:00+00:00"
+    gateway.sync_machine(
+        CoreMachine.parse(
+            core_machine(desired_state="retained", revision=3, retain_until=retain_until)
+        )
+    )
+    retained = store.get(MACHINE_ID)
+    assert retained.desired_state is DesiredState.RETAINED
+    assert retained.retain_until == datetime(2026, 1, 8, tzinfo=UTC)
+    assert retained.core_revision == 3
+
+    deleted = CoreMachine.parse(
+        core_machine(desired_state="deleted", revision=4, retain_until=retain_until)
+    )
+    gateway.sync_machine(deleted)
+    assert store.get(MACHINE_ID).desired_state is DesiredState.RETAINED
+    store.set_observed(store.get(MACHINE_ID), ObservedState.RETAINED, None)
+    gateway.sync_machine(deleted)
+    machine = store.get(MACHINE_ID)
+    assert machine.desired_state is DesiredState.DELETED
+    assert machine.retain_until == datetime(2026, 1, 8, tzinfo=UTC)
+    gateway.sync_machine(CoreMachine.parse(core_machine(revision=5)))
+    assert store.get(MACHINE_ID).desired_state is DesiredState.DELETED
+    store.close()
+
+
+def test_deleting_a_running_machine_retains_it_first(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    insert_machine(store, cfg, "slot-1", 1, MACHINE_ID)
+    gateway = make_gateway(cfg, store)
+    gateway.sync_machine(CoreMachine.parse(core_machine(desired_state="deleted", revision=2)))
+    machine = store.get(MACHINE_ID)
+    assert machine.desired_state is DesiredState.RETAINED
+    assert machine.retain_until is None
+    store.close()
+
+
+def test_running_machine_in_error_is_stopped(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    gateway = make_gateway(cfg, store)
+    gateway.sync_machine(CoreMachine.parse(core_machine(state="error")))
+    assert store.list() == []
+    insert_machine(store, cfg, "slot-1", 1, MACHINE_ID)
+    gateway.sync_machine(CoreMachine.parse(core_machine(state="error", revision=2)))
+    assert store.get(MACHINE_ID).desired_state is DesiredState.STOPPED
+    store.close()
+
+
+def test_stale_core_revision_changes_nothing(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    gateway = make_gateway(cfg, store)
+    gateway.sync_machine(CoreMachine.parse(core_machine(desired_state="stopped", revision=3)))
+    gateway.sync_machine(CoreMachine.parse(core_machine(revision=2)))
+    machine = store.get(MACHINE_ID)
+    assert machine.desired_state is DesiredState.STOPPED
+    assert machine.core_revision == 3
+    store.close()
+
+
+def test_slot_reuse_waits_until_the_old_generation_is_deleted(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    gateway = make_gateway(cfg, store)
+    insert_machine(store, cfg, "slot-1", 1, MACHINE_ID)
+    at_rest(store, MACHINE_ID, DesiredState.STOPPED, ObservedState.STOPPED)
+    old = store.set_desired(MACHINE_ID, DesiredState.DELETED, None)
+    reuse = CoreMachine.parse(core_machine(machine_id=OTHER_MACHINE_ID, generation=2))
+    gateway.sync_machine(reuse)
+    assert [machine.generation for machine in store.list()] == [1]
+    store.set_observed(old, ObservedState.DELETED, None)
+    gateway.sync_machine(reuse)
+    reused = store.get(OTHER_MACHINE_ID)
+    assert (reused.slot_id, reused.generation) == ("slot-1", 2)
+    assert reused.assignment_secret_arn == cfg.slot("slot-1").assignment_secret_arn
+    store.close()
+
+
+def test_a_different_machine_at_a_stored_slot_generation_fails_loud(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    insert_machine(store, cfg, "slot-1", 1, MACHINE_ID)
+    gateway = make_gateway(cfg, store)
+    with pytest.raises(ConfigError, match="different machine"):
+        gateway.sync_machine(CoreMachine.parse(core_machine(machine_id=OTHER_MACHINE_ID)))
+    store.close()
+
+
+def test_unknown_slot_fails_loud(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    gateway = make_gateway(cfg, store)
+    with pytest.raises(ConfigError, match="not in machine_slots"):
+        gateway.sync_machine(CoreMachine.parse(core_machine(slot_id="slot-9")))
+    assert store.list() == []
+    store.close()
+
+
+def test_core_data_volume_is_adopted_and_then_cross_checked(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    gateway = make_gateway(cfg, store)
+    gateway.request = Mock(return_value=prepared_machine())
+    gateway.secrets.describe_secret.return_value = {"VersionIdsToStages": {}}
+    gateway.sync_machine(CoreMachine.parse(core_machine(data_volume_id=VOLUME_ID)))
+    machine = store.get(MACHINE_ID)
+    assert machine.data_volume_id == VOLUME_ID
+    assert machine.volume_az == cfg.availability_zone
+    other = CoreMachine.parse(core_machine(data_volume_id="vol-0fedcba9876543210"))
+    with pytest.raises(ConfigError, match="different data volume"):
+        gateway.sync_machine(other)
+    store.close()
+
+
+def test_capacity_counts_machines_before_inserting(tmp_path):
+    cfg = replace(config(tmp_path, max_machines=2), max_machines=1)
+    store = open_store(cfg)
+    gateway = make_gateway(cfg, store)
+    gateway.sync_machine(CoreMachine.parse(core_machine(desired_state="stopped")))
+    second = CoreMachine.parse(core_machine(machine_id=OTHER_MACHINE_ID, slot_id="slot-2"))
+    with pytest.raises(CapacityError):
+        gateway.sync_machine(second)
+    store.close()
+
+
+def test_instance_type_outside_the_allowed_list_is_rejected(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    with pytest.raises(ConfigError, match="instance type"):
+        make_gateway(cfg, store, instance_type="m6i.xlarge")
+    store.close()
+
+
+def test_a_live_slot_cannot_change_its_identity(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    insert_machine(store, cfg, "slot-1", 1, MACHINE_ID)
+    moved = replace(
+        cfg,
+        machine_slots={
+            "slot-1": replace(
+                cfg.slot("slot-1"),
+                assignment_secret_arn="arn:aws:secretsmanager:us-east-1:123456789012:secret:moved",
+            )
+        },
+    )
+    with pytest.raises(ConfigError, match="cannot change"):
+        make_gateway(moved, store)
+    delete_fully(store, MACHINE_ID)
+    make_gateway(moved, store)
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"machine_id": "not-a-uuid"},
+        {"generation": 0},
+        {"revision": True},
+        {"desired_state": "restart"},
+        {"retain_until": "2026-01-08T00:00:00"},
+        {"data_volume_id": "volume"},
+    ],
+)
+def test_invalid_core_machines_are_refused(overrides):
+    with pytest.raises((ConfigError, ValueError)):
+        CoreMachine.parse(core_machine(**overrides))
+
+
+def test_invalid_core_machine_does_not_block_the_others(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    gateway = make_gateway(cfg, store)
+    gateway.request = routed([core_machine(generation=0), core_machine(desired_state="stopped")])
+    gateway.sync_machines()
+    assert store.get(MACHINE_ID).desired_state is DesiredState.STOPPED
+    store.close()

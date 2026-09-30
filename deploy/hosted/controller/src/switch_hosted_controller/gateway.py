@@ -4,42 +4,41 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from time import monotonic
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
-from uuid import UUID, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from botocore.exceptions import ClientError
 
-from .config import ConfigError, ControllerConfig
-from .model import DesiredState, ObservedState
-from .store import AgentNotFoundError, AgentStore
+from .config import ConfigError, ControllerConfig, validate_slot_id
+from .model import DesiredState, Machine, ObservedState
+from .store import MachineStore, SlotInUseError
 
 logger = logging.getLogger(__name__)
 
-WORKER_CAPABILITY_PATH = "/run/switch-hosted/secrets/worker-capability"
-WORKER_CAPABILITY_RE = re.compile(r"^[\x21-\x7e]{16,4096}$")
+CAPABILITY_RE = re.compile(r"^[\x21-\x7e]{16,4096}$")
+CORE_DESIRED_STATES = {"running", "stopped", "retained", "deleted"}
+SETUP_FAILED_MESSAGE = (
+    "Cloud machine setup failed. Retry; if it still fails, contact your administrator."
+)
+NEEDS_ATTENTION_MESSAGE = "The cloud machine needs repair. Contact your server administrator."
+NEEDS_ATTENTION_CODE = "machine_needs_attention"
+COPIED_STATES = {
+    ObservedState.STOPPING,
+    ObservedState.STOPPED,
+    ObservedState.RETAINED,
+    ObservedState.DELETING,
+    ObservedState.DELETED,
+}
 
 
-def bundle_token(request_id: str, revision: int) -> str:
-    return str(uuid5(UUID(request_id), str(revision)))
-
-
-def worker_attach_fields(prepared: dict) -> tuple[dict[str, str], dict[str, str]]:
-    """The deployment and bundle fields a worker needs to attach to Switch.
-
-    The capability is the one Core's `prepare` issued for this launch revision;
-    the worker writes it to `WORKER_CAPABILITY_PATH` and sends it as
-    `X-Switch-Worker-Capability`. The boot and instance ids it sends beside it
-    are read on the machine itself, because a bundle outlives a boot.
-    """
-    capability = prepared.get("worker_capability")
-    if not isinstance(capability, str) or not WORKER_CAPABILITY_RE.fullmatch(capability):
-        raise ConfigError("Cloud gateway returned no valid worker capability.")
-    return {"workerCapabilityPath": WORKER_CAPABILITY_PATH}, {"workerCapability": capability}
+def bundle_token(machine_id: str, bundle_revision: int) -> str:
+    return str(uuid5(NAMESPACE_URL, f"{machine_id}:{bundle_revision}"))
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -52,6 +51,48 @@ class GatewayError(RuntimeError):
         self.status = status
         self.detail = detail
         super().__init__(f"Cloud gateway request failed with status {status}.")
+
+
+@dataclass(frozen=True)
+class CoreMachine:
+    machine_id: str
+    slot_id: str
+    generation: int
+    state: str
+    desired_state: str
+    revision: int
+    data_volume_id: str | None
+    retain_until: datetime | None
+
+    @classmethod
+    def parse(cls, raw: Any) -> CoreMachine:
+        if not isinstance(raw, dict):
+            raise ConfigError("Cloud gateway returned an invalid machine.")
+        generation = raw.get("generation")
+        revision = raw.get("revision")
+        if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+            raise ConfigError("Cloud gateway returned an invalid machine generation.")
+        if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+            raise ConfigError("Cloud gateway returned an invalid machine revision.")
+        if raw.get("desired_state") not in CORE_DESIRED_STATES:
+            raise ConfigError("Cloud gateway returned an invalid machine desired state.")
+        if not isinstance(raw.get("state"), str):
+            raise ConfigError("Cloud gateway returned an invalid machine state.")
+        volume_id = raw.get("data_volume_id")
+        if volume_id is not None and (
+            not isinstance(volume_id, str) or not re.fullmatch(r"vol-[0-9a-f]+", volume_id)
+        ):
+            raise ConfigError("Cloud gateway returned an invalid data volume id.")
+        return cls(
+            machine_id=str(UUID(raw["machine_id"])),
+            slot_id=validate_slot_id(raw["slot_id"]),
+            generation=generation,
+            state=raw["state"],
+            desired_state=raw["desired_state"],
+            revision=revision,
+            data_volume_id=volume_id,
+            retain_until=_parse_timestamp(raw.get("retain_until")),
+        )
 
 
 @dataclass(frozen=True)
@@ -92,7 +133,7 @@ class Gateway:
         self,
         settings: GatewayConfig,
         config: ControllerConfig,
-        store: AgentStore,
+        store: MachineStore,
         secrets_client: Any,
     ):
         if settings.instance_type not in config.allowed_instance_types:
@@ -102,15 +143,15 @@ class Gateway:
         self.store = store
         self.secrets = secrets_client
         self.prepare_failures: dict[str, float] = {}
-        for agent in store.list():
-            assignment = config.assignment(agent.agent_id)
+        for machine in store.list():
+            if machine.observed_state is ObservedState.DELETED:
+                continue
+            slot = config.slot(machine.slot_id)
             if (
-                assignment.assignment_secret_arn != agent.assignment_secret_arn
-                or assignment.instance_profile_arn != agent.instance_profile_arn
+                slot.assignment_secret_arn != machine.assignment_secret_arn
+                or slot.instance_profile_arn != machine.instance_profile_arn
             ):
-                raise ConfigError(
-                    "An existing worker assignment cannot change its secret or IAM identity."
-                )
+                raise ConfigError("A machine slot in use cannot change its secret or IAM identity.")
 
     def request(
         self, path: str, body: dict | None = None, *, prefix: str = "/gateway/hosted-controller"
@@ -140,120 +181,181 @@ class Gateway:
         except (URLError, TimeoutError):
             raise GatewayError(503) from None
 
-    def accept_launches(self) -> None:
-        jobs = self.request("")
-        active_ids = {job["request_id"] for job in jobs}
+    def machines(self) -> list[dict]:
+        response = self.request("/machines")
+        if not isinstance(response, dict) or not isinstance(response.get("machines"), list):
+            raise ConfigError("Cloud gateway returned an invalid machine list.")
+        return response["machines"]
+
+    def sync_machines(self) -> None:
+        listed = self.machines()
+        active_ids = {item.get("machine_id") for item in listed if isinstance(item, dict)}
         self.prepare_failures = {
             key: started for key, started in self.prepare_failures.items() if key in active_ids
         }
-        for job in jobs:
+        for item in listed:
             try:
-                self.accept_launch(job)
-                self.prepare_failures.pop(job["request_id"], None)
+                core = CoreMachine.parse(item)
             except Exception as error:
-                logger.error(
-                    "Cloud launch preparation failed for %s: %s",
-                    job.get("request_id"),
-                    type(error).__name__,
-                )
-                if job["desired_state"] != "running":
-                    continue
-                terminal = isinstance(error, ConfigError) or (
-                    isinstance(error, GatewayError) and error.status == 422
-                )
-                first_failure = self.prepare_failures.setdefault(job["request_id"], monotonic())
-                if not terminal and monotonic() - first_failure < 300:
-                    continue
-                try:
-                    self.store.set_desired(job["agent_id"], DesiredState.STOPPED)
-                except Exception as stop_error:
-                    logger.error(
-                        "Could not stop failed launch %s: %s",
-                        job.get("request_id"),
-                        type(stop_error).__name__,
-                    )
-                try:
-                    self.request(
-                        f"/{UUID(job['request_id'])}/observation",
-                        {
-                            "state": "error",
-                            "revision": job["revision"],
-                            "error": error.detail
-                            if isinstance(error, GatewayError)
-                            and error.status == 422
-                            and error.detail
-                            else "Cloud agent setup failed. Check the agent name, provider connection and repository write access, then retry. If it still fails, contact your administrator.",
-                        },
-                    )
-                except Exception as report_error:
-                    logger.error(
-                        "Could not report failed launch %s: %s",
-                        job.get("request_id"),
-                        type(report_error).__name__,
-                    )
+                logger.error("Ignoring an invalid cloud machine: %s", type(error).__name__)
+                continue
+            try:
+                self.sync_machine(core)
+                self.prepare_failures.pop(core.machine_id, None)
+            except Exception as error:
+                self._record_failure(core, error)
 
-    def accept_launch(self, job: dict) -> None:
-        request_id = str(UUID(job["request_id"]))
-        agent_id = job["agent_id"]
-        assignment = self.config.assignment(agent_id)
+    def _record_failure(self, core: CoreMachine, error: Exception) -> None:
+        logger.error(
+            "Cloud machine preparation failed for %s: %s", core.machine_id, type(error).__name__
+        )
+        if core.desired_state != "running":
+            return
+        if isinstance(error, GatewayError) and error.status == 409:
+            return
+        terminal = isinstance(error, ConfigError) or (
+            isinstance(error, GatewayError) and error.status == 422
+        )
+        first_failure = self.prepare_failures.setdefault(core.machine_id, monotonic())
+        if not terminal and monotonic() - first_failure < 300:
+            return
+        machine = self._row(core)
+        if machine is not None:
+            try:
+                self.store.set_desired(machine.machine_id, DesiredState.STOPPED, core.retain_until)
+            except Exception as stop_error:
+                logger.error(
+                    "Could not stop failed machine %s: %s",
+                    core.machine_id,
+                    type(stop_error).__name__,
+                )
+        message = (
+            error.detail
+            if isinstance(error, GatewayError) and error.status == 422 and error.detail
+            else SETUP_FAILED_MESSAGE
+        )
         try:
-            agent = self.store.get(agent_id)
-        except AgentNotFoundError:
-            if job["state"] == "error":
+            self.request(
+                f"/machines/{core.machine_id}/observation",
+                self.observation(machine, "error", core.revision, message, None),
+            )
+        except Exception as report_error:
+            logger.error(
+                "Could not report failed machine %s: %s",
+                core.machine_id,
+                type(report_error).__name__,
+            )
+
+    def _row(self, core: CoreMachine) -> Machine | None:
+        machine = self.store.find(core.slot_id, core.generation)
+        if machine is None or machine.machine_id != core.machine_id:
+            return None
+        return machine
+
+    def sync_machine(self, core: CoreMachine) -> None:
+        slot = self.config.slot(core.slot_id)
+        machine = self.store.find(core.slot_id, core.generation)
+        if machine is not None and machine.machine_id != core.machine_id:
+            raise ConfigError(
+                "Cloud gateway returned a different machine for a stored slot generation."
+            )
+        if machine is None:
+            if core.state == "error" and core.desired_state in {"running", "stopped"}:
                 return
-            agent = self.store.reserve_create(
-                agent_id=agent_id,
-                instance_type=self.settings.instance_type,
-                image_id=self.config.image_id,
-                assignment_secret_arn=assignment.assignment_secret_arn,
-                instance_profile_arn=assignment.instance_profile_arn,
-                max_agents=self.config.max_agents,
-            )
-        desired = job["desired_state"]
-        if desired in {"stopped", "restart", "deleted"}:
-            if (
-                desired == "deleted"
-                and agent.desired_state == DesiredState.STOPPED
-                and agent.observed_state == ObservedState.STOPPED
-            ):
-                self.store.set_desired(agent_id, DesiredState.DELETED)
-            elif agent.desired_state != DesiredState.DELETED:
-                self.store.set_desired(agent_id, DesiredState.STOPPED)
-            return
-        if job["state"] == "error":
-            self.store.set_desired(agent_id, DesiredState.STOPPED)
-            return
-        revision = job["revision"]
-        token = bundle_token(request_id, revision)
-        agent = self.store.require_bundle(agent_id, revision, token)
-        if agent.required_bundle_token != token:
+            try:
+                machine = self.store.insert(
+                    machine_id=core.machine_id,
+                    slot_id=core.slot_id,
+                    generation=core.generation,
+                    core_revision=core.revision,
+                    instance_type=self.settings.instance_type,
+                    image_id=self.config.image_id,
+                    assignment_secret_arn=slot.assignment_secret_arn,
+                    instance_profile_arn=slot.instance_profile_arn,
+                    max_machines=self.config.max_machines,
+                )
+            except SlotInUseError as error:
+                logger.warning("Waiting for machine %s: %s", core.machine_id, error)
+                return
+        machine = self.store.record_core_revision(machine.machine_id, core.revision)
+        if machine.core_revision > core.revision:
             logger.warning(
-                "Ignoring launch %s at revision %s: revision %s is already required.",
-                request_id,
-                revision,
-                agent.required_bundle_revision,
+                "Ignoring machine %s at revision %s: revision %s is already recorded.",
+                core.machine_id,
+                core.revision,
+                machine.core_revision,
             )
             return
-        if agent.desired_state == DesiredState.STOPPED:
-            agent = self.store.set_desired(agent_id, DesiredState.RUNNING)
-        if agent.volume_id is None or agent.bundle_token == token:
+        if core.data_volume_id is not None:
+            if machine.data_volume_id is None:
+                machine = self.store.record_volume(
+                    machine.machine_id, core.data_volume_id, self.config.availability_zone
+                )
+            elif machine.data_volume_id != core.data_volume_id:
+                raise ConfigError(
+                    "Cloud gateway reports a different data volume than the controller recorded."
+                )
+
+        if core.desired_state == "deleted":
+            if machine.desired_state is DesiredState.DELETED or _at_rest(machine):
+                self.store.set_desired(machine.machine_id, DesiredState.DELETED, core.retain_until)
+            elif machine.desired_state is not DesiredState.RETAINED:
+                self.store.set_desired(machine.machine_id, DesiredState.RETAINED, core.retain_until)
             return
-        secret_id = assignment.assignment_secret_arn
+        if machine.desired_state is DesiredState.DELETED:
+            logger.warning(
+                "Ignoring desired %s for machine %s: it is already being deleted.",
+                core.desired_state,
+                core.machine_id,
+            )
+            return
+        if core.desired_state in {"stopped", "retained"}:
+            self.store.set_desired(
+                machine.machine_id, DesiredState(core.desired_state), core.retain_until
+            )
+            return
+        if core.state == "error":
+            self.store.set_desired(machine.machine_id, DesiredState.STOPPED, core.retain_until)
+            return
+
+        token = bundle_token(core.machine_id, core.revision)
+        machine = self.store.require_bundle(machine.machine_id, core.revision, token)
+        if machine.required_bundle_token != token:
+            logger.warning(
+                "Ignoring machine %s at revision %s: revision %s is already required.",
+                core.machine_id,
+                core.revision,
+                machine.required_bundle_revision,
+            )
+            return
+        machine = self.store.set_desired(
+            machine.machine_id, DesiredState.RUNNING, core.retain_until
+        )
+        if machine.data_volume_id is None or machine.bundle_token == token:
+            return
+        secret_id = machine.assignment_secret_arn
         if self.promote_bundle(secret_id, token):
-            self.store.record_bundle(agent_id, token)
+            self.store.record_bundle(machine.machine_id, token)
             return
-        prepared = self.request(f"/{request_id}/prepare", {})
-        if prepared["agent_id"] != agent_id:
-            raise ConfigError("Cloud gateway returned a different worker identity.")
-        if prepared["revision"] != revision:
+        prepared = self.request(f"/machines/{core.machine_id}/prepare", {})
+        if (
+            not isinstance(prepared, dict)
+            or str(UUID(prepared["machine_id"])) != core.machine_id
+            or prepared["slot_id"] != core.slot_id
+            or prepared["generation"] != core.generation
+        ):
+            raise ConfigError("Cloud gateway prepared a different machine.")
+        if prepared["revision"] != machine.core_revision:
             logger.warning(
-                "Launch %s moved from revision %s to %s during preparation; waiting for the next poll.",
-                request_id,
-                revision,
+                "Machine %s moved from revision %s to %s during preparation; waiting for the next poll.",
+                core.machine_id,
+                machine.core_revision,
                 prepared["revision"],
             )
             return
-        bundle = self.bundle(prepared, agent.volume_id)
+        if prepared["bundle_revision"] != machine.core_revision:
+            raise ConfigError("Cloud gateway prepared a bundle for a different revision.")
+        bundle = self.bundle(prepared, machine)
         try:
             self.secrets.put_secret_value(
                 SecretId=secret_id,
@@ -265,7 +367,7 @@ class Gateway:
                 raise
             if not self.promote_bundle(secret_id, token):
                 raise
-        self.store.record_bundle(agent_id, token)
+        self.store.record_bundle(machine.machine_id, token)
 
     def promote_bundle(self, secret_id: str, token: str) -> bool:
         """Make the bundle version `token` AWSCURRENT if it exists; False if it does not."""
@@ -285,107 +387,104 @@ class Gateway:
         return True
 
     def report_observations(self) -> None:
-        for job in self.request(""):
-            if job["state"] == "error" and job["desired_state"] != "deleted":
-                continue
+        for item in self.machines():
             try:
-                agent = self.store.get(job["agent_id"])
-            except AgentNotFoundError:
+                core = CoreMachine.parse(item)
+            except Exception as error:
+                logger.error("Ignoring an invalid cloud machine: %s", type(error).__name__)
+                continue
+            if core.state == "error" and core.desired_state in {"running", "stopped"}:
+                continue
+            machine = self._row(core)
+            if machine is None:
                 continue
             state = "provisioning"
-            if agent.observed_state == ObservedState.RUNNING:
+            if machine.observed_state is ObservedState.RUNNING:
                 state = "running"
-            elif agent.observed_state == ObservedState.NEEDS_ATTENTION:
+            elif machine.observed_state is ObservedState.NEEDS_ATTENTION:
                 state = "error"
-            elif agent.observed_state in {
-                ObservedState.STOPPING,
-                ObservedState.STOPPED,
-                ObservedState.DELETING,
-                ObservedState.DELETED,
-            }:
-                state = agent.observed_state.value
+            elif (
+                machine.observed_state is ObservedState.RETAINED and core.desired_state == "deleted"
+            ):
+                state = "deleting"
+            elif machine.observed_state in COPIED_STATES:
+                state = machine.observed_state.value
             if state == "error":
-                logger.error(
-                    "Cloud worker %s needs repair: %s", job["request_id"], agent.last_error
-                )
+                logger.error("Cloud machine %s needs repair: %s", core.machine_id, machine.error)
             try:
                 self.request(
-                    f"/{UUID(job['request_id'])}/observation",
-                    {
-                        "state": state,
-                        "revision": job["revision"],
-                        "error": "The cloud worker needs repair. Contact your server administrator."
-                        if state == "error"
-                        else None,
-                        "error_code": "worker_needs_attention" if state == "error" else None,
-                    },
+                    f"/machines/{core.machine_id}/observation",
+                    self.observation(
+                        machine,
+                        state,
+                        machine.core_revision,
+                        NEEDS_ATTENTION_MESSAGE if state == "error" else None,
+                        NEEDS_ATTENTION_CODE if state == "error" else None,
+                    ),
                 )
             except Exception as error:
                 logger.error(
-                    "Could not report launch %s: %s", job["request_id"], type(error).__name__
+                    "Could not report machine %s: %s", core.machine_id, type(error).__name__
                 )
 
-    def bundle(self, prepared: dict, volume_id: str) -> dict:
-        attach_deployment, attach_bundle = worker_attach_fields(prepared)
-        spec = prepared["spec"]
-        provider = spec.get("provider", "claude")
-        binary = {
-            "claude": "/opt/switch/claude/bin/claude",
-            "codex": "/opt/switch/providers/codex",
-            "cursor": "/opt/switch/providers/cursor",
-            "opencode": "/opt/switch/providers/opencode",
-            "antigravity": "/opt/switch/providers/antigravity-acp",
-        }[provider]
-        deployment = {
-            "version": 1,
-            "revision": prepared["revision"],
-            "session": {
-                "sessionId": "watcher-" + prepared["agent_id"],
-                "agentId": prepared["agent_id"],
-            },
-            "provider": {
-                "kind": provider,
-                "credential": {
-                    "kind": prepared["provider_kind"],
-                    "path": "/run/switch-hosted/secrets/provider",
-                    "refresh": True,
-                },
-                "binaryPath": binary,
-                "context": "Use the Switch tools to read room context and post replies to the room.\n"
-                + spec["instructions"],
-                **(
-                    {"definition": {"name": spec["name"], "content": spec["definition"]}}
-                    if provider == "claude"
-                    else {}
-                ),
-            },
-            "github": {
-                "credentialPath": "/run/switch-hosted/secrets/github",
-                "repository": prepared["repository"],
-                "refresh": True,
-            },
-            "workspacePath": "/data/workspace",
-            "watch": spec["auto_session"],
-            "runtimeMode": "full-access" if spec["auto_approve"] else "approval-required",
-            "switchCredentialsPath": "/run/switch-hosted/secrets/switch.json",
-            **attach_deployment,
-        }
-        model = spec["definition_attributes"].get("model")
-        if model:
-            deployment["provider"]["model"] = {"id": model}
-        # A Core that predates connection skills does not send the key.
-        if prepared.get("skills"):
-            deployment["skills"] = prepared["skills"]
+    def observation(
+        self,
+        machine: Machine | None,
+        state: str,
+        revision: int,
+        error: str | None,
+        error_code: str | None,
+    ) -> dict:
         return {
-            "version": 1,
+            "state": state,
+            "revision": revision,
+            "error": error,
+            "error_code": error_code,
+            "data_volume_id": machine.data_volume_id if machine else None,
+            "instance_id": machine.instance_id if machine else None,
+            "instance_type": machine.instance_type if machine else None,
+        }
+
+    def bundle(self, prepared: dict, machine: Machine) -> dict:
+        capability = prepared.get("machine_capability")
+        if not isinstance(capability, str) or not CAPABILITY_RE.fullmatch(capability):
+            raise ConfigError("Cloud gateway returned no valid machine capability.")
+        endpoint = prepared.get("api_endpoint")
+        url = urlsplit(endpoint) if isinstance(endpoint, str) else None
+        if url is None or url.scheme != "https" or not url.hostname:
+            raise ConfigError("Cloud gateway returned no valid API endpoint.")
+        return {
+            "version": 2,
+            "machineId": machine.machine_id,
             "assignment": {
                 "installationId": self.config.installation_id,
-                "agentId": prepared["agent_id"],
-                "generation": 1,
-                "dataVolumeId": volume_id,
+                "slotId": machine.slot_id,
+                "generation": machine.generation,
+                "dataVolumeId": machine.data_volume_id,
             },
-            "deployment": deployment,
-            "switchCredentials": prepared["switch_credentials"],
-            "githubCredential": prepared["github_credential"],
-            **attach_bundle,
+            "machineCapability": capability,
+            "apiEndpoint": endpoint,
         }
+
+
+def _at_rest(machine: Machine) -> bool:
+    return (
+        machine.desired_state in {DesiredState.STOPPED, DesiredState.RETAINED}
+        and machine.observed_state.value == machine.desired_state.value
+        and machine.observed_revision == machine.desired_revision
+        and machine.observed_operation_id == machine.operation_id
+    )
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ConfigError("Cloud gateway returned an invalid retain_until.")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        raise ConfigError("Cloud gateway returned an invalid retain_until.") from None
+    if parsed.tzinfo is None:
+        raise ConfigError("Cloud gateway returned a retain_until without a time zone.")
+    return parsed

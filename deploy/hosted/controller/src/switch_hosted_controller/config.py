@@ -17,7 +17,7 @@ class ConfigError(ValueError):
 
 
 @dataclass(frozen=True)
-class WorkerAssignment:
+class MachineSlot:
     instance_profile_arn: str
     assignment_secret_arn: str
 
@@ -32,10 +32,10 @@ class ControllerConfig:
     image_id: str
     root_device_name: str
     allowed_instance_types: frozenset[str]
-    max_agents: int
+    max_machines: int
     root_volume_gib: int
     data_volume_gib: int
-    worker_assignments: dict[str, WorkerAssignment]
+    machine_slots: dict[str, MachineSlot]
     state_db_path: Path
     lock_path: Path
     poll_interval_seconds: float
@@ -61,10 +61,10 @@ class ControllerConfig:
             "image_id",
             "root_device_name",
             "allowed_instance_types",
-            "max_agents",
+            "max_machines",
             "root_volume_gib",
             "data_volume_gib",
-            "worker_assignments",
+            "machine_slots",
             "state_db_path",
             "lock_path",
             "poll_interval_seconds",
@@ -107,7 +107,7 @@ class ControllerConfig:
             for value in allowed_raw
         )
 
-        max_agents = _bounded_int(raw, "max_agents", 1, 100)
+        max_machines = _bounded_int(raw, "max_machines", 1, 100)
         root_volume_gib = _bounded_int(raw, "root_volume_gib", 8, 1024)
         data_volume_gib = _bounded_int(raw, "data_volume_gib", 8, 16384)
         poll_interval = raw["poll_interval_seconds"]
@@ -116,40 +116,38 @@ class ControllerConfig:
         if not 0.2 <= float(poll_interval) <= 300:
             raise ConfigError("poll_interval_seconds must be between 0.2 and 300")
 
-        assignments_raw = raw["worker_assignments"]
-        if not isinstance(assignments_raw, dict) or not assignments_raw:
-            raise ConfigError("worker_assignments must be a non-empty object")
-        assignments: dict[str, WorkerAssignment] = {}
-        for agent_id, assignment_raw in assignments_raw.items():
-            _validated_value(agent_id, "worker_assignments key", _ID)
-            if not isinstance(assignment_raw, dict) or set(assignment_raw) != {
+        slots_raw = raw["machine_slots"]
+        if not isinstance(slots_raw, dict) or not slots_raw:
+            raise ConfigError("machine_slots must be a non-empty object")
+        slots: dict[str, MachineSlot] = {}
+        for slot_id, slot_raw in slots_raw.items():
+            _validated_value(slot_id, "machine_slots key", _ID)
+            if not isinstance(slot_raw, dict) or set(slot_raw) != {
                 "instance_profile_arn",
                 "assignment_secret_arn",
             }:
                 raise ConfigError(
-                    f"worker assignment {agent_id!r} must contain only instance_profile_arn and assignment_secret_arn"
+                    f"machine slot {slot_id!r} must contain only instance_profile_arn and assignment_secret_arn"
                 )
             profile = _validated_value(
-                assignment_raw["instance_profile_arn"], "instance_profile_arn", _ARN
+                slot_raw["instance_profile_arn"], "instance_profile_arn", _ARN
             )
             secret = _validated_value(
-                assignment_raw["assignment_secret_arn"], "assignment_secret_arn", _ARN
+                slot_raw["assignment_secret_arn"], "assignment_secret_arn", _ARN
             )
             if ":iam::" not in profile or ":instance-profile/" not in profile:
-                raise ConfigError(
-                    f"worker assignment {agent_id!r} has an invalid instance profile ARN"
-                )
+                raise ConfigError(f"machine slot {slot_id!r} has an invalid instance profile ARN")
             if ":secretsmanager:" not in secret or ":secret:" not in secret:
-                raise ConfigError(f"worker assignment {agent_id!r} has an invalid secret ARN")
-            assignments[agent_id] = WorkerAssignment(profile, secret)
-        if len(assignments) < max_agents:
-            raise ConfigError("max_agents exceeds configured worker assignments")
-        profiles = [assignment.instance_profile_arn for assignment in assignments.values()]
-        secrets = [assignment.assignment_secret_arn for assignment in assignments.values()]
+                raise ConfigError(f"machine slot {slot_id!r} has an invalid secret ARN")
+            slots[slot_id] = MachineSlot(profile, secret)
+        if len(slots) < max_machines:
+            raise ConfigError("max_machines exceeds configured machine slots")
+        profiles = [slot.instance_profile_arn for slot in slots.values()]
+        secrets = [slot.assignment_secret_arn for slot in slots.values()]
         if len(set(profiles)) != len(profiles):
-            raise ConfigError("worker assignment instance profiles must be unique")
+            raise ConfigError("machine slot instance profiles must be unique")
         if len(set(secrets)) != len(secrets):
-            raise ConfigError("worker assignment secrets must be unique")
+            raise ConfigError("machine slot secrets must be unique")
 
         state_db_path = _absolute_path(raw, "state_db_path")
         lock_path = _absolute_path(raw, "lock_path")
@@ -165,51 +163,39 @@ class ControllerConfig:
             image_id=image_id,
             root_device_name=root_device_name,
             allowed_instance_types=allowed_instance_types,
-            max_agents=max_agents,
+            max_machines=max_machines,
             root_volume_gib=root_volume_gib,
             data_volume_gib=data_volume_gib,
-            worker_assignments=assignments,
+            machine_slots=slots,
             state_db_path=state_db_path,
             lock_path=lock_path,
             poll_interval_seconds=float(poll_interval),
         )
 
-    def fingerprint(self, *, legacy: bool = False) -> str:
+    def fingerprint(self) -> str:
         immutable = {
             "installation_id": self.installation_id,
             "region": self.region,
             "availability_zone": self.availability_zone,
             "subnet_id": self.subnet_id,
             "security_group_ids": sorted(self.security_group_ids),
-            "image_id": self.image_id,
             "root_device_name": self.root_device_name,
             "allowed_instance_types": sorted(self.allowed_instance_types),
-            "max_agents": self.max_agents,
             "root_volume_gib": self.root_volume_gib,
             "data_volume_gib": self.data_volume_gib,
-            "worker_assignments": {
-                agent_id: {
-                    "instance_profile_arn": assignment.instance_profile_arn,
-                    "assignment_secret_arn": assignment.assignment_secret_arn,
-                }
-                for agent_id, assignment in sorted(self.worker_assignments.items())
-            },
         }
-        if not legacy:
-            for key in ("image_id", "max_agents", "worker_assignments"):
-                del immutable[key]
         payload = json.dumps(immutable, separators=(",", ":"), sort_keys=True)
         return hashlib.sha256(payload.encode()).hexdigest()
 
-    def assignment(self, agent_id: str) -> WorkerAssignment:
+    def slot(self, slot_id: str) -> MachineSlot:
         try:
-            return self.worker_assignments[agent_id]
+            return self.machine_slots[slot_id]
         except KeyError as exc:
-            raise ConfigError(f"agent {agent_id!r} is not in worker_assignments") from exc
+            raise ConfigError(f"slot {slot_id!r} is not in machine_slots") from exc
 
 
-def validate_agent_id(agent_id: str) -> str:
-    return _validated_value(agent_id, "agent_id", _ID)
+def validate_slot_id(slot_id: str) -> str:
+    return _validated_value(slot_id, "slot_id", _ID)
 
 
 def _validated_string(raw: dict[str, Any], key: str, pattern: re.Pattern[str]) -> str:

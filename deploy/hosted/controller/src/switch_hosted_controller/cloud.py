@@ -8,7 +8,7 @@ from typing import Any
 from botocore.exceptions import ClientError
 
 from .config import ControllerConfig
-from .model import Agent
+from .model import Machine
 
 MANAGED_BY = "switch-hosted-controller"
 DATA_DEVICE = "/dev/sdf"
@@ -31,8 +31,8 @@ class Ec2Cloud:
     def availability_zone(self) -> str:
         return self._config.availability_zone
 
-    def validate_image(self, agent: Agent) -> None:
-        images = self._ec2.describe_images(ImageIds=[agent.image_id]).get("Images", [])
+    def validate_image(self, machine: Machine) -> None:
+        images = self._ec2.describe_images(ImageIds=[machine.image_id]).get("Images", [])
         if len(images) != 1:
             raise CloudResourceError("configured AMI lookup did not return exactly one image")
         image = images[0]
@@ -50,30 +50,32 @@ class Ec2Cloud:
         if not mappings[0].get("Ebs") or mappings[0].get("NoDevice"):
             raise CloudResourceError("configured AMI root mapping is not an EBS device")
 
-    def discover_volume(self, agent: Agent) -> dict[str, Any] | None:
-        volumes = self._describe_volumes(Filters=self._resource_filters(agent.agent_id, "data"))
+    def discover_volume(self, machine: Machine) -> dict[str, Any] | None:
+        volumes = self._describe_volumes(Filters=self._resource_filters(machine, "data"))
         if len(volumes) > 1:
-            raise CloudResourceError("multiple controller-owned data volumes exist for agent")
+            raise CloudResourceError(
+                "multiple controller-owned data volumes exist for machine slot"
+            )
         if not volumes:
             return None
-        self._validate_volume(volumes[0], agent)
+        self._validate_volume(volumes[0], machine)
         return volumes[0]
 
-    def get_volume(self, agent: Agent) -> dict[str, Any] | None:
-        if agent.volume_id is None:
-            return self.discover_volume(agent)
+    def get_volume(self, machine: Machine) -> dict[str, Any] | None:
+        if machine.data_volume_id is None:
+            return self.discover_volume(machine)
         try:
-            volumes = self._describe_volumes(VolumeIds=[agent.volume_id])
+            volumes = self._describe_volumes(VolumeIds=[machine.data_volume_id])
         except ClientError as exc:
             if _error_code(exc) == "InvalidVolume.NotFound":
                 return None
             raise
         if len(volumes) != 1:
             raise CloudResourceError("recorded volume lookup did not return exactly one volume")
-        self._validate_volume(volumes[0], agent)
+        self._validate_volume(volumes[0], machine)
         return volumes[0]
 
-    def create_volume(self, agent: Agent) -> str:
+    def create_volume(self, machine: Machine) -> str:
         response = self._ec2.create_volume(
             AvailabilityZone=self._config.availability_zone,
             Encrypted=True,
@@ -82,28 +84,26 @@ class Ec2Cloud:
             Iops=3000,
             Throughput=125,
             Size=self._config.data_volume_gib,
-            ClientToken=self._token(agent, "data-volume"),
-            TagSpecifications=[{"ResourceType": "volume", "Tags": self._tags(agent, "data")}],
+            ClientToken=self._token(machine, "data-volume"),
+            TagSpecifications=[{"ResourceType": "volume", "Tags": self._tags(machine, "data")}],
         )
         return response["VolumeId"]
 
-    def discover_instance(self, agent: Agent) -> dict[str, Any] | None:
-        instances = self._describe_instances(
-            Filters=self._resource_filters(agent.agent_id, "worker")
-        )
+    def discover_instance(self, machine: Machine) -> dict[str, Any] | None:
+        instances = self._describe_instances(Filters=self._resource_filters(machine, "worker"))
         active = [instance for instance in instances if instance["State"]["Name"] != "terminated"]
         if len(active) > 1:
-            raise CloudResourceError("multiple controller-owned instances exist for agent")
+            raise CloudResourceError("multiple controller-owned instances exist for machine slot")
         if not active:
             return None
-        self._validate_instance(active[0], agent)
+        self._validate_instance(active[0], machine)
         return active[0]
 
-    def get_instance(self, agent: Agent) -> dict[str, Any] | None:
-        if agent.instance_id is None:
-            return self.discover_instance(agent)
+    def get_instance(self, machine: Machine) -> dict[str, Any] | None:
+        if machine.instance_id is None:
+            return self.discover_instance(machine)
         try:
-            instances = self._describe_instances(InstanceIds=[agent.instance_id])
+            instances = self._describe_instances(InstanceIds=[machine.instance_id])
         except ClientError as exc:
             if _error_code(exc) == "InvalidInstanceID.NotFound":
                 return None
@@ -112,7 +112,7 @@ class Ec2Cloud:
             return None
         if len(instances) != 1:
             raise CloudResourceError("recorded instance lookup did not return exactly one instance")
-        self._validate_instance(instances[0], agent)
+        self._validate_instance(instances[0], machine)
         return instances[0]
 
     def validate_capacity(self) -> None:
@@ -126,19 +126,19 @@ class Ec2Cloud:
                 },
             ]
         )
-        if len(active) >= self._config.max_agents:
+        if len(active) >= self._config.max_machines:
             raise CloudCapacityError("cloud instance capacity is exhausted")
 
-    def run_instance(self, agent: Agent) -> str:
-        if agent.volume_id is None:
+    def run_instance(self, machine: Machine) -> str:
+        if machine.data_volume_id is None:
             raise CloudResourceError("cannot launch without a recorded data volume")
         response = self._ec2.run_instances(
-            ImageId=agent.image_id,
-            InstanceType=agent.instance_type,
+            ImageId=machine.image_id,
+            InstanceType=machine.instance_type,
             MinCount=1,
             MaxCount=1,
-            ClientToken=self._token(agent, f"instance-{agent.recovery_count}"),
-            IamInstanceProfile={"Arn": agent.instance_profile_arn},
+            ClientToken=self._token(machine, f"instance-{machine.instance_seq}"),
+            IamInstanceProfile={"Arn": machine.instance_profile_arn},
             Placement={"AvailabilityZone": self._config.availability_zone},
             NetworkInterfaces=[
                 {
@@ -170,60 +170,60 @@ class Ec2Cloud:
                 }
             ],
             TagSpecifications=[
-                {"ResourceType": "instance", "Tags": self._tags(agent, "worker")},
-                {"ResourceType": "volume", "Tags": self._tags(agent, "root")},
-                {"ResourceType": "network-interface", "Tags": self._tags(agent, "network")},
+                {"ResourceType": "instance", "Tags": self._tags(machine, "worker")},
+                {"ResourceType": "volume", "Tags": self._tags(machine, "root")},
+                {"ResourceType": "network-interface", "Tags": self._tags(machine, "network")},
             ],
-            UserData=self._user_data(agent),
+            UserData=self._user_data(machine),
         )
         instances = response.get("Instances", [])
         if len(instances) != 1:
             raise CloudResourceError("RunInstances did not return exactly one instance")
         return instances[0]["InstanceId"]
 
-    def attach_volume(self, agent: Agent) -> None:
-        if agent.instance_id is None or agent.volume_id is None:
+    def attach_volume(self, machine: Machine) -> None:
+        if machine.instance_id is None or machine.data_volume_id is None:
             raise CloudResourceError("cannot attach without recorded instance and volume")
         self._ec2.attach_volume(
-            Device=DATA_DEVICE, InstanceId=agent.instance_id, VolumeId=agent.volume_id
+            Device=DATA_DEVICE, InstanceId=machine.instance_id, VolumeId=machine.data_volume_id
         )
 
-    def enforce_data_retention(self, agent: Agent) -> None:
-        if agent.instance_id is None or agent.volume_id is None:
+    def enforce_data_retention(self, machine: Machine) -> None:
+        if machine.instance_id is None or machine.data_volume_id is None:
             raise CloudResourceError("cannot set retention without recorded instance and volume")
         self._ec2.modify_instance_attribute(
-            InstanceId=agent.instance_id,
+            InstanceId=machine.instance_id,
             Attribute="blockDeviceMapping",
             BlockDeviceMappings=[
                 {
                     "DeviceName": DATA_DEVICE,
-                    "Ebs": {"DeleteOnTermination": False, "VolumeId": agent.volume_id},
+                    "Ebs": {"DeleteOnTermination": False, "VolumeId": machine.data_volume_id},
                 }
             ],
         )
 
-    def start_instance(self, agent: Agent) -> None:
-        if agent.instance_id is None:
+    def start_instance(self, machine: Machine) -> None:
+        if machine.instance_id is None:
             raise CloudResourceError("cannot start without a recorded instance")
-        self._ec2.start_instances(InstanceIds=[agent.instance_id])
+        self._ec2.start_instances(InstanceIds=[machine.instance_id])
 
-    def stop_instance(self, agent: Agent) -> None:
-        if agent.instance_id is None:
+    def stop_instance(self, machine: Machine) -> None:
+        if machine.instance_id is None:
             raise CloudResourceError("cannot stop without a recorded instance")
-        self._ec2.stop_instances(InstanceIds=[agent.instance_id], Force=False)
+        self._ec2.stop_instances(InstanceIds=[machine.instance_id], Force=False)
 
-    def terminate_instance(self, agent: Agent) -> None:
-        if agent.instance_id is None:
+    def terminate_instance(self, machine: Machine) -> None:
+        if machine.instance_id is None:
             raise CloudResourceError("cannot terminate without a recorded instance")
-        self._ec2.terminate_instances(InstanceIds=[agent.instance_id])
+        self._ec2.terminate_instances(InstanceIds=[machine.instance_id])
 
-    def delete_volume(self, agent: Agent) -> None:
-        if agent.volume_id is None:
+    def delete_volume(self, machine: Machine) -> None:
+        if machine.data_volume_id is None:
             raise CloudResourceError("cannot delete without a recorded volume")
-        self._ec2.delete_volume(VolumeId=agent.volume_id)
+        self._ec2.delete_volume(VolumeId=machine.data_volume_id)
 
-    def _validate_volume(self, volume: dict[str, Any], agent: Agent) -> None:
-        self._validate_tags(volume, agent, "data")
+    def _validate_volume(self, volume: dict[str, Any], machine: Machine) -> None:
+        self._validate_tags(volume, machine, "data")
         if volume.get("AvailabilityZone") != self._config.availability_zone:
             raise CloudResourceError("data volume is in the wrong availability zone")
         if volume.get("Encrypted") is not True:
@@ -237,16 +237,16 @@ class Ec2Cloud:
         if not volume.get("KmsKeyId"):
             raise CloudResourceError("data volume has no KMS key identity")
 
-    def _validate_instance(self, instance: dict[str, Any], agent: Agent) -> None:
+    def _validate_instance(self, instance: dict[str, Any], machine: Machine) -> None:
         instance_id = instance.get("InstanceId")
         if not instance_id:
             raise CloudResourceError("instance has no identity")
-        if agent.instance_id is not None and instance_id != agent.instance_id:
+        if machine.instance_id is not None and instance_id != machine.instance_id:
             raise CloudResourceError("instance identity differs from recorded instance")
-        self._validate_tags(instance, agent, "worker")
-        if instance.get("ImageId") != agent.image_id:
+        self._validate_tags(instance, machine, "worker")
+        if instance.get("ImageId") != machine.image_id:
             raise CloudResourceError("instance image differs from immutable spec")
-        if instance.get("InstanceType") != agent.instance_type:
+        if instance.get("InstanceType") != machine.instance_type:
             raise CloudResourceError("instance type differs from immutable spec")
         placement = instance.get("Placement") or {}
         if placement.get("AvailabilityZone") != self._config.availability_zone:
@@ -254,7 +254,7 @@ class Ec2Cloud:
         if instance.get("State", {}).get("Name") in {"shutting-down", "terminated"}:
             return
         profile = instance.get("IamInstanceProfile") or {}
-        if profile.get("Arn") != agent.instance_profile_arn:
+        if profile.get("Arn") != machine.instance_profile_arn:
             raise CloudResourceError("instance profile differs from immutable spec")
         if instance.get("SubnetId") != self._config.subnet_id:
             raise CloudResourceError("instance is in the wrong subnet")
@@ -288,53 +288,54 @@ class Ec2Cloud:
             if metadata.get(key) != expected:
                 raise CloudResourceError(f"instance metadata option {key} differs from spec")
 
-    def _validate_tags(self, resource: dict[str, Any], agent: Agent, purpose: str) -> None:
+    def _validate_tags(self, resource: dict[str, Any], machine: Machine, purpose: str) -> None:
         tags = {tag["Key"]: tag["Value"] for tag in resource.get("Tags", [])}
-        required = {tag["Key"]: tag["Value"] for tag in self._tags(agent, purpose)}
+        required = {tag["Key"]: tag["Value"] for tag in self._tags(machine, purpose)}
         for key, expected in required.items():
             if tags.get(key) != expected:
                 raise CloudResourceError(f"resource ownership tag {key!r} is missing or incorrect")
 
-    def _tags(self, agent: Agent, purpose: str) -> list[dict[str, str]]:
+    def _tags(self, machine: Machine, purpose: str) -> list[dict[str, str]]:
         return [
             {"Key": "switch:installation-id", "Value": self._config.installation_id},
-            {"Key": "switch:agent-id", "Value": agent.agent_id},
-            {"Key": "switch:generation", "Value": str(agent.generation)},
+            {"Key": "switch:slot-id", "Value": machine.slot_id},
+            {"Key": "switch:generation", "Value": str(machine.generation)},
+            {"Key": "switch:machine-id", "Value": machine.machine_id},
             {"Key": "switch:purpose", "Value": purpose},
             {"Key": "switch:managed-by", "Value": MANAGED_BY},
         ]
 
-    def _resource_filters(self, agent_id: str, purpose: str) -> list[dict[str, Any]]:
+    def _resource_filters(self, machine: Machine, purpose: str) -> list[dict[str, Any]]:
         return [
             {"Name": "tag:switch:installation-id", "Values": [self._config.installation_id]},
-            {"Name": "tag:switch:agent-id", "Values": [agent_id]},
-            {"Name": "tag:switch:generation", "Values": ["1"]},
+            {"Name": "tag:switch:slot-id", "Values": [machine.slot_id]},
+            {"Name": "tag:switch:generation", "Values": [str(machine.generation)]},
             {"Name": "tag:switch:purpose", "Values": [purpose]},
             {"Name": "tag:switch:managed-by", "Values": [MANAGED_BY]},
         ]
 
-    def _token(self, agent: Agent, resource: str) -> str:
-        material = f"{self._config.installation_id}:{agent.agent_id}:{agent.generation}:{resource}"
+    def _token(self, machine: Machine, resource: str) -> str:
+        material = (
+            f"{self._config.installation_id}:{machine.slot_id}:{machine.generation}:{resource}"
+        )
         return f"switch-{hashlib.sha256(material.encode()).hexdigest()[:48]}"
 
-    def _user_data(self, agent: Agent) -> str:
-        metadata = {
-            "version": 1,
+    def _user_data(self, machine: Machine) -> str:
+        metadata: dict[str, Any] = {
+            "version": 2,
             "installationId": self._config.installation_id,
-            "agentId": agent.agent_id,
-            "generation": agent.generation,
-            "assignmentSecretId": agent.assignment_secret_arn,
-            "dataVolumeId": agent.volume_id,
+            "slotId": machine.slot_id,
+            "generation": machine.generation,
+            "assignmentSecretId": machine.assignment_secret_arn,
+            "dataVolumeId": machine.data_volume_id,
             "dataDevice": DATA_DEVICE,
             "mountPath": "/data",
         }
-        if agent.previous_instance_id:
-            metadata["previousInstanceId"] = agent.previous_instance_id
-        if agent.previous_runtime_fingerprint:
-            metadata["previousRuntimeFingerprint"] = agent.previous_runtime_fingerprint
-        encoded = base64.b64encode(
-            json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode()
-        ).decode()
+        if machine.previous_instance_id:
+            metadata["previousInstanceId"] = machine.previous_instance_id
+        if machine.previous_runtime_fingerprint:
+            metadata["previousRuntimeFingerprint"] = machine.previous_runtime_fingerprint
+        encoded = base64.b64encode(json.dumps(metadata, separators=(",", ":")).encode()).decode()
         return "\n".join(
             [
                 "#cloud-config",

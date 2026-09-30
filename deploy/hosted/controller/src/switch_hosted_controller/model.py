@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 
 
 class DesiredState(StrEnum):
     RUNNING = "running"
     STOPPED = "stopped"
+    RETAINED = "retained"
     DELETED = "deleted"
 
 
@@ -16,18 +18,22 @@ class ObservedState(StrEnum):
     RUNNING = "running"
     STOPPING = "stopping"
     STOPPED = "stopped"
+    RETAINED = "retained"
     DELETING = "deleting"
     DELETED = "deleted"
     NEEDS_ATTENTION = "needs_attention"
 
 
 @dataclass(frozen=True)
-class Agent:
-    agent_id: str
+class Machine:
+    machine_id: str
+    slot_id: str
     generation: int
     desired_state: DesiredState
     desired_revision: int
     operation_id: str
+    core_revision: int
+    retain_until: datetime | None
     instance_type: str
     image_id: str
     assignment_secret_arn: str
@@ -35,14 +41,14 @@ class Agent:
     instance_id: str | None
     previous_instance_id: str | None
     previous_runtime_fingerprint: str | None
+    instance_seq: int
     recovery_count: int
-    volume_id: str | None
+    data_volume_id: str | None
     volume_az: str | None
     observed_state: ObservedState
     observed_revision: int
     observed_operation_id: str | None
-    last_error: str | None
-    delete_volume: bool
+    error: str | None
     volume_create_intent: bool
     volume_create_issued: bool
     instance_launch_intent: bool
