@@ -1426,3 +1426,95 @@ it('states placements on the attached incarnation, and raises on a refusal', asy
     abort.abort();
   }
 });
+
+it('does not give its connection up to itself over a request answered across its own reopen', async () => {
+  // Seen on a real host: placements stated under incarnation 4, the stream
+  // reopened (to 5) before the answer came, and the answer — "taken over:
+  // reopened since 4, now at 5" — named this very client as the new holder.
+  // It stood down for good, with nobody else anywhere near the connection.
+  const opened: ReadableStreamDefaultController<Uint8Array>[] = [];
+  let answerPlacements: (response: Response) => void = () => {};
+  const fetchMock = vi.fn(async (url: string) => {
+    if (url.includes('/events')) {
+      const generation = 4 + opened.length;
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            opened.push(controller);
+            controller.enqueue(connected(generation));
+          },
+        }),
+        { headers: { 'content-type': 'text/event-stream' } }
+      );
+    }
+    if (url.includes('connection/placements'))
+      return new Promise<Response>((resolve) => {
+        answerPlacements = resolve;
+      });
+    return Response.json({});
+  });
+  const evicted: Eviction[] = [];
+  const onConnected = vi.fn();
+  const { stream, abort } = makeStream(fetchMock, {
+    rooms: [],
+    scope: 'all',
+    onConnected,
+    onEvicted: (eviction) => evicted.push(eviction),
+  });
+  try {
+    await vi.waitFor(() => expect(onConnected).toHaveBeenCalledTimes(1));
+    const stating = stream.replacePlacements({ session: 'room' });
+    await vi.waitFor(() => expect(urlsFor(fetchMock, 'connection/placements')).toHaveLength(1));
+
+    opened[0]!.close();
+    await vi.waitFor(() => expect(onConnected).toHaveBeenCalledTimes(2), { timeout: 3000 });
+    answerPlacements(
+      Response.json(
+        {
+          detail: {
+            code: 'taken_over',
+            message: 'connection conn-1 has been reopened since incarnation 4 and is now at 5',
+          },
+        },
+        { status: 409 }
+      )
+    );
+
+    await expect(stating).rejects.toThrow('409');
+    expect(evicted).toEqual([]);
+  } finally {
+    abort.abort();
+  }
+});
+
+it('still stands down when a request is refused as taken over on the incarnation it holds', async () => {
+  const fetchMock = vi.fn(async (url: string) => {
+    if (url.includes('/events'))
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(connected(4));
+          },
+        }),
+        { headers: { 'content-type': 'text/event-stream' } }
+      );
+    if (url.includes('connection/placements'))
+      return Response.json(
+        { detail: { code: 'taken_over', message: 'another client holds it' } },
+        { status: 409 }
+      );
+    return Response.json({});
+  });
+  const evicted: Eviction[] = [];
+  const { stream, abort } = makeStream(fetchMock, {
+    rooms: [],
+    scope: 'all',
+    onEvicted: (eviction) => evicted.push(eviction),
+  });
+  try {
+    await expect(stream.replacePlacements({ session: 'room' })).rejects.toThrow('409');
+    expect(evicted.map((eviction) => eviction.code)).toEqual([EVICTION_TAKEN_OVER]);
+  } finally {
+    abort.abort();
+  }
+});

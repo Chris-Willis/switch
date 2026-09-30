@@ -2999,6 +2999,15 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
+#### Fixed
+- **A connection no longer gives itself up to itself.** A placements or room
+  subscribe request sent under one incarnation and answered after this client
+  had reopened its own stream was refused as "taken over", naming this client
+  as the new holder, and the client stood down for good with nobody else
+  anywhere near the connection. Such a refusal now only fails the request,
+  which is stated again on the next change or reconnect; a real takeover is
+  still caught by the next heartbeat.
+
 ### [0.7.0] - 2026-09-25
 
 #### Changed
@@ -3173,6 +3182,13 @@ published on its own.
   instead of relying on a live connection to the sidecar.
 
 #### Fixed
+- **A stuck process can no longer block replacing a watcher.** Stopping a
+  watcher or session host sent SIGTERM and waited; one waiting on a child that
+  would never finish — a session host that hung up and stayed alive — never
+  exited, so every update to that agent failed with "The SDK host has not
+  stopped". A host asked to stop is now killed, with every process it started,
+  if it has not gone after 10 s (a supervised host) or 20 s (one being
+  replaced).
 - **A session whose host hung up no longer blocks its room for good.** After a
   reset, a session host could finish and close its link to the watcher while a
   provider process it had started kept it alive. The watcher still saw it as
