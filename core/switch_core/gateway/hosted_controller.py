@@ -41,6 +41,7 @@ router = APIRouter(prefix="/hosted-controller")
 
 QUEUED_TIMEOUT = timedelta(minutes=10)
 DELETING_RESUME_AFTER = timedelta(minutes=5)
+AGENT_STOP_TIMEOUT = timedelta(minutes=10)
 
 
 async def controller_session(
@@ -91,10 +92,29 @@ def _connect_timed_out(machine: HostedMachine, now: datetime) -> bool:
     )
 
 
+def _start_timed_out(machine: HostedMachine, now: datetime) -> bool:
+    return (
+        machine.state == "provisioning"
+        and machine.running_observed_at is None
+        and now - machine.updated_at > MACHINE_CONNECT_TIMEOUT
+    )
+
+
+def _stop_timed_out(
+    launch: HostedLaunch, machine: HostedMachine, now: datetime
+) -> bool:
+    return (
+        launch.state == "stopping"
+        and now - launch.updated_at > AGENT_STOP_TIMEOUT
+        and machine.state == "ready"
+    )
+
+
 def _needs_sweep(machine: HostedMachine, now: datetime, idle_minutes: int) -> bool:
     return (
         (machine.state == "queued" and now - machine.updated_at > QUEUED_TIMEOUT)
         or _connect_timed_out(machine, now)
+        or _start_timed_out(machine, now)
         or (
             machine.state == "retained"
             and machine.desired_state == "retained"
@@ -199,6 +219,11 @@ async def _sweep(
         machine.error_code = "machine_connect_timeout"
         machine.error = "The cloud machine started but did not connect to Switch within 10 minutes. Retry it in Switch Console, or ask your administrator to check the machine's startup logs."
         machine.updated_at = now
+    elif _start_timed_out(machine, now):
+        machine.state = "error"
+        machine.error_code = "machine_connect_timeout"
+        machine.error = "The cloud machine did not start within 10 minutes. Retry it in Switch Console, or contact your administrator if it still cannot start."
+        machine.updated_at = now
     elif (
         machine.state == "retained"
         and machine.desired_state == "retained"
@@ -238,6 +263,39 @@ async def _expire_operations(session: AsyncSession) -> None:
         await session.commit()
 
 
+async def _time_out_stopping_launches(session: AsyncSession, now: datetime) -> None:
+    launch_ids = list(
+        await session.scalars(
+            select(HostedLaunch.id)
+            .join(
+                HostedMachine,
+                (HostedMachine.tenant_id == HostedLaunch.tenant_id)
+                & (HostedMachine.id == HostedLaunch.machine_id),
+            )
+            .where(
+                HostedLaunch.tenant_id == require_tenant_id(),
+                HostedLaunch.state == "stopping",
+                HostedLaunch.updated_at < now - AGENT_STOP_TIMEOUT,
+                HostedMachine.state == "ready",
+            )
+        )
+    )
+    for launch_id in launch_ids:
+        launch, machine = await HostedMachineStore().locked_launch(session, launch_id)
+        if (
+            launch is not None
+            and machine is not None
+            and _stop_timed_out(launch, machine, now)
+        ):
+            launch.state = "error"
+            launch.error_code = "agent_stop_timeout"
+            launch.error = (
+                "The agent did not stop within 10 minutes. Retry it in Switch Console."
+            )
+            launch.updated_at = now
+        await session.commit()
+
+
 @router.get("/machines")
 async def machines(
     session: Annotated[AsyncSession, Depends(controller_session)],
@@ -267,6 +325,7 @@ async def machines(
             )
         await session.commit()
     await _expire_operations(session)
+    await _time_out_stopping_launches(session, now)
     rows = await session.scalars(
         select(HostedMachine)
         .where(

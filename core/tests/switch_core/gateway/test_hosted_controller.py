@@ -494,6 +494,91 @@ async def test_connect_timeout_counts_from_the_running_observation(controller_ap
     assert item["state"] == "provisioning"
 
 
+async def test_provisioning_machine_never_observed_running_times_out(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    before = datetime.now(UTC)
+    await update_machine(
+        factory,
+        machine.id,
+        state="provisioning",
+        updated_at=before - timedelta(minutes=11),
+    )
+    [item] = await list_machines(client)
+    assert item["state"] == "error"
+    saved = await machine_of(factory, request_id)
+    assert saved.error_code == "machine_connect_timeout"
+    assert (
+        saved.error
+        == "The cloud machine did not start within 10 minutes. Retry it in Switch Console, or contact your administrator if it still cannot start."
+    )
+    assert saved.updated_at >= before
+
+
+async def test_recent_provisioning_machine_is_left_alone(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    await update_machine(
+        factory,
+        machine.id,
+        state="provisioning",
+        updated_at=datetime.now(UTC) - timedelta(minutes=5),
+    )
+    [item] = await list_machines(client)
+    assert item["state"] == "provisioning"
+
+
+async def _stopping_launch(controller_app, *, machine_state: str, minutes: int) -> None:
+    _, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    await update_machine(factory, machine.id, state=machine_state)
+    await update_launch(
+        factory,
+        request_id,
+        state="stopping",
+        desired_state="stopped",
+        updated_at=datetime.now(UTC) - timedelta(minutes=minutes),
+    )
+
+
+async def test_launch_that_never_stops_on_a_ready_machine_times_out(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    before = datetime.now(UTC)
+    await _stopping_launch(controller_app, machine_state="ready", minutes=11)
+    await list_machines(client)
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+    assert launch.state == "error"
+    assert launch.error_code == "agent_stop_timeout"
+    assert (
+        launch.error
+        == "The agent did not stop within 10 minutes. Retry it in Switch Console."
+    )
+    assert launch.updated_at >= before
+    retried = await client.post(
+        f"/hosted-launches/{request_id}/lifecycle",
+        json={"action": "retry", "revision": launch.revision},
+    )
+    assert retried.status_code == 200, retried.text
+
+
+@pytest.mark.parametrize(
+    ("machine_state", "minutes"),
+    [("stopping", 11), ("provisioning", 11), ("ready", 5)],
+    ids=["machine-stopping", "machine-provisioning", "recent"],
+)
+async def test_stopping_launch_is_left_alone_unless_it_should_have_stopped(
+    controller_app, machine_state, minutes
+):
+    client, request_id, _, _, factory, _ = controller_app
+    await _stopping_launch(controller_app, machine_state=machine_state, minutes=minutes)
+    await list_machines(client)
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+    assert launch.state == "stopping"
+    assert launch.error_code is None
+
+
 async def test_retention_sweep_deletes_an_expired_retained_machine(controller_app):
     client, request_id, _, _, factory, _ = controller_app
     machine = await machine_of(factory, request_id)
