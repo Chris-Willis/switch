@@ -362,7 +362,7 @@ def ring_mailbox_cancel(
     )
 
 
-@router.post("/{request_id}/lifecycle")
+@router.post("/{request_id}/lifecycle", response_model=None)
 async def lifecycle(
     request_id: UUID,
     body: LifecycleRequest,
@@ -370,7 +370,7 @@ async def lifecycle(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
-) -> dict:
+) -> dict | JSONResponse:
     launch, machine = await locked_owned(session, str(request_id), user.id)
     if launch.revision != body.revision:
         raise HTTPException(
@@ -383,6 +383,8 @@ async def lifecycle(
         raise HTTPException(409, "Only a ready worker can be restarted.")
     if body.action == "retry" and launch.state != "error":
         raise HTTPException(409, "Only a worker in error can be retried.")
+    if body.action in ("restart", "retry") and owner_stopped(machine):
+        return coded_conflict("machine_stopped", MACHINE_STOPPED)
     if body.action == "remove":
         return await remove(session, protocol, config, launch, machine)
     machines = HostedMachineStore()
