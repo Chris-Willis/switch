@@ -100,6 +100,12 @@ def relay_target(
     """
     if machine is not None and owner_stopped(machine):
         raise RelayError("machine_stopped", "The owner stopped the cloud machine.", 409)
+    if machine is not None and machine.state == "error":
+        raise RelayError(
+            "machine_error",
+            "The cloud machine needs attention. Retry it in Switch Console.",
+            409,
+        )
     if machine is not None and idle_sleeping(machine) and kind == "read_only":
         raise RelayError("worker_sleeping", "The cloud machine is asleep.", 409)
     if is_waking(launch, machine):
@@ -184,6 +190,7 @@ async def dispatch_mutating(
         if (
             machine is not None
             and idle_sleeping(machine)
+            and machine.state != "error"
             and launch.desired_state == "running"
             and launch.state != "error"
         ):

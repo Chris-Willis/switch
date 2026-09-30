@@ -304,3 +304,16 @@ async def test_a_queued_launch_is_waking_until_it_is_ready(launches):
         launch.state = "ready"
         assert not is_waking(launch, machine)
         assert not is_waking(launch, None)
+
+
+async def test_a_queued_launch_on_an_errored_machine_is_not_waking(launches):
+    store, factory = launches
+    await reserve(store, factory, "request-1", "helper")
+    async with factory() as session:
+        launch, machine = await HostedMachineStore().locked_launch(session, "request-1")
+        assert launch is not None and machine is not None
+        assert launch.state == "queued"
+        machine.state = "error"
+        assert not is_waking(launch, machine)
+        launch.state = "provisioning"
+        assert not is_waking(launch, machine)

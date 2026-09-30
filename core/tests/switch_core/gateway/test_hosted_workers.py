@@ -807,6 +807,42 @@ async def test_relay_error_codes_in_order(worker_app):
     assert set(body["worker"]) >= {"machine_id", "process_state", "oom_kills"}
 
 
+async def test_relay_to_an_errored_machine_is_machine_error(worker_app):
+    client, request_id, _, _, factory, prepared = worker_app
+    machine_id = prepared["machine_id"]
+    await set_machine(factory, machine_id, state="error")
+    assert (await _launch(factory, request_id)).state == "queued"
+    for message in (READ_ONLY, {"forget": str(uuid4())}):
+        status, body = await _relay_code(client, request_id, message)
+        assert (status, body["error"]["code"]) == (409, "machine_error")
+        assert "wake_available" not in body
+    assert (await _launch(factory, request_id)).relay_seq == 0
+
+
+async def test_relay_to_an_errored_sleeping_machine_does_not_wake_it(worker_app):
+    client, request_id, _, _, factory, prepared = worker_app
+    machine_id = prepared["machine_id"]
+    await _ready_worker(worker_app)
+    await set_machine(
+        factory,
+        machine_id,
+        desired_state="stopped",
+        stop_reason="idle",
+        state="error",
+        revision=2,
+    )
+    for message in (READ_ONLY, {"forget": str(uuid4())}):
+        status, body = await _relay_code(client, request_id, message)
+        assert (status, body["error"]["code"]) == (409, "machine_error")
+        assert "wake_available" not in body
+    machine = await _machine(factory, machine_id)
+    assert (machine.desired_state, machine.stop_reason, machine.revision) == (
+        "stopped",
+        "idle",
+        2,
+    )
+
+
 async def test_idle_sleep_wakes_only_for_a_running_agent(worker_app):
     client, request_id, _, _, factory, prepared = worker_app
     machine_id = prepared["machine_id"]

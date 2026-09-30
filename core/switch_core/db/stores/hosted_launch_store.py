@@ -354,6 +354,7 @@ class ProviderDisconnected(Exception):
 def is_waking(launch: HostedLaunch, machine: HostedMachine | None) -> bool:
     return (
         machine is not None
+        and machine.state != "error"
         and launch.desired_state == "running"
         and launch.state != "error"
         and (machine_starting(machine) or launch.state in {"queued", "provisioning"})
