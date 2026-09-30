@@ -475,6 +475,25 @@ export class SwitchEventStream {
   }
 
   /**
+   * Whether a takeover refusal for a request sent under `sent` describes a
+   * reopen of our own.
+   *
+   * A request carries the incarnation it was sent under, and the server
+   * refuses it as taken over once the connection has moved past that. But
+   * this client reopens its own stream — after an eviction, a refused beat, a
+   * repoint — and a request in flight across that reopen is refused the same
+   * way, naming as the new holder the incarnation this client now is. Standing
+   * down on that gives the connection up to ourselves, for good. Heartbeats
+   * already discard such answers through the fence; this is the same test for
+   * the requests that do not go through it. A real takeover after our reopen
+   * is still caught: the next beat, under the incarnation we now hold, is
+   * refused, and stands down.
+   */
+  private supersededOurselves(sent: number | null): boolean {
+    return sent !== null && this.generation !== null && this.generation !== sent;
+  }
+
+  /**
    * Give the connection up to the client that now holds it.
    *
    * Ends both loops and reports through the same callback an `evicted` frame
@@ -504,6 +523,7 @@ export class SwitchEventStream {
     // the frame, so waiting costs such a client nothing.
     await Promise.race([this.fence.reached, until(this.deps.signal, this.halt.signal)]);
     if (this.halt.signal.aborted) return;
+    const generation = this.generation;
     const resp = await this.post('connection/subscribe', {
       connection_id: this.deps.connectionId,
       room_id: roomId,
@@ -513,11 +533,15 @@ export class SwitchEventStream {
       // displaced would rewrite the winner's rooms — and evict whoever holds
       // the room it asks for — and being refused the open afterwards would
       // come too late to undo any of it.
-      generation: this.generation,
+      generation,
     });
     if (!resp.ok) {
       const body = await resp.text();
       if (resp.status === 409 && refusalCode(body) === EVICTION_TAKEN_OVER) {
+        if (this.supersededOurselves(generation))
+          throw new Error(
+            `subscribe to ${roomId} was answered for an incarnation this connection has since reopened past; ask again`
+          );
         // Not this connection's client any more. Terminal, like every other
         // door onto a takeover: there is nothing to repoint.
         this.standDown();
@@ -551,14 +575,20 @@ export class SwitchEventStream {
     ]).finally(() => clearTimeout(timer));
     if (!attached || this.halt.signal.aborted)
       throw new Error('the connection to Switch is not open, so it cannot take placements');
+    const generation = this.generation;
     const resp = await this.post('connection/placements', {
       connection_id: this.deps.connectionId,
       placements,
-      generation: this.generation,
+      generation,
     });
     if (resp.ok) return;
     const body = await resp.text();
-    if (resp.status === 409 && refusalCode(body) === EVICTION_TAKEN_OVER) this.standDown();
+    if (
+      resp.status === 409 &&
+      refusalCode(body) === EVICTION_TAKEN_OVER &&
+      !this.supersededOurselves(generation)
+    )
+      this.standDown();
     throw new PlacementsRefusedError(resp.status, body.slice(0, 500));
   }
 
