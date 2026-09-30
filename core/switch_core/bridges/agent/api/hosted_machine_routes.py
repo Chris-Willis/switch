@@ -115,25 +115,60 @@ async def _machine_launch(
     return launch
 
 
+UNAVAILABLE_ERRORS = {
+    "agent_key_missing": (
+        "Switch lost this cloud agent's credential, so its machine cannot run it. "
+        "Remove the agent and create it again."
+    ),
+    "agent_identity_missing": (
+        "Switch lost this cloud agent's identity, so its machine cannot run it. "
+        "Retry it in Switch Console."
+    ),
+}
+
+
+def _unavailable_entry(
+    launch: HostedLaunch,
+    code: Literal["agent_key_missing", "agent_identity_missing"],
+    now: datetime,
+) -> dict:
+    """List a launch the machine cannot run, and put it in error.
+
+    A queued launch whose identity is missing is left alone: launch creation
+    commits `agent_id` before it registers the agent.
+    """
+    logger.error(
+        "Cloud launch %s: agent %s is unavailable (%s); the machine cannot run it.",
+        launch.id,
+        launch.agent_id,
+        code,
+    )
+    exempt = code == "agent_identity_missing" and launch.state == "queued"
+    already = launch.state == "error" and launch.error_code == code
+    if not exempt and not already:
+        launch.state = "error"
+        launch.error_code = code
+        launch.error = UNAVAILABLE_ERRORS[code]
+        launch.updated_at = now
+    return {
+        "launch_id": launch.id,
+        "agent_id": launch.agent_id,
+        "name": launch.name,
+        "revision": launch.revision,
+        "desired_state": launch.desired_state,
+        "unavailable": code,
+    }
+
+
 async def _agent_entry(
     session: AsyncSession,
     launch: HostedLaunch,
-    agent: Agent,
+    key: ApiKey,
     settings: HostedControllerSettings,
     config: SwitchConfig,
 ) -> dict:
     assert launch.agent_id is not None
     provider = launch.spec.get("provider", "claude")
-    key = await session.get(ApiKey, agent.api_key_id)
-    if key is None or not key.encrypted_key:
-        logger.error(
-            "Cloud launch %s: agent %s has no stored API key; the machine cannot run it.",
-            launch.id,
-            launch.agent_id,
-        )
-        raise HTTPException(
-            409, f"The Switch credential for cloud agent {launch.name} is unavailable."
-        )
     connection = await session.get(
         ProviderConnection, (require_tenant_id(), launch.owner_id, provider)
     )
@@ -198,9 +233,14 @@ async def agents(
             continue
         agent = await session.get(Agent, launch.agent_id)
         if agent is None:
+            entries.append(_unavailable_entry(launch, "agent_identity_missing", now))
+            continue
+        key = await session.get(ApiKey, agent.api_key_id)
+        if key is None or not key.encrypted_key:
+            entries.append(_unavailable_entry(launch, "agent_key_missing", now))
             continue
         entries.append(
-            await _agent_entry(session, launch, agent, current.settings, config)
+            await _agent_entry(session, launch, key, current.settings, config)
         )
         if launch.state == "queued":
             launch.state = "provisioning"

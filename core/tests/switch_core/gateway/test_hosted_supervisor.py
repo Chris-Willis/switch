@@ -25,6 +25,7 @@ from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
     fixture,
     machine_of,
     observe,
+    register_hosted_agent,
     update_launch,
     update_machine,
 )
@@ -241,45 +242,154 @@ async def test_agents_omits_deleted_and_unregistered_launches(supervisor):
     assert (await client.get(path, headers=headers)).json()["agents"] == []
 
 
-async def test_agents_omits_a_launch_whose_agent_row_does_not_exist_yet(supervisor):
-    client, request_id, agent_id, _, factory, machine_id, headers = supervisor
+UNAVAILABLE_KEYS = {
+    "launch_id",
+    "agent_id",
+    "name",
+    "revision",
+    "desired_state",
+    "unavailable",
+}
+KEY_MISSING_ERROR = (
+    "Switch lost this cloud agent's credential, so its machine cannot run it. "
+    "Remove the agent and create it again."
+)
+IDENTITY_MISSING_ERROR = (
+    "Switch lost this cloud agent's identity, so its machine cannot run it. "
+    "Retry it in Switch Console."
+)
+
+
+async def second_launch(
+    factory, service, request_id: str, *, state: str, register: bool
+) -> tuple[str, str]:
+    """Another launch on the fixture's machine, with its own agent if `register`."""
     machine = await machine_of(factory, request_id)
-    unregistered_agent_id = str(uuid4())
+    launch_id = str(uuid4())
+    agent_id = (
+        await register_hosted_agent(
+            service,
+            owner=machine.owner_id,
+            request_id=launch_id,
+            name="cloud-second",
+            spec=SPEC,
+        )
+        if register
+        else str(uuid4())
+    )
     async with factory() as session:
         await seed_launch(
             session,
             machine=machine,
-            request_id=str(uuid4()),
-            name="cloud-pending",
-            state="queued",
+            request_id=launch_id,
+            name="cloud-second",
+            state=state,
             desired_state="running",
             revision=1,
-            agent_id=unregistered_agent_id,
-            spec=SPEC,
+            agent_id=agent_id,
+            spec={**SPEC, "provider": "claude"},
         )
         await session.commit()
-    response = await client.get(
-        f"/hosted/machines/{machine_id}/agents", headers=headers
+    return launch_id, agent_id
+
+
+def split_entries(listed: list[dict], broken_id: str) -> tuple[dict, dict]:
+    [healthy] = [entry for entry in listed if entry["launch_id"] != broken_id]
+    [broken] = [entry for entry in listed if entry["launch_id"] == broken_id]
+    return healthy, broken
+
+
+async def test_agents_lists_a_queued_launch_whose_agent_row_does_not_exist_yet_as_unavailable(
+    supervisor, caplog
+):
+    client, request_id, agent_id, service, factory, machine_id, headers = supervisor
+    pending_id, pending_agent = await second_launch(
+        factory, service, request_id, state="queued", register=False
     )
-    assert response.status_code == 200
-    listed = response.json()["agents"]
-    assert len(listed) == 1
-    assert listed[0]["agent_id"] == agent_id
-    assert listed[0]["name"] == "cloud-helper"
+    with caplog.at_level(logging.ERROR):
+        response = await client.get(
+            f"/hosted/machines/{machine_id}/agents", headers=headers
+        )
+    assert response.status_code == 200, response.text
+    healthy, broken = split_entries(response.json()["agents"], pending_id)
+    assert set(healthy) == set(fixture("agents_response.json")["agents"][0])
+    assert healthy["agent_id"] == agent_id
+    assert broken == {
+        "launch_id": pending_id,
+        "agent_id": pending_agent,
+        "name": "cloud-second",
+        "revision": 1,
+        "desired_state": "running",
+        "unavailable": "agent_identity_missing",
+    }
+    assert "agent_identity_missing" in caplog.text
+    launch = await launch_row(factory, pending_id)
+    assert launch.state == "queued"
+    assert launch.error_code is None
+    assert launch.error is None
 
 
-async def test_agents_refuses_rather_than_omits_an_agent_without_its_key(supervisor):
-    client, _, agent_id, _, factory, machine_id, headers = supervisor
+async def test_agents_lists_a_launch_whose_agent_row_is_gone_as_unavailable(
+    supervisor,
+):
+    client, request_id, _, service, factory, machine_id, headers = supervisor
+    broken_id, broken_agent = await second_launch(
+        factory, service, request_id, state="provisioning", register=False
+    )
+    path = f"/hosted/machines/{machine_id}/agents"
+    response = await client.get(path, headers=headers)
+    assert response.status_code == 200, response.text
+    healthy, broken = split_entries(response.json()["agents"], broken_id)
+    assert set(healthy) == set(fixture("agents_response.json")["agents"][0])
+    assert "unavailable" not in healthy
+    assert set(broken) == UNAVAILABLE_KEYS
+    assert broken["agent_id"] == broken_agent
+    assert broken["unavailable"] == "agent_identity_missing"
+    launch = await launch_row(factory, broken_id)
+    assert launch.state == "error"
+    assert launch.error_code == "agent_identity_missing"
+    assert launch.error == IDENTITY_MISSING_ERROR
+    marked_at = launch.updated_at
+    again = await client.get(path, headers=headers)
+    assert again.status_code == 200, again.text
+    assert (await launch_row(factory, broken_id)).updated_at == marked_at
+
+
+async def test_agents_lists_a_launch_without_its_key_as_unavailable(supervisor, caplog):
+    client, request_id, agent_id, service, factory, machine_id, headers = supervisor
+    broken_id, broken_agent = await second_launch(
+        factory, service, request_id, state="queued", register=True
+    )
     async with factory() as session:
-        agent = await session.get(Agent, agent_id)
+        agent = await session.get(Agent, broken_agent)
         key = await session.get(ApiKey, agent.api_key_id)
         key.encrypted_key = ""
         await session.commit()
-    response = await client.get(
-        f"/hosted/machines/{machine_id}/agents", headers=headers
-    )
-    assert response.status_code == 409
-    assert "cloud-helper" in response.json()["detail"]
+    path = f"/hosted/machines/{machine_id}/agents"
+    with caplog.at_level(logging.ERROR):
+        response = await client.get(path, headers=headers)
+    assert response.status_code == 200, response.text
+    healthy, broken = split_entries(response.json()["agents"], broken_id)
+    assert set(healthy) == set(fixture("agents_response.json")["agents"][0])
+    assert healthy["agent_id"] == agent_id
+    assert broken == {
+        "launch_id": broken_id,
+        "agent_id": broken_agent,
+        "name": "cloud-second",
+        "revision": 1,
+        "desired_state": "running",
+        "unavailable": "agent_key_missing",
+    }
+    assert "agent_key_missing" in caplog.text
+    launch = await launch_row(factory, broken_id)
+    assert launch.state == "error"
+    assert launch.error_code == "agent_key_missing"
+    assert launch.error == KEY_MISSING_ERROR
+    marked_at = launch.updated_at
+    again = await client.get(path, headers=headers)
+    assert again.status_code == 200, again.text
+    assert (await launch_row(factory, broken_id)).updated_at == marked_at
+    assert (await launch_row(factory, request_id)).state == "provisioning"
 
 
 async def test_agents_sends_no_skills_to_a_provider_without_a_skills_directory(

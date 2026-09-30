@@ -28,6 +28,8 @@ from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
+    Agent,
+    ApiKey,
     HostedLaunch,
     HostedMachine,
     TenantMember,
@@ -91,6 +93,7 @@ RESPONSES: dict[str, dict[tuple[str, ...], Any]] = {
         ("agents", "*", "worker_capability"): WORKER_CAPABILITY,
         ("agents", "*", "switch_credentials", "env", "SWITCH_API_TOKEN"): API_TOKEN,
     },
+    "agents_response_unavailable.json": {},
     "heartbeat_response.json": {},
     "launch_summary.json": {},
     "machines_response.json": {},
@@ -280,6 +283,15 @@ async def wire_flow(wire) -> tuple[dict[str, Any], dict[str, str]]:
     )
     bodies["machine_summary_sleeping.json"] = _ok(
         await client.get(f"/hosted-machines/{machine_id}")
+    )
+
+    async with factory() as session:
+        agent = await session.get(Agent, agent_id)
+        key = await session.get(ApiKey, agent.api_key_id)
+        key.encrypted_key = ""
+        await session.commit()
+    bodies["agents_response_unavailable.json"] = _ok(
+        await client.get(f"/hosted/machines/{machine_id}/agents", headers=supervisor)
     )
     return bodies, placeholders
 
