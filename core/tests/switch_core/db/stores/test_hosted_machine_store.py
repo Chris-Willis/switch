@@ -271,6 +271,59 @@ async def test_start_stop_and_retry(factory):
     ) == ("queued", None, None, 4, None)
 
 
+async def test_starting_a_ready_machine_again_waits_for_it_to_reconnect(factory):
+    machine = await seed(
+        factory,
+        owner_id="owner-a",
+        slot_id="slot-a",
+        state="ready",
+        desired_state="running",
+        stop_reason=None,
+        revision=2,
+        generation=1,
+    )
+    store = HostedMachineStore()
+    now = datetime.now(UTC)
+    machine.running_observed_at = now
+    store.start(machine, now)
+    assert (machine.state, machine.revision, machine.running_observed_at) == (
+        "ready",
+        2,
+        now,
+    )
+    store.stop(machine, "owner", now)
+    store.start(machine, now)
+    assert (
+        machine.state,
+        machine.desired_state,
+        machine.revision,
+        machine.running_observed_at,
+    ) == ("provisioning", "running", 4, None)
+
+
+async def test_reusing_a_retained_machine_still_ready_waits_for_it_to_reconnect(
+    factory,
+):
+    retained = await seed(
+        factory,
+        owner_id="owner-a",
+        slot_id="slot-a",
+        state="ready",
+        desired_state="retained",
+        stop_reason=None,
+        revision=3,
+        generation=1,
+    )
+    machine = await claim(factory, "owner-a")
+    assert (machine.id, machine.state, machine.desired_state, machine.revision) == (
+        retained.id,
+        "provisioning",
+        "running",
+        4,
+    )
+    assert machine_starting(machine)
+
+
 async def test_retain_if_empty_retains_only_once_no_agent_is_left(factory):
     store = HostedMachineStore()
     async with factory() as session:
