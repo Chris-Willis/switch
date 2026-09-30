@@ -691,13 +691,10 @@ commit that can be tested on its own.
   nothing in an unclaimed channel. The alternative of typing a chat id in the
   dashboard and confirming in Telegram is ruled out: it would have the shared
   bot post a prompt into any chat someone names.
-- **A shared bridge restarted at runtime has no bot until its next update.**
-  Bridges running at boot are attached when the bot connects, and one created
-  by a claim is attached before its first update. One restarted while the
-  server runs (a config change, say) is not, so a reply sent before anyone
-  writes in that chat fails. Discord's shared bridges have the same gap.
-  Closing it needs the lifecycle to tell the app client when a bridge
-  starts.
+- **A shared bridge restarted at runtime had no bot until its next update.**
+  Closed: the lifecycle now hands each bridge to a listener as it starts, and
+  the app client attaches it once the bot is up (Discord's shared bridges the
+  same way). The attach on each update stays as a backstop.
 
 ## Testing
 
@@ -727,7 +724,20 @@ Beyond that, each stage carries the tests listed with it. A doc-vs-code test,
 - **One-tap account linking by DM** (`/start <code>` in a private chat, linking
   the sender to the Switch user who minted the code). Deferred. Main's
   seen-user linking works, and under decision 2 each person links once per
-  tenant, not once per chat.
+  tenant, not once per chat. **TODO:** the Bot API has no member list, so
+  today someone must post once in a connected chat before they can link;
+  this link would remove that step (Discord and Slack search their
+  directories instead).
+  - Main risk: a leaked link links whoever taps it to the minting user, whom
+    owner-only agents then obey. Keep it single-use and short-lived, name the
+    linked account in the bot's reply and in Switch with an easy Unlink, and
+    consider a confirm step in Switch.
+  - Derive the code's key for a separate purpose (`telegram/link`) so a link
+    code and a chat code can never be read as each other.
+  - Rough size: about 1,000 lines with tests, mostly server (a link-code
+    table, a route, `/start` handling in DMs, claim logic moved out of the
+    route into a service) plus a Console button. The shared bot first; an
+    organisation's own bot needs extra plumbing.
 - **Bridging DMs.** A DM has no tenant (G4).
 - **Fair per-tenant rate limiting** (above).
 - **Auto-leaving unclaimed chats** (decision 9).
