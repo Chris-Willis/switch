@@ -9,6 +9,7 @@ const server = vi.hoisted(() => ({
   launches: [] as { request_id: string }[],
   machines: [] as { machine_id: string; revision: number }[],
   machineActions: [] as unknown[],
+  wakeRace: false,
   relayClients: 0,
 }));
 
@@ -53,6 +54,22 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
         const machine = server.machines.find((each) => each.machine_id === id)!;
         if (rest === undefined) return { json: async () => machine };
         server.machineActions.push(init.body);
+        if (server.wakeRace) {
+          server.wakeRace = false;
+          Object.assign(machine, {
+            state: 'provisioning',
+            desired_state: 'running',
+            stop_reason: null,
+            sleeping: false,
+            revision: machine.revision + 1,
+          });
+          throw new FakeGatewayError(
+            'http',
+            'Switch gateway returned 409',
+            409,
+            'revision mismatch'
+          );
+        }
         const started = {
           ...machine,
           desired_state: 'running',
@@ -100,6 +117,7 @@ beforeEach(() => {
   server.launches = [];
   server.machines = [];
   server.machineActions = [];
+  server.wakeRace = false;
   server.relayClients = 0;
 });
 
@@ -198,14 +216,15 @@ it.each([
     'worker_sleeping',
     machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'idle', sleeping: true }),
     { desired_state: 'stopped', state: 'stopped' },
-    true,
+    false,
   ],
   [
     'worker_sleeping',
     machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'idle', sleeping: true }),
     { state: 'error', error_code: 'agent_crashed', error: 'The agent crashed 5 times.' },
-    true,
+    false,
   ],
+  ['machine_error', machine({ state: 'error', error: 'The machine did not connect.' }), {}, false],
   [
     'agent_crashed',
     machine({}),
@@ -307,4 +326,20 @@ it('refuses a start whose operation id is not its session id', async () => {
   await expect(runCloudSessionOperation(agent, sessionId, restartId, 'start')).rejects.toThrow(
     /identified by its session id/
   );
+});
+
+it('does not wake a machine its owner stopped', async () => {
+  server.machines = [machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'owner' })];
+  server.launches = [launch('00000000-0000-4000-8000-000000000001', { machine_id: machineId })];
+  await expect(wakeCloudAgent(agent)).rejects.toThrow('The owner stopped the cloud machine');
+  expect(server.machineActions).toEqual([]);
+});
+
+it('reads a wake that lost the revision race to another wake as the machine waking', async () => {
+  server.machines = [
+    machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'idle', sleeping: true }),
+  ];
+  server.launches = [launch('00000000-0000-4000-8000-000000000001', { machine_id: machineId })];
+  server.wakeRace = true;
+  expect(await wakeCloudAgent(agent)).toMatchObject({ desired_state: 'running', revision: 5 });
 });

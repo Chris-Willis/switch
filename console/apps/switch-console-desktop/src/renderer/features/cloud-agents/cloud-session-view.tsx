@@ -17,10 +17,15 @@ import {
   cloudAgentPhase,
   parseCloudAgentKey,
 } from '@shared/core/cloud-agents/cloud-agents';
-import { cloudAgentState } from './cloud-agent-state';
+import { cloudAgentState, cloudHoldBlocker } from './cloud-agent-state';
 import { cloudOperationAttempts, restartAttemptKey } from './cloud-operation-attempts';
 import { CloudProblem } from './cloud-problem';
-import { useCloudAgentSessions, useCloudAgents, useCloudWake } from './use-cloud-agents';
+import {
+  useCloudAgentSessions,
+  useCloudAgents,
+  useCloudProblemAction,
+  useCloudWake,
+} from './use-cloud-agents';
 
 type CloudSessionParams = { agentKey: string; sessionId: string; name: string };
 
@@ -61,12 +66,17 @@ const CloudWorkerStatus = observer(function CloudWorkerStatus({
         This cloud agent is no longer on its Switch server.
       </div>
     );
-  return agent?.problem ? (
+  return agent?.problem ? <CloudAgentProblem agent={agent} /> : null;
+});
+
+function CloudAgentProblem({ agent }: { agent: CloudAgent }) {
+  const action = useCloudProblemAction(agent, false);
+  return agent.problem ? (
     <div className="px-5 pt-3">
-      <CloudProblem problem={agent.problem} compact={false} />
+      <CloudProblem problem={agent.problem} compact={false} action={action} />
     </div>
   ) : null;
-});
+}
 
 const CloudSessionPanel = observer(function CloudSessionPanel() {
   const { params } = useParams('cloudSession');
@@ -89,6 +99,7 @@ const CloudSessionPanel = observer(function CloudSessionPanel() {
         hostState={agent ? cloudAgentState(agent) : null}
         autoWake={{
           phase: agent ? cloudAgentPhase(agent.launch, agent.machine) : null,
+          blocked: agent ? cloudHoldBlocker(agent) : null,
           wake: () => wake.mutateAsync(params.agentKey),
         }}
         stopHost={() => rpc.sdkHost.stop(params.agentKey, params.sessionId)}

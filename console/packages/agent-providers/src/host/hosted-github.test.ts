@@ -360,6 +360,16 @@ describe('ensureHostedRepository', () => {
     );
   });
 
+  it('shares the mirror with an agent that names the repository in another case', async () => {
+    const { git, commit, mirror, workspace, ensure } = await repositories();
+    const head = await commit('first');
+    await ensure(AGENT);
+    await ensure(OTHER, 'Example/Project');
+    const common = await git('-C', workspace(OTHER), 'rev-parse', '--git-common-dir');
+    expect(await realpath(resolve(workspace(OTHER), common))).toBe(mirror);
+    expect(await git('-C', workspace(OTHER), 'rev-parse', 'HEAD')).toBe(head);
+  });
+
   it('refuses a mirror whose origin is a different repository', async () => {
     const { commit, mirror, workspace, ensure, git } = await repositories();
     await commit('first');

@@ -14,6 +14,7 @@ const sdkHost = vi.hoisted(() => ({
   cloudAgents: vi.fn(),
   cloudSessions: vi.fn(),
   cloudSessionOperation: vi.fn(),
+  cloudWake: vi.fn(),
 }));
 const expandedCloudGroups = await vi.hoisted(async () => {
   const { observable } = await import('mobx');
@@ -31,7 +32,7 @@ vi.hoisted(() => {
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { sdkHost },
+  rpc: { sdkHost, switchServers: { cloudMachineLifecycle: vi.fn() } },
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
@@ -109,6 +110,7 @@ beforeEach(() => {
   navigate.mockReset();
   sdkHost.cloudSessionOperation.mockReset();
   sdkHost.cloudSessions.mockReset();
+  sdkHost.cloudWake.mockReset();
   expandedCloudGroups.clear();
   cloudOperationAttempts.settle(startAttemptKey(agentKey));
 });
@@ -219,4 +221,33 @@ it('keeps a cloud row expanded after remount', async () => {
   await act(async () => await new Promise((resolve) => setTimeout(resolve, 20)));
   expect(sdkHost.cloudSessions).toHaveBeenCalled();
   expect(remounted.textContent).toContain('Session s1');
+});
+
+function asleep(overrides: Partial<CloudAgent['launch']>, wakeAvailable: boolean): CloudAgent {
+  return {
+    ...agent(),
+    launch: { ...agent().launch, ...overrides },
+    problem: { code: 'worker_sleeping', message: 'The cloud machine is asleep.', wakeAvailable },
+  };
+}
+
+it('wakes a sleeping agent’s machine from its row', async () => {
+  sdkHost.cloudAgents.mockResolvedValue([asleep({}, true)]);
+  sdkHost.cloudWake.mockResolvedValue(undefined);
+  expandedCloudGroups.add(`cloud:${agentKey}`);
+  const el = await render();
+  expect(el.textContent).not.toContain('Send a message to wake it.');
+  await act(async () => button(el, /^wake$/i)!.click());
+  expect(sdkHost.cloudWake).toHaveBeenCalledWith(agentKey);
+});
+
+it('offers no wake for a stopped agent on a sleeping machine', async () => {
+  sdkHost.cloudAgents.mockResolvedValue([
+    asleep({ desired_state: 'stopped', state: 'stopped' }, false),
+  ]);
+  expandedCloudGroups.add(`cloud:${agentKey}`);
+  const el = await render();
+  expect(el.textContent).toContain('asleep');
+  expect(el.textContent).not.toContain('wake it');
+  expect(button(el, /^wake$/i)).toBeUndefined();
 });

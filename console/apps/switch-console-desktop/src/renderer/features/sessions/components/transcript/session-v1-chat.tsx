@@ -5,8 +5,16 @@ import { SessionHeaderContent } from '@renderer/features/sessions/session-header
 import { Button } from '@renderer/lib/ui/button';
 import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import { Textarea } from '@renderer/lib/ui/textarea';
+import type { CloudAgentPhase } from '@shared/core/cloud-agents/cloud-agents';
 import type { InitialPromptDelivery } from '@shared/core/sessions/session-config';
-import { deliverHeld, type HeldMessage, isWakingError, relayRefusalText } from './held-message';
+import {
+  deliverHeld,
+  type HeldMessage,
+  heldMessages,
+  heldStatusText,
+  isWakingError,
+  relayRefusalText,
+} from './held-message';
 import { SessionAttachmentList, useSessionAttachments } from './session-attachments';
 import { sessionStatePill, type SessionStateTone } from './session-state';
 import { SessionStatePill } from './session-state-pill';
@@ -32,9 +40,13 @@ export function SessionV1Chat({
   stopHost?: () => Promise<void>;
   startup?: { status: 'starting' | 'ready' | 'error'; message: string | null } | null;
   retireHost?: (epoch: string) => Promise<void>;
-  /** A cloud agent's machine, woken by the first message sent while it sleeps. */
+  /**
+   * A cloud agent's machine, woken by the first message sent while it sleeps.
+   * `blocked` says why a held message will not be delivered without the user.
+   */
   autoWake?: {
-    phase: 'sleeping' | 'waking' | 'machine_stopped' | null;
+    phase: CloudAgentPhase | null;
+    blocked: string | null;
     wake: () => Promise<unknown>;
   };
 }) {
@@ -98,12 +110,13 @@ export function SessionV1Chat({
       setAction(null);
     }
   };
-  const [draft, setDraft] = useState('');
-  const [pendingId, setPendingId] = useState<string | null>(null);
+  const [held, setHeld] = useState<HeldMessage | null>(() => heldMessages.get(client.sessionId));
+  useEffect(() => heldMessages.set(client.sessionId, held), [client, held]);
+  const [draft, setDraft] = useState(() => held?.text ?? '');
+  const [pendingId, setPendingId] = useState<string | null>(() => held?.commandId ?? null);
   const [sending, setSending] = useState(false);
   const [retireConfirm, setRetireConfirm] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [held, setHeld] = useState<HeldMessage | null>(null);
   const [heldRetryWait, setHeldRetryWait] = useState(false);
   const delivering = useRef(false);
   useEffect(() => {
@@ -119,6 +132,7 @@ export function SessionV1Chat({
     session?.connectivity === 'online' &&
     (session.status === 'ready' || session.status === 'running');
   const wakeable = autoWake?.phase === 'sleeping' || autoWake?.phase === 'waking';
+  const machineAwake = !wakeable;
   const runningTurn = view.snapshot?.turns.find((turn) => turn.status === 'running');
   const lastItems = new Map(view.snapshot?.items.map((item) => [item.turnId, item.itemId]));
   const stoppedTurns = new Map(
@@ -199,8 +213,8 @@ export function SessionV1Chat({
   };
   const heldStuck = !held
     ? null
-    : autoWake?.phase === 'machine_stopped'
-      ? 'The owner stopped the cloud machine. Start it in Your Agents, then send again.'
+    : autoWake?.blocked
+      ? `${autoWake.blocked} Your message was not sent.`
       : autoWake?.phase === null &&
           view.connected &&
           (session?.status === 'stopped' || session?.status === 'error')
@@ -213,6 +227,11 @@ export function SessionV1Chat({
     if (!client.hasPendingCommand()) setPendingId(null);
     setSendError(heldStuck);
   }, [heldStuck, sending, client]);
+  const cancelHeld = () => {
+    setHeld(null);
+    setHeldRetryWait(false);
+    if (!client.hasPendingCommand()) setPendingId(null);
+  };
   useEffect(() => {
     if (!held || heldStuck || !available || heldRetryWait || delivering.current) return;
     delivering.current = true;
@@ -516,7 +535,7 @@ export function SessionV1Chat({
             )}
           </details>
         )}
-      {!busy && !held && (view.error || !view.connected) && (
+      {!busy && (view.error || (!view.connected && !held)) && (
         <div
           role="status"
           className="flex items-center justify-between gap-3 bg-background-1 px-5 py-2 text-sm"
@@ -642,10 +661,13 @@ export function SessionV1Chat({
       </div>
       <div className="mx-auto w-full max-w-3xl px-5 pb-5">
         {held && (
-          <p role="status" className="mb-2 flex items-center gap-2 text-sm text-foreground-muted">
-            <Loader2 className="size-3 animate-spin" />
-            Waking… about 1–2 min. Keep Switch Console open until the machine is awake.
-          </p>
+          <div role="status" className="mb-2 flex items-center gap-2 text-sm text-foreground-muted">
+            <Loader2 className="size-3 shrink-0 animate-spin" />
+            <span className="min-w-0 flex-1">{heldStatusText(machineAwake)}</span>
+            <Button size="sm" variant="ghost" disabled={sending} onClick={cancelHeld}>
+              Cancel
+            </Button>
+          </div>
         )}
         {sendError && (
           <div role="alert" className="mb-2 text-sm text-foreground-destructive">
@@ -773,7 +795,15 @@ export function SessionV1Chat({
               }
               onClick={() => void send()}
             >
-              {sending ? 'Sending…' : held ? 'Waking…' : pendingId ? 'Retry message' : 'Send'}
+              {sending
+                ? 'Sending…'
+                : held
+                  ? machineAwake
+                    ? 'Connecting…'
+                    : 'Waking…'
+                  : pendingId
+                    ? 'Retry message'
+                    : 'Send'}
             </Button>
           </div>
         </div>

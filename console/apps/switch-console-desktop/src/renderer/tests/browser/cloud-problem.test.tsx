@@ -1,12 +1,13 @@
 /**
  * A cloud agent whose worker cannot be asked says why: a sleeping machine reads
- * as asleep and says a message wakes it, and any other relay refusal is an
- * alert that names its code. Neither offers a button: waking is the composer's.
+ * as asleep and says a message wakes it, or offers Wake where there is no
+ * composer, and any other relay refusal is an alert that names its code.
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { CloudProblem } from '@renderer/features/cloud-agents/cloud-problem';
+import type { CloudProblemAction } from '@renderer/features/cloud-agents/use-cloud-agents';
 import type { CloudRelayProblem } from '@shared/core/cloud-agents/cloud-agents';
 
 let container: HTMLDivElement | null = null;
@@ -19,11 +20,14 @@ afterEach(async () => {
   root = null;
 });
 
-async function render(problem: CloudRelayProblem): Promise<HTMLDivElement> {
+async function render(
+  problem: CloudRelayProblem,
+  action: CloudProblemAction | null = null
+): Promise<HTMLDivElement> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  await act(async () => root!.render(<CloudProblem problem={problem} compact />));
+  await act(async () => root!.render(<CloudProblem problem={problem} compact action={action} />));
   return container;
 }
 
@@ -52,4 +56,42 @@ it('shows any other refusal as an alert with its code', async () => {
   expect(alert?.textContent).toContain('(worker_busy)');
   expect(alert?.textContent).not.toContain('wake');
   expect(el.querySelector('button')).toBeNull();
+});
+
+it('offers Wake in place of the hint where there is no composer', async () => {
+  const run = vi.fn();
+  const el = await render(
+    { code: 'worker_sleeping', message: 'The cloud machine is asleep.', wakeAvailable: true },
+    { label: 'Wake', pending: false, error: null, run }
+  );
+  expect(el.textContent).not.toContain('Send a message to wake it.');
+  const wake = el.querySelector('button');
+  expect(wake?.textContent).toBe('Wake');
+  await act(async () => wake!.click());
+  expect(run).toHaveBeenCalledOnce();
+});
+
+it('says nothing about waking a sleeping machine that a message would not wake', async () => {
+  const el = await render({
+    code: 'worker_sleeping',
+    message: 'The cloud machine is asleep.',
+    wakeAvailable: false,
+  });
+  expect(el.textContent).not.toContain('wake it');
+  expect(el.querySelector('button')).toBeNull();
+});
+
+it('shows a machine in error with Retry and why a retry failed', async () => {
+  const el = await render(
+    { code: 'machine_error', message: 'The machine did not connect.', wakeAvailable: false },
+    {
+      label: 'Retry machine',
+      pending: false,
+      error: 'Could not retry the machine: boom',
+      run: vi.fn(),
+    }
+  );
+  expect(el.textContent).toContain('The cloud machine is in error.');
+  expect(el.textContent).toContain('Could not retry the machine: boom');
+  expect(el.querySelector('button')?.textContent).toBe('Retry machine');
 });

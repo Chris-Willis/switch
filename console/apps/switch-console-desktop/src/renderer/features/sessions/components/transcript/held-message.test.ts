@@ -6,7 +6,13 @@ import {
 } from '@switch-console/shared/session-v1';
 import { describe, expect, it } from 'vitest';
 import { RpcError, serializeRpcError } from '@shared/lib/ipc/rpc-error';
-import { deliverHeld, isWakingError, relayRefusalText } from './held-message';
+import {
+  deliverHeld,
+  heldMessages,
+  heldStatusText,
+  isWakingError,
+  relayRefusalText,
+} from './held-message';
 
 function relayError(relayCode: string): RpcError {
   const error = Object.assign(new Error(`Refused: ${relayCode}`), {
@@ -166,10 +172,37 @@ describe('relay refusals the user has to act on', () => {
     );
   });
 
+  it('says what to do for a machine in error', () => {
+    expect(relayRefusalText(relayError('machine_error'))).toBe(
+      'The cloud machine is in error. Retry it in Your Agents, then send again.'
+    );
+  });
+
   it('has nothing to add for any other failure', () => {
     expect(relayRefusalText(relayError('worker_waking'))).toBeNull();
     expect(relayRefusalText(relayError('worker_busy'))).toBeNull();
     expect(relayRefusalText(new Error('machine_stopped'))).toBeNull();
+    expect(relayRefusalText(relayError('toString'))).toBeNull();
     expect(isWakingError(new Error('worker_waking'))).toBe(false);
+  });
+});
+
+describe('what the composer says while it holds a message', () => {
+  it('says waking only while the machine is not yet awake', () => {
+    expect(heldStatusText(false)).toMatch(/^Waking…/);
+    expect(heldStatusText(false)).toContain('Keep Switch Console open');
+    expect(heldStatusText(true)).not.toContain('Waking');
+    expect(heldStatusText(true)).toContain('The machine is awake. Connecting to the session');
+  });
+});
+
+describe('held messages by session', () => {
+  it('keeps a held message for its session until it is cleared', () => {
+    const held = { commandId: 'held-4', text: 'later', attachments: [] };
+    heldMessages.set('session-a', held);
+    expect(heldMessages.get('session-a')).toEqual(held);
+    expect(heldMessages.get('session-b')).toBeNull();
+    heldMessages.set('session-a', null);
+    expect(heldMessages.get('session-a')).toBeNull();
   });
 });

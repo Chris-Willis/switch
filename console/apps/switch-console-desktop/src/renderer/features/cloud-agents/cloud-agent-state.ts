@@ -1,3 +1,4 @@
+import { relayRefusal } from '@renderer/features/sessions/components/transcript/held-message';
 import type { SessionStateTone } from '@renderer/features/sessions/components/transcript/session-state';
 import { type CloudAgent, cloudAgentPhase } from '@shared/core/cloud-agents/cloud-agents';
 
@@ -12,11 +13,29 @@ export function cloudAgentState(
   const phase = cloudAgentPhase(agent.launch, agent.machine);
   if (phase === 'sleeping') return { label: 'sleeping', tone: 'idle' };
   if (phase === 'machine_stopped') return { label: 'machine stopped', tone: 'idle' };
+  if (phase === 'machine_error') return { label: 'machine error', tone: 'bad' };
   if (phase === 'waking') return { label: 'waking…', tone: 'busy' };
   if (agent.launch.desired_state === 'stopped') return { label: 'stopped', tone: 'idle' };
   if (agent.launch.process_state === 'crashed' || agent.launch.error_code === 'agent_crashed')
     return { label: 'crashed', tone: 'bad' };
   if (agent.launch.state === 'error') return { label: 'error', tone: 'bad' };
   if (agent.problem) return { label: 'unreachable', tone: 'bad' };
+  return null;
+}
+
+/**
+ * Why a message held for a waking machine will not be delivered without the
+ * user acting, or null while it still may be.
+ */
+export function cloudHoldBlocker(agent: CloudAgent): string | null {
+  const { launch } = agent;
+  if (launch.desired_state === 'deleted') return 'This agent is being removed.';
+  const phase = cloudAgentPhase(launch, agent.machine);
+  if (phase === 'machine_stopped' || phase === 'machine_error') return relayRefusal(phase);
+  if (launch.desired_state === 'stopped') return relayRefusal('agent_stopped');
+  if (launch.process_state === 'crashed' || launch.error_code === 'agent_crashed')
+    return relayRefusal('agent_crashed');
+  if (launch.state === 'error')
+    return 'This agent could not start. Retry it in Your Agents, then send again.';
   return null;
 }

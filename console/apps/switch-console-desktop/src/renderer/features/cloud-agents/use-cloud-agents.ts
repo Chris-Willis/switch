@@ -85,3 +85,67 @@ export function useCloudWake() {
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['cloud-agents'] }),
   });
 }
+
+/** Start or retry the machine an agent runs on, at the revision it was read at. */
+function useCloudMachineAction() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ agent, action }: { agent: CloudAgent; action: 'start' | 'retry' }) => {
+      const key = parseCloudAgentKey(agent.key);
+      if (!key || !agent.machine) throw new Error(`${agent.launch.name} has no cloud machine.`);
+      return rpc.switchServers.cloudMachineLifecycle(
+        key.serverId,
+        agent.machine.machine_id,
+        action,
+        agent.machine.revision
+      );
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['cloud-agents'] }),
+  });
+}
+
+export type CloudProblemAction = {
+  label: string;
+  pending: boolean;
+  error: string | null;
+  run: () => void;
+};
+
+/**
+ * What the user can do about why an agent's worker cannot be asked: wake a
+ * sleeping machine (only where `wake`, since a composer wakes it by sending),
+ * start one its owner stopped, or retry one in error.
+ */
+export function useCloudProblemAction(agent: CloudAgent, wake: boolean): CloudProblemAction | null {
+  const waking = useCloudWake();
+  const machineAction = useCloudMachineAction();
+  const failed = (error: Error | null, what: string) =>
+    error ? `Could not ${what}: ${String(error)}` : null;
+  const problem = agent.problem;
+  if (wake && problem?.code === 'worker_sleeping' && problem.wakeAvailable)
+    return {
+      label: waking.isPending ? 'Waking…' : 'Wake',
+      pending: waking.isPending,
+      error: failed(waking.error, 'wake the machine'),
+      run: () => waking.mutate(agent.key),
+    };
+  if (problem?.code === 'machine_stopped' && agent.machine)
+    return {
+      label: machineAction.isPending ? 'Starting…' : 'Start machine',
+      pending: machineAction.isPending,
+      error: failed(machineAction.error, 'start the machine'),
+      run: () => machineAction.mutate({ agent, action: 'start' }),
+    };
+  if (
+    problem?.code === 'machine_error' &&
+    agent.machine &&
+    agent.machine.error_code !== 'machine_needs_attention'
+  )
+    return {
+      label: machineAction.isPending ? 'Retrying…' : 'Retry machine',
+      pending: machineAction.isPending,
+      error: failed(machineAction.error, 'retry the machine'),
+      run: () => machineAction.mutate({ agent, action: 'retry' }),
+    };
+  return null;
+}

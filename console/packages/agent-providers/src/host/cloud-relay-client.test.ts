@@ -210,7 +210,7 @@ it('reports a sleeping launch with whether it can be woken, without asking again
   expect(relayed).toHaveLength(1);
 });
 
-it.each(['machine_stopped', 'agent_stopped', 'agent_crashed'])(
+it.each(['machine_stopped', 'machine_error', 'agent_stopped', 'agent_crashed'])(
   'raises %s without asking again',
   async (code) => {
     answer = () => refused(409, code);

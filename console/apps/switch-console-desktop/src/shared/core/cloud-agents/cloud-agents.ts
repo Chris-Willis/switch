@@ -135,18 +135,22 @@ export type CloudAgent = CloudSessions & {
   machine: CloudMachine | null;
 };
 
+export type CloudAgentPhase = 'sleeping' | 'waking' | 'machine_stopped' | 'machine_error';
+
 /**
- * Whether the agent's machine is asleep, stopped by its owner, or on its way
- * up. The machine is read first; a launch without one says for itself. Only a
- * launch asked to run and not in error sleeps or wakes with its machine: a
- * message to a stopped or crashed one is refused rather than waking it.
+ * Whether the agent's machine is asleep, stopped by its owner, in error, or on
+ * its way up. The machine is read first; a launch without one says for itself.
+ * Only a launch asked to run and not in error sleeps or wakes with its
+ * machine: a message to a stopped or crashed one is refused rather than
+ * waking it.
  */
 export function cloudAgentPhase(
   launch: CloudLaunch,
   machine: CloudMachine | null
-): 'sleeping' | 'waking' | 'machine_stopped' | null {
+): CloudAgentPhase | null {
   if (machine?.desired_state === 'stopped' && machine.stop_reason === 'owner')
     return 'machine_stopped';
+  if (machine?.state === 'error') return 'machine_error';
   if (launch.desired_state !== 'running' || launch.state === 'error') return null;
   if (machine ? machine.sleeping : launch.sleeping) return 'sleeping';
   if (
