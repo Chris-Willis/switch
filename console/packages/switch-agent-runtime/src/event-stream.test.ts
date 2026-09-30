@@ -817,6 +817,149 @@ describe('the heartbeat after a reconnect', () => {
   });
 });
 
+describe('reopening while an open is still in flight', () => {
+  /**
+   * A server that keeps the incarnation the way the real one does: every open
+   * it receives makes a new one, whether or not the client stays to read the
+   * answer, and a reattach claiming an older one is refused as a takeover.
+   * The next open can be held unanswered, the way a slow connection holds it.
+   */
+  function incarnationServer() {
+    const state = {
+      generation: 0,
+      opens: 0,
+      beat: 'ok' as 'ok' | 404 | 'slow-404-and-drop',
+      subscribeDrops: false,
+      holdNext: false,
+      release: (): void => {},
+      drop: (): void => {},
+    };
+    const body = (gen: number, signal: AbortSignal) =>
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          const close = (): void => {
+            try {
+              controller.close();
+            } catch {
+              // already closed
+            }
+          };
+          state.drop = close;
+          controller.enqueue(connected(gen));
+          signal.addEventListener('abort', close, { once: true });
+        },
+      });
+    const fetchMock = vi.fn(async (url: string, init: { signal: AbortSignal }) => {
+      if (String(url).includes('connection/subscribe')) {
+        if (!state.subscribeDrops)
+          return { ok: true, status: 200, text: async (): Promise<string> => '' };
+        state.subscribeDrops = false;
+        // The stream ends while the claim is still in flight.
+        state.holdNext = true;
+        state.drop();
+        await new Promise((r) => setTimeout(r, 3_000));
+        return { ok: true, status: 200, text: async (): Promise<string> => '' };
+      }
+      if (!String(url).includes('/events')) {
+        if (state.beat === 'slow-404-and-drop') {
+          // The stream ends while this beat is in flight, and its answer comes
+          // back just after the client has started reopening.
+          state.beat = 'ok';
+          state.holdNext = true;
+          state.drop();
+          await new Promise((r) => setTimeout(r, 1_200));
+          return { ok: false, status: 404, text: async (): Promise<string> => '' };
+        }
+        if (state.beat === 404)
+          return { ok: false, status: 404, text: async (): Promise<string> => '' };
+        return { ok: true, status: 200, text: async (): Promise<string> => '' };
+      }
+      state.opens += 1;
+      const claimed = new URL(String(url)).searchParams.get('expected_generation');
+      if (claimed !== null && Number(claimed) < state.generation)
+        return {
+          ok: false,
+          status: 409,
+          body: null,
+          text: async (): Promise<string> =>
+            JSON.stringify({ detail: { code: 'taken_over', message: 'reattach refused' } }),
+        };
+      // The server acts on the open the moment it arrives.
+      state.generation += 1;
+      const gen = state.generation;
+      const answer = {
+        ok: true,
+        status: 200,
+        body: body(gen, init.signal),
+        text: async (): Promise<string> => '',
+      };
+      if (!state.holdNext) return answer;
+      state.holdNext = false;
+      return new Promise((resolve, reject) => {
+        state.release = () => resolve(answer);
+        init.signal.addEventListener(
+          'abort',
+          () => reject(new DOMException('aborted', 'AbortError')),
+          { once: true }
+        );
+      });
+    });
+    return { state, fetchMock };
+  }
+
+  it('does not cancel an open the server has already acted on, and so does not stand down', async () => {
+    // The self-takeover seen on the pilot. The server closes the stream, the
+    // client starts reopening, and a beat sent just before comes back 404.
+    // Reopening in answer used to cancel the open already in flight — which
+    // the server had acted on, moving the connection to a new incarnation.
+    // The client never read that answer, reattached claiming the old one, was
+    // refused as a takeover, and stood down for good. The "other client" was
+    // its own cancelled request.
+    vi.useFakeTimers();
+    const { state, fetchMock } = incarnationServer();
+    const onEvicted = vi.fn();
+    const { abort } = makeStream(fetchMock, { rooms: [], onEvicted });
+
+    await vi.advanceTimersByTimeAsync(3 * BEAT_INTERVAL_MS);
+    expect(state.generation).toBe(1);
+
+    state.beat = 'slow-404-and-drop';
+    // Long enough for the refused beat's wait to end while the open is held.
+    await vi.advanceTimersByTimeAsync(12_000);
+    state.release();
+    await vi.advanceTimersByTimeAsync(5 * BEAT_INTERVAL_MS);
+
+    expect(onEvicted).not.toHaveBeenCalled();
+    expect(state.opens).toBe(2);
+    expect(beatGenerations(fetchMock).at(-1)).toBe(2);
+    abort.abort();
+  });
+
+  it('carries out a repoint asked for mid-open once that open is answered', async () => {
+    // The other way into the same hole: a room change reopens to include the
+    // new room. Mid-open, it must wait for the answer rather than cancel it —
+    // and must still happen, since the open in flight was built without it.
+    vi.useFakeTimers();
+    const { state, fetchMock } = incarnationServer();
+    const onEvicted = vi.fn();
+    const { stream, abort } = makeStream(fetchMock, { rooms: ['room-a'], onEvicted });
+    await vi.advanceTimersByTimeAsync(BEAT_INTERVAL_MS);
+
+    state.subscribeDrops = true;
+    const repointing = stream.repoint('room-b');
+    // The claim returns while the stream's reopen is held unanswered.
+    await vi.advanceTimersByTimeAsync(5_000);
+    state.release();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await repointing;
+
+    expect(onEvicted).not.toHaveBeenCalled();
+    const opens = urlsFor(fetchMock, '/events');
+    expect(opens.at(-1)).toContain('rooms=room-b');
+    abort.abort();
+  });
+});
+
 describe('a connection another client takes over', () => {
   it('stands down when the room it repoints to is refused, without reopening', async () => {
     // `repoint` claims the room *before* it reopens, so the open's own fence

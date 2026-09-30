@@ -346,6 +346,13 @@ export class SwitchEventStream {
    */
   private attaches = 0;
   private wakeBeat: () => void = () => {};
+  /**
+   * Reopens asked for, and how many of those the open now in progress was
+   * built after — so a reopen asked for mid-open is carried out once that open
+   * is answered, never by cancelling it. See `reopen`.
+   */
+  private reopensWanted = 0;
+  private openCarries = 0;
 
   constructor(deps: SwitchEventStreamDeps) {
     this.deps = deps;
@@ -414,8 +421,35 @@ export class SwitchEventStream {
     this.reopen();
   }
 
+  /**
+   * Replace the socket — but never by cancelling an open the server has not
+   * answered yet.
+   *
+   * An open is a request the server acts on as soon as it arrives: it makes a
+   * new incarnation of the connection there and then. Cancelling it
+   * client-side does not undo that, it only stops us reading the answer that
+   * names the new incarnation. The next open then claims the incarnation
+   * before it, which the server has moved past, and is refused as a takeover
+   * — terminal. The client stands down, and the "other client" it yielded to
+   * was its own cancelled request.
+   *
+   * So a reopen asked for while an open is in flight is remembered instead,
+   * and carried out when that open's `connection_state` arrives, by which time
+   * we know the incarnation to claim. An open that was already built after the
+   * request carries it and needs no second one.
+   */
   private reopen(): void {
-    this.socketAbort?.abort();
+    this.reopensWanted += 1;
+    if (this.fence.admitting) this.socketAbort?.abort();
+  }
+
+  /**
+   * Reopen only to get attached again — the heartbeat's reason. An open
+   * already in flight does exactly that, so there is nothing to add to it; and
+   * one scheduled after a dropped socket carries the request anyway.
+   */
+  private reattach(): void {
+    if (this.fence.admitting) this.reopen();
   }
 
   /**
@@ -673,6 +707,7 @@ export class SwitchEventStream {
           client_version: RUNTIME_VERSION,
         });
         this.declaredSpawnCapable = this.spawnCapable;
+        this.openCarries = this.reopensWanted;
         if (this.declaredSpawnCapable) params.set('spawn_capable', 'true');
         if (this.rooms.length) params.set('rooms', this.rooms.join(','));
         // Reattaching, so say which incarnation we believe we still are and
@@ -781,6 +816,14 @@ export class SwitchEventStream {
           server: frame.data.server ?? null,
         });
         this.reportRooms(frame.data.rooms);
+        // A reopen asked for while this open was in flight, for something this
+        // open was built too early to carry. Now that we know the incarnation
+        // to claim, it is safe to replace the socket — and done before the
+        // gate opens, so no beat goes out on a socket about to be dropped.
+        if (this.reopensWanted > this.openCarries) {
+          this.socketAbort?.abort();
+          return;
+        }
         this.fence.attached();
         this.attaches += 1;
         this.wakeBeat();
@@ -1065,7 +1108,7 @@ export class SwitchEventStream {
           // server closes a lapsed connection's socket, and the stream loop
           // reopens it. Reopening again would throw that healthy connection
           // away; beat on it instead.
-          if (this.attaches === seenAttach) this.reopen();
+          if (this.attaches === seenAttach) this.reattach();
           continue;
         } else if (!ok) {
           fail(new Error(`HTTP ${status}`));
