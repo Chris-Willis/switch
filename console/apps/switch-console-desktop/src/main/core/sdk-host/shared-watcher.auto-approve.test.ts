@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   runCommand: vi.fn(),
   updateAgent: vi.fn(),
   stopLegacySidecar: vi.fn(),
+  bringUp: vi.fn(),
 }));
 
 vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: mocks.agent }));
@@ -63,7 +64,11 @@ vi.mock('./shared-host-deployment', () => ({
   runSharedHostCommand: mocks.runCommand,
 }));
 vi.mock('./legacy-sidecar', () => ({ stopLegacySidecar: mocks.stopLegacySidecar }));
-vi.mock('./watcher-inspection', () => ({ waitForWatcherStop: 'process.exit(0)' }));
+vi.mock('./watcher-inspection', () => ({}));
+vi.mock('./watcher-bring-up', () => ({
+  AUTO_APPROVE_CHOICE_FILE: 'auto-approve.json',
+  bringUpRemoteWatcher: mocks.bringUp,
+}));
 vi.mock('./adopt-subagent', () => ({ adoptSubagent: vi.fn() }));
 vi.mock('./local-host', () => ({ startLocalWatcher: vi.fn(), stopLocalWatcher: vi.fn() }));
 vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn() } }));
@@ -97,11 +102,6 @@ function savedSpec(runtimeMode: string) {
   );
 }
 
-/** A person's choice, kept beside the watcher by a sharing-aware Console. */
-function chosen(runtimeMode: string) {
-  writeFileSync(join(root, 'auto-approve.json'), JSON.stringify({ runtimeMode, at: 'then' }));
-}
-
 function readChoice(): { runtimeMode: string } {
   return JSON.parse(readFileSync(join(root, 'auto-approve.json'), 'utf8'));
 }
@@ -110,13 +110,9 @@ function readSpec(): { start: { input: { runtimeMode: string } } } {
   return JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'));
 }
 
-function writtenMode(): string {
-  const [, , config] = mocks.runCommand.mock.calls.at(-1) as [
-    unknown,
-    unknown,
-    { start: { input: { runtimeMode: string } } },
-  ];
-  return config.start.input.runtimeMode;
+/** Whether the bring-up was asked to take the host's choice into the watcher. */
+function adopted(): boolean {
+  return (mocks.bringUp.mock.calls.at(-1)![0] as { adoptAutoApprove: boolean }).adoptAutoApprove;
 }
 
 beforeEach(() => {
@@ -129,71 +125,50 @@ beforeEach(() => {
     connectionId: 'connection-1',
   });
   mocks.deploy.mockImplementation(async () => ({ ctx, root, entrypoint: 'shared-host.mjs' }));
+  mocks.bringUp.mockResolvedValue({ root, runtimeMode: null, legacyStopped: [] });
 });
 
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+// What the host's choice does to the watcher's spec is the bring-up script's,
+// tested against real files in watcher-bring-up.test.ts. Here: when this
+// Console asks for it, and what it does with the answer.
+
 it('takes auto-approve from the host when another Console changed it', async () => {
   mocks.agent.mockResolvedValue(agent(false));
-  savedSpec('full-access');
-  chosen('full-access');
+  mocks.bringUp.mockResolvedValue({ root, runtimeMode: 'full-access', legacyStopped: [] });
 
   await configureSharedWatcher('agent-1', { connected: true, spawning: true }, 'explicit');
 
-  expect(writtenMode()).toBe('full-access');
+  expect(adopted()).toBe(true);
   expect(mocks.updateAgent).toHaveBeenCalledWith({ agentId: 'agent-1', autoApprove: true });
 });
 
 it('leaves the row alone when it already agrees with the host', async () => {
   mocks.agent.mockResolvedValue(agent(true));
-  savedSpec('full-access');
-  chosen('full-access');
 
   await configureSharedWatcher('agent-1', { connected: true, spawning: true }, 'explicit');
 
-  expect(writtenMode()).toBe('full-access');
-  expect(mocks.updateAgent).not.toHaveBeenCalled();
-});
-
-it('does not take a saved spec for a choice when nobody made one', async () => {
-  // An older Console wrote this spec from its own row and kept no choice.
-  mocks.agent.mockResolvedValue(agent(true));
-  savedSpec('approval-required');
-
-  await configureSharedWatcher('agent-1', { connected: true, spawning: true }, 'explicit');
-
-  expect(writtenMode()).toBe('full-access');
-  expect(mocks.updateAgent).not.toHaveBeenCalled();
-});
-
-it('writes the first watcher from the row, with no spec on the host yet', async () => {
-  mocks.agent.mockResolvedValue(agent(true));
-
-  await configureSharedWatcher('agent-1', { connected: true, spawning: true }, 'explicit');
-
-  expect(writtenMode()).toBe('full-access');
+  expect(adopted()).toBe(true);
   expect(mocks.updateAgent).not.toHaveBeenCalled();
 });
 
 it('writes this Console’s value when the person using it has just changed it', async () => {
   mocks.agent.mockResolvedValue(agent(true));
-  savedSpec('approval-required');
 
   await configureSharedWatcherFor('agent-1', { connected: true, spawning: true }, 'explicit', {
     name: undefined,
     autoApprove: 'this-console',
   });
 
-  expect(writtenMode()).toBe('full-access');
+  expect(adopted()).toBe(false);
   expect(mocks.updateAgent).not.toHaveBeenCalled();
 });
 
 it('does not take a subagent watcher’s setting for its parent’s', async () => {
   mocks.agent.mockResolvedValue(agent(false));
-  savedSpec('full-access');
-  chosen('full-access');
   // A subagent watcher reads its Switch id from the credentials file.
   const readId = vi.spyOn(ctx, 'exec');
   readId.mockImplementation(async (command: string, args: string[]) => {
@@ -209,9 +184,17 @@ it('does not take a subagent watcher’s setting for its parent’s', async () =
     'helper'
   );
 
-  expect(writtenMode()).toBe('approval-required');
+  expect(adopted()).toBe(false);
   expect(mocks.updateAgent).not.toHaveBeenCalled();
   readId.mockRestore();
+});
+
+it('asks nothing of the host’s choice for a watcher being stopped', async () => {
+  mocks.agent.mockResolvedValue(agent(true));
+
+  await configureSharedWatcher('agent-1', { connected: false, spawning: false }, 'explicit');
+
+  expect(adopted()).toBe(false);
 });
 
 it('keeps a changed setting on the host for a watcher that starts no sessions', async () => {

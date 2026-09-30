@@ -1358,6 +1358,15 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Changed
+- **Updating the sidecars on a host with many agents takes a fraction of the
+  SSH round trips.** Each agent's bring-up used to check the host's shared
+  bundle for itself — half a dozen commands asking the same question — and
+  then stop an old sidecar, write its flags, stage its configuration and
+  launch it in as many more. The bundle is now checked, and uploaded if
+  needed, once per host, and each agent is brought up in one command after
+  its configuration is staged: about two round trips instead of thirteen.
+  Agents are still brought up one after another, so their reconnects to
+  Switch stay spread out.
 - **Every agent starts a session when it is addressed; the "Auto-create a
   session on notify" setting is gone.** Its switch is removed from the agent
   page and the create form, and new agents register as `auto_session`.

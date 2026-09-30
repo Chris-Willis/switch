@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   ssh: vi.fn(),
   ready: vi.fn(),
   server: vi.fn(),
+  bringUp: vi.fn(),
 }));
 
 vi.mock('@main/core/managed-switch-server/session-readiness', () => ({
@@ -52,8 +53,11 @@ vi.mock('./shared-host-deployment', () => ({
   runSharedHostCommand: mocks.runCommand,
 }));
 vi.mock('./watcher-inspection', () => ({
-  waitForWatcherStop: 'wait',
   removeWatcherRoots: 'fs.rmSync(root)',
+}));
+vi.mock('./watcher-bring-up', () => ({
+  AUTO_APPROVE_CHOICE_FILE: 'auto-approve.json',
+  bringUpRemoteWatcher: mocks.bringUp,
 }));
 vi.mock('./adopt-subagent', () => ({ adoptSubagent: vi.fn() }));
 vi.mock('./local-host', () => ({
@@ -74,6 +78,7 @@ beforeEach(() => {
     entrypoint: 'shared-host.mjs',
   });
   mocks.exec.mockResolvedValue({ stdout: '' });
+  mocks.bringUp.mockResolvedValue({ root: '/state/watcher', runtimeMode: null, legacyStopped: [] });
   mocks.stopped.mockResolvedValue([]);
   mocks.agentById.mockResolvedValue({
     id: 'agent-1',
@@ -112,7 +117,7 @@ it('stops a local agent through Console rather than a deployed host', async () =
   expect(mocks.deploy).not.toHaveBeenCalled();
 });
 
-it('still deploys the shared host for an agent on an SSH host', async () => {
+it('brings a watcher on an SSH host up in one command there', async () => {
   mocks.location.mockResolvedValue({
     id: 'remote',
     dir: '/work',
@@ -120,14 +125,20 @@ it('still deploys the shared host for an agent on an SSH host', async () => {
     connectionId: 'connection-1',
   });
   await configureSharedWatcher('agent-1', { connected: true, spawning: true }, 'explicit');
-  expect(mocks.deploy).toHaveBeenCalled();
-  expect(mocks.runCommand).toHaveBeenCalledWith(
-    expect.objectContaining({ kind: 'ssh' }),
-    expect.anything(),
-    expect.anything(),
-    '--ensure-watch',
-    false
-  );
+  expect(mocks.bringUp).toHaveBeenCalledOnce();
+  expect(mocks.bringUp.mock.calls[0][0]).toMatchObject({
+    transport: expect.objectContaining({ kind: 'ssh' }),
+    repoDir: '/work',
+    identity: 'switch-agent-1',
+    credentialsPath: '/work/.switch/agents/scout.json',
+    state: { connected: true, spawning: true },
+    config: expect.objectContaining({
+      session: expect.objectContaining({ agentId: 'switch-agent-1' }),
+    }),
+  });
+  // Not the per-agent deploy and launch it replaces.
+  expect(mocks.deploy).not.toHaveBeenCalled();
+  expect(mocks.runCommand).not.toHaveBeenCalled();
   expect(mocks.startLocal).not.toHaveBeenCalled();
 });
 
@@ -143,21 +154,20 @@ it.each([
   async (intent, connected, clear) => {
     mocks.location.mockResolvedValue({ id: 'remote', dir: '/work', sshHost: 'builder' });
     await configureSharedWatcher('agent-1', { connected, spawning: connected }, intent);
-    const write = mocks.exec.mock.calls.find((call) => call[1][1].includes('taken-over.json'));
-    expect(write?.[1].slice(2)).toEqual([
-      '/state/watcher',
-      String(connected),
-      String(connected),
-      clear,
-    ]);
+    expect(mocks.bringUp.mock.calls[0][0]).toMatchObject({
+      state: { connected, spawning: connected },
+      clear: clear === 'true',
+    });
   }
 );
 
 it('tells an SSH host to connect without spawning when auto-start is off', async () => {
   mocks.location.mockResolvedValue({ id: 'remote', dir: '/work', sshHost: 'builder' });
   await configureSharedWatcher('agent-1', { connected: true, spawning: false }, 'explicit');
-  const write = mocks.exec.mock.calls.find((call) => call[1][1].includes('taken-over.json'));
-  expect(write?.[1].slice(2)).toEqual(['/state/watcher', 'true', 'false', 'true']);
+  expect(mocks.bringUp.mock.calls[0][0]).toMatchObject({
+    state: { connected: true, spawning: false },
+    clear: true,
+  });
 });
 
 it('passes the spawn decision to a local watcher', async () => {
@@ -241,7 +251,7 @@ it('never connects to a server whose update failed', async () => {
   await expect(
     configureSharedWatcher('agent-1', { connected: true, spawning: true }, 'restore')
   ).rejects.toThrow('failed');
-  expect(mocks.deploy).not.toHaveBeenCalled();
+  expect(mocks.bringUp).not.toHaveBeenCalled();
   expect(mocks.startLocal).not.toHaveBeenCalled();
 });
 
