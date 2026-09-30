@@ -62,6 +62,14 @@ def _settings(config: SwitchConfig) -> HostedControllerSettings:
     )
 
 
+def _capability_valid(machine: HostedMachine | None, capability: str) -> bool:
+    return (
+        bool(capability)
+        and machine is not None
+        and HostedMachineStore.capability_matches(machine, capability)
+    )
+
+
 async def machine_request(
     machine_id: str,
     request: Request,
@@ -74,12 +82,8 @@ async def machine_request(
     capability = supplied[7:] if supplied.startswith("Bearer ") else ""
     with tenant_scope(settings.tenant_id):
         async with factory() as session:
-            machine = await HostedMachineStore().locked(session, machine_id)
-            if (
-                not capability
-                or machine is None
-                or not HostedMachineStore.capability_matches(machine, capability)
-            ):
+            machine = await HostedMachineStore().get(session, machine_id)
+            if not _capability_valid(machine, capability):
                 raise HTTPException(401, "invalid machine capability")
             if not request.headers.get(
                 "x-switch-host-boot-id"
@@ -88,6 +92,9 @@ async def machine_request(
                     400,
                     "X-Switch-Host-Boot-Id and X-Switch-Host-Instance-Id are required.",
                 )
+            machine = await HostedMachineStore().locked(session, machine_id)
+            if machine is None or not _capability_valid(machine, capability):
+                raise HTTPException(401, "invalid machine capability")
             if (
                 machine.state in RETIRED_STATES
                 or machine.desired_state in RETIRED_STATES

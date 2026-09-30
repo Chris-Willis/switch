@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import logging
 from datetime import UTC, datetime, timedelta
@@ -14,6 +15,7 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
+from switch_core.db.stores.hosted_machine_store import lock_machine
 from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
     HEADERS,
     SPEC,
@@ -105,6 +107,24 @@ async def test_supervisor_routes_require_the_machine_capability(supervisor):
             assert response.json() == {"detail": "invalid machine capability"}
     another = await client.get(f"/hosted/machines/{other.id}/agents", headers=headers)
     assert another.status_code == 401
+
+
+async def test_wrong_capability_is_refused_without_waiting_on_the_machine_lock(
+    supervisor,
+):
+    client, _, _, _, factory, machine_id, headers = supervisor
+    sent = {**headers, "Authorization": "Bearer wrong"}
+    async with factory() as holder:
+        await lock_machine(holder, machine_id)
+        try:
+            response = await asyncio.wait_for(
+                client.get(f"/hosted/machines/{machine_id}/agents", headers=sent),
+                timeout=5,
+            )
+        finally:
+            await holder.rollback()
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid machine capability"}
 
 
 @pytest.mark.parametrize(
