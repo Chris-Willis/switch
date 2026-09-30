@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 
 BRIDGE_TENANT = "tenant-bridge"
@@ -30,8 +30,8 @@ def registry() -> Iterator[MetricsRegistry]:
     uninstall()
 
 
-def _bridge() -> BridgeCore:
-    bridge = BridgeCore.__new__(BridgeCore)
+def _bridge() -> CollaborationCore:
+    bridge = CollaborationCore.__new__(CollaborationCore)
     bridge._bridge_id = "bridge-1"
     bridge._bridge_tenant_id = BRIDGE_TENANT
     bridge._bridge_type = "slack"

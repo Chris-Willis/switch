@@ -12,10 +12,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
@@ -55,7 +55,9 @@ def _leave(transport_room_id: str) -> InboundMembership:
     )
 
 
-def _client(buffer: EventBuffer, connections: ConnectionRegistry) -> SimpleNamespace:
+def _client(
+    buffer: EventBuffer, connections: AgentConnectionRegistry
+) -> SimpleNamespace:
     """A minimal fake `self` for the unbound `AgentClient.on_removed`."""
     meta = {
         "!left:test": RoomMeta(
@@ -90,7 +92,7 @@ async def test_the_rooms_retained_events_are_forgotten() -> None:
     buffer.enqueue(AGENT, LEFT, _message(LEFT, "said in the old room"))
     buffer.enqueue(AGENT, KEPT, _message(KEPT, "said in this one"))
 
-    await _removed(_client(buffer, ConnectionRegistry()), "!left:test")
+    await _removed(_client(buffer, AgentConnectionRegistry()), "!left:test")
 
     # Read at the level every reader is built on, filter or no filter: this is
     # what closes it for the stream, which has no membership of its own to
@@ -99,7 +101,7 @@ async def test_the_rooms_retained_events_are_forgotten() -> None:
 
 
 async def test_the_rooms_claim_is_released() -> None:
-    connections = ConnectionRegistry()
+    connections = AgentConnectionRegistry()
     conn = connections.open(
         agent_id=AGENT,
         connection_id="c1",
@@ -122,7 +124,7 @@ async def test_a_room_that_cannot_be_resolved_drops_nothing() -> None:
     buffer = EventBuffer()
     buffer.enqueue(AGENT, LEFT, _message(LEFT, "still here"))
 
-    await _removed(_client(buffer, ConnectionRegistry()), "!unknown:test")
+    await _removed(_client(buffer, AgentConnectionRegistry()), "!unknown:test")
 
     assert [item.room_id for item in buffer.read_from(AGENT, 0)] == [LEFT]
 

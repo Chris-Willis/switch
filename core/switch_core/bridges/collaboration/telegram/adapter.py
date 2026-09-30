@@ -38,7 +38,7 @@ from switch_core.bridges.agent.commands import COMMANDS, COMMANDS_BY_NAME, Comma
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
-    CollaborationAdapter,
+    PlatformAdapter,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -431,7 +431,7 @@ class TelegramConnectionConfig(BridgeConnectionConfig):
     bot_username: str
 
 
-class TelegramAdapter(CollaborationAdapter):
+class TelegramAdapter(PlatformAdapter):
     """Telegram collaboration bridge adapter.
 
     Single-bot identity model. Telegram has no per-message identity override —

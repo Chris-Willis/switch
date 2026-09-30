@@ -5,8 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from switch_core.bridges.collaboration import bridge_core as bridge_core_module
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration import (
+    collaboration_core as collaboration_core_module,
+)
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import InboundMessage
 
 # CHOO-1781: the first message from a channel member not yet known to the room
@@ -101,7 +103,7 @@ async def test_waits_for_puppet_join_before_returning() -> None:
     bridge = _bridge(puppet)
 
     task = asyncio.create_task(
-        BridgeCore._ensure_user_in_matrix_room(
+        CollaborationCore._ensure_user_in_matrix_room(
             bridge,
             external_user_id="ext-alice",
             external_username="alice",
@@ -117,17 +119,17 @@ async def test_waits_for_puppet_join_before_returning() -> None:
     puppet.complete_join()
     assert await task is puppet
     assert puppet.wait_joined_calls == [
-        (MATRIX_ROOM_ID, bridge_core_module.PUPPET_JOIN_TIMEOUT)
+        (MATRIX_ROOM_ID, collaboration_core_module.PUPPET_JOIN_TIMEOUT)
     ]
 
 
 async def test_returns_none_when_join_never_lands(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(bridge_core_module, "PUPPET_JOIN_TIMEOUT", 0.01)
+    monkeypatch.setattr(collaboration_core_module, "PUPPET_JOIN_TIMEOUT", 0.01)
     puppet = _FakePuppet()  # never joins
 
-    result = await BridgeCore._ensure_user_in_matrix_room(
+    result = await CollaborationCore._ensure_user_in_matrix_room(
         _bridge(puppet),
         external_user_id="ext-alice",
         external_username="alice",
@@ -149,7 +151,7 @@ async def test_app_sender_puppet_is_provisioned_then_awaited() -> None:
     bridge = _bridge(puppet, known_puppets={})
 
     task = asyncio.create_task(
-        BridgeCore._ensure_user_in_matrix_room(
+        CollaborationCore._ensure_user_in_matrix_room(
             bridge,
             external_user_id=APP_SENDER_ID,
             external_username="Datadog",
@@ -165,7 +167,7 @@ async def test_app_sender_puppet_is_provisioned_then_awaited() -> None:
     puppet.complete_join()
     assert await task is puppet
     assert puppet.wait_joined_calls == [
-        (MATRIX_ROOM_ID, bridge_core_module.PUPPET_JOIN_TIMEOUT)
+        (MATRIX_ROOM_ID, collaboration_core_module.PUPPET_JOIN_TIMEOUT)
     ]
 
 
@@ -188,7 +190,7 @@ async def test_first_message_from_app_sender_is_relayed() -> None:
         # Complete the join as the real invite/join round-trip would, so the
         # relay below exercises the post-join send rather than a stubbed one.
         asyncio.get_running_loop().call_soon(puppet.complete_join)
-        return await BridgeCore._ensure_user_in_matrix_room(inner, **kwargs)  # type: ignore[arg-type]
+        return await CollaborationCore._ensure_user_in_matrix_room(inner, **kwargs)  # type: ignore[arg-type]
 
     bridge = SimpleNamespace(
         _repair_placeholder_username=_noop_repair,
@@ -201,7 +203,7 @@ async def test_first_message_from_app_sender_is_relayed() -> None:
         _channel_locks={},
     )
 
-    await BridgeCore._handle_inbound_message(
+    await CollaborationCore._handle_inbound_message(
         bridge,
         InboundMessage(
             channel_id="chan-1",
@@ -244,7 +246,7 @@ async def test_first_message_from_unknown_member_is_relayed() -> None:
         _channel_locks={},
     )
 
-    await BridgeCore._handle_inbound_message(
+    await CollaborationCore._handle_inbound_message(
         bridge,
         InboundMessage(
             channel_id="chan-1",

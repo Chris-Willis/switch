@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.transport import HistoryPage, InboundMessage
 from tests.switch_core.transport.fake import FakeTransport
 
@@ -30,12 +30,12 @@ def _ev(
     )
 
 
-def _service_with_transport(transport: FakeTransport) -> ProtocolService:
+def _service_with_transport(transport: FakeTransport) -> AgentCore:
     client = SimpleNamespace(transport=transport)
-    svc = object.__new__(ProtocolService)
+    svc = object.__new__(AgentCore)
     # Presence unions the heartbeat rows with the live connections
     # (CHOO-1857); an empty registry means "rows only".
-    svc.connections = ConnectionRegistry()
+    svc.connections = AgentConnectionRegistry()
 
     async def _require_room_member(agent_id: str, room_id: str) -> SimpleNamespace:
         return SimpleNamespace(matrix_room_id="!matrix:server")

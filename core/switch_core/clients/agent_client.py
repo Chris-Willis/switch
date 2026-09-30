@@ -15,7 +15,7 @@ from switch_core.bridges.agent.commands import (
     _addressed_by_name_or_role,
     dispatch_command,
 )
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.presence import (
     agents_present_in,
@@ -242,7 +242,7 @@ class AgentClient(ClientBase[ClientConfig]):
         agent_session_store: AgentSessionStore,
         room_role_store: RoomRoleStore,
         external_user_store: ExternalUserStore,
-        connections: ConnectionRegistry,
+        connections: AgentConnectionRegistry,
         frontend_base_url: str | None,
         **kwargs: Unpack[ClientBaseKwargs[ClientConfig]],
     ) -> None:

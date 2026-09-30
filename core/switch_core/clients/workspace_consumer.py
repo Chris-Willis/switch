@@ -11,39 +11,39 @@ from switch_core.clients.client_base import (
 from switch_core.transport import InboundMedia, InboundMessage, RoomRef
 
 if TYPE_CHECKING:
-    from switch_core.bridges.collaboration.bridge_core import BridgeCore
+    from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 
 logger = logging.getLogger(__name__)
 
 
-class BridgeClientConfig(ClientConfig):
+class WorkspaceConsumerConfig(ClientConfig):
     bridge_id: str
 
 
-class BridgeClient(ClientBase[BridgeClientConfig]):
-    config_class = BridgeClientConfig
+class WorkspaceConsumer(ClientBase[WorkspaceConsumerConfig]):
+    config_class = WorkspaceConsumerConfig
 
     def __init__(
         self,
         *,
-        bridge_core: BridgeCore,
-        **kwargs: Unpack[ClientBaseKwargs[BridgeClientConfig]],
+        collaboration_core: CollaborationCore,
+        **kwargs: Unpack[ClientBaseKwargs[WorkspaceConsumerConfig]],
     ) -> None:
         super().__init__(**kwargs)
-        self._bridge_core = bridge_core
+        self._collaboration_core = collaboration_core
 
     async def on_message(self, room: RoomRef, event: InboundMessage) -> None:
         logger.debug(
-            "[BRIDGE-CLIENT] on_message room=%s sender=%s",
+            "[WORKSPACE-CONSUMER] on_message room=%s sender=%s",
             room.room_id,
             event.sender,
         )
-        await self._bridge_core.handle_outbound_message(room, event)
+        await self._collaboration_core.handle_outbound_message(room, event)
 
     async def on_media(self, room: RoomRef, event: InboundMedia) -> None:
         logger.debug(
-            "[BRIDGE-CLIENT] on_media room=%s sender=%s",
+            "[WORKSPACE-CONSUMER] on_media room=%s sender=%s",
             room.room_id,
             event.sender,
         )
-        await self._bridge_core.handle_outbound_media(room, event, self)
+        await self._collaboration_core.handle_outbound_media(room, event, self)

@@ -47,7 +47,7 @@ from switch_core.telemetry.snapshot import (
 from switch_core.tenant_context import tenant_scope
 
 if TYPE_CHECKING:
-    from switch_core.bridges.collaboration.bridge_core import BridgeCore
+    from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
     from switch_core.bridges.collaboration.lifecycle_service import (
         CollaborationBridgeLifecycleService,
     )
@@ -413,7 +413,7 @@ class RoomService:
 
     @staticmethod
     async def _add_users_to_channel(
-        bridge_core: BridgeCore,
+        collaboration_core: CollaborationCore,
         external_channel_id: str,
         user_names: list[str],
     ) -> list[dict[str, Any]]:
@@ -426,7 +426,7 @@ class RoomService:
         a log line, leaving a room that silently lacked the people it was asked
         for.
         """
-        resolved = await bridge_core.resolve_external_user_id_map(user_names)
+        resolved = await collaboration_core.resolve_external_user_id_map(user_names)
         failures: list[dict[str, Any]] = [
             {
                 "kind": "user",
@@ -440,7 +440,7 @@ class RoomService:
         # rather than passing the caller's full name list beside a shorter list
         # of ids — an adapter that zips them would otherwise mis-attribute.
         names = list(resolved)
-        failed_ids = await bridge_core.adapter.add_users_to_channel(
+        failed_ids = await collaboration_core.adapter.add_users_to_channel(
             external_channel_id, names, [resolved[name] for name in names]
         )
         by_id = {resolved[name]: name for name in names}
@@ -456,7 +456,7 @@ class RoomService:
 
     @staticmethod
     async def _ensure_channel_capture(
-        bridge_core: BridgeCore,
+        collaboration_core: CollaborationCore,
         external_channel_id: str,
         channel_type: ChannelType,
     ) -> None:
@@ -470,7 +470,7 @@ class RoomService:
         capture is a single bridge-wide stream, and idempotent for those where
         it is not.
         """
-        await bridge_core.adapter.ensure_channel_subscriptions(
+        await collaboration_core.adapter.ensure_channel_subscriptions(
             [(external_channel_id, channel_type)]
         )
 
@@ -487,24 +487,30 @@ class RoomService:
         channel_type = config.channel_type
         external_channel_id = config.external_channel_id
         bridge_id = await self._resolve_bridge_id(config)
-        bridge_core = None
+        collaboration_core = None
         if bridge_id:
             await self._require_tenant_bridge(bridge_id)
-            bridge_core = self._collab_lifecycle.get(bridge_id)
-            if bridge_core is None:
+            collaboration_core = self._collab_lifecycle.get(bridge_id)
+            if collaboration_core is None:
                 raise ValueError(f"Bridge not running: {bridge_id}")
 
         # A channel the platform delivered to this bridge is its own by
         # construction; one named by the caller has to be shown to be.
         if (
-            bridge_core
+            collaboration_core
             and external_channel_id is not None
             and config.created_by_kind != "system"
         ):
-            await bridge_core.adapter.require_bindable_channel(external_channel_id)
+            await collaboration_core.adapter.require_bindable_channel(
+                external_channel_id
+            )
 
-        if bridge_core and external_channel_id is not None and channel_type is None:
-            channel_type = await bridge_core.adapter.get_channel_type(
+        if (
+            collaboration_core
+            and external_channel_id is not None
+            and channel_type is None
+        ):
+            channel_type = await collaboration_core.adapter.get_channel_type(
                 external_channel_id
             )
 
@@ -513,18 +519,20 @@ class RoomService:
 
         is_dm = (
             channel_type == "direct"
-            and bridge_core is not None
+            and collaboration_core is not None
             and external_channel_id is None
         )
         if is_dm:
             self._validate_dm_room(config, agent_ids)
 
-        if bridge_core and external_channel_id is None:
+        if collaboration_core and external_channel_id is None:
             await self._require_channel_creation(bridge_id)  # type: ignore[arg-type]
             if is_dm:
                 user_name = (config.user_names or [])[0]
                 agent_name = (await self._resolve_ids_to_names(agent_ids))[0]
-                ext_id_map = await bridge_core.resolve_external_user_id_map([user_name])
+                ext_id_map = await collaboration_core.resolve_external_user_id_map(
+                    [user_name]
+                )
                 user_external_id = ext_id_map.get(user_name)
                 if user_external_id is None:
                     raise ValueError(
@@ -532,13 +540,15 @@ class RoomService:
                         "this bridge. The user must have interacted with Switch on "
                         "the platform before a DM can be opened with them."
                     )
-                external_channel_id = await bridge_core.adapter.create_dm_channel(
-                    agent_name=agent_name,
-                    user_name=user_name,
-                    user_external_id=user_external_id,
+                external_channel_id = (
+                    await collaboration_core.adapter.create_dm_channel(
+                        agent_name=agent_name,
+                        user_name=user_name,
+                        user_external_id=user_external_id,
+                    )
                 )
             else:
-                external_channel_id = await bridge_core.adapter.create_channel(
+                external_channel_id = await collaboration_core.adapter.create_channel(
                     config.name,
                     config.description,
                     channel_type=channel_type,
@@ -549,8 +559,8 @@ class RoomService:
         # it, which fires an inbound join; without this guard that join would
         # not see the not-yet-committed mapping and would auto-create a second
         # room for the same channel (CHOO-1660).
-        if bridge_core and external_channel_id:
-            bridge_core.begin_provisioning(external_channel_id)
+        if collaboration_core and external_channel_id:
+            collaboration_core.begin_provisioning(external_channel_id)
         try:
             matrix_room_id = await self._matrix_admin.create_room(
                 config.name, config.description
@@ -604,13 +614,13 @@ class RoomService:
                     await self._seed_aliases(session, room.id, agent_ids, config)
                 await session.commit()
 
-            if bridge_core and external_channel_id:
-                bridge_core.add_room_mapping(
+            if collaboration_core and external_channel_id:
+                collaboration_core.add_room_mapping(
                     room.id, matrix_room_id, external_channel_id, room.tenant_id
                 )
         finally:
-            if bridge_core and external_channel_id:
-                bridge_core.end_provisioning(external_channel_id)
+            if collaboration_core and external_channel_id:
+                collaboration_core.end_provisioning(external_channel_id)
 
         # The room row is durably committed above. Everything from here down —
         # channel capture, invites, adding agents/users on the external
@@ -656,40 +666,40 @@ class RoomService:
                     room.id,
                 )
 
-        if bridge_core and external_channel_id:
+        if collaboration_core and external_channel_id:
             await self._ensure_channel_capture(
-                bridge_core, external_channel_id, channel_type
+                collaboration_core, external_channel_id, channel_type
             )
 
         # Invite the bridge client before the agent clients so it is joined (and
         # thus replicating) before any agent can post — otherwise messages sent
         # in the gap predate the bridge's join and are dropped by _should_ignore,
         # never reaching the external channel. Mirrors change_bridge's ordering.
-        if bridge_core:
+        if collaboration_core:
             await self._matrix_admin.invite_to_room(
-                matrix_room_id, bridge_core._bridge_client_matrix_user_id
+                matrix_room_id, collaboration_core._workspace_consumer_matrix_user_id
             )
 
         unreachable_users: list[dict[str, Any]] = []
         if (
-            bridge_core
+            collaboration_core
             and external_channel_id
             and channel_type not in ("direct", "group")
         ):
             agent_names = await self._resolve_ids_to_names(agent_ids)
-            await bridge_core.adapter.add_agents_to_channel(
+            await collaboration_core.adapter.add_agents_to_channel(
                 external_channel_id, agent_names
             )
             if config.user_names:
                 unreachable_users = await self._add_users_to_channel(
-                    bridge_core, external_channel_id, config.user_names
+                    collaboration_core, external_channel_id, config.user_names
                 )
-                await bridge_core.ensure_users_in_room(
+                await collaboration_core.ensure_users_in_room(
                     room.id, matrix_room_id, config.user_names
                 )
 
-        if bridge_core and external_channel_id and is_dm and config.user_names:
-            await bridge_core.ensure_users_in_room(
+        if collaboration_core and external_channel_id and is_dm and config.user_names:
+            await collaboration_core.ensure_users_in_room(
                 room.id, matrix_room_id, config.user_names
             )
 
@@ -788,9 +798,9 @@ class RoomService:
                 await session.commit()
 
         if bridge_id:
-            bridge_core = self._collab_lifecycle.get(bridge_id)
-            if bridge_core:
-                bridge_core.remove_room_mapping(room.id, room.matrix_room_id)
+            collaboration_core = self._collab_lifecycle.get(bridge_id)
+            if collaboration_core:
+                collaboration_core.remove_room_mapping(room.id, room.matrix_room_id)
 
         logger.info("Deleted room %s", room_id)
 
@@ -889,10 +899,10 @@ class RoomService:
                 await session.commit()
 
         if room.bridge_id and room.external_channel_id:
-            bridge_core = self._collab_lifecycle.get(room.bridge_id)
-            if bridge_core:
+            collaboration_core = self._collab_lifecycle.get(room.bridge_id)
+            if collaboration_core:
                 agent_names_resolved = await self._resolve_ids_to_names(new_agent_ids)
-                await bridge_core.adapter.add_agents_to_channel(
+                await collaboration_core.adapter.add_agents_to_channel(
                     room.external_channel_id, agent_names_resolved
                 )
 
@@ -1118,18 +1128,18 @@ class RoomService:
                 raise ValueError(f"Room not found: {room_id}")
         if not room.bridge_id or not room.external_channel_id:
             raise ValueError(f"Room {room_id} is not bridged")
-        bridge_core = self._collab_lifecycle.get(room.bridge_id)
-        if bridge_core is None:
+        collaboration_core = self._collab_lifecycle.get(room.bridge_id)
+        if collaboration_core is None:
             raise ValueError(f"Bridge not running: {room.bridge_id}")
-        resolved = await bridge_core.resolve_external_user_id_map(user_names)
+        resolved = await collaboration_core.resolve_external_user_id_map(user_names)
         unresolved = [name for name in user_names if name not in resolved]
         resolved_names = list(resolved.keys())
-        failed_ids = await bridge_core.adapter.add_users_to_channel(
+        failed_ids = await collaboration_core.adapter.add_users_to_channel(
             room.external_channel_id, resolved_names, list(resolved.values())
         )
         by_id = {resolved[name]: name for name in resolved_names}
         unresolved.extend(by_id.get(fid, fid) for fid in failed_ids)
-        await bridge_core.ensure_users_in_room(
+        await collaboration_core.ensure_users_in_room(
             room.id, room.matrix_room_id, resolved_names
         )
         logger.info("Added %d users to room %s", len(resolved_names), room_id)
@@ -1162,11 +1172,11 @@ class RoomService:
                 raise ValueError(f"Room not found: {room_id}")
 
         await self._require_tenant_bridge(bridge_id)
-        bridge_core = self._collab_lifecycle.get(bridge_id)
+        collaboration_core = self._collab_lifecycle.get(bridge_id)
 
-        if external_channel_id is None and bridge_core is not None:
+        if external_channel_id is None and collaboration_core is not None:
             await self._require_channel_creation(bridge_id)
-            external_channel_id = await bridge_core.adapter.create_channel(
+            external_channel_id = await collaboration_core.adapter.create_channel(
                 room.name, room.description
             )
 
@@ -1180,12 +1190,12 @@ class RoomService:
             )
             await session.commit()
 
-        if bridge_core and external_channel_id:
-            bridge_core.add_room_mapping(
+        if collaboration_core and external_channel_id:
+            collaboration_core.add_room_mapping(
                 room.id, room.matrix_room_id, external_channel_id, room.tenant_id
             )
             await self._ensure_channel_capture(
-                bridge_core, external_channel_id, channel_type
+                collaboration_core, external_channel_id, channel_type
             )
 
         logger.info("Linked bridge %s to room %s", bridge_id, room_id)
@@ -1203,9 +1213,9 @@ class RoomService:
             await session.commit()
 
         if bridge_id:
-            bridge_core = self._collab_lifecycle.get(bridge_id)
-            if bridge_core:
-                bridge_core.remove_room_mapping(room.id, room.matrix_room_id)
+            collaboration_core = self._collab_lifecycle.get(bridge_id)
+            if collaboration_core:
+                collaboration_core.remove_room_mapping(room.id, room.matrix_room_id)
 
         logger.info("Unlinked bridge from room %s", room_id)
 
@@ -1308,7 +1318,7 @@ class RoomService:
                 new_bridge, external_channel_id, resolved_channel_type
             )
             await self._matrix_admin.invite_to_room(
-                matrix_room_id, new_bridge._bridge_client_matrix_user_id
+                matrix_room_id, new_bridge._workspace_consumer_matrix_user_id
             )
 
             if resolved_channel_type not in ("direct", "group"):
@@ -1331,7 +1341,7 @@ class RoomService:
                 if old_bridge is not None:
                     old_bridge.remove_room_mapping(room_id, matrix_room_id)
                     await self._matrix_admin.kick_user(
-                        matrix_room_id, old_bridge._bridge_client_matrix_user_id
+                        matrix_room_id, old_bridge._workspace_consumer_matrix_user_id
                     )
                 logger.warning(
                     "Room %s moved from bridge %s to %s; old external channel %s "
@@ -1478,10 +1488,10 @@ class RoomService:
         on it then.
         """
         await self._require_tenant_bridge(bridge_id)
-        bridge_core = self._collab_lifecycle.get(bridge_id)
-        if bridge_core is None:
+        collaboration_core = self._collab_lifecycle.get(bridge_id)
+        if collaboration_core is None:
             raise ValueError("the room's messaging app is not running")
-        return await bridge_core.resolve_external_user_id_map(names)
+        return await collaboration_core.resolve_external_user_id_map(names)
 
     async def ensure_client_in_room(self, room_id: str, client_id: str) -> None:
         """Invite a single running client to the room (it auto-joins) and record

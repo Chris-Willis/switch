@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { listHostSessions } from '@main/core/sdk-host/host-sessions';
 import { stopSharedSession } from '@main/core/sdk-host/shared-agent-runtime';
-import { configureSharedWatcher } from '@main/core/sdk-host/shared-watcher';
+import { configureAgentHost } from '@main/core/sdk-host/agent-host';
 import { manageAgentSidecar } from '@main/core/sdk-host/sidecar-management';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manager';
@@ -20,7 +20,7 @@ export async function resetRemoteAgent(agentId: string): Promise<void> {
   const agent = await getAgentById(agentId);
   if (!agent?.workspaceId || !agent.switchAgentId)
     throw new Error('The agent is not linked to Switch.');
-  await configureSharedWatcher(agentId, { connected: false, spawning: false }, 'explicit');
+  await configureAgentHost(agentId, { connected: false, spawning: false }, 'explicit');
   remoteSessionReconciler.stop(agentId);
   const remote = await listHostSessions(agentId);
   for (const session of remote) {

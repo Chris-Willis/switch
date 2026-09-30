@@ -8,11 +8,11 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     ROOM_RELEASED_PROTOCOL_REVISION,
+    AgentConnection,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    Connection,
-    ConnectionRegistry,
     Released,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
@@ -25,8 +25,12 @@ ROOM_C = "room-c"
 
 
 def _open(
-    registry: ConnectionRegistry, connection_id: str, *, speaks: int | None, scope: str
-) -> Connection:
+    registry: AgentConnectionRegistry,
+    connection_id: str,
+    *,
+    speaks: int | None,
+    scope: str,
+) -> AgentConnection:
     return registry.open(
         agent_id=AGENT,
         connection_id=connection_id,
@@ -64,7 +68,7 @@ async def _frames_until_quiet(
 
 
 def test_a_claim_taken_over_is_released_to_its_holder_with_its_session() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     loser = _open(
         registry, "loser", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all"
     )
@@ -82,7 +86,7 @@ def test_a_claim_taken_over_is_released_to_its_holder_with_its_session() -> None
 
 def test_connect_to_room_placement_releases_the_other_connections_session() -> None:
     """`connect_to_room` places before it claims; the frame names the session once."""
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     loser = _open(
         registry, "loser", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all"
     )
@@ -99,7 +103,7 @@ def test_connect_to_room_placement_releases_the_other_connections_session() -> N
 
 
 def test_displacing_a_sibling_on_the_same_connection_releases_nothing() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _open(
         registry, "watcher", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all"
     )
@@ -112,7 +116,7 @@ def test_displacing_a_sibling_on_the_same_connection_releases_nothing() -> None:
 
 @pytest.mark.parametrize("speaks", [ROOM_RELEASED_PROTOCOL_REVISION - 1, None])
 def test_a_client_that_cannot_take_the_frame_is_not_sent_it(speaks: int | None) -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     loser = _open(registry, "loser", speaks=speaks, scope="single")
     winner = _open(
         registry, "winner", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all"
@@ -126,7 +130,7 @@ def test_a_client_that_cannot_take_the_frame_is_not_sent_it(speaks: int | None) 
 
 
 def test_taking_the_room_back_withdraws_the_unsent_release() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     first = _open(
         registry, "first", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all"
     )
@@ -143,7 +147,7 @@ def test_taking_the_room_back_withdraws_the_unsent_release() -> None:
 
 
 def test_replacing_placements_is_a_full_replacement() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _open(
         registry, "watcher", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all"
     )
@@ -158,7 +162,7 @@ def test_replacing_placements_is_a_full_replacement() -> None:
 
 
 def test_replacing_placements_leaves_other_connections_alone() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     mine = _open(registry, "mine", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all")
     theirs = _open(
         registry, "theirs", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all"
@@ -175,7 +179,7 @@ def test_replacing_placements_leaves_other_connections_alone() -> None:
 
 
 def test_replacing_placements_takes_a_room_over_and_releases_it() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     mine = _open(registry, "mine", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all")
     theirs = _open(
         registry, "theirs", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all"
@@ -194,7 +198,7 @@ def test_replacing_placements_takes_a_room_over_and_releases_it() -> None:
 
 
 def test_a_room_claimed_without_a_placement_is_released_with_no_session() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     mine = _open(registry, "mine", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all")
     theirs = _open(
         registry, "theirs", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="single"
@@ -210,7 +214,7 @@ def test_a_room_claimed_without_a_placement_is_released_with_no_session() -> Non
 
 
 def test_two_sessions_in_one_room_are_refused_without_change() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _open(
         registry, "watcher", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all"
     )
@@ -224,7 +228,7 @@ def test_two_sessions_in_one_room_are_refused_without_change() -> None:
 
 
 async def test_the_displaced_stream_is_sent_room_released() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     loser = _open(
         registry, "loser", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all"
@@ -248,7 +252,7 @@ async def test_the_displaced_stream_is_sent_room_released() -> None:
 
 
 async def test_an_older_client_stream_is_not_sent_room_released() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     loser = _open(
         registry, "loser", speaks=ROOM_RELEASED_PROTOCOL_REVISION - 1, scope="all"

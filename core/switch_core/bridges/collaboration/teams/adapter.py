@@ -24,7 +24,7 @@ from pydantic.json_schema import SkipJsonSchema
 
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 from switch_core.bridges.collaboration.adapter import (
-    CollaborationAdapter,
+    PlatformAdapter,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -547,7 +547,7 @@ class TeamsConnectionConfig(BridgeConnectionConfig):
         return self
 
 
-class TeamsAdapter(CollaborationAdapter):
+class TeamsAdapter(PlatformAdapter):
     """Microsoft Teams collaboration adapter.
 
     Single-bot identity model (like Slack): one Azure bot app backs every Switch

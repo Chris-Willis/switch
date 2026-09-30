@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import InboundMessage
 from switch_core.bridges.collaboration.session.form import posted_form
 from switch_core.bridges.collaboration.session.refusal import Refused
@@ -113,7 +113,7 @@ def _bridge(approval_answers: Any) -> tuple[Any, list[dict[str, str]]]:
         relayed.append(kwargs)
         return None
 
-    bridge = BridgeCore.__new__(BridgeCore)
+    bridge = CollaborationCore.__new__(CollaborationCore)
     bridge._channel_to_room = {CHANNEL: ("room-uuid", "!room:test")}
     bridge._channel_locks = {}
     bridge._approval_answers = approval_answers

@@ -21,9 +21,9 @@ const mocks = vi.hoisted(() => {
     },
   };
 });
-vi.mock('@main/core/sdk-host/shared-watcher', () => ({
+vi.mock('@main/core/sdk-host/agent-host', () => ({
   applyControllerState: mocks.apply,
-  configureSharedWatcher: mocks.configure,
+  configureAgentHost: mocks.configure,
 }));
 vi.mock('@main/core/sdk-host/local-host', () => ({ disposeLocalHosts: mocks.dispose }));
 vi.mock('@main/core/agents/getAgents', () => ({ getAgents: mocks.agents }));

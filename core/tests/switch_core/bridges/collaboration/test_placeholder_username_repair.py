@@ -16,7 +16,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
@@ -86,7 +86,7 @@ def _core(stored_name: str, *, adapter: Any = None, puppet: Any = None) -> Any:
     user = SimpleNamespace(
         id="eu-1", external_username=stored_name, client_id="client-1"
     )
-    core = object.__new__(BridgeCore)
+    core = object.__new__(CollaborationCore)
     core._session_factory = lambda: _FakeSession()  # type: ignore[attr-defined]
     core._bridge_id = "bridge-1"  # type: ignore[attr-defined]
     core._bridge_type = "teams"  # type: ignore[attr-defined]
@@ -117,9 +117,9 @@ def test_teams_does_not_mistake_a_name_for_an_id() -> None:
 
 def test_a_platform_whose_handles_are_handles_recognises_nothing() -> None:
     # The default: nothing to recognise, so nothing is ever renamed.
-    from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+    from switch_core.bridges.collaboration.adapter import PlatformAdapter
 
-    assert CollaborationAdapter.is_placeholder_username(None, _TEAMS_ID) is False  # type: ignore[arg-type]
+    assert PlatformAdapter.is_placeholder_username(None, _TEAMS_ID) is False  # type: ignore[arg-type]
 
 
 # ── the repair ───────────────────────────────────────────────────────────────

@@ -15,10 +15,10 @@ from switch_core.db.models import (
     BridgeMessageMap,
     TurnStatusPost,
 )
-from switch_core.session_activity.bridge_publisher import (
-    SessionActivityBridgePublisher,
-)
 from switch_core.session_activity.listener import SessionActivityListener
+from switch_core.session_activity.publisher import (
+    SessionActivityPublisher,
+)
 from switch_core.session_activity.service import (
     ApprovalOption,
     PlatformPerson,
@@ -89,7 +89,7 @@ def online() -> Online:
 def _publisher(session_factory, bridged, listener, platform, online):
     tenant = current_tenant_id()
     assert tenant is not None
-    return SessionActivityBridgePublisher(
+    return SessionActivityPublisher(
         adapter=platform,  # type: ignore[arg-type]
         bridge_id=bridged.bridge_id,
         bridge_type="slack",
@@ -104,7 +104,7 @@ def _publisher(session_factory, bridged, listener, platform, online):
 @pytest.fixture
 async def publisher(
     session_factory, bridged, listener, platform, online
-) -> AsyncIterator[SessionActivityBridgePublisher]:
+) -> AsyncIterator[SessionActivityPublisher]:
     publisher = _publisher(session_factory, bridged, listener, platform, online)
     publisher.start()
     try:

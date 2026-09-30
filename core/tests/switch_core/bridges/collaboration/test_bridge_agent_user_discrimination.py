@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundMessage,
@@ -84,7 +84,7 @@ def _fake_bridge(*, agents: set[str]) -> SimpleNamespace:
 async def test_inbound_message_from_agent_is_dropped() -> None:
     bridge = _fake_bridge(agents={"cc-marketing.chad"})
 
-    await BridgeCore._handle_inbound_message(bridge, _msg("cc-marketing.chad"))
+    await CollaborationCore._handle_inbound_message(bridge, _msg("cc-marketing.chad"))
 
     # Agent's own echo: never re-imported, never puppeted as a user.
     assert bridge.ensure_calls == []
@@ -94,7 +94,7 @@ async def test_inbound_message_from_third_party_bot_is_bridged() -> None:
     # Not a registered agent (e.g. a GitHub/CI bot or a human) — must flow in.
     bridge = _fake_bridge(agents={"cc-marketing.chad"})
 
-    await BridgeCore._handle_inbound_message(bridge, _msg("github-ci-bot"))
+    await CollaborationCore._handle_inbound_message(bridge, _msg("github-ci-bot"))
 
     assert len(bridge.ensure_calls) == 1
     assert bridge.ensure_calls[0]["external_username"] == "github-ci-bot"
@@ -106,7 +106,9 @@ async def test_inbound_message_from_third_party_bot_is_bridged() -> None:
 async def test_user_join_from_agent_routes_to_agent_join() -> None:
     bridge = _fake_bridge(agents={"github.phil.conway"})
 
-    await BridgeCore._handle_user_joined_channel(bridge, _join("github.phil.conway"))
+    await CollaborationCore._handle_user_joined_channel(
+        bridge, _join("github.phil.conway")
+    )
 
     # Routed to the agent-join path; no external-user puppet created.
     assert [j.agent_name for j in bridge.agent_joins] == ["github.phil.conway"]
@@ -116,7 +118,7 @@ async def test_user_join_from_agent_routes_to_agent_join() -> None:
 async def test_user_join_from_human_creates_puppet() -> None:
     bridge = _fake_bridge(agents={"github.phil.conway"})
 
-    await BridgeCore._handle_user_joined_channel(bridge, _join("alice"))
+    await CollaborationCore._handle_user_joined_channel(bridge, _join("alice"))
 
     assert bridge.agent_joins == []
     assert len(bridge.ensure_calls) == 1

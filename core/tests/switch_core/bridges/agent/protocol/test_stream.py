@@ -10,14 +10,14 @@ import pytest
 
 from switch_core import version as version_module
 from switch_core.bridges.agent.protocol import stream as stream_module
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_LAPSED,
     HEARTBEAT_TTL_SECONDS,
     PROTOCOL_ACCEPTS,
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
     Closure,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.stream import event_stream
@@ -72,7 +72,7 @@ async def _take(stream, count: int, timeout: float = 2.0) -> list[tuple[str, dic
     return out
 
 
-def _open(registry: ConnectionRegistry, **kw: Any):
+def _open(registry: AgentConnectionRegistry, **kw: Any):
     params: dict[str, Any] = {
         "agent_id": AGENT,
         "connection_id": kw.pop("connection_id", "c1"),
@@ -88,7 +88,7 @@ def _open(registry: ConnectionRegistry, **kw: Any):
 
 
 async def test_first_frame_is_the_connection_state() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     conn = _open(registry)
     registry.claim_room(conn, ROOM_A)
@@ -113,7 +113,7 @@ async def test_the_first_frame_declares_the_server(monkeypatch) -> None:
     version is reachable without authenticating (CHOO-1865).
     """
     monkeypatch.setattr(version_module, "switch_core_version", lambda: "9.9.9")
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     conn = _open(registry)
 
@@ -136,7 +136,7 @@ async def test_an_unreadable_server_version_is_null_not_a_placeholder(
 ) -> None:
     """Null means unknown. A placeholder would read as a version we chose."""
     monkeypatch.setattr(version_module, "switch_core_version", lambda: None)
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     conn = _open(registry)
 
@@ -152,7 +152,7 @@ async def test_the_first_frame_echoes_what_the_client_declared() -> None:
     Both sides otherwise believe it landed, which is worse than never having
     sent it.
     """
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     conn = _open(
         registry,
@@ -176,7 +176,7 @@ async def test_the_first_frame_echoes_what_the_client_declared() -> None:
 
 
 async def test_an_undeclared_client_is_echoed_as_all_null() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     conn = _open(registry, declaration=ClientDeclaration())
 
@@ -192,7 +192,7 @@ async def test_an_undeclared_client_is_echoed_as_all_null() -> None:
 
 
 async def test_catch_up_then_live_delivery() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     conn = _open(registry)
     registry.claim_room(conn, ROOM_A)
@@ -218,7 +218,7 @@ async def test_catch_up_then_live_delivery() -> None:
 
 
 async def test_sequence_number_is_carried_for_resume() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     conn = _open(registry)
     registry.claim_room(conn, ROOM_A)
@@ -232,7 +232,7 @@ async def test_sequence_number_is_carried_for_resume() -> None:
 
 
 async def test_resuming_from_a_cursor_skips_what_was_already_seen() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     first = buffer.enqueue(AGENT, ROOM_A, _message("seen"))
     buffer.enqueue(AGENT, ROOM_A, _message("missed"))
@@ -247,7 +247,7 @@ async def test_resuming_from_a_cursor_skips_what_was_already_seen() -> None:
 
 
 async def test_expired_cursor_produces_a_gap_event_rather_than_silence() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer(max_events_per_agent=1)
     buffer.enqueue(AGENT, ROOM_A, _message("dropped"))
     buffer.enqueue(AGENT, ROOM_A, _message("kept"))
@@ -263,7 +263,7 @@ async def test_expired_cursor_produces_a_gap_event_rather_than_silence() -> None
 
 
 async def test_events_for_rooms_the_connection_does_not_cover_are_skipped() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     conn = _open(registry)
     registry.claim_room(conn, ROOM_A)
@@ -278,7 +278,7 @@ async def test_events_for_rooms_the_connection_does_not_cover_are_skipped() -> N
 
 
 async def test_addressed_filter_drops_ambient_chatter() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     conn = _open(registry, scope="all", delivery_filter="addressed")
 
@@ -292,7 +292,7 @@ async def test_addressed_filter_drops_ambient_chatter() -> None:
 
 
 async def test_a_superseded_stream_is_told_it_was_evicted() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     conn = _open(registry)
     registry.claim_room(conn, ROOM_A)
@@ -312,7 +312,7 @@ async def test_a_superseded_stream_is_told_it_was_evicted() -> None:
 
 
 async def test_closing_the_connection_ends_the_stream_with_a_reason() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     conn = _open(registry)
     registry.claim_room(conn, ROOM_A)
@@ -331,7 +331,7 @@ async def test_closing_the_connection_ends_the_stream_with_a_reason() -> None:
 
 async def test_a_close_about_a_room_names_the_room_it_was_about() -> None:
     """A client that loses a connection over a room it declared must be told which."""
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     conn = _open(registry)
     registry.claim_room(conn, ROOM_A)
@@ -351,7 +351,7 @@ async def test_a_close_about_a_room_names_the_room_it_was_about() -> None:
 
 
 async def test_subscription_change_is_announced() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     conn = _open(registry)
     registry.claim_room(conn, ROOM_A)
@@ -373,7 +373,7 @@ async def test_subscription_change_is_announced() -> None:
 
 
 async def test_stream_detaches_on_exit_without_killing_the_connection() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     conn = _open(registry)
 
@@ -388,7 +388,7 @@ async def test_stream_detaches_on_exit_without_killing_the_connection() -> None:
 @pytest.mark.parametrize("scope", ["single", "all"])
 async def test_two_connections_receive_the_same_event(scope: str) -> None:
     """Non-destructive reads: one reader must not steal from another."""
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
 
     session = registry.open(
@@ -433,7 +433,7 @@ async def test_resume_replays_buffered_events_for_a_room_claimed_at_open() -> No
     first, skip those events as "not covered", and advance the cursor past
     them — losing exactly what resume is meant to recover.
     """
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
 
     seen = buffer.enqueue(AGENT, ROOM_A, _message("before the drop"))
@@ -452,7 +452,7 @@ async def test_resume_replays_buffered_events_for_a_room_claimed_at_open() -> No
 
 async def test_events_for_uncovered_rooms_do_not_block_the_cursor() -> None:
     """Skipping is deliberate for rooms this connection does not cover."""
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     conn = _open(registry)
     registry.claim_room(conn, ROOM_A)
@@ -474,7 +474,7 @@ async def test_a_cursor_from_before_a_restart_is_reported_not_ignored() -> None:
     otherwise sit quietly at a position that no longer means anything, looking
     caught up while its history has a hole in it.
     """
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     buffer.enqueue(AGENT, ROOM_A, _message("after the restart"))
 
@@ -503,7 +503,7 @@ class TestALapsedHeartbeatStopsDelivery:
     async def test_the_stream_evicts_when_the_heartbeat_lapses(self) -> None:
         import time as _time
 
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         buffer = EventBuffer()
         conn = _open(registry)
         registry.claim_room(conn, ROOM_A)
@@ -527,7 +527,7 @@ class TestALapsedHeartbeatStopsDelivery:
         """Otherwise the room slot stays claimed by a connection that is gone."""
         import time as _time
 
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         buffer = EventBuffer()
         conn = _open(registry)
         registry.claim_room(conn, ROOM_A)
@@ -560,7 +560,7 @@ class TestFilteredEventsDoNotSpinTheLoop:
     async def test_the_cursor_advances_past_events_the_filter_excludes(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         buffer = EventBuffer()
         conn = _open(registry, delivery_filter="addressed")
         registry.claim_room(conn, ROOM_A)
@@ -586,7 +586,7 @@ class TestFilteredEventsDoNotSpinTheLoop:
         self,
     ) -> None:
         """Advancing past the excluded events must not skip what follows."""
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         buffer = EventBuffer()
         conn = _open(registry, delivery_filter="addressed")
         registry.claim_room(conn, ROOM_A)
@@ -622,7 +622,7 @@ class TestAConnectionWithNoRoomDoesNotConsume:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(stream_module, "KEEPALIVE_INTERVAL_SECONDS", 0.05)
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         buffer = EventBuffer()
         # Opened at 0, like a session handed its trigger's position.
         conn = _open(registry, cursor=0)
@@ -643,7 +643,7 @@ class TestAConnectionWithNoRoomDoesNotConsume:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(stream_module, "KEEPALIVE_INTERVAL_SECONDS", 0.05)
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         buffer = EventBuffer()
         conn = _open(registry, cursor=0)
 
@@ -666,7 +666,7 @@ class TestAConnectionWithNoRoomDoesNotConsume:
 
     async def test_an_all_scope_connection_is_not_parked(self) -> None:
         """A watcher holds no room by design and must keep receiving."""
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         buffer = EventBuffer()
         conn = _open(registry, scope="all", connection_id="watcher")
 
@@ -682,7 +682,7 @@ class TestAConnectionWithNoRoomDoesNotConsume:
 
 
 async def test_replaced_stream_cannot_capture_its_successors_generation() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     conn = _open(registry)
     old = event_stream(conn=conn, registry=registry, buffer=buffer, approvals=None)
@@ -692,7 +692,7 @@ async def test_replaced_stream_cannot_capture_its_successors_generation() -> Non
 
 
 async def test_closed_stream_cannot_detach_a_recreated_connection() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     conn = _open(registry)
     old = event_stream(conn=conn, registry=registry, buffer=buffer, approvals=None)
@@ -722,7 +722,7 @@ async def test_a_resumed_stream_does_not_replay_a_room_the_agent_was_removed_fro
     nothing left for any reader to be handed. This asserts the property at the
     reader that has no other defence.
     """
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
 
     buffer.enqueue(AGENT, ROOM_A, _message("said before the removal"))
@@ -751,7 +751,7 @@ async def test_a_last_event_id_reconnect_does_not_replay_a_removed_room() -> Non
     being asked — so it is worth pinning separately from an explicitly
     requested `start_from`.
     """
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
 
     seen = buffer.enqueue(AGENT, ROOM_A, _message("before the drop"))
@@ -782,7 +782,7 @@ class TestWhatADeliveredEventSaysAboutItsRoom:
     async def test_a_delivered_event_carries_the_chatter_of_its_own_room(
         self,
     ) -> None:
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         buffer = EventBuffer()
         conn = _open(registry, delivery_filter="addressed")
         registry.claim_room(conn, ROOM_A)
@@ -809,7 +809,7 @@ class TestWhatADeliveredEventSaysAboutItsRoom:
         Skipping unnotifiable events is what keeps the generator from spinning;
         it must not double as a claim that the agent has seen them.
         """
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         buffer = EventBuffer()
         conn = _open(registry, delivery_filter="addressed")
         registry.claim_room(conn, ROOM_A)
@@ -833,7 +833,7 @@ class TestWhatADeliveredEventSaysAboutItsRoom:
     async def test_a_room_claimed_after_the_connection_opened_counts_from_there(
         self,
     ) -> None:
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         buffer = EventBuffer()
         conn = _open(registry, delivery_filter="addressed")
         registry.claim_room(conn, ROOM_A)
@@ -855,7 +855,7 @@ class TestWhatADeliveredEventSaysAboutItsRoom:
         assert frames[1][1]["missed"] == {"count": 1, "reason": None}
 
     async def test_a_count_is_absent_rather_than_zero_after_a_restart(self) -> None:
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         buffer = EventBuffer()
         conn = _open(registry, cursor=4812)  # from a previous life
         registry.claim_room(conn, ROOM_A)
@@ -877,7 +877,7 @@ class TestAGapNamesTheRoomsThatLostEvents:
     """ "Something was dropped" is unactionable across a dozen rooms."""
 
     async def test_an_expired_cursor_names_them(self) -> None:
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         buffer = EventBuffer(max_events_per_agent=2)
         buffer.enqueue(AGENT, ROOM_A, _message("dropped"))
         buffer.enqueue(AGENT, ROOM_B, _message("dropped", room=ROOM_B))
@@ -898,7 +898,7 @@ class TestAGapNamesTheRoomsThatLostEvents:
         assert sorted(frames[1][1]["rooms"]) == [ROOM_A, ROOM_B]
 
     async def test_a_restart_names_the_rooms_the_connection_covers(self) -> None:
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         buffer = EventBuffer()
         buffer.enqueue(AGENT, ROOM_A, _message("after the restart"))
 
@@ -922,7 +922,7 @@ class TestAGapNamesTheRoomsThatLostEvents:
         its sessions go on to claim answering with a fresh zero, which is the
         restart made invisible in exactly the rooms the agent works in.
         """
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         buffer = EventBuffer()
         buffer.enqueue(AGENT, ROOM_A, _message("after the restart"))
         conn = _open(registry, scope="all", cursor=4812)
@@ -946,7 +946,7 @@ class TestAGapNamesTheRoomsThatLostEvents:
         assert "restarted" in delivered[-1][1]["missed"]["reason"]
 
     async def test_a_dropped_event_gap_is_confined_to_the_rooms_it_names(self) -> None:
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         buffer = EventBuffer(max_events_per_agent=1)
         buffer.enqueue(AGENT, ROOM_A, _message("dropped"))
         buffer.enqueue(AGENT, ROOM_A, _message("kept"))
@@ -966,7 +966,7 @@ class TestAGapNamesTheRoomsThatLostEvents:
 
 async def test_a_delivered_event_names_no_session() -> None:
     """Routing a room's events to a session is the watcher's, from its own placements."""
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     buffer = EventBuffer()
     conn = _open(registry, scope="all")
     registry.place_session(AGENT, "session-1", ROOM_A, conn.id)

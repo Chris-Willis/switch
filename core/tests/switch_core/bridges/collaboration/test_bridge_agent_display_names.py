@@ -19,10 +19,10 @@ import pytest
 from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.adapter import (
     AgentPresentation,
-    CollaborationAdapter,
+    PlatformAdapter,
     TurnActivity,
 )
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
@@ -96,17 +96,17 @@ def _agent(
     return SimpleNamespace(name=name, display_name=display_name, icon_url=icon_url)
 
 
-def _bridge(*agents: SimpleNamespace) -> BridgeCore:
-    """A BridgeCore with only the two collaborators the resolver and the echo
+def _bridge(*agents: SimpleNamespace) -> CollaborationCore:
+    """A CollaborationCore with only the two collaborators the resolver and the echo
     check touch — the rest of `__init__` needs a live Matrix stack."""
-    bridge = BridgeCore.__new__(BridgeCore)
+    bridge = CollaborationCore.__new__(CollaborationCore)
     bridge._bridge_tenant_id = "tenant-1"
     bridge._agent_store = _AgentStore({a.name: a for a in agents})  # type: ignore[assignment]
     bridge._session_factory = _Session  # type: ignore[assignment]
     return bridge
 
 
-class _BareAdapter(CollaborationAdapter):
+class _BareAdapter(PlatformAdapter):
     """Concrete only so it can be instantiated: the label plumbing under test
     lives on the base class and no platform method is called."""
 
@@ -127,7 +127,7 @@ class _BareAdapter(CollaborationAdapter):
     def translate_outbound(self, *a: Any, **k: Any) -> Any: ...
 
 
-class TestBridgeCoreResolver:
+class TestCollaborationCoreResolver:
     async def test_returns_the_agents_display_name(self) -> None:
         bridge = _bridge(_agent("worker", "Worker Bee"))
         found = await bridge._agent_presentation("worker")
@@ -242,7 +242,7 @@ class TestAdapterLabelSelection:
         that uploads the bytes rather than passing a link on keeps the response
         format it can accept."""
         adapter = MattermostAdapter.__new__(MattermostAdapter)
-        CollaborationAdapter.__init__(adapter)
+        PlatformAdapter.__init__(adapter)
 
         assert await adapter.agent_icon_url("worker") == default_icon_url(
             "worker", image_format="png"
@@ -280,7 +280,7 @@ def test_the_resolver_is_installed_before_the_adapter_starts() -> None:
     bridge._ensure_channel_captures = _noop  # type: ignore[assignment,method-assign]
     bridge._create_agent_identities = _noop  # type: ignore[assignment,method-assign]
 
-    asyncio.run(BridgeCore.start(bridge))
+    asyncio.run(CollaborationCore.start(bridge))
 
     assert started == ["started"]
     assert installed == [bridge._agent_presentation]
@@ -318,7 +318,9 @@ class _FakeSlackClient:
         return {"ts": "301.0"}
 
 
-def _slack_adapter(bridge: BridgeCore | None) -> tuple[SlackAdapter, _FakeSlackClient]:
+def _slack_adapter(
+    bridge: CollaborationCore | None,
+) -> tuple[SlackAdapter, _FakeSlackClient]:
     adapter = SlackAdapter(
         config=SlackConnectionConfig(
             bot_token="xoxb-test", app_token="xapp-test", workspace_id="T123"
@@ -635,7 +637,7 @@ def _gateway_message(
 
 
 def _discord_adapter(
-    bridge: BridgeCore | None,
+    bridge: CollaborationCore | None,
 ) -> tuple[DiscordAdapter, _FakeChannel, _FakeChannel]:
     adapter = DiscordAdapter(
         config=DiscordConnectionConfig(bot_token="token", guild_id=str(GUILD_ID))
@@ -1033,7 +1035,7 @@ class _FakeTeamsConnector:
 
 
 def _teams_adapter(
-    bridge: BridgeCore | None,
+    bridge: CollaborationCore | None,
 ) -> tuple[TeamsAdapter, _FakeTeamsConnector]:
     adapter = TeamsAdapter(
         config=TeamsConnectionConfig(
@@ -1241,7 +1243,7 @@ class _FakeTelegramBot:
 
 
 def _telegram_adapter(
-    bridge: BridgeCore | None,
+    bridge: CollaborationCore | None,
 ) -> tuple[TelegramAdapter, _FakeTelegramBot]:
     adapter = TelegramAdapter(
         config=TelegramConnectionConfig(
@@ -1469,7 +1471,7 @@ MATTERMOST_CHANNEL = "mm-channel-1"
 
 
 def _mattermost_adapter(
-    bridge: BridgeCore | None,
+    bridge: CollaborationCore | None,
 ) -> tuple[MattermostAdapter, list[str]]:
     """Mattermost carries the label in two places: the inherited operator ping,
     covered here, and the per-agent bot's own `display_name`, covered by the
@@ -1588,7 +1590,7 @@ class _MattermostBot:
 
 
 def _mattermost_identity_adapter(
-    bridge: BridgeCore, bots: list[dict[str, Any]], name_display: str | None
+    bridge: CollaborationCore, bots: list[dict[str, Any]], name_display: str | None
 ) -> tuple[MattermostAdapter, _MattermostAdmin]:
     """An adapter wired for `create_agent_identity`: a fake admin driver, and
     stubs for the icon upload (its own concern, covered elsewhere) and the bot

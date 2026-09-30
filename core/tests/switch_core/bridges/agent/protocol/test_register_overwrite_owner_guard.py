@@ -16,9 +16,9 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.service import (
+from switch_core.bridges.agent.protocol.agent_core import (
+    AgentCore,
     AgentExistsError,
-    ProtocolService,
 )
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
@@ -62,15 +62,15 @@ class _NoBridges:
         return []
 
 
-def _service(session_factory: async_sessionmaker[AsyncSession]) -> ProtocolService:
-    svc = object.__new__(ProtocolService)
+def _service(session_factory: async_sessionmaker[AsyncSession]) -> AgentCore:
+    svc = object.__new__(AgentCore)
     svc.session_factory = session_factory  # type: ignore[attr-defined]
     svc.agent_store = AgentStore()  # type: ignore[attr-defined]
     svc.api_key_store = ApiKeyStore()  # type: ignore[attr-defined]
     svc.client_lifecycle = _FakeClientLifecycle(session_factory)  # type: ignore[attr-defined]
     svc.collab_lifecycle = _NoBridges()  # type: ignore[attr-defined]
     svc.config = SimpleNamespace(jwt_secret_key="test-secret")  # type: ignore[attr-defined]
-    # Duck-typed: the attribute exists on ProtocolService after the api-key
+    # Duck-typed: the attribute exists on AgentCore after the api-key
     # cache landed on main; a no-op stand-in keeps this test valid on both
     # sides of that merge.
     svc.api_key_cache = SimpleNamespace(invalidate_agent=lambda *a, **k: None)  # type: ignore[attr-defined]
@@ -87,7 +87,7 @@ async def _make_user(
         return user.id
 
 
-async def _register(svc: ProtocolService, name: str, owner_id: str, **kw: object):
+async def _register(svc: AgentCore, name: str, owner_id: str, **kw: object):
     return await svc.register_agent(
         name=name,
         description=f"{name} desc",

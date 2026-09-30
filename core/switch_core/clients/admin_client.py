@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Literal, Unpack
 
 from switch_core.agent_display_name import agent_label_with_identifier
 from switch_core.bridges.agent.commands import dispatch_admin_command
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
     PLATFORM_MARKER,
@@ -61,7 +61,7 @@ class AdminClient(ClientBase[ClientConfig]):
         agent_store: AgentStore,
         room_store: RoomStore,
         room_role_store: RoomRoleStore,
-        connections: ConnectionRegistry,
+        connections: AgentConnectionRegistry,
         document_store: DocumentStore,
         reference_store: ReferenceStore,
         agent_session_store: AgentSessionStore,

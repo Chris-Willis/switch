@@ -1,4 +1,4 @@
-import { keepAutoApproveChoice, recordAutoApproveOnHost } from '@main/core/sdk-host/shared-watcher';
+import { keepAutoApproveChoice, recordAutoApproveOnHost } from '@main/core/sdk-host/agent-host';
 import { listStoppedControllerAgentIds } from '@main/core/switch-rooms/auto-session-store';
 import { getRemoteAgentLocation } from './agent-location';
 import { getAgentById } from './getAgentById';

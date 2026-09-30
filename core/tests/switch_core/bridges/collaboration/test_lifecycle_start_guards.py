@@ -14,7 +14,7 @@ from collections.abc import Mapping
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.models import BridgeStartRefused
 
 from .test_lifecycle_tenant_binding import (
@@ -42,7 +42,7 @@ async def test_a_refused_bridge_runs_nothing(
     service = _service(session_factory)
     service.register_adapter("mattermost", _StubAdapter, _StubConfig)
     asked: list[dict[str, object]] = []
-    handed: list[CollaborationAdapter] = []
+    handed: list[PlatformAdapter] = []
 
     async def refuse(**kwargs: object) -> None:
         asked.append(kwargs)

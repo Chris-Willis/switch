@@ -50,7 +50,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     ActivitySnapshot,
-    CollaborationAdapter,
+    PlatformAdapter,
     RemovalFailed,
     RichContentFailed,
     RichContentThrottled,
@@ -192,11 +192,11 @@ _Key = tuple[str, ...]
 _RESYNC: _Key = ("resync",)
 
 
-class SessionActivityBridgePublisher:
+class SessionActivityPublisher:
     def __init__(
         self,
         *,
-        adapter: CollaborationAdapter,
+        adapter: PlatformAdapter,
         bridge_id: str,
         bridge_type: str,
         tenant_id: str,
@@ -236,7 +236,7 @@ class SessionActivityBridgePublisher:
 
     def start(self) -> None:
         if self._tasks:
-            raise RuntimeError("SessionActivityBridgePublisher is already started")
+            raise RuntimeError("SessionActivityPublisher is already started")
         self._unsubscribe = self._listener.subscribe(
             self._tenant_id, self._on_change, self._on_resync
         )

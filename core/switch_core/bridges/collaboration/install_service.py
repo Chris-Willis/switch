@@ -57,7 +57,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.install import (
     InboundWebhook,
     MessagingAppInstaller,
@@ -132,7 +132,7 @@ class WebhookTarget:
     tenant_id: str
     platform: str
     bridge_id: str
-    adapter: CollaborationAdapter
+    adapter: PlatformAdapter
 
 
 class InstallPlatformMismatch(RuntimeError):

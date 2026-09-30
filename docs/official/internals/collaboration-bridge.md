@@ -28,7 +28,7 @@ Microsoft Teams is the only adapter that has to be reachable from the internet. 
 
 ## The adapter contract
 
-`CollaborationAdapter` is an abstract base class. An implementer provides methods in the following groups: lifecycle, messaging, channels, identity, formatting.
+`PlatformAdapter` is an abstract base class. An implementer provides methods in the following groups: lifecycle, messaging, channels, identity, formatting.
 
 ### Lifecycle
 

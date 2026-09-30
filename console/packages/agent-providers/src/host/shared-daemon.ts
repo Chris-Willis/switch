@@ -11,7 +11,7 @@ import { adapterFor } from './server';
 import { HOST_EXIT_GRACE_MS, SessionLinks } from './session-channel';
 import { sharedConfigSchema } from './shared-config';
 import { hostSessionProcess } from './shared-host';
-import { runSharedWatcher } from './shared-watcher';
+import { runAgentHost } from './agent-host';
 import { superviseSharedHost } from './supervisor';
 import { recordWatcherHealth } from './watcher-health-file';
 import { WatcherControl } from './watcher-tools';
@@ -130,7 +130,7 @@ async function main(): Promise<void> {
     // start it again.
     try {
       await Promise.all([
-        runSharedWatcher(root, config, stop.signal, supervision, control).finally(() =>
+        runAgentHost(root, config, stop.signal, supervision, control).finally(() =>
           stop.abort()
         ),
         serveControl(resolve(root), links, ensure, control, stop.signal),

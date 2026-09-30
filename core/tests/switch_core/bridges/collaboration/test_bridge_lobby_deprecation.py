@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import InboundMessage
 
 
@@ -47,7 +47,7 @@ async def test_lobby_message_posts_deprecation_notice() -> None:
     adapter = _adapter_fake()
     bridge = SimpleNamespace(_adapter=adapter)
 
-    await BridgeCore._handle_lobby_message(bridge, _msg("lobby"))
+    await CollaborationCore._handle_lobby_message(bridge, _msg("lobby"))
 
     assert len(adapter.notices) == 1
     channel_id, content, thread_root_id = adapter.notices[0]
@@ -84,7 +84,7 @@ async def test_inbound_lobby_message_short_circuits_routing() -> None:
         _channel_locks={},
     )
 
-    await BridgeCore._handle_inbound_message(bridge, _msg("lobby"))
+    await CollaborationCore._handle_inbound_message(bridge, _msg("lobby"))
 
     # Routed to the deprecation handler; never created a room / puppet.
     assert len(handled) == 1
@@ -114,7 +114,7 @@ async def test_inbound_non_lobby_message_is_not_short_circuited() -> None:
         _channel_locks={},
     )
 
-    await BridgeCore._handle_inbound_message(bridge, _msg("channel_public"))
+    await CollaborationCore._handle_inbound_message(bridge, _msg("channel_public"))
 
     # A normal channel message does not hit the lobby deprecation handler.
     assert handled == []

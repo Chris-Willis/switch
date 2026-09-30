@@ -64,7 +64,7 @@ _ALLOWED_MODULES = {
     # The runtime-state sweep reads every tenant's stale rows, one tenant at a
     # time; `register_agent_with_token` resolves a registration credential by
     # its globally unique hash, which is the read that produces a tenant.
-    "switch_core.bridges.agent.protocol.service",
+    "switch_core.bridges.agent.protocol.agent_core",
     # Bearer and OIDC authentication: the credential's tenant, before its row.
     "switch_core.bridges.agent.auth",
     # The gateway's JWT subject resolves to its membership, and
@@ -80,7 +80,7 @@ _ALLOWED_MODULES = {
     "switch_core.bridges.agent.server_connectors.lifecycle",
     # `_room_tenant`'s fallback: which tenant is this room in, asked when the
     # answer is not already cached alongside the channel mapping.
-    "switch_core.bridges.collaboration.bridge_core",
+    "switch_core.bridges.collaboration.collaboration_core",
     # An inbound webhook from an installed workspace: the platform's signature
     # proves the sender and the payload names a workspace, and nothing in
     # either names a tenant. It is the one read that must happen before a
@@ -125,9 +125,9 @@ _RAW_SESSION_FACTORY_MODULES = {
     # ── Reached only from inside a unit of work that has already bound the
     # tenant of the row it is acting on — an inbound bridge event, a delivery,
     # a sweep row, an authenticated agent operation.
-    "switch_core.bridges.agent.protocol.service",
+    "switch_core.bridges.agent.protocol.agent_core",
     "switch_core.bridges.agent.commands",
-    "switch_core.bridges.collaboration.bridge_core",
+    "switch_core.bridges.collaboration.collaboration_core",
     "switch_core.bridges.collaboration.lifecycle_service",
     "switch_core.bridges.agent.server_connectors.lifecycle",
     "switch_core.clients.agent_client",

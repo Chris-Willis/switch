@@ -6,7 +6,7 @@ import secrets
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.server_connectors.base import (
     ServerSideConnector,
     ServerSideConnectorConfig,
@@ -42,7 +42,7 @@ class ServerSideConnectorLifecycleService:
         *,
         connector_store: ServerConnectorStore,
         api_key_store: ApiKeyStore,
-        protocol: ProtocolService,
+        protocol: AgentCore,
         session_factory: async_sessionmaker[AsyncSession],
         telemetry: TelemetryService | None = None,
         encryption_secret: str,

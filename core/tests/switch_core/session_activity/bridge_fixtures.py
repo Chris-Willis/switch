@@ -24,13 +24,16 @@ class BridgedRoom:
 
 async def make_bridged_room(db, *, member: str) -> BridgedRoom:
     suffix = uuid.uuid4().hex[:8]
-    bridge_client = Client(
+    workspace_consumer = Client(
         matrix_user_id=f"@bridge-{suffix}:test", display_name="bridge", type="bridge"
     )
-    db.add(bridge_client)
+    db.add(workspace_consumer)
     await db.flush()
     bridge = CollaborationBridge(
-        type="slack", display_name="Slack", client_id=bridge_client.id, status="active"
+        type="slack",
+        display_name="Slack",
+        client_id=workspace_consumer.id,
+        status="active",
     )
     db.add(bridge)
     await db.flush()
@@ -59,7 +62,7 @@ class Drawn:
 
 @dataclass
 class RecordingPlatform:
-    """Duck-typed `CollaborationAdapter`: only what the publisher calls."""
+    """Duck-typed `PlatformAdapter`: only what the publisher calls."""
 
     platform_name: str = "Test"
     draws_session_activity: bool = True

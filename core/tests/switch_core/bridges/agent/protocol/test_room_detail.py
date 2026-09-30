@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.types import AgentStatus
 
 
@@ -150,11 +150,11 @@ def _build_service(
     ext_users: dict[str, list[Any]] | None = None,
     statuses: dict[str, AgentStatus] | None = None,
     roles: list[dict[str, Any]] | None = None,
-) -> ProtocolService:
-    svc = object.__new__(ProtocolService)
+) -> AgentCore:
+    svc = object.__new__(AgentCore)
     # Presence unions the heartbeat rows with the live connections
     # (CHOO-1857); an empty registry means "rows only".
-    svc.connections = ConnectionRegistry()
+    svc.connections = AgentConnectionRegistry()
     svc.session_factory = _session_factory  # type: ignore[assignment]
     svc.room_store = _FakeRoomStore({room.id: room}, agent_ids, client_ids or [])  # type: ignore[assignment]
     svc.agent_store = _FakeAgentStore(agents or {})  # type: ignore[assignment]

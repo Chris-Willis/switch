@@ -27,7 +27,7 @@ from typing import Any
 import discord
 
 from switch_core.bridges.agent.commands import Command as InRoomCommand
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.discord.adapter import (
     ALLOWED_MESSAGE_TYPES,
     DiscordAdapter,
@@ -106,7 +106,7 @@ class DiscordGatewayClient:
     def connection(self) -> DiscordConnection:
         return self._connection
 
-    def attach_if_live(self, adapter: CollaborationAdapter) -> None:
+    def attach_if_live(self, adapter: PlatformAdapter) -> None:
         """Hand a starting Discord bridge the shared connection, if it is up.
 
         Called as each bridge starts, before anything in it runs, so a new

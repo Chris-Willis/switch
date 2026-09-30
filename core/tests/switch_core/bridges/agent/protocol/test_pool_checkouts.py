@@ -16,8 +16,8 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.types import RoomDescriptor
 from switch_core.budgets import BudgetExceeded, BudgetGuard
 from switch_core.db.models import (
@@ -68,14 +68,14 @@ class _OneBridge:
         self.typing.append((room_id, agent_name, is_typing))
 
 
-def _service(counting: _CountingSessionFactory) -> ProtocolService:
-    svc = object.__new__(ProtocolService)
+def _service(counting: _CountingSessionFactory) -> AgentCore:
+    svc = object.__new__(AgentCore)
     svc.session_factory = counting  # type: ignore[attr-defined]
     svc.agent_store = AgentStore()  # type: ignore[attr-defined]
     svc.room_store = RoomStore()  # type: ignore[attr-defined]
     svc.budget_guard = BudgetGuard(BudgetStore())  # type: ignore[attr-defined]
     svc.collab_lifecycle = _NoBridges()  # type: ignore[attr-defined]
-    svc.connections = ConnectionRegistry()
+    svc.connections = AgentConnectionRegistry()
     return svc
 
 

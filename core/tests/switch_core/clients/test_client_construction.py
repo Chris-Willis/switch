@@ -19,8 +19,11 @@ from typing import Any
 import pytest
 
 from switch_core.clients.admin_client import AdminClient
-from switch_core.clients.bridge_client import BridgeClient, BridgeClientConfig
 from switch_core.clients.client_base import ClientBase, ClientConfig
+from switch_core.clients.workspace_consumer import (
+    WorkspaceConsumer,
+    WorkspaceConsumerConfig,
+)
 
 
 def _base_kwargs() -> dict[str, Any]:
@@ -41,10 +44,10 @@ def test_client_base_takes_what_the_factory_passes() -> None:
     assert client.client_id == "client-1"
 
 
-def test_bridge_client_construction_matches_its_lifecycle_call_site() -> None:
-    client = BridgeClient(
-        bridge_core=object(),  # type: ignore[arg-type]
-        config=BridgeClientConfig(bridge_id="bridge-1"),
+def test_workspace_consumer_construction_matches_its_lifecycle_call_site() -> None:
+    client = WorkspaceConsumer(
+        collaboration_core=object(),  # type: ignore[arg-type]
+        config=WorkspaceConsumerConfig(bridge_id="bridge-1"),
         **_base_kwargs(),
     )
 

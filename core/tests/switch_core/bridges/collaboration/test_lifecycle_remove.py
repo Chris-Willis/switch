@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
-    _bridge_client_localpart,
+    _workspace_consumer_localpart,
 )
 from switch_core.db.models import (
     TENANT_ZERO_ID,
@@ -204,7 +204,7 @@ async def test_disconnecting_takes_every_identity_switch_made_for_it(
     """
     service = _service(session_factory, _ClientLifecycle())
     async with session_factory() as session:
-        bridge_id, bridge_client_id = await _make_bridge(session)
+        bridge_id, workspace_consumer_id = await _make_bridge(session)
         _external_user_id, puppet_client_id = await _make_external_user(
             session, bridge_id=bridge_id
         )
@@ -213,7 +213,7 @@ async def test_disconnecting_takes_every_identity_switch_made_for_it(
     await service.remove(bridge_id)
 
     async with session_factory() as session:
-        assert await ClientStore().get(session, bridge_client_id) is None
+        assert await ClientStore().get(session, workspace_consumer_id) is None
         assert await ClientStore().get(session, puppet_client_id) is None
 
 
@@ -230,19 +230,19 @@ async def test_identities_that_were_in_rooms_go_too(
     """
     service = _service(session_factory, _ClientLifecycle())
     async with session_factory() as session:
-        bridge_id, bridge_client_id = await _make_bridge(session)
+        bridge_id, workspace_consumer_id = await _make_bridge(session)
         room_id = await _make_bridged_room(session, bridge_id=bridge_id)
         _external_user_id, puppet_client_id = await _make_external_user(
             session, bridge_id=bridge_id
         )
-        await RoomStore().add_client(session, bridge_client_id, room_id)
+        await RoomStore().add_client(session, workspace_consumer_id, room_id)
         await RoomStore().add_client(session, puppet_client_id, room_id)
         await session.commit()
 
     await service.remove(bridge_id)
 
     async with session_factory() as session:
-        assert await ClientStore().get(session, bridge_client_id) is None
+        assert await ClientStore().get(session, workspace_consumer_id) is None
         assert await ClientStore().get(session, puppet_client_id) is None
         # The room outlives the connection as an internal-only room, with
         # nobody left claiming to be a member on the platform's behalf.
@@ -263,7 +263,7 @@ async def test_a_failed_client_delete_leaves_the_bridge_intact(
     lifecycle = _FailingClientLifecycle(fail_on_nth=2)
     service = _service(session_factory, lifecycle)
     async with session_factory() as session:
-        bridge_id, bridge_client_id = await _make_bridge(session)
+        bridge_id, workspace_consumer_id = await _make_bridge(session)
         room_id = await _make_bridged_room(session, bridge_id=bridge_id)
         _first_id, first_puppet = await _make_external_user(
             session, bridge_id=bridge_id
@@ -271,7 +271,7 @@ async def test_a_failed_client_delete_leaves_the_bridge_intact(
         _second_id, second_puppet = await _make_external_user(
             session, bridge_id=bridge_id
         )
-        await RoomStore().add_client(session, bridge_client_id, room_id)
+        await RoomStore().add_client(session, workspace_consumer_id, room_id)
         await RoomStore().add_client(session, first_puppet, room_id)
         await session.commit()
 
@@ -286,10 +286,10 @@ async def test_a_failed_client_delete_leaves_the_bridge_intact(
         assert room is not None
         assert room.bridge_id == bridge_id
         assert await ExternalUserStore().get_by_bridge(session, bridge_id) != []
-        for client_id in (bridge_client_id, first_puppet, second_puppet):
+        for client_id in (workspace_consumer_id, first_puppet, second_puppet):
             assert await ClientStore().get(session, client_id) is not None
         assert sorted(await RoomStore().get_client_ids(session, room_id)) == sorted(
-            [bridge_client_id, first_puppet]
+            [workspace_consumer_id, first_puppet]
         )
 
 
@@ -300,16 +300,16 @@ async def test_an_app_with_nobody_on_it_still_loses_its_own_client(
     # Louis's case exactly: a Telegram connection nobody had messaged yet.
     service = _service(session_factory, _ClientLifecycle())
     async with session_factory() as session:
-        bridge_id, bridge_client_id = await _make_bridge(session)
+        bridge_id, workspace_consumer_id = await _make_bridge(session)
         await session.commit()
 
     await service.remove(bridge_id)
 
     async with session_factory() as session:
-        assert await ClientStore().get(session, bridge_client_id) is None
+        assert await ClientStore().get(session, workspace_consumer_id) is None
 
 
-class TestTheBridgeClientName:
+class TestTheWorkspaceConsumerName:
     """Why deleting the row is necessary but not sufficient.
 
     The homeserver has no API for removing an account, so the Matrix user
@@ -321,19 +321,19 @@ class TestTheBridgeClientName:
     """
 
     def test_two_connections_of_the_same_name_do_not_collide(self) -> None:
-        first = _bridge_client_localpart("telegram", "Telegram louiss")
-        second = _bridge_client_localpart("telegram", "Telegram louiss")
+        first = _workspace_consumer_localpart("telegram", "Telegram louiss")
+        second = _workspace_consumer_localpart("telegram", "Telegram louiss")
 
         assert first != second
 
     def test_the_name_still_says_which_app_it_is(self) -> None:
         # It shows up as a Matrix user in rooms; a pure uuid would be unreadable.
-        localpart = _bridge_client_localpart("telegram", "Telegram louiss")
+        localpart = _workspace_consumer_localpart("telegram", "Telegram louiss")
 
         assert localpart.startswith("switch-bridge-telegram-telegram-louiss")
 
     def test_it_stays_a_legal_matrix_localpart(self) -> None:
-        localpart = _bridge_client_localpart("slack", "Ops & Eng (US)")
+        localpart = _workspace_consumer_localpart("slack", "Ops & Eng (US)")
 
         assert re.fullmatch(r"[a-z0-9._=/-]+", localpart)
 

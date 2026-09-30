@@ -25,15 +25,15 @@ from switch_core.authz import Action, Principal, require, require_manage
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.mediation import MediationService
+from switch_core.bridges.agent.protocol.agent_connections import (
+    AgentConnectionRegistry,
+    ClientDeclaration,
+)
 from switch_core.bridges.agent.protocol.agent_detail import (
     apply_agent_options,
     assemble_agent_detail,
     list_agent_summaries,
     reparent_agent,
-)
-from switch_core.bridges.agent.protocol.connections import (
-    ClientDeclaration,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.presence import rooms_occupied
@@ -249,7 +249,7 @@ def _describe_room(room: Room) -> RoomDescriptor:
     )
 
 
-class ProtocolService:
+class AgentCore:
     # Class-level defaults: several tests assemble a minimal instance without
     # `__init__`, and `emit_safely` treats None as "report nothing".
     telemetry: TelemetryService | None = None
@@ -268,7 +268,7 @@ class ProtocolService:
         client_lifecycle: ClientLifecycleService,
         collab_lifecycle: CollaborationBridgeLifecycleService,
         event_buffer: EventBuffer,
-        connections: ConnectionRegistry,
+        connections: AgentConnectionRegistry,
         task_store: TaskStore,
         resource_service: ResourceService,
         api_key_store: ApiKeyStore,
@@ -299,7 +299,7 @@ class ProtocolService:
         self.client_lifecycle = client_lifecycle
         self.collab_lifecycle = collab_lifecycle
         self.event_buffer = event_buffer
-        # Injected, not constructed: more than one ProtocolService exists in a
+        # Injected, not constructed: more than one AgentCore exists in a
         # running server, and a connection registered through one must be
         # visible to all of them. Owning a registry here would split the live
         # connection set in two.
@@ -776,9 +776,11 @@ class ProtocolService:
         instead would repeat the cross-tenant identity leak this method exists
         to avoid.
         """
-        for bridge_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
+        for collaboration_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
             try:
-                await bridge_core.adapter.create_agent_identity(agent_name, description)
+                await collaboration_core.adapter.create_agent_identity(
+                    agent_name, description
+                )
             except Exception:
                 logger.warning(
                     "Failed to create bridge identity for %s",
@@ -888,9 +890,9 @@ class ProtocolService:
         there, the tenant is the caller's to establish — `delete_agent`
         refuses without one before it stops anything.
         """
-        for bridge_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
+        for collaboration_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
             try:
-                await bridge_core.adapter.remove_agent_identity(agent_name)
+                await collaboration_core.adapter.remove_agent_identity(agent_name)
             except Exception:
                 logger.warning(
                     "Failed to remove bridge identity for %s",
@@ -1571,8 +1573,8 @@ class ProtocolService:
             )
             return
 
-        bridge_core = self.collab_lifecycle.get(room.bridge_id)
-        if bridge_core is None:
+        collaboration_core = self.collab_lifecycle.get(room.bridge_id)
+        if collaboration_core is None:
             raise ValueError(
                 f"Collaboration bridge {room.bridge_id} for room {room.id} "
                 "is not running"
@@ -1581,7 +1583,7 @@ class ProtocolService:
             agent = await self.agent_store.get(session, agent_id)
         if agent is None:
             raise ValueError(f"Agent not found: {agent_id}")
-        await bridge_core.handle_outbound_typing(room.id, agent.name, is_typing)
+        await collaboration_core.handle_outbound_typing(room.id, agent.name, is_typing)
 
     async def update_status(self, agent_id: str, room_id: str, detail: str) -> None:
         """Send a status message to a room."""

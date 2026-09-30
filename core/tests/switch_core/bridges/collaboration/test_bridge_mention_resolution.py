@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -53,7 +53,7 @@ def _session_factory() -> Any:
 
 
 def _loading_bridge(adapter: SlackAdapter, users: list[SimpleNamespace]) -> Any:
-    """A BridgeCore stand-in with just what `_load_existing_puppets` touches."""
+    """A CollaborationCore stand-in with just what `_load_existing_puppets` touches."""
 
     async def _get_by_bridge(_session: object, bridge_id: str) -> list[SimpleNamespace]:
         assert bridge_id == BRIDGE_ID
@@ -82,7 +82,7 @@ async def test_startup_priming_makes_a_never_seen_user_mentionable() -> None:
     # Nothing has posted since startup, so the live-resolution path has not run.
     assert adapter.translate_outbound("@doe.jane ping") == "@doe.jane ping"
 
-    await BridgeCore._load_existing_puppets(bridge)
+    await CollaborationCore._load_existing_puppets(bridge)
 
     assert adapter.translate_outbound("@doe.jane ping") == "<@U123> ping"
 
@@ -93,7 +93,7 @@ async def test_priming_resolves_a_handle_with_capitals() -> None:
         adapter, [_external_user("Timo.Meyer", "U456", "client-2")]
     )
 
-    await BridgeCore._load_existing_puppets(bridge)
+    await CollaborationCore._load_existing_puppets(bridge)
 
     # The mention pattern and the lookup are both case-insensitive: Slack handles
     # are, and the token a sender types need not match the stored casing.
@@ -115,7 +115,7 @@ async def test_app_rows_are_skipped_while_human_rows_are_primed() -> None:
         ],
     )
 
-    await BridgeCore._load_existing_puppets(bridge)
+    await CollaborationCore._load_existing_puppets(bridge)
 
     assert adapter.translate_outbound("@datadog alert") == "@datadog alert"
     assert adapter.translate_outbound("@doe.jane alert") == "<@U123> alert"
@@ -150,10 +150,10 @@ async def test_new_puppet_is_mentionable_without_waiting_for_a_restart() -> None
         _external_user_store=SimpleNamespace(create=_create),
     )
     bridge._create_puppet_locked = functools.partial(
-        BridgeCore._create_puppet_locked, bridge
+        CollaborationCore._create_puppet_locked, bridge
     )
 
-    await BridgeCore._create_puppet(bridge, "U789", "new.person")
+    await CollaborationCore._create_puppet(bridge, "U789", "new.person")
 
     assert adapter.translate_outbound("@new.person welcome") == "<@U789> welcome"
 

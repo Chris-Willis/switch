@@ -37,9 +37,9 @@ from testcontainers.postgres import PostgresContainer
 # Importing models registers every table on Base.metadata for create_all.
 import switch_core.db.models  # noqa: F401
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
     RegistrationResult,
@@ -248,7 +248,7 @@ class Harness:
     def __init__(
         self,
         *,
-        protocol: ProtocolService,
+        protocol: AgentCore,
         room_service: RoomService,
         client_lifecycle: ClientLifecycleService,
         room_store: RoomStore,
@@ -525,7 +525,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
         # Per-test in-memory wiring: a fresh EventBuffer / client registry so queued
         # events and client registrations never leak across tests.
         event_buffer = EventBuffer()
-        connections = ConnectionRegistry()
+        connections = AgentConnectionRegistry()
         collab_lifecycle = _NoBridges()
 
         # The transport's wake-up path: rows are announced over LISTEN/NOTIFY, so
@@ -602,7 +602,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             session_factory=session_factory,
         )
 
-        protocol = ProtocolService(
+        protocol = AgentCore(
             agent_store=session_env.agent_store,
             agent_session_store=session_env.agent_session_store,
             room_store=session_env.room_store,

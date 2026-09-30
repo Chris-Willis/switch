@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import MethodType, SimpleNamespace
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import InboundCommand
 from switch_core.transport import SendResult, TransportError
 
@@ -32,7 +32,7 @@ def _fake_bridge(
     external_to_matrix: dict[str, str] | None = None,
     translate_inbound: object = None,
 ) -> SimpleNamespace:
-    """A minimal BridgeCore stand-in for _handle_inbound_command.
+    """A minimal CollaborationCore stand-in for _handle_inbound_command.
 
     `external_to_matrix` seeds the (external post -> Matrix event) lookup so we
     can exercise the "thread root already bridged" branch.
@@ -88,7 +88,9 @@ class TestCommandThreadMapping:
                 event_id="$cmd-event", event_type="com.switch.command", content={}
             )
         )
-        await BridgeCore._handle_inbound_command(bridge, _cmd(message_ref="mm-post-1"))
+        await CollaborationCore._handle_inbound_command(
+            bridge, _cmd(message_ref="mm-post-1")
+        )
 
         assert bridge.recorded == [
             {
@@ -110,7 +112,7 @@ class TestCommandThreadMapping:
             ),
             external_to_matrix={"mm-root": "$matrix-root"},
         )
-        await BridgeCore._handle_inbound_command(
+        await CollaborationCore._handle_inbound_command(
             bridge, _cmd(message_ref="mm-reply", root_id="mm-root")
         )
 
@@ -128,7 +130,7 @@ class TestCommandThreadMapping:
                 event_id="$cmd-event", event_type="com.switch.command", content={}
             )
         )
-        await BridgeCore._handle_inbound_command(
+        await CollaborationCore._handle_inbound_command(
             bridge, _cmd(message_ref="mm-reply", root_id="mm-root")
         )
 
@@ -148,14 +150,16 @@ class TestCommandThreadMapping:
                 event_id="$cmd-event", event_type="com.switch.command", content={}
             )
         )
-        await BridgeCore._handle_inbound_command(bridge, _cmd(message_ref=None))
+        await CollaborationCore._handle_inbound_command(bridge, _cmd(message_ref=None))
 
         assert bridge.recorded == []
 
     async def test_no_mapping_when_send_fails(self) -> None:
         err = TransportError("boom")
         bridge = _fake_bridge(err)
-        await BridgeCore._handle_inbound_command(bridge, _cmd(message_ref="mm-post-1"))
+        await CollaborationCore._handle_inbound_command(
+            bridge, _cmd(message_ref="mm-post-1")
+        )
 
         assert bridge.recorded == []
 
@@ -172,7 +176,7 @@ class TestCommandThreadMapping:
                 "<!subteam^S123>", "@switch-onboarder"
             ),
         )
-        await BridgeCore._handle_inbound_command(
+        await CollaborationCore._handle_inbound_command(
             bridge,
             _cmd(
                 message_ref="mm-post-1",
@@ -198,7 +202,9 @@ class TestCommandResultThreadingRace:
             _bridge_message_map_store=SimpleNamespace(get_by_matrix_event_id=_boom),
             _session_factory=_boom,
         )
-        got = await BridgeCore._external_post_for_matrix_event(bridge, "$cmd-event")
+        got = await CollaborationCore._external_post_for_matrix_event(
+            bridge, "$cmd-event"
+        )
         assert got == "chan-1:100.1"
 
     async def test_top_level_command_result_threads_during_db_write(self) -> None:
@@ -243,10 +249,10 @@ class TestCommandResultThreadingRace:
             _matrix_event_for_external_post=_matrix_event_for_external_post,
         )
         bridge._prerecord_message_map = MethodType(
-            BridgeCore._prerecord_message_map, bridge
+            CollaborationCore._prerecord_message_map, bridge
         )
         bridge._external_post_for_matrix_event = MethodType(
-            BridgeCore._external_post_for_matrix_event, bridge
+            CollaborationCore._external_post_for_matrix_event, bridge
         )
 
         async def _record_message_map(
@@ -260,7 +266,7 @@ class TestCommandResultThreadingRace:
 
         bridge._record_message_map = _record_message_map
 
-        await BridgeCore._handle_inbound_command(
+        await CollaborationCore._handle_inbound_command(
             bridge, _cmd(message_ref="chan-1:100.1", command="help")
         )
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
@@ -125,7 +125,7 @@ def _attachment(filename: str, mimetype: str) -> Attachment:
 async def test_three_attachments_are_stamped_as_one_group() -> None:
     bridge = _fake_bridge()
 
-    await BridgeCore._handle_inbound_message(
+    await CollaborationCore._handle_inbound_message(
         bridge,
         _msg(
             content="three files",
@@ -166,7 +166,7 @@ async def test_single_attachment_carries_no_group_marker() -> None:
     # a complete message and never buffers it.
     bridge = _fake_bridge()
 
-    await BridgeCore._handle_inbound_message(
+    await CollaborationCore._handle_inbound_message(
         bridge, _msg(attachments=[_attachment("cat.png", "image/png")])
     )
 
@@ -178,7 +178,7 @@ async def test_single_attachment_carries_no_group_marker() -> None:
 async def test_attachment_failures_are_disclosed_alongside_text() -> None:
     bridge = _fake_bridge()
 
-    await BridgeCore._handle_inbound_message(
+    await CollaborationCore._handle_inbound_message(
         bridge,
         _msg(
             content="see attached",
@@ -200,7 +200,7 @@ async def test_attachment_failures_are_disclosed_when_text_is_empty() -> None:
     # in the room — never a silent drop.
     bridge = _fake_bridge()
 
-    await BridgeCore._handle_inbound_message(
+    await CollaborationCore._handle_inbound_message(
         bridge,
         _msg(
             content="   ",
@@ -221,7 +221,7 @@ async def test_attachment_failures_are_disclosed_when_text_is_empty() -> None:
 async def test_attachment_failures_ride_on_the_caption_of_relayed_media() -> None:
     bridge = _fake_bridge()
 
-    await BridgeCore._handle_inbound_message(
+    await CollaborationCore._handle_inbound_message(
         bridge,
         _msg(
             content="two files, one failed",

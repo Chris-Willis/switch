@@ -12,16 +12,19 @@ import aiohttp
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.ingress import CallbackEndpoint, CallbackIngress
 from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     BridgeCredentialError,
     BridgeOperationError,
 )
-from switch_core.clients.bridge_client import BridgeClient, BridgeClientConfig
 from switch_core.clients.client_factory import ClientFactory
+from switch_core.clients.workspace_consumer import (
+    WorkspaceConsumer,
+    WorkspaceConsumerConfig,
+)
 from switch_core.config import SwitchConfig
 from switch_core.db.models import CollaborationBridge
 from switch_core.db.session_scope import tenant_session
@@ -45,7 +48,9 @@ from switch_core.telemetry.snapshot import PLATFORMS, normalise_platform
 from switch_core.tenant_context import current_tenant_id, no_tenant
 
 if TYPE_CHECKING:
-    from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+    from switch_core.bridges.agent.protocol.agent_connections import (
+        AgentConnectionRegistry,
+    )
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
     from switch_core.room_service import RoomService
     from switch_core.session_activity.listener import SessionActivityListener
@@ -265,7 +270,7 @@ def _failure_reason(exc: BaseException) -> str:
     return "unknown"
 
 
-def _bridge_client_localpart(bridge_type: str, display_name: str) -> str:
+def _workspace_consumer_localpart(bridge_type: str, display_name: str) -> str:
     """The localpart for a messaging app's own client.
 
     The random tail is what makes disconnecting and reconnecting work. The
@@ -316,7 +321,7 @@ class CollaborationBridgeLifecycleService:
         client_factory: ClientFactory,
         session_activity_listener: SessionActivityListener,
         session_activity_service: SessionActivityService,
-        connections: ConnectionRegistry,
+        connections: AgentConnectionRegistry,
         telemetry: TelemetryService | None = None,
     ) -> None:
         self._bridge_store = bridge_store
@@ -335,14 +340,12 @@ class CollaborationBridgeLifecycleService:
         self._session_activity_listener = session_activity_listener
         self._session_activity_service = session_activity_service
         self._connections = connections
-        self._bridge_starting_listeners: list[
-            Callable[[CollaborationAdapter], None]
-        ] = []
+        self._bridge_starting_listeners: list[Callable[[PlatformAdapter], None]] = []
         self._bridge_start_guards: list[BridgeStartGuard] = []
 
-        self._adapter_registry: dict[str, type[CollaborationAdapter]] = {}
+        self._adapter_registry: dict[str, type[PlatformAdapter]] = {}
         self._config_registry: dict[str, type[BridgeConnectionConfig]] = {}
-        self._bridges: dict[str, BridgeCore] = {}
+        self._bridges: dict[str, CollaborationCore] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         # How many times each bridge has failed to come up since this
         # process started. See `_note_connect_failure`.
@@ -353,7 +356,7 @@ class CollaborationBridgeLifecycleService:
         # `_connect_duration_ms`.
         self._connect_started: dict[str, float] = {}
         # Read off the row at start, so reporting never depends on what the
-        # BridgeCore exposes.
+        # CollaborationCore exposes.
         self._bridge_facts: dict[str, tuple[str, object]] = {}
         # Bridges the deployment's setup step registered rather than a person,
         # read off the row at start like `_bridge_facts`. Onboarding telemetry
@@ -363,7 +366,7 @@ class CollaborationBridgeLifecycleService:
         # Reached the platform, as opposed to merely started.
         self._connected: set[str] = set()
         # bridge_id -> the host resource it holds exclusively while running
-        # (see CollaborationAdapter.exclusive_resource). Lets a second
+        # (see PlatformAdapter.exclusive_resource). Lets a second
         # claimant be refused by name instead of failing on the resource.
         self._held_resources: dict[str, str] = {}
         # Started and not deliberately stopped. A crash removes a bridge from
@@ -404,7 +407,7 @@ class CollaborationBridgeLifecycleService:
     def register_adapter(
         self,
         bridge_type: str,
-        adapter_cls: type[CollaborationAdapter],
+        adapter_cls: type[PlatformAdapter],
         config_cls: type[BridgeConnectionConfig],
     ) -> None:
         self._adapter_registry[bridge_type] = adapter_cls
@@ -413,7 +416,7 @@ class CollaborationBridgeLifecycleService:
     def get_registered_types(self) -> list[str]:
         return list(self._adapter_registry.keys())
 
-    def get_adapter(self, bridge_id: str) -> CollaborationAdapter | None:
+    def get_adapter(self, bridge_id: str) -> PlatformAdapter | None:
         """The live adapter for a running bridge, or None if it isn't running.
 
         Used to ask a platform for a channel deeplink without the caller having
@@ -422,7 +425,7 @@ class CollaborationBridgeLifecycleService:
         return bridge.adapter if bridge is not None else None
 
     def add_bridge_starting_listener(
-        self, listener: Callable[[CollaborationAdapter], None]
+        self, listener: Callable[[PlatformAdapter], None]
     ) -> None:
         """Be handed each bridge's adapter as it starts, before it runs.
 
@@ -461,7 +464,7 @@ class CollaborationBridgeLifecycleService:
                 connection_config=connection_config,
             )
 
-    def iter_adapters(self) -> Iterator[CollaborationAdapter]:
+    def iter_adapters(self) -> Iterator[PlatformAdapter]:
         """The live adapter of every running bridge, as a snapshot.
 
         Platform-agnostic on purpose: a caller narrows with `isinstance` to the
@@ -751,17 +754,17 @@ class CollaborationBridgeLifecycleService:
         # orphan client identity behind for a bridge that was never viable.
         await adapter_cls.verify_credentials(connection_config)
 
-        bridge_client_record = await self._client_lifecycle.create_client(
+        workspace_consumer_record = await self._client_lifecycle.create_client(
             client_type="bridge",
             display_name=f"bridge-{bridge_type}-{display_name}",
-            localpart=_bridge_client_localpart(bridge_type, display_name),
+            localpart=_workspace_consumer_localpart(bridge_type, display_name),
         )
 
         bridge = CollaborationBridge(
             type=bridge_type,
             display_name=display_name,
             connection_config=connection_config,  # type: ignore[arg-type]
-            client_id=bridge_client_record.id,
+            client_id=workspace_consumer_record.id,
             status="active",
             channel_creation_enabled=channel_creation_enabled,
             preconfigured=preconfigured,
@@ -896,13 +899,13 @@ class CollaborationBridgeLifecycleService:
                 )
 
             async with tenant_session(self._session_factory, tenant_id) as session:
-                bridge_client_record = await self._client_store.get(
+                workspace_consumer_record = await self._client_store.get(
                     session, bridge.client_id
                 )
-            if bridge_client_record is None:
+            if workspace_consumer_record is None:
                 raise ValueError(f"Bridge client not found: {bridge.client_id}")
 
-            bridge_core = BridgeCore(
+            collaboration_core = CollaborationCore(
                 bridge_id=bridge_id,
                 bridge_tenant_id=tenant_id,
                 bridge_type=bridge.type,
@@ -918,7 +921,7 @@ class CollaborationBridgeLifecycleService:
                 matrix_admin=self._matrix_admin,
                 session_factory=self._session_factory,
                 matrix_server_name=self._config.matrix_server_name,
-                bridge_client_matrix_user_id=bridge_client_record.matrix_user_id,
+                workspace_consumer_matrix_user_id=workspace_consumer_record.matrix_user_id,
                 max_attachment_bytes=self._config.agent_media_max_bytes,
                 gateway_public_url=self._config.gateway_public_url,
                 session_activity_listener=self._session_activity_listener,
@@ -926,15 +929,15 @@ class CollaborationBridgeLifecycleService:
                 connections=self._connections,
             )
 
-            bridge_client = BridgeClient(
-                bridge_core=bridge_core,
-                client_id=bridge_client_record.id,
-                tenant_id=bridge_client_record.tenant_id,
-                matrix_user_id=bridge_client_record.matrix_user_id,
-                display_name=bridge_client_record.display_name,
+            workspace_consumer = WorkspaceConsumer(
+                collaboration_core=collaboration_core,
+                client_id=workspace_consumer_record.id,
+                tenant_id=workspace_consumer_record.tenant_id,
+                matrix_user_id=workspace_consumer_record.matrix_user_id,
+                display_name=workspace_consumer_record.display_name,
                 session_factory=self._session_factory,
                 client_store=self._client_store,
-                config=BridgeClientConfig(bridge_id=bridge_id),
+                config=WorkspaceConsumerConfig(bridge_id=bridge_id),
                 transport_factory=self._client_factory.transport_for,
             )
 
@@ -949,9 +952,11 @@ class CollaborationBridgeLifecycleService:
             else:
                 self._preconfigured.discard(bridge_id)
             task = asyncio.create_task(
-                self._run_bridge(bridge_id, tenant_id, bridge_core, bridge_client)
+                self._run_bridge(
+                    bridge_id, tenant_id, collaboration_core, workspace_consumer
+                )
             )
-            self._bridges[bridge_id] = bridge_core
+            self._bridges[bridge_id] = collaboration_core
             self._tasks[bridge_id] = task
             self._started.add(bridge_id)
             self._platforms_seen.add(normalise_platform(bridge.type))
@@ -1039,8 +1044,8 @@ class CollaborationBridgeLifecycleService:
         self,
         bridge_id: str,
         tenant_id: str,
-        bridge_core: BridgeCore,
-        bridge_client: BridgeClient,
+        collaboration_core: CollaborationCore,
+        workspace_consumer: WorkspaceConsumer,
     ) -> None:
         """The bridge's own long-lived task.
 
@@ -1049,8 +1054,8 @@ class CollaborationBridgeLifecycleService:
         often as from boot, so without this the bridge would spend its whole
         life acting as the operator who happened to restart it. Nothing here
         is ambient afterwards: `_record_bridge_memberships` binds the bridge's
-        tenant for its own writes, `BridgeCore.start` binds it around each
-        piece of bridge-level loading it does, and `bridge_client.start()` —
+        tenant for its own writes, `CollaborationCore.start` binds it around each
+        piece of bridge-level loading it does, and `workspace_consumer.start()` —
         which runs until shutdown — binds nothing at all, leaving each
         delivery to bind the tenant of the room it is for.
         """
@@ -1059,15 +1064,15 @@ class CollaborationBridgeLifecycleService:
             connected = False
             try:
                 await self._record_bridge_memberships(
-                    bridge_id, tenant_id, bridge_client.client_id
+                    bridge_id, tenant_id, workspace_consumer.client_id
                 )
-                await bridge_core.start()
+                await collaboration_core.start()
                 # The one point that means "connected": `start()` only
-                # launched this task and `bridge_client.start()` never returns.
+                # launched this task and `workspace_consumer.start()` never returns.
                 connected = True
                 self._connected.add(bridge_id)
                 await self._report_connector_up(bridge_id, platform, configured_at)
-                await bridge_client.start()
+                await workspace_consumer.start()
             except Exception as exc:
                 logger.exception("Bridge %s crashed", bridge_id)
                 self._bridges.pop(bridge_id, None)
@@ -1231,11 +1236,11 @@ class CollaborationBridgeLifecycleService:
         endpoint = self._callback_endpoints.pop(bridge_id, None)
         if endpoint is not None:
             await endpoint.withdraw()
-        bridge_core = self._bridges.get(bridge_id)
+        collaboration_core = self._bridges.get(bridge_id)
         was_connected = bridge_id in self._connected
         self._connected.discard(bridge_id)
-        if bridge_core:
-            await bridge_core.stop()
+        if collaboration_core:
+            await collaboration_core.stop()
 
         task = self._tasks.pop(bridge_id, None)
         if task and not task.done():
@@ -1254,7 +1259,7 @@ class CollaborationBridgeLifecycleService:
 
         # `_bridges` membership is set before the connection is attempted, so
         # on its own it would report a bridge that never connected.
-        if bridge_core is not None and was_connected:
+        if collaboration_core is not None and was_connected:
             platform, _ = self._bridge_facts.get(bridge_id, ("none", None))
             emit_safely(
                 self._telemetry,
@@ -1360,26 +1365,26 @@ class CollaborationBridgeLifecycleService:
         self._connect_failures.pop(bridge_id, None)
         self._connect_started.pop(bridge_id, None)
 
-    def get(self, bridge_id: str) -> BridgeCore | None:
+    def get(self, bridge_id: str) -> CollaborationCore | None:
         """The running bridge for ``bridge_id``, if it is the bound tenant's.
 
         The registry holds every tenant's bridges, so a caller acting for one
         tenant must not be handed another's. With no tenant bound (boot and
         the per-tenant fan-outs) there is nothing to compare against.
         """
-        bridge_core = self._bridges.get(bridge_id)
-        if bridge_core is None:
+        collaboration_core = self._bridges.get(bridge_id)
+        if collaboration_core is None:
             return None
         bound = current_tenant_id()
-        if bound is not None and bridge_core.tenant_id != bound:
+        if bound is not None and collaboration_core.tenant_id != bound:
             logger.warning(
                 "Refused bridge %s to tenant %s: it belongs to tenant %s",
                 bridge_id,
                 bound,
-                bridge_core.tenant_id,
+                collaboration_core.tenant_id,
             )
             return None
-        return bridge_core
+        return collaboration_core
 
     def expected_count(self) -> int:
         """Bridges that were started and have not been stopped deliberately."""
@@ -1404,7 +1409,7 @@ class CollaborationBridgeLifecycleService:
         The total answers "how many bridges died" and never "which", and which
         is the first thing anyone asks — a Slack outage and a misconfigured
         Teams app look identical in a single number. Read off `_bridge_facts`,
-        which is written at start from the row, so a bridge whose `BridgeCore`
+        which is written at start from the row, so a bridge whose `CollaborationCore`
         has already been discarded by a crash is still attributable.
 
         Every platform this process has ever started a bridge for appears,
@@ -1429,7 +1434,7 @@ class CollaborationBridgeLifecycleService:
             counts[name] = counts.get(name, 0) + (1 if alive else 0)
         return counts
 
-    def bridges_for_tenant(self, tenant_id: str) -> list[BridgeCore]:
+    def bridges_for_tenant(self, tenant_id: str) -> list[CollaborationCore]:
         """Running bridges belonging to `tenant_id`, and none other.
 
         `_bridges` is a flat, instance-wide dict, so this is the only way to

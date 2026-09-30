@@ -24,12 +24,12 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.agent.app import create_agent_bridge_app
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_TTL_SECONDS,
-    ConnectionRegistry,
+    AgentConnectionRegistry,
 )
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_KEY_LABEL,
     BOOTSTRAP_KEY_TYPE,
@@ -177,7 +177,7 @@ _CONNECTION_SWEEP_INTERVAL = 2.0
 _FORCED_EXIT_GRACE_SECONDS = 3.0
 
 
-async def _runtime_state_sweep_loop(protocol: ProtocolService) -> None:
+async def _runtime_state_sweep_loop(protocol: AgentCore) -> None:
     # `no_tenant` for the reason every other long-lived task does it: a task
     # keeps the context of whoever created it, and nothing in here may depend
     # on that. Boot binds nothing today, so this changes no behaviour — it
@@ -191,7 +191,7 @@ async def _runtime_state_sweep_loop(protocol: ProtocolService) -> None:
                 logger.exception("Runtime-state sweep failed")
 
 
-async def _connection_sweep_loop(protocol: ProtocolService, lag: EventLoopLag) -> None:
+async def _connection_sweep_loop(protocol: AgentCore, lag: EventLoopLag) -> None:
     """Expire connections whose client has stopped beating.
 
     Skips a round after the event loop has been blocked. A stall stops us
@@ -212,7 +212,7 @@ async def _connection_sweep_loop(protocol: ProtocolService, lag: EventLoopLag) -
         lag.record(overslept)
         if overslept > HEARTBEAT_TTL_SECONDS / 2:
             logger.warning(
-                "Connection sweep skipped: the event loop was blocked for %.1fs, "
+                "AgentConnection sweep skipped: the event loop was blocked for %.1fs, "
                 "so heartbeats could not be processed and every connection would "
                 "look lapsed. Something is blocking the loop — that is the bug, "
                 "not the connections.",
@@ -222,14 +222,14 @@ async def _connection_sweep_loop(protocol: ProtocolService, lag: EventLoopLag) -
         try:
             for conn in protocol.connections.sweep():
                 logger.info(
-                    "Connection %s for agent %s expired (heartbeat lapsed, "
+                    "AgentConnection %s for agent %s expired (heartbeat lapsed, "
                     "%d beats received)",
                     conn.id,
                     conn.agent_id,
                     conn.beats,
                 )
         except Exception:
-            logger.exception("Connection sweep failed")
+            logger.exception("AgentConnection sweep failed")
 
 
 # The innermost of three nested budgets: under
@@ -472,7 +472,7 @@ async def run(config: SwitchConfig) -> None:
     # the agent bridge because the room clients are wired first and read
     # presence from it — an agent is reachable if it has a live connection OR a
     # fresh heartbeat row (CHOO-1857 stage B).
-    connections = ConnectionRegistry()
+    connections = AgentConnectionRegistry()
 
     # ── Client factory ───────────────────────────────────────────────────────
     client_factory = ClientFactory(

@@ -32,8 +32,8 @@ from switch_core.bridges.agent.operations.callctx import (
     CallerSession,
     call_context,
 )
-from switch_core.bridges.agent.protocol.connections import UnknownConnectionError
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_connections import UnknownConnectionError
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.budgets import BudgetExceeded
 from switch_core.db.models import Agent
 
@@ -132,7 +132,7 @@ SESSION_SELECTOR_HEADERS = (
 async def resolve_caller(
     *,
     agent_id: str,
-    protocol: ProtocolService,
+    protocol: AgentCore,
     factory: async_sessionmaker[AsyncSession],
     connection_id: str | None,
     session_id: str | None,
@@ -158,7 +158,7 @@ async def resolve_caller(
                 status_code=400,
                 detail=(
                     "a session selector names the connection it calls over; "
-                    "send X-Switch-Connection-Id with X-Switch-Session-Id"
+                    "send X-Switch-AgentConnection-Id with X-Switch-Session-Id"
                 ),
             )
         caller = CallerSession(
@@ -198,7 +198,7 @@ async def post_operation(
     agent_id: str,
     operation: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
     body: dict[str, Any] | None = None,
     connection_id: Annotated[str | None, Header(alias="x-switch-connection-id")] = None,
@@ -210,7 +210,7 @@ async def post_operation(
 
     The caller says what it is bound to, and that is what an operation
     depending on the caller's room binding resolves it from. Either
-    `X-Switch-Connection-Id`, naming an open connection, or the session
+    `X-Switch-AgentConnection-Id`, naming an open connection, or the session
     selector — `X-Switch-Session-Id` with `X-Switch-Session-Host-Id` and
     `X-Switch-Session-Epoch` — naming the session that bound one. Both are
     read from headers rather than the body, and both are checked against the

@@ -46,8 +46,8 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.session_activity_post_store import ApprovalRequestPostStore
 from switch_core.db.stores.session_activity_store import ApprovalRequestStore
-from switch_core.session_activity.bridge_publisher import HANDLE_PREFIX
 from switch_core.session_activity.cards import approval_request
+from switch_core.session_activity.publisher import HANDLE_PREFIX
 from switch_core.session_activity.service import (
     PlatformPerson,
     SessionActivityService,

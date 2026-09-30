@@ -685,7 +685,7 @@ async def test_export_includes_users_from_bridge(env):
     """A bridged room with an external user in it exports that user by name."""
     sf = env["session_factory"]
     async with sf() as session:
-        bridge_client = Client(
+        workspace_consumer = Client(
             matrix_user_id="@bridge:test.local",
             display_name="bridge",
             type="collaboration_bridge",
@@ -695,12 +695,12 @@ async def test_export_includes_users_from_bridge(env):
             display_name="bob",
             type="external_user",
         )
-        session.add_all([bridge_client, user_client])
+        session.add_all([workspace_consumer, user_client])
         await session.flush()
         bridge = CollaborationBridge(
             type="mattermost",
             display_name="Mattermost",
-            client_id=bridge_client.id,
+            client_id=workspace_consumer.id,
             status="active",
         )
         session.add(bridge)
@@ -1386,7 +1386,7 @@ async def _seed_bridge_with_claim(
     """A bridge, an external user on it, and optionally a claim. Returns the
     bridge id."""
     async with session_factory() as session:
-        bridge_client = Client(
+        workspace_consumer = Client(
             matrix_user_id=f"@bridge-{display_name.lower()}:test.local",
             display_name=display_name,
             type="collaboration_bridge",
@@ -1396,12 +1396,12 @@ async def _seed_bridge_with_claim(
             display_name=external_username,
             type="external_user",
         )
-        session.add_all([bridge_client, user_client])
+        session.add_all([workspace_consumer, user_client])
         await session.flush()
         bridge = CollaborationBridge(
             type="slack",
             display_name=display_name,
-            client_id=bridge_client.id,
+            client_id=workspace_consumer.id,
             status="active",
             is_default=is_default,
         )

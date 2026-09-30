@@ -24,7 +24,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -74,7 +74,7 @@ def _service(
     )
 
 
-class _StubAdapter(CollaborationAdapter):
+class _StubAdapter(PlatformAdapter):
     """Concrete only so `start` can build one; no platform call is made."""
 
     def __init__(self, *, config: Any) -> None:
@@ -267,8 +267,8 @@ async def test_the_bridge_task_unbinds_and_then_binds_per_unit_of_work(
         async def start(self) -> None:
             seen["client"] = current_tenant_id()
 
-    bridge_client = _Client()
-    bridge_client.client_id = client_id
+    workspace_consumer = _Client()
+    workspace_consumer.client_id = client_id
 
     leaked: list[str | None] = []
     with tenant_scope(caller_tenant):
@@ -276,7 +276,7 @@ async def test_the_bridge_task_unbinds_and_then_binds_per_unit_of_work(
             bridge_id,
             bridge_tenant,
             _Core(),  # type: ignore[arg-type]
-            bridge_client,  # type: ignore[arg-type]
+            workspace_consumer,  # type: ignore[arg-type]
         )
         leaked.append(current_tenant_id())
 

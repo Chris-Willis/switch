@@ -21,8 +21,8 @@ from types import SimpleNamespace
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.clients.admin_messages import PLATFORM_MARKER
 from switch_core.db.models import Client, Message, MessageAttachment, Room
 from switch_core.db.stores.message_store import MessageStore
@@ -91,12 +91,12 @@ async def _write(
     return await MessageStore().create(session, message, attachments or [])
 
 
-def _service(session_factory: async_sessionmaker[AsyncSession]) -> ProtocolService:
+def _service(session_factory: async_sessionmaker[AsyncSession]) -> AgentCore:
     async def _require(agent_id: str, room_id: str):
         return SimpleNamespace(id=room_id)
 
-    svc = object.__new__(ProtocolService)
-    svc.connections = ConnectionRegistry()
+    svc = object.__new__(AgentCore)
+    svc.connections = AgentConnectionRegistry()
     svc.session_factory = session_factory
     svc.message_store = MessageStore()
     svc.require_room_member = _require  # type: ignore[assignment]

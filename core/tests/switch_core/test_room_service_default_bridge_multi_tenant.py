@@ -73,12 +73,12 @@ class _FakeAdapter:
         return None
 
 
-class _FakeBridgeCore:
+class _FakeCollaborationCore:
     """The running half of a bridge — `create_room` never opens a session on
-    this, so it does not need to be the real `BridgeCore`."""
+    this, so it does not need to be the real `CollaborationCore`."""
 
     def __init__(self, matrix_user_id: str) -> None:
-        self._bridge_client_matrix_user_id = matrix_user_id
+        self._workspace_consumer_matrix_user_id = matrix_user_id
         self.adapter = _FakeAdapter()
         self.mappings: list[tuple[str, str, str, str]] = []
 
@@ -99,7 +99,7 @@ class _FakeBridgeCore:
 
 
 class _FakeLifecycle:
-    def __init__(self, bridges: dict[str, _FakeBridgeCore]) -> None:
+    def __init__(self, bridges: dict[str, _FakeCollaborationCore]) -> None:
         self._bridges = bridges
 
     def get(self, bridge_id: str) -> Any:
@@ -156,7 +156,7 @@ async def _make_default_bridge(
 def _service(
     session_factory: async_sessionmaker[AsyncSession],
     *,
-    bridges: dict[str, _FakeBridgeCore],
+    bridges: dict[str, _FakeCollaborationCore],
     matrix: _FakeMatrix,
 ) -> RoomService:
     svc = object.__new__(RoomService)
@@ -192,8 +192,8 @@ async def test_create_room_succeeds_for_each_tenants_own_default_bridge(
     svc = _service(
         session_factory,
         bridges={
-            bridge_a: _FakeBridgeCore("@bot-a:switch.local"),
-            bridge_b: _FakeBridgeCore("@bot-b:switch.local"),
+            bridge_a: _FakeCollaborationCore("@bot-a:switch.local"),
+            bridge_b: _FakeCollaborationCore("@bot-b:switch.local"),
         },
         matrix=matrix,
     )

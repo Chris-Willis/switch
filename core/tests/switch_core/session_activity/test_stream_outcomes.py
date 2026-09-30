@@ -11,11 +11,11 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     APPROVAL_OUTCOME_PROTOCOL_REVISION,
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.stream import event_stream
@@ -50,7 +50,7 @@ async def approvals(service, postgres_url) -> AsyncIterator[ApprovalOutcomes]:
 
 
 def _open_stream(approvals, *, agent_id=AGENT, scope="all", speaks=PROTOCOL_VERSION):
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = registry.open(
         agent_id=agent_id,
         connection_id=f"conn-{agent_id}-{scope}",

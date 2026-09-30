@@ -32,12 +32,12 @@ from switch_core.bridges.agent.operations.context import (
     sole_connected_room,
 )
 from switch_core.bridges.agent.operations.registry import operation
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     ConnectionError_,
     evicted_session_warning,
 )
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
-from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
 from switch_core.db.models import CollaborationBridge, User
 from switch_core.db.stores.template_store import TemplateStore
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 
 def claim_room_on_caller_connection(
-    protocol: ProtocolService, agent_id: str, connection_id: str, room_id: str
+    protocol: AgentCore, agent_id: str, connection_id: str, room_id: str
 ) -> str | None:
     """Bind the room to the connection that asked to connect.
 
@@ -111,7 +111,7 @@ def claim_room_on_caller_connection(
 
 
 def rooms_on_caller_connection(
-    protocol: ProtocolService, agent_id: str, connection_id: str
+    protocol: AgentCore, agent_id: str, connection_id: str
 ) -> set[str]:
     """The rooms claimed by the connection underneath this caller.
 
@@ -126,7 +126,7 @@ def rooms_on_caller_connection(
 
 
 def release_room_on_caller_connection(
-    protocol: ProtocolService, agent_id: str, connection_id: str, room_id: str
+    protocol: AgentCore, agent_id: str, connection_id: str, room_id: str
 ) -> None:
     """Drop a room the caller has left from the connection underneath it.
 
@@ -143,7 +143,7 @@ def release_room_on_caller_connection(
 
 
 async def bind_room_for_connectionless_caller(
-    protocol: ProtocolService,
+    protocol: AgentCore,
     *,
     agent_id: str,
     connection_id: str,
@@ -395,7 +395,7 @@ def _eviction_warning(
 
 
 async def _decorate_linked_rooms(
-    protocol: ProtocolService,
+    protocol: AgentCore,
     agent_id: str,
     linked_rooms: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:

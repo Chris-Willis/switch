@@ -19,7 +19,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.budgets import BudgetGuard
 from switch_core.clients.agent_client import AgentClient
 from switch_core.clients.room_meta import RoomMeta
@@ -129,7 +129,7 @@ def _client(
     client._room_role_store = RoomRoleStore()
     client._agent_session_store = AgentSessionStore()
     client._external_user_store = ExternalUserStore()
-    client._connections = ConnectionRegistry()
+    client._connections = AgentConnectionRegistry()
     client._addressing = AddressingResolver(
         room_store=client._room_store,
         room_role_store=client._room_role_store,

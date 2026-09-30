@@ -22,7 +22,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
-    CollaborationAdapter,
+    PlatformAdapter,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -309,7 +309,7 @@ class _ActivityStream:
     blocks: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
-class SlackAdapter(CollaborationAdapter):
+class SlackAdapter(PlatformAdapter):
     draws_session_activity: ClassVar[bool] = True
     separate_attention_slot: ClassVar[bool] = True
     #: Cheap on a stream in a way it never was on an edit. An append is rate
@@ -544,7 +544,7 @@ class SlackAdapter(CollaborationAdapter):
     ) -> str | None:
         """Post a Block Kit message, for what plain text cannot carry.
 
-        Slack-only and deliberately not on `CollaborationAdapter`: blocks are
+        Slack-only and deliberately not on `PlatformAdapter`: blocks are
         Slack's own shape, and the platforms that need something like them need
         something different. `text` is what a notification and a client that
         will not render the blocks are left with, so it has to stand alone.

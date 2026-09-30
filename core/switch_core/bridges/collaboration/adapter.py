@@ -326,7 +326,7 @@ class SupportsSharedConnection(Protocol):
     def set_on_attached(self, callback: Callable[[], None]) -> None: ...
 
 
-class CollaborationAdapter(ABC):
+class PlatformAdapter(ABC):
     #: Whether this platform draws agents' session activity: each turn step by
     #: step, and the approval and question cards a session waits on.
     draws_session_activity: ClassVar[bool] = False
@@ -637,7 +637,7 @@ class CollaborationAdapter(ABC):
 
         **`content` is Switch Markdown, and this method renders it.** Unlike
         `send_message`, whose caller translates, every caller here passes an
-        unrendered body — the notices in `bridge_core`, the adapters' own
+        unrendered body — the notices in `collaboration_core`, the adapters' own
         notices, and the relayed admin events alike. An override must therefore
         run `translate_outbound` itself. Splitting that responsibility between
         callers is what once sent a body through the conversion twice, and the

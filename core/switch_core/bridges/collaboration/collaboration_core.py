@@ -18,7 +18,7 @@ from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.commands import stop_control_frame
 from switch_core.bridges.collaboration.adapter import (
     AgentPresentation,
-    CollaborationAdapter,
+    PlatformAdapter,
     SupportsSharedConnection,
 )
 from switch_core.bridges.collaboration.models import (
@@ -60,10 +60,10 @@ from switch_core.observability.metrics import metrics
 from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomCreateConfig
 from switch_core.session_activity.bridge_answers import ApprovalAnswers
-from switch_core.session_activity.bridge_publisher import (
-    SessionActivityBridgePublisher,
-)
 from switch_core.session_activity.listener import SessionActivityListener
+from switch_core.session_activity.publisher import (
+    SessionActivityPublisher,
+)
 from switch_core.session_activity.service import (
     PlatformPerson,
     SessionActivityService,
@@ -83,7 +83,9 @@ from switch_core.transport import (
 )
 
 if TYPE_CHECKING:
-    from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+    from switch_core.bridges.agent.protocol.agent_connections import (
+        AgentConnectionRegistry,
+    )
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
     from switch_core.room_service import RoomService
 
@@ -150,9 +152,9 @@ def _no_agents_notice(slash_hint: str | None) -> str:
     )
 
 
-class BridgeCore:
-    # Tests assemble a BridgeCore with `__new__`; these read as "not wired".
-    _activity_publisher: SessionActivityBridgePublisher | None = None
+class CollaborationCore:
+    # Tests assemble a CollaborationCore with `__new__`; these read as "not wired".
+    _activity_publisher: SessionActivityPublisher | None = None
     _approval_answers: ApprovalAnswers | None = None
 
     def __init__(
@@ -162,7 +164,7 @@ class BridgeCore:
         bridge_tenant_id: str,
         bridge_type: str,
         bridge_display_name: str,
-        adapter: CollaborationAdapter,
+        adapter: PlatformAdapter,
         room_store: RoomStore,
         external_user_store: ExternalUserStore,
         bridge_message_map_store: BridgeMessageMapStore,
@@ -173,11 +175,11 @@ class BridgeCore:
         matrix_admin: Provisioning,
         session_factory: async_sessionmaker[AsyncSession],
         matrix_server_name: str,
-        bridge_client_matrix_user_id: str,
+        workspace_consumer_matrix_user_id: str,
         max_attachment_bytes: int,
         session_activity_listener: SessionActivityListener,
         session_activity_service: SessionActivityService,
-        connections: ConnectionRegistry,
+        connections: AgentConnectionRegistry,
         gateway_public_url: str | None = None,
     ) -> None:
         self._bridge_id = bridge_id
@@ -202,7 +204,7 @@ class BridgeCore:
         self._matrix_admin = matrix_admin
         self._session_factory = session_factory
         self._matrix_server_name = matrix_server_name
-        self._bridge_client_matrix_user_id = bridge_client_matrix_user_id
+        self._workspace_consumer_matrix_user_id = workspace_consumer_matrix_user_id
         self._max_attachment_bytes = max_attachment_bytes
 
         self._channel_to_room: dict[str, tuple[str, str]] = {}
@@ -246,7 +248,7 @@ class BridgeCore:
         self._connections = connections
         self._session_activity_service = session_activity_service
         self._activity_publisher = (
-            SessionActivityBridgePublisher(
+            SessionActivityPublisher(
                 adapter=adapter,
                 bridge_id=bridge_id,
                 bridge_type=bridge_type,
@@ -272,7 +274,7 @@ class BridgeCore:
         )
 
     @property
-    def adapter(self) -> CollaborationAdapter:
+    def adapter(self) -> PlatformAdapter:
         return self._adapter
 
     @property
@@ -1794,7 +1796,7 @@ class BridgeCore:
         if event.sender in self._puppet_matrix_ids:
             logger.debug("[BRIDGE-OUT] skipping puppet message from %s", event.sender)
             return
-        if event.sender == self._bridge_client_matrix_user_id:
+        if event.sender == self._workspace_consumer_matrix_user_id:
             logger.debug("[BRIDGE-OUT] skipping bridge client message")
             return
 
@@ -1929,7 +1931,7 @@ class BridgeCore:
         )
         if event.sender in self._puppet_matrix_ids:
             return
-        if event.sender == self._bridge_client_matrix_user_id:
+        if event.sender == self._workspace_consumer_matrix_user_id:
             return
 
         channel_id = self._find_channel(matrix_room_id=room.room_id)

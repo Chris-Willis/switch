@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
@@ -128,9 +128,9 @@ class TestTheLifecycle:
         service = _service(session_factory)
         service.register_adapter("mattermost", _StubAdapter, _StubConfig)
         events: list[str] = []
-        handed: list[CollaborationAdapter] = []
+        handed: list[PlatformAdapter] = []
 
-        def listener(adapter: CollaborationAdapter) -> None:
+        def listener(adapter: PlatformAdapter) -> None:
             events.append("listener")
             handed.append(adapter)
 

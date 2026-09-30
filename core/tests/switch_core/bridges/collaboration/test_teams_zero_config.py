@@ -12,7 +12,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from pydantic import ValidationError
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -249,7 +249,7 @@ async def test_verify_credentials_reports_an_unreachable_microsoft(
 # ── register() wiring ────────────────────────────────────────────────────────
 
 
-class _RecordingAdapter(CollaborationAdapter):
+class _RecordingAdapter(PlatformAdapter):
     """Records the order register() drives the two hooks in."""
 
     events: list[str] = []
@@ -383,7 +383,7 @@ async def test_exclusive_resource_is_the_listener_port() -> None:
 
 def test_outbound_only_adapters_claim_nothing() -> None:
     """Slack, Discord and Mattermost dial out; any number can coexist."""
-    assert CollaborationAdapter.exclusive_resource({}) is None
+    assert PlatformAdapter.exclusive_resource({}) is None
 
 
 # The one tenant these tests pretend the deployment has. Named rather than

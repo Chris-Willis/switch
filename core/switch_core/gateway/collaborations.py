@@ -635,8 +635,8 @@ async def claim_bridge_identity(
             external_user_id=payload.external_user_id,
             username=payload.username,
         )
-        bridge_core = collab_lifecycle.get(bridge_id)
-        if bridge_core is None:
+        collaboration_core = collab_lifecycle.get(bridge_id)
+        if collaboration_core is None:
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -645,7 +645,7 @@ async def claim_bridge_identity(
                 ),
             )
         try:
-            external_user = await bridge_core.ensure_external_user(
+            external_user = await collaboration_core.ensure_external_user(
                 external_user_id=payload.external_user_id,
                 external_username=payload.username,
             )

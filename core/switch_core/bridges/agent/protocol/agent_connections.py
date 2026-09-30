@@ -393,7 +393,7 @@ class TooManyConnectionsError(ConnectionError_):
 
 
 @dataclass
-class Connection:
+class AgentConnection:
     id: str
     agent_id: str
     scope: Scope
@@ -434,17 +434,17 @@ class Connection:
         return self.closure is None and (now - self.last_beat) < HEARTBEAT_TTL_SECONDS
 
 
-class ConnectionRegistry:
+class AgentConnectionRegistry:
     """The live set of agent connections. Authoritative, in memory."""
 
     def __init__(self) -> None:
-        # Called with every Connection this registry closes, whoever closed it.
+        # Called with every AgentConnection this registry closes, whoever closed it.
         # A callback rather than a report at each call site: `close` is reached
         # from five places — the sweep, the stale-connection check, the stream,
         # and two room-claim failures — and a sixth added later would silently
         # report nothing. The registry stays unaware of what the callback does.
-        self._on_close: Callable[[Connection], None] = lambda conn: None
-        self._by_id: dict[str, Connection] = {}
+        self._on_close: Callable[[AgentConnection], None] = lambda conn: None
+        self._by_id: dict[str, AgentConnection] = {}
         self._by_agent: dict[str, set[str]] = {}
         self._slot_locks: dict[str, tuple[asyncio.Lock, int]] = {}
         # Incarnations are drawn from here, never from the connection, so a
@@ -492,7 +492,7 @@ class ConnectionRegistry:
         cursor: int,
         declaration: ClientDeclaration,
         expected_generation: int | None,
-    ) -> Connection:
+    ) -> AgentConnection:
         """Open a connection, or reattach to one the client already owns.
 
         The client chooses the id, which makes opening idempotent: a timed-out
@@ -569,7 +569,7 @@ class ConnectionRegistry:
             raise TooManyConnectionsError(agent_id, MAX_CONNECTIONS_PER_AGENT)
 
         now = time.monotonic()
-        conn = Connection(
+        conn = AgentConnection(
             id=connection_id,
             agent_id=agent_id,
             scope=scope,
@@ -600,7 +600,7 @@ class ConnectionRegistry:
         )
         return conn
 
-    def detach_stream(self, conn: Connection, generation: int) -> None:
+    def detach_stream(self, conn: AgentConnection, generation: int) -> None:
         """Mark the stream gone while leaving the connection alive.
 
         Only the generation that is currently attached may detach: a superseded
@@ -615,7 +615,7 @@ class ConnectionRegistry:
                 conn.id,
             )
 
-    def set_close_listener(self, listener: Callable[[Connection], None]) -> None:
+    def set_close_listener(self, listener: Callable[[AgentConnection], None]) -> None:
         """Observe every connection this registry closes.
 
         One listener, set once at wiring time. It must not raise — a bad
@@ -625,7 +625,7 @@ class ConnectionRegistry:
         """
         self._on_close = listener
 
-    def close(self, connection_id: str, closure: Closure) -> Connection | None:
+    def close(self, connection_id: str, closure: Closure) -> AgentConnection | None:
         conn = self._by_id.pop(connection_id, None)
         if conn is None:
             return None
@@ -674,7 +674,7 @@ class ConnectionRegistry:
             )
         return conn
 
-    def sweep(self) -> list[Connection]:
+    def sweep(self) -> list[AgentConnection]:
         """Close connections whose heartbeat has lapsed. Returns those closed."""
         now = time.monotonic()
         stale = [
@@ -703,7 +703,7 @@ class ConnectionRegistry:
         connection_id: str,
         cursor: int,
         generation: int | None,
-    ) -> Connection:
+    ) -> AgentConnection:
         """Record a client tick and its cursor.
 
         Rejects a tick for a connection with no stream: the client is alive but
@@ -746,7 +746,7 @@ class ConnectionRegistry:
             conn.cursor = cursor
         return conn
 
-    def require(self, agent_id: str, connection_id: str) -> Connection:
+    def require(self, agent_id: str, connection_id: str) -> AgentConnection:
         conn = self._by_id.get(connection_id)
         if conn is None or conn.agent_id != agent_id:
             raise UnknownConnectionError(connection_id)
@@ -757,7 +757,7 @@ class ConnectionRegistry:
 
     def require_current(
         self, agent_id: str, connection_id: str, *, generation: int | None
-    ) -> Connection:
+    ) -> AgentConnection:
         """Resolve a connection the caller must still be the client on.
 
         `require` answers "does this connection exist", which is the wrong
@@ -788,7 +788,7 @@ class ConnectionRegistry:
         return conn
 
     @staticmethod
-    def _fenced_holder(conn: Connection) -> int | None:
+    def _fenced_holder(conn: AgentConnection) -> int | None:
         """The holder's revision, when it is one that carries the incarnation.
 
         The declaration on the connection is the holder's, not the caller's, so
@@ -801,10 +801,10 @@ class ConnectionRegistry:
             return speaks
         return None
 
-    def get(self, connection_id: str) -> Connection | None:
+    def get(self, connection_id: str) -> AgentConnection | None:
         return self._by_id.get(connection_id)
 
-    def for_agent(self, agent_id: str) -> list[Connection]:
+    def for_agent(self, agent_id: str) -> list[AgentConnection]:
         now = time.monotonic()
         return [
             conn
@@ -841,7 +841,7 @@ class ConnectionRegistry:
         return ({previous} - {room_id} if previous else set()), displaced
 
     def replace_placements(
-        self, conn: Connection, placements: dict[str, str]
+        self, conn: AgentConnection, placements: dict[str, str]
     ) -> list[Released]:
         """Make `placements` the whole of this connection's session placements.
 
@@ -918,7 +918,7 @@ class ConnectionRegistry:
 
     @staticmethod
     def _notify_released(
-        conn: Connection, room_id: str, session_id: str | None
+        conn: AgentConnection, room_id: str, session_id: str | None
     ) -> None:
         """Queue a `room_released` frame for a client that can take one.
 
@@ -931,7 +931,7 @@ class ConnectionRegistry:
             conn.released_rooms[room_id] = session_id
         conn.wake.set()
 
-    def _placed_by(self, conn: Connection, room_id: str) -> str | None:
+    def _placed_by(self, conn: AgentConnection, room_id: str) -> str | None:
         """The session this connection placed in the room, if any."""
         owners = self._placement_owners.get(conn.agent_id, {})
         return next(
@@ -945,7 +945,7 @@ class ConnectionRegistry:
             None,
         )
 
-    def connection_placements(self, conn: Connection) -> dict[str, str]:
+    def connection_placements(self, conn: AgentConnection) -> dict[str, str]:
         """The sessions this connection placed, and their rooms."""
         owners = self._placement_owners.get(conn.agent_id, {})
         return {
@@ -1025,8 +1025,8 @@ class ConnectionRegistry:
                 self._slot_locks[agent_id] = (lock, remaining - 1)
 
     def claim_room(
-        self, conn: Connection, room_id: str, *, takeover: bool = False
-    ) -> Connection | None:
+        self, conn: AgentConnection, room_id: str, *, takeover: bool = False
+    ) -> AgentConnection | None:
         """Subscribe a connection to a room, claiming its slot.
 
         At most one connection per agent may act in a room, which is what the
@@ -1040,7 +1040,7 @@ class ConnectionRegistry:
         Returns the connection that was evicted, if any.
         """
         claimant = self.claimant_of(conn.agent_id, room_id)
-        evicted: Connection | None = None
+        evicted: AgentConnection | None = None
         if claimant is not None and claimant.id != conn.id:
             if not takeover:
                 raise RoomOccupiedError(room_id, claimant.id)
@@ -1054,7 +1054,7 @@ class ConnectionRegistry:
         conn.wake.set()
         return evicted
 
-    def release_room(self, conn: Connection, room_id: str) -> None:
+    def release_room(self, conn: AgentConnection, room_id: str) -> None:
         conn.rooms.discard(room_id)
         conn.wake.set()
 
@@ -1074,7 +1074,7 @@ class ConnectionRegistry:
                 conn.rooms.discard(room_id)
                 conn.wake.set()
 
-    def claimant_of(self, agent_id: str, room_id: str) -> Connection | None:
+    def claimant_of(self, agent_id: str, room_id: str) -> AgentConnection | None:
         """The connection that has explicitly claimed this room, if any.
 
         Only an explicit claim conflicts. An `all`-scope connection covering a
@@ -1086,7 +1086,7 @@ class ConnectionRegistry:
                 return conn
         return None
 
-    def holder_of(self, agent_id: str, room_id: str) -> Connection | None:
+    def holder_of(self, agent_id: str, room_id: str) -> AgentConnection | None:
         """The connection entitled to act as this agent in this room, if any.
 
         The claimant if there is one, otherwise an `all`-scope connection —
@@ -1101,7 +1101,7 @@ class ConnectionRegistry:
                 return conn
         return None
 
-    def covers(self, conn: Connection, room_id: str) -> bool:
+    def covers(self, conn: AgentConnection, room_id: str) -> bool:
         if conn.scope == "single":
             return room_id in conn.rooms
         # An `all` connection covers everything no sibling has claimed.

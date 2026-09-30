@@ -30,7 +30,7 @@ import { ownProcessGroup } from '../process-fence';
 import { SessionLinks } from '../session-channel';
 import { sharedConfigSchema } from '../shared-config';
 import { hostSessionProcess } from '../shared-host';
-import { runSharedWatcher } from '../shared-watcher';
+import { runAgentHost } from '../agent-host';
 import { superviseSharedHost } from '../supervisor';
 import { WatcherControl } from '../watcher-tools';
 import { createBenchAdapter } from './adapter';
@@ -89,7 +89,7 @@ async function main(): Promise<void> {
     // start it again.
     try {
       await Promise.all([
-        runSharedWatcher(root, config, stop.signal, supervision, control).finally(() =>
+        runAgentHost(root, config, stop.signal, supervision, control).finally(() =>
           stop.abort()
         ),
         serveControl(resolve(root), links, ensure, control, stop.signal),

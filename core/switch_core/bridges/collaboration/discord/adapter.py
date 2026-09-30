@@ -22,7 +22,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     ActivitySnapshot,
     ChannelNotBindable,
-    CollaborationAdapter,
+    PlatformAdapter,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -484,7 +484,7 @@ class DiscordConnectionConfig(BridgeConnectionConfig):
         return self
 
 
-class DiscordAdapter(CollaborationAdapter):
+class DiscordAdapter(PlatformAdapter):
     """Discord collaboration bridge adapter.
 
     Single-bot identity model like Slack: all agents post through one bot
@@ -575,7 +575,7 @@ class DiscordAdapter(CollaborationAdapter):
             )
         # Fired the moment a shared connection is attached, so the start-time
         # work that needed it (agent-identity provisioning) can re-run. Set by
-        # BridgeCore; None on an own-connection bridge, which is never attached.
+        # CollaborationCore; None on an own-connection bridge, which is never attached.
         self._on_attached: Callable[[], None] | None = None
         # (channel id, webhook name) -> webhook the bridge posts through there.
         self._webhooks: dict[tuple[int, str], discord.Webhook] = {}

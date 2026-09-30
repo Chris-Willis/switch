@@ -157,7 +157,7 @@ class _PortHoldingAdapter(_StubAdapter):
 
 
 class _FailingCore:
-    """A `bridge_core.start()` that never reaches the platform at all -- the
+    """A `collaboration_core.start()` that never reaches the platform at all -- the
     `_run_bridge` branch that still reports `bridge_connected{failure}`,
     as opposed to a `bridge_disconnected` for a bridge that connected and
     then dropped."""
@@ -499,10 +499,10 @@ class TestATaskFailureAfterStartSucceedsIsStillReportedExactlyOnce:
 
         # What the scheduled task would have done, awaited directly rather
         # than raced, the same way `test_lifecycle_callback_endpoint.py`'s
-        # crash test does -- except `bridge_core.start()` itself is what
+        # crash test does -- except `collaboration_core.start()` itself is what
         # fails here (`_FailingCore`), the branch that reports
         # `bridge_connected{failure}` from inside `_run_bridge`.
-        # `bridge_client` never gets far enough to have `.start()` called, so
+        # `workspace_consumer` never gets far enough to have `.start()` called, so
         # only its `client_id` attribute (read first, by
         # `_record_bridge_memberships`) matters.
         await type(service)._run_bridge(

@@ -18,8 +18,8 @@ vi.mock('@main/core/workspaces/workspace-session', () => ({
 }));
 vi.mock('@main/core/sdk-host/host-sessions', () => ({ listHostSessions: mocks.list }));
 vi.mock('@main/core/sdk-host/shared-agent-runtime', () => ({ stopSharedSession: mocks.stop }));
-vi.mock('@main/core/sdk-host/shared-watcher', () => ({
-  configureSharedWatcher: mocks.disable,
+vi.mock('@main/core/sdk-host/agent-host', () => ({
+  configureAgentHost: mocks.disable,
   applyControllerState: mocks.restart,
 }));
 // Sidecar management is deliberately left real: it owns the Start transition,

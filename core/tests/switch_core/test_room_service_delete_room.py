@@ -35,7 +35,7 @@ class _FakeRoomStore:
         self.deleted.append(room_id)
 
 
-class _FakeBridgeCore:
+class _FakeCollaborationCore:
     def __init__(self, events: list[Any]) -> None:
         self._events = events
 
@@ -89,7 +89,7 @@ def _build_service(
 
 
 class TestDeleteRoom:
-    async def test_evicts_bridged_room_from_bridge_core(self) -> None:
+    async def test_evicts_bridged_room_from_collaboration_core(self) -> None:
         events: list[Any] = []
         room = SimpleNamespace(
             id="room-1",
@@ -98,7 +98,7 @@ class TestDeleteRoom:
             bridge_id="bridge-x",
             external_channel_id="chan-x",
         )
-        bridge = _FakeBridgeCore(events)
+        bridge = _FakeCollaborationCore(events)
         svc, room_store = _build_service(
             room=room,
             client_ids=[],
@@ -113,7 +113,7 @@ class TestDeleteRoom:
         assert ("delete_room", "!mx:switch.local") in events
         assert ("remove_room_mapping", "room-1", "!mx:switch.local") in events
 
-    async def test_non_bridged_room_does_not_touch_bridge_core(self) -> None:
+    async def test_non_bridged_room_does_not_touch_collaboration_core(self) -> None:
         events: list[Any] = []
         room = SimpleNamespace(
             id="room-1",
@@ -135,7 +135,7 @@ class TestDeleteRoom:
         assert room_store.deleted == ["room-1"]
         assert not any(e[0] == "remove_room_mapping" for e in events)
 
-    async def test_missing_bridge_core_is_tolerated(self) -> None:
+    async def test_missing_collaboration_core_is_tolerated(self) -> None:
         events: list[Any] = []
         room = SimpleNamespace(
             id="room-1",

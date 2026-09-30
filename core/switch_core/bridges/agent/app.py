@@ -15,9 +15,9 @@ from switch_core.bridges.agent.auth import BearerAuthMiddleware
 from switch_core.bridges.agent.deeplink import router as deeplink_router
 from switch_core.bridges.agent.dependencies import get_protocol, init_dependencies
 from switch_core.bridges.agent.mcp import create_mcp_app
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -59,15 +59,15 @@ def create_agent_bridge_app(
     session_factory: object,
     config: SwitchConfig,
     approval_outcomes: ApprovalOutcomes,
-    connections: ConnectionRegistry | None = None,
+    connections: AgentConnectionRegistry | None = None,
     telemetry: TelemetryService | None = None,
-) -> tuple[FastAPI, ProtocolService]:
+) -> tuple[FastAPI, AgentCore]:
     # One registry for the whole process: the live connection set is the source
     # of truth for reachability, so every service must see the same one. The
     # caller may supply it, and main.py does, because the agent clients are
     # wired before this app is built and read presence from the same registry.
     if connections is None:
-        connections = ConnectionRegistry()
+        connections = AgentConnectionRegistry()
 
     # One cache for the whole process, for the same reason as `connections`:
     # the HTTP door and the MCP door each carry their own auth middleware, and

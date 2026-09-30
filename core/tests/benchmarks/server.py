@@ -33,9 +33,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.app import create_agent_bridge_app
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
     TaskProtocolConfig,
@@ -125,11 +125,11 @@ class BenchServer:
         *,
         base_url: str,
         port: int,
-        protocol: ProtocolService,
+        protocol: AgentCore,
         room_service: RoomService,
         client_lifecycle: ClientLifecycleService,
         event_buffer: EventBuffer,
-        connections: ConnectionRegistry,
+        connections: AgentConnectionRegistry,
         collector: TraceCollector,
         requests: RequestCounter,
         statements: Counter[str],
@@ -443,7 +443,7 @@ async def _serve(
     # raises instead of unbinding.
     bind_tenant_id(TENANT_ZERO_ID)
     event_buffer = EventBuffer()
-    connections = ConnectionRegistry()
+    connections = AgentConnectionRegistry()
     collab_lifecycle = _NoBridges()
 
     message_listener = MessageListener(lambda: create_unpooled_engine(config))

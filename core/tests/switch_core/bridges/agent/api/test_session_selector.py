@@ -11,10 +11,10 @@ import pytest
 from fastapi import HTTPException
 
 from switch_core.bridges.agent.api.operations import resolve_caller
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_LAPSED,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
 
 AGENT = "agent-demo"
@@ -22,12 +22,12 @@ CONNECTION = "connection-demo"
 
 
 class _Protocol:
-    def __init__(self, connections: ConnectionRegistry) -> None:
+    def __init__(self, connections: AgentConnectionRegistry) -> None:
         self.connections = connections
 
 
 def _protocol() -> _Protocol:
-    connections = ConnectionRegistry()
+    connections = AgentConnectionRegistry()
     connections.open(
         agent_id=AGENT,
         connection_id=CONNECTION,
@@ -105,7 +105,7 @@ async def test_a_dead_or_foreign_connection_is_refused() -> None:
 
 
 def test_one_session_per_room_and_one_room_per_session() -> None:
-    connections = ConnectionRegistry()
+    connections = AgentConnectionRegistry()
     assert connections.place_session(AGENT, "first", "room-a", CONNECTION) == (
         set(),
         None,
