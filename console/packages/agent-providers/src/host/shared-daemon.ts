@@ -8,7 +8,7 @@ import { replaceOwner } from './ownership-lock';
 import { ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
 import { adapterFor } from './server';
-import { SessionLinks } from './session-channel';
+import { HOST_EXIT_GRACE_MS, SessionLinks } from './session-channel';
 import { sharedConfigSchema } from './shared-config';
 import { hostSessionProcess } from './shared-host';
 import { runSharedWatcher } from './shared-watcher';
@@ -188,6 +188,15 @@ async function main(): Promise<void> {
     } finally {
       // The channel would otherwise keep this process alive after the host is done.
       process.disconnect();
+      // Something the host started can outlive it too, and keep this process
+      // alive holding the session's lock with no pipe to its parent. Exit
+      // regardless: the supervisor then clears what is left of the group.
+      setTimeout(() => {
+        console.warn(
+          `The session host finished but was still running ${HOST_EXIT_GRACE_MS / 1000} s later; exiting so its supervisor can stop what it left behind.`
+        );
+        process.exit();
+      }, HOST_EXIT_GRACE_MS).unref();
     }
   }
 }
