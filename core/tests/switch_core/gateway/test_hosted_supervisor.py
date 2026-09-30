@@ -329,6 +329,29 @@ async def test_agents_lists_a_queued_launch_whose_agent_row_does_not_exist_yet_a
     assert launch.error is None
 
 
+async def test_agents_puts_a_stale_queued_launch_without_its_agent_row_in_error(
+    supervisor,
+):
+    client, request_id, _, service, factory, machine_id, headers = supervisor
+    stale_id, stale_agent = await second_launch(
+        factory, service, request_id, state="queued", register=False
+    )
+    await update_launch(
+        factory, stale_id, updated_at=datetime.now(UTC) - timedelta(minutes=2)
+    )
+    response = await client.get(
+        f"/hosted/machines/{machine_id}/agents", headers=headers
+    )
+    assert response.status_code == 200, response.text
+    _, broken = split_entries(response.json()["agents"], stale_id)
+    assert broken["agent_id"] == stale_agent
+    assert broken["unavailable"] == "agent_identity_missing"
+    launch = await launch_row(factory, stale_id)
+    assert launch.state == "error"
+    assert launch.error_code == "agent_identity_missing"
+    assert launch.error == IDENTITY_MISSING_ERROR
+
+
 async def test_agents_lists_a_launch_whose_agent_row_is_gone_as_unavailable(
     supervisor,
 ):

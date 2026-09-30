@@ -46,6 +46,7 @@ HEARTBEAT_EVERY_S = 15
 DISK_FULL_BELOW_BYTES = 1 << 30
 RETIRED_STATES = {"retained", "deleting", "deleted"}
 WORKER_ATTACH_TIMEOUT = timedelta(minutes=10)
+IDENTITY_REGISTRATION_GRACE = timedelta(minutes=1)
 
 
 @dataclass(frozen=True)
@@ -135,8 +136,10 @@ def _unavailable_entry(
 ) -> dict:
     """List a launch the machine cannot run, and put it in error.
 
-    A queued launch whose identity is missing is left alone: launch creation
-    commits `agent_id` before it registers the agent.
+    A queued launch whose identity is missing is left alone for
+    `IDENTITY_REGISTRATION_GRACE`: launch creation commits `agent_id` before
+    it registers the agent. Past the grace it goes to error like any other
+    state, and retry registers the reserved id again.
     """
     logger.error(
         "Cloud launch %s: agent %s is unavailable (%s); the machine cannot run it.",
@@ -144,7 +147,11 @@ def _unavailable_entry(
         launch.agent_id,
         code,
     )
-    exempt = code == "agent_identity_missing" and launch.state == "queued"
+    exempt = (
+        code == "agent_identity_missing"
+        and launch.state == "queued"
+        and now - launch.updated_at < IDENTITY_REGISTRATION_GRACE
+    )
     already = launch.state == "error" and launch.error_code == code
     if not exempt and not already:
         launch.state = "error"
