@@ -112,7 +112,14 @@ async def lifecycle(
         idle_sleeping(machine) and machine.revision == body.revision + 1
     ):
         raise HTTPException(409, "revision mismatch")
-    if machine.state in RETIRED_STATES or machine.desired_state in RETIRED_STATES:
+    retrying_retire = (
+        body.action == "retry"
+        and machine.state == "error"
+        and machine.desired_state == "retained"
+    )
+    if not retrying_retire and (
+        machine.state in RETIRED_STATES or machine.desired_state in RETIRED_STATES
+    ):
         raise HTTPException(409, f"machine is {machine.desired_state}")
     now = datetime.now(UTC)
     cancelled: list[MailboxNotice] = []

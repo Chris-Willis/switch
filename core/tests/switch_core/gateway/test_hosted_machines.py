@@ -11,6 +11,12 @@ import pytest
 
 from switch_core.db.models import HostedWakeMailbox
 from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.hosted_machines import router as machine_router
+from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
+    controller_app,
+    machine_of,
+    observe,
+)
 from tests.switch_core.gateway.test_hosted_mailbox import (  # noqa: F401
     address,
     addressed,
@@ -19,6 +25,10 @@ from tests.switch_core.gateway.test_hosted_mailbox import (  # noqa: F401
     mailbox_app,
     rows,
     set_launch,
+)
+from tests.switch_core.gateway.test_hosted_supervisor import (  # noqa: F401
+    heartbeat_body,
+    supervisor,
 )
 from tests.switch_core.gateway.test_hosted_workers import (  # noqa: F401
     _launch,
@@ -209,11 +219,36 @@ async def test_retry_only_from_error(mailbox_app):  # noqa: F811
     assert machine["revision"] == 2
 
 
+async def test_retry_requeues_the_retire_of_a_machine_in_error(mailbox_app):  # noqa: F811
+    app = mailbox_app
+    await set_machine(
+        app.factory,
+        app.machine_id,
+        state="error",
+        desired_state="retained",
+        error="The instance could not stop.",
+        error_code="instance_failed",
+    )
+    for action in ("stop", "start"):
+        assert (await _lifecycle(app, action, 1)).status_code == 409
+    retried = await _lifecycle(app, "retry", 1)
+    assert retried.status_code == 200, retried.text
+    machine = retried.json()["machine"]
+    assert (
+        machine["state"],
+        machine["desired_state"],
+        machine["error"],
+        machine["revision"],
+    ) == ("queued", "retained", None, 2)
+
+
 @pytest.mark.parametrize(
     "values",
     [
         {"desired_state": "retained"},
+        {"state": "retained", "desired_state": "retained"},
         {"state": "deleting", "desired_state": "deleted"},
+        {"state": "error", "desired_state": "deleted"},
     ],
 )
 @pytest.mark.parametrize("action", ["stop", "start", "retry"])
@@ -222,3 +257,36 @@ async def test_a_retired_machine_refuses_lifecycle(mailbox_app, values, action):
     await set_machine(app.factory, app.machine_id, **values)
     refused = await _lifecycle(app, action, 1)
     assert refused.status_code == 409
+
+
+async def test_stop_then_start_before_the_stop_lands_waits_for_a_fresh_heartbeat(
+    supervisor,  # noqa: F811
+):
+    client, request_id, _, _, factory, machine_id, headers = supervisor
+    client._transport.app.include_router(machine_router)
+    heartbeat = f"/hosted/machines/{machine_id}/heartbeat"
+    await observe(client, machine_id, state="running", revision=1)
+    await client.post(heartbeat, headers=headers, json=heartbeat_body())
+    assert (await machine_of(factory, request_id)).state == "ready"
+
+    lifecycle = f"/hosted-machines/{machine_id}/lifecycle"
+    stopped = await client.post(lifecycle, json={"action": "stop", "revision": 1})
+    assert stopped.status_code == 200, stopped.text
+    started = await client.post(lifecycle, json={"action": "start", "revision": 2})
+    assert started.status_code == 200, started.text
+    assert (
+        started.json()["machine"]["state"],
+        started.json()["machine"]["revision"],
+    ) == (
+        "provisioning",
+        3,
+    )
+
+    await observe(client, machine_id, state="running", revision=3)
+    observed = await machine_of(factory, request_id)
+    assert (observed.state, observed.running_observed_at is not None) == (
+        "provisioning",
+        True,
+    )
+    await client.post(heartbeat, headers=headers, json=heartbeat_body())
+    assert (await machine_of(factory, request_id)).state == "ready"

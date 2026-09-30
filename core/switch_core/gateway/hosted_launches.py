@@ -6,6 +6,7 @@ from typing import Annotated, Literal, Self, cast
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,12 +37,13 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.hosted_launch_store import (
     HostedLaunchConflict,
     HostedLaunchStore,
-    lock_launch,
 )
 from switch_core.db.stores.hosted_machine_store import (
     HostedMachineConflict,
     HostedMachineStore,
     idle_sleeping,
+    machine_starting,
+    owner_stopped,
 )
 from switch_core.db.stores.hosted_mailbox_store import (
     HostedMailboxStore,
@@ -77,6 +79,14 @@ router = APIRouter(prefix="/hosted-launches")
 IDENTITY_FAILED = (
     "Switch could not create this cloud agent's identity. Retry it to try again."
 )
+MACHINE_ERROR = "The cloud machine needs attention. Retry it in Switch Console."
+MACHINE_STOPPED = "The owner stopped the cloud machine. Start it in Switch Console."
+WORKER_WAKING = "The cloud machine is starting. Try again in a moment."
+
+
+def coded_conflict(code: str, message: str) -> JSONResponse:
+    """A 409 whose `detail` is the message and whose `code` names the refusal."""
+    return JSONResponse(status_code=409, content={"detail": message, "code": code})
 
 
 def controller_settings(request: Request) -> HostedControllerSettings:
@@ -241,6 +251,9 @@ async def _identity_failed(
 ) -> HostedLaunch:
     """Mark the launch `identity_failed`, dropping an identity left half registered."""
     await session.rollback()
+    machines = HostedMachineStore()
+    launch, machine = await machines.locked_launch(session, request_id)
+    assert launch is not None and machine is not None
     if await session.get(Agent, agent_id) is not None:
         try:
             await protocol.delete_agent(agent_id=agent_id)
@@ -251,11 +264,10 @@ async def _identity_failed(
                 agent_id,
                 exc_info=True,
             )
-        await session.rollback()
-    machines = HostedMachineStore()
-    launch, machine = await machines.locked_launch(session, request_id)
-    assert launch is not None and machine is not None
-    if launch.agent_id == agent_id and await session.get(Agent, agent_id) is None:
+    if (
+        launch.agent_id == agent_id
+        and await session.get(Agent, agent_id, populate_existing=True) is None
+    ):
         launch.agent_id = None
     if launch.desired_state != "deleted":
         launch.state = "error"
@@ -273,20 +285,30 @@ async def register_identity(
     """Register the launch's agent identity, unless it already has one.
 
     Core mints the agent id and records it on the launch before registering,
-    so the launch's name reservation admits only this identity. A failure
-    leaves the launch in `error` with `identity_failed`, which `retry`
-    registers again. Raises 422 when another agent holds the name.
+    so the launch's name reservation admits only this identity. A launch that
+    has an id but no agent, left by an interrupted registration, registers
+    that id again. Registration runs under the machine and launch locks, so
+    only one caller registers. A failure leaves the launch in `error` with
+    `identity_failed`, which `retry` registers again. Raises 422 when another
+    agent holds the name.
     """
     machines = HostedMachineStore()
     launch, machine = await machines.locked_launch(session, request_id)
     assert launch is not None and machine is not None
-    if launch.agent_id is not None or launch.desired_state == "deleted":
+    if launch.agent_id is None and launch.desired_state != "deleted":
+        launch.agent_id = str(uuid4())
+        launch.updated_at = datetime.now(UTC)
+        await session.commit()
+        launch, machine = await machines.locked_launch(session, request_id)
+        assert launch is not None and machine is not None
+    agent_id = launch.agent_id
+    if (
+        agent_id is None
+        or launch.desired_state == "deleted"
+        or await session.get(Agent, agent_id) is not None
+    ):
         await session.commit()
         return launch
-    agent_id = str(uuid4())
-    launch.agent_id = agent_id
-    launch.updated_at = datetime.now(UTC)
-    await session.commit()
     try:
         await _register(protocol, launch, agent_id)
     except AgentExistsError:
@@ -303,9 +325,7 @@ async def register_identity(
         return await _identity_failed(
             session, protocol, request_id, agent_id, IDENTITY_FAILED
         )
-    launch, machine = await machines.locked_launch(session, request_id)
-    assert launch is not None and machine is not None
-    agent = await session.get(Agent, agent_id)
+    agent = await session.get(Agent, agent_id, populate_existing=True)
     if agent is None:
         logger.error(
             "Cloud launch %s: agent %s is missing after registration",
@@ -315,10 +335,6 @@ async def register_identity(
         return await _identity_failed(
             session, protocol, request_id, agent_id, IDENTITY_FAILED
         )
-    if launch.desired_state == "deleted" or launch.agent_id != agent_id:
-        await session.commit()
-        await protocol.delete_agent(agent_id=agent_id)
-        return launch
     if launch.spec["addressing_policy"] is not None:
         agent.addressing_policy = launch.spec["addressing_policy"]
     launch.updated_at = datetime.now(UTC)
@@ -348,7 +364,7 @@ def ring_mailbox_cancel(
     )
 
 
-@router.post("/{request_id}/lifecycle")
+@router.post("/{request_id}/lifecycle", response_model=None)
 async def lifecycle(
     request_id: UUID,
     body: LifecycleRequest,
@@ -356,7 +372,7 @@ async def lifecycle(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
-) -> dict:
+) -> dict | JSONResponse:
     launch, machine = await locked_owned(session, str(request_id), user.id)
     if launch.revision != body.revision:
         raise HTTPException(
@@ -369,6 +385,8 @@ async def lifecycle(
         raise HTTPException(409, "Only a ready worker can be restarted.")
     if body.action == "retry" and launch.state != "error":
         raise HTTPException(409, "Only a worker in error can be retried.")
+    if body.action in ("restart", "retry") and owner_stopped(machine):
+        return coded_conflict("machine_stopped", MACHINE_STOPPED)
     if body.action == "remove":
         return await remove(session, protocol, config, launch, machine)
     machines = HostedMachineStore()
@@ -408,7 +426,7 @@ async def lifecycle(
     remaining = await revoke_pending(
         session, config, (GitHubIssuedToken.launch_id == launch.id,)
     )
-    if launch.desired_state == "running" and launch.agent_id is None:
+    if launch.desired_state == "running":
         launch = await register_identity(session, protocol, launch.id)
     response = await launch_summary(session, launch)
     return {**response, "access_warning": ACCESS_WARNING if remaining else None}
@@ -449,8 +467,8 @@ async def remove(
     Two commits under the machine and launch locks: the first records the
     removal and what to clean up, and drops the queued mail; the second
     deletes the identity and retains the disk when no agent is left. A crash
-    between them leaves the launch `deleting`, and `remove` on it again
-    finishes the cleanup.
+    between them leaves the launch `deleting`; `remove` on it again, or the
+    controller sweep, finishes the cleanup.
     """
     machines = HostedMachineStore()
     now = datetime.now(UTC)
@@ -496,6 +514,29 @@ async def remove(
         await post_removed_notices(protocol, agent, cancelled)
 
     launch, machine = await locked_owned(session, launch.id, launch.owner_id)
+    await finish_removal(session, protocol, config, launch, machine, now)
+    await session.commit()
+    remaining = await revoke_pending(
+        session, config, (GitHubIssuedToken.launch_id == launch.id,)
+    )
+    response = summary(launch, machine)
+    return {**response, "access_warning": ACCESS_WARNING if remaining else None}
+
+
+async def finish_removal(
+    session: AsyncSession,
+    protocol: ProtocolService,
+    config: SwitchConfig,
+    launch: HostedLaunch,
+    machine: HostedMachine,
+    now: datetime,
+) -> None:
+    """Delete a `deleting` launch's identity and mark it `deleted`.
+
+    The caller holds the machine and launch locks and commits. Safe to run
+    again after an interruption.
+    """
+    machines = HostedMachineStore()
     await AgentStore().lock_name(session, launch.name)
     if launch.agent_id and await session.get(Agent, launch.agent_id) is not None:
         await protocol.delete_agent(agent_id=launch.agent_id)
@@ -519,12 +560,6 @@ async def remove(
     await machines.retain_if_empty(
         session, machine, retention_days=config.hosted_disk_retention_days, now=now
     )
-    await session.commit()
-    remaining = await revoke_pending(
-        session, config, (GitHubIssuedToken.launch_id == launch.id,)
-    )
-    response = summary(launch, machine)
-    return {**response, "access_warning": ACCESS_WARNING if remaining else None}
 
 
 def operation_summary(operation: HostedOperation) -> dict:
@@ -563,18 +598,15 @@ async def ring_operation(
         protocol.connections.ring_worker(agent_id, "operation", {"id": operation_id})
 
 
-@router.post("/{request_id}/sessions", status_code=202)
+@router.post("/{request_id}/sessions", status_code=202, response_model=None)
 async def session_operation(
     request_id: UUID,
     body: SessionOperationRequest,
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
-) -> dict:
-    await lock_launch(session, str(request_id))
-    launch = await HostedLaunchStore().owned(session, str(request_id), user.id)
-    if launch is None:
-        raise HTTPException(404, "Cloud launch not found.")
+) -> dict | JSONResponse:
+    launch, machine = await locked_owned(session, str(request_id), user.id)
     existing = await session.get(HostedOperation, (require_tenant_id(), str(body.id)))
     if existing:
         if (
@@ -586,6 +618,22 @@ async def session_operation(
                 409, "This operation ID was already used for different details."
             )
         return operation_summary(existing)
+    if machine.state == "error":
+        return coded_conflict("machine_error", MACHINE_ERROR)
+    if owner_stopped(machine):
+        return coded_conflict("machine_stopped", MACHINE_STOPPED)
+    if (
+        idle_sleeping(machine)
+        and launch.desired_state == "running"
+        and launch.state != "error"
+    ):
+        now = datetime.now(UTC)
+        HostedMachineStore().start(machine, now)
+        launch.active_at = now
+        await session.commit()
+        return coded_conflict("worker_waking", WORKER_WAKING)
+    if machine_starting(machine):
+        return coded_conflict("worker_waking", WORKER_WAKING)
     if (
         launch.state not in ("ready", "running")
         or launch.desired_state != "running"
@@ -667,7 +715,7 @@ async def create(
             raise HTTPException(
                 409, "This launch request was already used for different agent details."
             )
-        if existing.agent_id is None and existing.state != "error":
+        if existing.state != "error" and existing.desired_state != "deleted":
             existing = await register_identity(session, protocol, existing.id)
         return await launch_summary(session, existing)
     connections = ProviderConnectionStore()

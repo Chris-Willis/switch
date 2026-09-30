@@ -8,12 +8,12 @@ check.
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.dependencies import (
@@ -45,6 +45,8 @@ router = APIRouter(prefix="/hosted/machines")
 HEARTBEAT_EVERY_S = 15
 DISK_FULL_BELOW_BYTES = 1 << 30
 RETIRED_STATES = {"retained", "deleting", "deleted"}
+WORKER_ATTACH_TIMEOUT = timedelta(minutes=10)
+IDENTITY_REGISTRATION_GRACE = timedelta(minutes=1)
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,14 @@ def _settings(config: SwitchConfig) -> HostedControllerSettings:
     )
 
 
+def _capability_valid(machine: HostedMachine | None, capability: str) -> bool:
+    return (
+        bool(capability)
+        and machine is not None
+        and HostedMachineStore.capability_matches(machine, capability)
+    )
+
+
 async def machine_request(
     machine_id: str,
     request: Request,
@@ -74,12 +84,8 @@ async def machine_request(
     capability = supplied[7:] if supplied.startswith("Bearer ") else ""
     with tenant_scope(settings.tenant_id):
         async with factory() as session:
-            machine = await HostedMachineStore().locked(session, machine_id)
-            if (
-                not capability
-                or machine is None
-                or not HostedMachineStore.capability_matches(machine, capability)
-            ):
+            machine = await HostedMachineStore().get(session, machine_id)
+            if not _capability_valid(machine, capability):
                 raise HTTPException(401, "invalid machine capability")
             if not request.headers.get(
                 "x-switch-host-boot-id"
@@ -88,6 +94,9 @@ async def machine_request(
                     400,
                     "X-Switch-Host-Boot-Id and X-Switch-Host-Instance-Id are required.",
                 )
+            machine = await HostedMachineStore().locked(session, machine_id)
+            if machine is None or not _capability_valid(machine, capability):
+                raise HTTPException(401, "invalid machine capability")
             if (
                 machine.state in RETIRED_STATES
                 or machine.desired_state in RETIRED_STATES
@@ -108,25 +117,66 @@ async def _machine_launch(
     return launch
 
 
+UNAVAILABLE_ERRORS = {
+    "agent_key_missing": (
+        "Switch lost this cloud agent's credential, so its machine cannot run it. "
+        "Remove the agent and create it again."
+    ),
+    "agent_identity_missing": (
+        "Switch lost this cloud agent's identity, so its machine cannot run it. "
+        "Retry it in Switch Console."
+    ),
+}
+
+
+def _unavailable_entry(
+    launch: HostedLaunch,
+    code: Literal["agent_key_missing", "agent_identity_missing"],
+    now: datetime,
+) -> dict:
+    """List a launch the machine cannot run, and put it in error.
+
+    A queued launch whose identity is missing is left alone for
+    `IDENTITY_REGISTRATION_GRACE`: launch creation commits `agent_id` before
+    it registers the agent. Past the grace it goes to error like any other
+    state, and retry registers the reserved id again.
+    """
+    logger.error(
+        "Cloud launch %s: agent %s is unavailable (%s); the machine cannot run it.",
+        launch.id,
+        launch.agent_id,
+        code,
+    )
+    exempt = (
+        code == "agent_identity_missing"
+        and launch.state == "queued"
+        and now - launch.updated_at < IDENTITY_REGISTRATION_GRACE
+    )
+    already = launch.state == "error" and launch.error_code == code
+    if not exempt and not already:
+        launch.state = "error"
+        launch.error_code = code
+        launch.error = UNAVAILABLE_ERRORS[code]
+        launch.updated_at = now
+    return {
+        "launch_id": launch.id,
+        "agent_id": launch.agent_id,
+        "name": launch.name,
+        "revision": launch.revision,
+        "desired_state": launch.desired_state,
+        "unavailable": code,
+    }
+
+
 async def _agent_entry(
     session: AsyncSession,
     launch: HostedLaunch,
-    agent: Agent,
+    key: ApiKey,
     settings: HostedControllerSettings,
     config: SwitchConfig,
 ) -> dict:
     assert launch.agent_id is not None
     provider = launch.spec.get("provider", "claude")
-    key = await session.get(ApiKey, agent.api_key_id)
-    if key is None or not key.encrypted_key:
-        logger.error(
-            "Cloud launch %s: agent %s has no stored API key; the machine cannot run it.",
-            launch.id,
-            launch.agent_id,
-        )
-        raise HTTPException(
-            409, f"The Switch credential for cloud agent {launch.name} is unavailable."
-        )
     connection = await session.get(
         ProviderConnection, (require_tenant_id(), launch.owner_id, provider)
     )
@@ -191,9 +241,14 @@ async def agents(
             continue
         agent = await session.get(Agent, launch.agent_id)
         if agent is None:
+            entries.append(_unavailable_entry(launch, "agent_identity_missing", now))
+            continue
+        key = await session.get(ApiKey, agent.api_key_id)
+        if key is None or not key.encrypted_key:
+            entries.append(_unavailable_entry(launch, "agent_key_missing", now))
             continue
         entries.append(
-            await _agent_entry(session, launch, agent, current.settings, config)
+            await _agent_entry(session, launch, key, current.settings, config)
         )
         if launch.state == "queued":
             launch.state = "provisioning"
@@ -244,7 +299,7 @@ class AgentReport(BaseModel):
     restarts: int = Field(ge=0)
     oom_kills: int = Field(ge=0)
     exit: ProcessExit | None
-    since: datetime
+    since: AwareDatetime
 
 
 class Heartbeat(BaseModel):
@@ -260,6 +315,10 @@ class Heartbeat(BaseModel):
 CRASHED_ERROR = "The agent crashed 5 times in 10 minutes. Retry it in Switch Console."
 FAILED_ERROR = (
     "The agent stopped with an error and was not restarted. Retry it in Switch Console."
+)
+ATTACH_TIMEOUT_ERROR = (
+    "The agent started but did not connect to Switch within 10 minutes. "
+    "Retry it in Switch Console, or check its provider login."
 )
 
 
@@ -293,12 +352,27 @@ def _apply_process_state(
             launch.error = None
             launch.error_code = None
             launch.active_at = now
-    elif report.process_state in {"crashed", "failed"}:
+        elif (
+            not listening
+            and launch.desired_state == "running"
+            and launch.state == "provisioning"
+            and now - max(report.since, launch.updated_at) > WORKER_ATTACH_TIMEOUT
+        ):
+            launch.state = "error"
+            launch.error_code = "worker_attach_timeout"
+            launch.error = ATTACH_TIMEOUT_ERROR
+    elif (
+        report.process_state in {"crashed", "failed"}
+        and launch.desired_state == "running"
+    ):
         crashed = report.process_state == "crashed"
         launch.state = "error"
         launch.error_code = "agent_crashed" if crashed else "agent_failed"
         launch.error = CRASHED_ERROR if crashed else FAILED_ERROR
-    elif report.process_state == "stopped" and launch.desired_state == "stopped":
+    elif (
+        report.process_state in {"stopped", "crashed", "failed"}
+        and launch.desired_state == "stopped"
+    ):
         launch.state = "stopped"
         launch.error = None
         launch.error_code = None
@@ -332,7 +406,11 @@ async def heartbeat(
         machine.error_code = None
     for report in body.agents:
         launch = await _machine_launch(session, machine, report.launch_id)
-        if launch is None or launch.agent_id != report.agent_id:
+        if (
+            launch is None
+            or launch.agent_id != report.agent_id
+            or launch.revision != report.revision
+        ):
             continue
         launch.process_state = report.process_state
         launch.process_restarts = report.restarts
@@ -341,7 +419,7 @@ async def heartbeat(
             None if report.exit is None else report.exit.model_dump(mode="json")
         )
         launch.process_reported_at = now
-        if report.revision == launch.revision and launch.desired_state != "deleted":
+        if launch.desired_state != "deleted":
             _apply_process_state(launch, report, protocol, now)
     result = {
         "agents_version": machine.agents_version,

@@ -13,7 +13,6 @@ from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import HostedLaunch, HostedMachine, require_tenant_id
 
 MACHINE_CONNECT_TIMEOUT = timedelta(minutes=10)
-HEARTBEAT_STALE_AFTER = timedelta(seconds=90)
 
 
 class HostedMachineConflict(Exception):
@@ -68,6 +67,16 @@ def bump_revision(machine: HostedMachine, now: datetime) -> None:
     machine.revision += 1
     machine.running_observed_at = None
     machine.updated_at = now
+
+
+def await_reconnect(machine: HostedMachine) -> None:
+    """Make a still-ready machine prove itself again at its new revision.
+
+    A running observation leaves a ready machine ready, so without this a
+    restart Core never saw the stop of would never re-check the heartbeat.
+    """
+    if machine.state == "ready":
+        machine.state = "provisioning"
 
 
 class HostedMachineStore:
@@ -157,11 +166,11 @@ class HostedMachineStore:
                 machine.stop_reason = None
                 machine.active_at = now
                 bump_revision(machine, now)
+                await_reconnect(machine)
             elif machine.desired_state == "stopped":
                 self.start(machine, now)
             else:
                 machine.active_at = now
-                machine.updated_at = now
             await session.flush()
             return machine
 
@@ -204,8 +213,8 @@ class HostedMachineStore:
             machine.desired_state = "running"
             machine.stop_reason = None
             bump_revision(machine, now)
+            await_reconnect(machine)
         machine.active_at = now
-        machine.updated_at = now
 
     def stop(
         self,

@@ -450,6 +450,11 @@ async def delete_agent(
 ) -> dict[str, bool]:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")
+    if hosted_launch_of(agent.metadata_) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="This is a cloud agent. Remove it from Switch Console's cloud agents instead.",
+        )
 
     try:
         await protocol.delete_agent(agent_id=agent_id)

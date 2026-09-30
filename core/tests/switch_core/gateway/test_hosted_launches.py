@@ -6,7 +6,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
@@ -312,6 +312,51 @@ async def test_identity_failure_is_an_error_that_retry_registers(
         assert await session.get(Agent, retried.json()["agent_id"]) is not None
 
 
+async def test_identity_failure_deletes_the_partial_agent_under_the_launch_lock(
+    launch_app, monkeypatch
+):
+    app = launch_app
+    register_agent = app.protocol.register_agent
+    delete_agent = app.protocol.delete_agent
+    partial: list[str] = []
+    lock_free: list[bool] = []
+
+    async def register_then_fail(**kwargs):
+        await register_agent(**kwargs)
+        partial.append(kwargs["reserved_agent_id"])
+        raise RuntimeError("synthetic registration failure")
+
+    async def probe_then_delete(*, agent_id):
+        async with app.factory() as other:
+            lock_free.append(
+                await other.scalar(
+                    text("SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))"),
+                    {
+                        "key": f"hosted-launch:{require_tenant_id()}:{request['request_id']}"
+                    },
+                )
+            )
+            await other.rollback()
+        await delete_agent(agent_id=agent_id)
+
+    monkeypatch.setattr(
+        app.protocol, "register_agent", register_then_fail, raising=False
+    )
+    monkeypatch.setattr(app.protocol, "delete_agent", probe_then_delete, raising=False)
+    request = body()
+    created = await app.client.post("/hosted-launches", json=request)
+    assert created.status_code == 202, created.text
+    assert lock_free == [False]
+    failed = created.json()
+    assert (failed["state"], failed["error_code"], failed["agent_id"]) == (
+        "error",
+        "identity_failed",
+        None,
+    )
+    async with app.factory() as session:
+        assert await session.get(Agent, partial[0]) is None
+
+
 async def test_a_taken_name_is_refused(launch_app, monkeypatch):
     app = launch_app
     await register(app.protocol, "helper", "cloud-owner")
@@ -570,3 +615,230 @@ async def test_read_only_repository_cannot_create_cloud_agent(launch_app):
     result = await app.client.post("/hosted-launches", json=body())
     assert result.status_code == 422
     assert "needs write access" in result.json()["detail"]
+
+
+async def _interrupted_registration(app, monkeypatch, request: dict) -> str:
+    """A launch whose agent id was recorded but whose agent was never registered."""
+    register_agent = app.protocol.register_agent
+    monkeypatch.setattr(
+        app.protocol,
+        "register_agent",
+        AsyncMock(side_effect=RuntimeError("synthetic registration failure")),
+        raising=False,
+    )
+    created = await app.client.post("/hosted-launches", json=request)
+    assert created.status_code == 202, created.text
+    monkeypatch.setattr(app.protocol, "register_agent", register_agent, raising=False)
+    reserved = str(uuid4())
+    await _update(
+        app.factory,
+        HostedLaunch,
+        request["request_id"],
+        state="queued",
+        error=None,
+        error_code=None,
+        agent_id=reserved,
+    )
+    return reserved
+
+
+async def test_create_retry_registers_an_interrupted_identity(launch_app, monkeypatch):
+    app = launch_app
+    request = body()
+    reserved = await _interrupted_registration(app, monkeypatch, request)
+    retried = await app.client.post("/hosted-launches", json=request)
+    assert retried.status_code == 202, retried.text
+    assert retried.json()["agent_id"] == reserved
+    async with app.factory() as session:
+        agent = await session.get(Agent, reserved)
+        assert agent is not None
+        assert agent.metadata_["hosted_launch_id"] == request["request_id"]
+    again = await app.client.post("/hosted-launches", json=request)
+    assert again.json()["agent_id"] == reserved
+    async with app.factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Agent)) == 1
+
+
+@pytest.mark.parametrize(
+    ("state", "action"), [("error", "retry"), ("stopped", "start")]
+)
+async def test_lifecycle_registers_an_interrupted_identity(
+    launch_app, monkeypatch, state, action
+):
+    app = launch_app
+    request = body()
+    reserved = await _interrupted_registration(app, monkeypatch, request)
+    await _update(
+        app.factory,
+        HostedLaunch,
+        request["request_id"],
+        state=state,
+        desired_state="running" if state == "error" else "stopped",
+    )
+    launch = await _launch(app.factory, request["request_id"])
+    result = await _lifecycle(app, request["request_id"], action, launch.revision)
+    assert result.status_code == 200, result.text
+    assert result.json()["agent_id"] == reserved
+    async with app.factory() as session:
+        assert await session.get(Agent, reserved) is not None
+
+
+async def _ready_launch(app) -> dict:
+    created = (await app.client.post("/hosted-launches", json=body())).json()
+    await _update(app.factory, HostedLaunch, created["request_id"], state="ready")
+    await _update(
+        app.factory, HostedMachine, created["machine_id"], state="ready", revision=2
+    )
+    return created
+
+
+async def _session_operation(app, request_id: str, operation_id: str | None = None):
+    return await app.client.post(
+        f"/hosted-launches/{request_id}/sessions",
+        json={
+            "id": operation_id or str(uuid4()),
+            "session_id": str(uuid4()),
+            "action": "start",
+        },
+    )
+
+
+async def _operation_count(factory) -> int:
+    async with factory() as session:
+        return await session.scalar(select(func.count()).select_from(HostedOperation))
+
+
+@pytest.mark.parametrize(
+    ("machine", "code", "message"),
+    [
+        (
+            {"state": "error"},
+            "machine_error",
+            "The cloud machine needs attention. Retry it in Switch Console.",
+        ),
+        (
+            {"state": "stopped", "desired_state": "stopped", "stop_reason": "owner"},
+            "machine_stopped",
+            "The owner stopped the cloud machine. Start it in Switch Console.",
+        ),
+        (
+            {"state": "provisioning"},
+            "worker_waking",
+            "The cloud machine is starting. Try again in a moment.",
+        ),
+    ],
+)
+async def test_session_operation_refuses_a_machine_that_is_not_ready(
+    launch_app, machine, code, message
+):
+    app = launch_app
+    created = await _ready_launch(app)
+    await _update(app.factory, HostedMachine, created["machine_id"], **machine)
+    refused = await _session_operation(app, created["request_id"])
+    assert refused.status_code == 409
+    assert refused.json() == {"detail": message, "code": code}
+    assert await _operation_count(app.factory) == 0
+    assert (await _machine(app.factory, created["machine_id"])).revision == 2
+
+
+async def test_session_operation_wakes_a_sleeping_machine(launch_app):
+    app = launch_app
+    created = await _ready_launch(app)
+    await _update(
+        app.factory,
+        HostedMachine,
+        created["machine_id"],
+        state="stopped",
+        desired_state="stopped",
+        stop_reason="idle",
+    )
+    before = await _launch(app.factory, created["request_id"])
+    waking = await _session_operation(app, created["request_id"])
+    assert waking.status_code == 409
+    assert waking.json()["code"] == "worker_waking"
+    machine = await _machine(app.factory, created["machine_id"])
+    assert (machine.desired_state, machine.stop_reason, machine.revision) == (
+        "running",
+        None,
+        3,
+    )
+    assert (
+        await _launch(app.factory, created["request_id"])
+    ).active_at > before.active_at
+    assert await _operation_count(app.factory) == 0
+
+
+async def test_session_operation_is_queued_on_a_ready_machine_and_replayed(
+    launch_app,
+):
+    app = launch_app
+    created = await _ready_launch(app)
+    operation_id = str(uuid4())
+    body_ = {"id": operation_id, "session_id": str(uuid4()), "action": "start"}
+    url = f"/hosted-launches/{created['request_id']}/sessions"
+    queued = await app.client.post(url, json=body_)
+    assert queued.status_code == 202, queued.text
+    await _update(
+        app.factory,
+        HostedMachine,
+        created["machine_id"],
+        state="stopped",
+        desired_state="stopped",
+        stop_reason="owner",
+    )
+    replayed = await app.client.post(url, json=body_)
+    assert replayed.status_code == 202
+    assert replayed.json()["id"] == operation_id
+
+
+async def _restartable(app, action: str, stop_reason: str) -> dict:
+    """A launch that `action` accepts, on a machine stopped for `stop_reason`."""
+    created = (await app.client.post("/hosted-launches", json=body())).json()
+    launch_state = {"restart": "ready", "retry": "error"}[action]
+    await _update(app.factory, HostedLaunch, created["request_id"], state=launch_state)
+    await _update(
+        app.factory,
+        HostedMachine,
+        created["machine_id"],
+        state="stopped",
+        desired_state="stopped",
+        stop_reason=stop_reason,
+        revision=2,
+    )
+    return created
+
+
+@pytest.mark.parametrize("action", ["restart", "retry"])
+async def test_restart_and_retry_do_not_start_an_owner_stopped_machine(
+    launch_app, action
+):
+    app = launch_app
+    created = await _restartable(app, action, "owner")
+    refused = await _lifecycle(app, created["request_id"], action, 1)
+    assert refused.status_code == 409
+    assert refused.json() == {
+        "detail": "The owner stopped the cloud machine. Start it in Switch Console.",
+        "code": "machine_stopped",
+    }
+    machine = await _machine(app.factory, created["machine_id"])
+    assert (machine.desired_state, machine.stop_reason, machine.revision) == (
+        "stopped",
+        "owner",
+        2,
+    )
+    assert (await _launch(app.factory, created["request_id"])).revision == 1
+
+
+@pytest.mark.parametrize("action", ["restart", "retry"])
+async def test_restart_and_retry_wake_an_idle_sleeping_machine(launch_app, action):
+    app = launch_app
+    created = await _restartable(app, action, "idle")
+    result = await _lifecycle(app, created["request_id"], action, 1)
+    assert result.status_code == 200, result.text
+    assert result.json()["state"] == "queued"
+    machine = await _machine(app.factory, created["machine_id"])
+    assert (machine.desired_state, machine.stop_reason, machine.revision) == (
+        "running",
+        None,
+        3,
+    )

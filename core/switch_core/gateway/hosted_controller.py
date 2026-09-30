@@ -14,6 +14,7 @@ from switch_core.config import SwitchConfig
 from switch_core.db.models import (
     HostedLaunch,
     HostedMachine,
+    HostedOperation,
     TenantMember,
     require_tenant_id,
 )
@@ -29,7 +30,7 @@ from switch_core.gateway.dependencies import (
     get_protocol,
     get_session_factory,
 )
-from switch_core.gateway.hosted_launches import controller_settings
+from switch_core.gateway.hosted_launches import controller_settings, finish_removal
 from switch_core.providers.github_revocations import revoke_pending
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
@@ -39,6 +40,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/hosted-controller")
 
 QUEUED_TIMEOUT = timedelta(minutes=10)
+DELETING_RESUME_AFTER = timedelta(minutes=5)
+AGENT_STOP_TIMEOUT = timedelta(minutes=10)
 
 
 async def controller_session(
@@ -89,10 +92,29 @@ def _connect_timed_out(machine: HostedMachine, now: datetime) -> bool:
     )
 
 
+def _start_timed_out(machine: HostedMachine, now: datetime) -> bool:
+    return (
+        machine.state == "provisioning"
+        and machine.running_observed_at is None
+        and now - machine.updated_at > MACHINE_CONNECT_TIMEOUT
+    )
+
+
+def _stop_timed_out(
+    launch: HostedLaunch, machine: HostedMachine, now: datetime
+) -> bool:
+    return (
+        launch.state == "stopping"
+        and now - launch.updated_at > AGENT_STOP_TIMEOUT
+        and machine.state == "ready"
+    )
+
+
 def _needs_sweep(machine: HostedMachine, now: datetime, idle_minutes: int) -> bool:
     return (
         (machine.state == "queued" and now - machine.updated_at > QUEUED_TIMEOUT)
         or _connect_timed_out(machine, now)
+        or _start_timed_out(machine, now)
         or (
             machine.state == "retained"
             and machine.desired_state == "retained"
@@ -146,6 +168,40 @@ async def _should_sleep(
     return idle and now - machine.active_at >= idle_after
 
 
+async def _resume_removals(
+    session: AsyncSession,
+    protocol: ProtocolService,
+    config: SwitchConfig,
+    now: datetime,
+) -> None:
+    """Finish removals that were interrupted between their two commits."""
+    stalled = list(
+        await session.scalars(
+            select(HostedLaunch.id).where(
+                HostedLaunch.tenant_id == require_tenant_id(),
+                HostedLaunch.state == "deleting",
+                HostedLaunch.updated_at < now - DELETING_RESUME_AFTER,
+            )
+        )
+    )
+    for launch_id in stalled:
+        launch, machine = await HostedMachineStore().locked_launch(session, launch_id)
+        if launch is None or machine is None or launch.state != "deleting":
+            await session.commit()
+            continue
+        try:
+            await finish_removal(session, protocol, config, launch, machine, now)
+        except Exception:
+            logger.error(
+                "Cloud launch %s: finishing its interrupted removal failed",
+                launch_id,
+                exc_info=True,
+            )
+            await session.rollback()
+            continue
+        await session.commit()
+
+
 async def _sweep(
     session: AsyncSession,
     machine: HostedMachine,
@@ -162,6 +218,11 @@ async def _sweep(
         machine.state = "error"
         machine.error_code = "machine_connect_timeout"
         machine.error = "The cloud machine started but did not connect to Switch within 10 minutes. Retry it in Switch Console, or ask your administrator to check the machine's startup logs."
+        machine.updated_at = now
+    elif _start_timed_out(machine, now):
+        machine.state = "error"
+        machine.error_code = "machine_connect_timeout"
+        machine.error = "The cloud machine did not start within 10 minutes. Retry it in Switch Console, or contact your administrator if it still cannot start."
         machine.updated_at = now
     elif (
         machine.state == "retained"
@@ -182,6 +243,59 @@ async def _sweep(
         HostedMachineStore().stop(machine, "idle", now)
 
 
+async def _expire_operations(session: AsyncSession) -> None:
+    launch_ids = list(
+        await session.scalars(
+            select(HostedOperation.launch_id)
+            .where(
+                HostedOperation.tenant_id == require_tenant_id(),
+                HostedOperation.state.in_(["queued", "claimed"]),
+            )
+            .distinct()
+        )
+    )
+    for launch_id in launch_ids:
+        launch, _ = await HostedMachineStore().locked_launch(session, launch_id)
+        if launch is not None:
+            await HostedLaunchStore().fail_stale_operations(
+                session, launch.id, launch.revision
+            )
+        await session.commit()
+
+
+async def _time_out_stopping_launches(session: AsyncSession, now: datetime) -> None:
+    launch_ids = list(
+        await session.scalars(
+            select(HostedLaunch.id)
+            .join(
+                HostedMachine,
+                (HostedMachine.tenant_id == HostedLaunch.tenant_id)
+                & (HostedMachine.id == HostedLaunch.machine_id),
+            )
+            .where(
+                HostedLaunch.tenant_id == require_tenant_id(),
+                HostedLaunch.state == "stopping",
+                HostedLaunch.updated_at < now - AGENT_STOP_TIMEOUT,
+                HostedMachine.state == "ready",
+            )
+        )
+    )
+    for launch_id in launch_ids:
+        launch, machine = await HostedMachineStore().locked_launch(session, launch_id)
+        if (
+            launch is not None
+            and machine is not None
+            and _stop_timed_out(launch, machine, now)
+        ):
+            launch.state = "error"
+            launch.error_code = "agent_stop_timeout"
+            launch.error = (
+                "The agent did not stop within 10 minutes. Retry it in Switch Console."
+            )
+            launch.updated_at = now
+        await session.commit()
+
+
 @router.get("/machines")
 async def machines(
     session: Annotated[AsyncSession, Depends(controller_session)],
@@ -190,6 +304,7 @@ async def machines(
 ) -> dict:
     store = HostedMachineStore()
     now = datetime.now(UTC)
+    await _resume_removals(session, protocol, config, now)
     candidates = list(
         await session.scalars(
             select(HostedMachine)
@@ -209,6 +324,8 @@ async def machines(
                 session, machine, protocol, config.hosted_idle_stop_minutes, now
             )
         await session.commit()
+    await _expire_operations(session)
+    await _time_out_stopping_launches(session, now)
     rows = await session.scalars(
         select(HostedMachine)
         .where(
@@ -291,6 +408,8 @@ class Observation(BaseModel):
 
 ERROR_REPLACING_STATES = {"error", "retained", "deleting", "deleted"}
 
+STALE_ERROR_IGNORED_STATES = {"deleted", "queued", "provisioning"}
+
 OBSERVED_ERROR = "The cloud machine could not start. Retry it in Switch Console, or contact your administrator if it keeps failing."
 
 
@@ -312,7 +431,7 @@ async def observe(
             )
         elif (
             body.state == "error" or body.error is not None
-        ) and machine.state != "deleted":
+        ) and machine.state not in STALE_ERROR_IGNORED_STATES:
             machine.state = "error"
             machine.error = body.error or OBSERVED_ERROR
             machine.error_code = body.error_code

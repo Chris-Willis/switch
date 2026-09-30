@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
+    HostedMachine,
     ProviderConnection,
     ProviderVerification,
     TenantMember,
@@ -27,6 +28,7 @@ from switch_core.gateway.provider_connections import router as connections
 from switch_core.gateway.provider_verifications import router as verifications
 from switch_core.providers.hosted import HostedControllerSettings
 from tests.switch_core.bridges.agent.protocol.registration_harness import make_owner
+from tests.switch_core.hosted_machine_helpers import seed_machine
 
 CONTROLLER = "SYNTHETIC-CONTROLLER-VERIFICATION-TEST"
 HEADERS = {"Authorization": "Bearer " + CONTROLLER}
@@ -260,6 +262,55 @@ async def test_failed_replacement_preserves_verified_connection(verification_app
         assert (
             decrypt_token(saved.encrypted_credential, KEY) == "placeholder-credential"
         )
+
+
+async def agents_version(factory, machine_id: str) -> int:
+    async with factory() as session:
+        machine = await session.get(HostedMachine, (require_tenant_id(), machine_id))
+        assert machine is not None
+        return machine.agents_version
+
+
+async def test_only_a_successful_result_bumps_the_owners_machine_agents(
+    verification_app,
+):
+    client, factory, owner = verification_app
+    async with factory() as session:
+        machine = await seed_machine(
+            session,
+            owner_id=owner,
+            slot_id="slot-a",
+            state="ready",
+            desired_state="running",
+            stop_reason=None,
+            revision=1,
+            generation=1,
+        )
+        await session.commit()
+        machine_id = machine.id
+    job_id, worker = await start(client)
+    before = await agents_version(factory, machine_id)
+    succeeded = await client.post(
+        "/provider-verifications/" + job_id + "/result",
+        headers=worker,
+        json={"succeeded": True},
+    )
+    assert succeeded.status_code == 200, succeeded.text
+    assert await agents_version(factory, machine_id) == before + 1
+    await client.post(
+        "/provider-verifications/" + job_id + "/observe",
+        headers=HEADERS,
+        json={"instance_id": "i-0123456789abcdef0", "terminated": True},
+    )
+    second, worker = await start(client)
+    before = await agents_version(factory, machine_id)
+    failed = await client.post(
+        "/provider-verifications/" + second + "/result",
+        headers=worker,
+        json={"succeeded": False},
+    )
+    assert failed.status_code == 200, failed.text
+    assert await agents_version(factory, machine_id) == before
 
 
 async def test_changed_credential_cannot_silently_reuse_pending_check(verification_app):

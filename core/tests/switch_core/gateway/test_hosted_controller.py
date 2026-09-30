@@ -40,6 +40,7 @@ from switch_core.bridges.agent.protocol.service import AgentExistsError
 from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
+    ApiKey,
     GitHubIssuedToken,
     HostedLaunch,
     HostedMachine,
@@ -49,6 +50,7 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
+from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.hosted_machine_store import (
     HostedMachineStore,
@@ -62,7 +64,7 @@ from switch_core.gateway.dependencies import (
     get_session,
     get_session_factory,
 )
-from switch_core.gateway.hosted_controller import router
+from switch_core.gateway.hosted_controller import DELETING_RESUME_AFTER, router
 from switch_core.gateway.hosted_launches import router as launch_router
 from switch_core.gateway.hosted_relay import router as relay_router
 from switch_core.gateway.known_agents import KNOWN_AGENTS
@@ -492,6 +494,91 @@ async def test_connect_timeout_counts_from_the_running_observation(controller_ap
     assert item["state"] == "provisioning"
 
 
+async def test_provisioning_machine_never_observed_running_times_out(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    before = datetime.now(UTC)
+    await update_machine(
+        factory,
+        machine.id,
+        state="provisioning",
+        updated_at=before - timedelta(minutes=11),
+    )
+    [item] = await list_machines(client)
+    assert item["state"] == "error"
+    saved = await machine_of(factory, request_id)
+    assert saved.error_code == "machine_connect_timeout"
+    assert (
+        saved.error
+        == "The cloud machine did not start within 10 minutes. Retry it in Switch Console, or contact your administrator if it still cannot start."
+    )
+    assert saved.updated_at >= before
+
+
+async def test_recent_provisioning_machine_is_left_alone(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    await update_machine(
+        factory,
+        machine.id,
+        state="provisioning",
+        updated_at=datetime.now(UTC) - timedelta(minutes=5),
+    )
+    [item] = await list_machines(client)
+    assert item["state"] == "provisioning"
+
+
+async def _stopping_launch(controller_app, *, machine_state: str, minutes: int) -> None:
+    _, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    await update_machine(factory, machine.id, state=machine_state)
+    await update_launch(
+        factory,
+        request_id,
+        state="stopping",
+        desired_state="stopped",
+        updated_at=datetime.now(UTC) - timedelta(minutes=minutes),
+    )
+
+
+async def test_launch_that_never_stops_on_a_ready_machine_times_out(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    before = datetime.now(UTC)
+    await _stopping_launch(controller_app, machine_state="ready", minutes=11)
+    await list_machines(client)
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+    assert launch.state == "error"
+    assert launch.error_code == "agent_stop_timeout"
+    assert (
+        launch.error
+        == "The agent did not stop within 10 minutes. Retry it in Switch Console."
+    )
+    assert launch.updated_at >= before
+    retried = await client.post(
+        f"/hosted-launches/{request_id}/lifecycle",
+        json={"action": "retry", "revision": launch.revision},
+    )
+    assert retried.status_code == 200, retried.text
+
+
+@pytest.mark.parametrize(
+    ("machine_state", "minutes"),
+    [("stopping", 11), ("provisioning", 11), ("ready", 5)],
+    ids=["machine-stopping", "machine-provisioning", "recent"],
+)
+async def test_stopping_launch_is_left_alone_unless_it_should_have_stopped(
+    controller_app, machine_state, minutes
+):
+    client, request_id, _, _, factory, _ = controller_app
+    await _stopping_launch(controller_app, machine_state=machine_state, minutes=minutes)
+    await list_machines(client)
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+    assert launch.state == "stopping"
+    assert launch.error_code is None
+
+
 async def test_retention_sweep_deletes_an_expired_retained_machine(controller_app):
     client, request_id, _, _, factory, _ = controller_app
     machine = await machine_of(factory, request_id)
@@ -526,6 +613,51 @@ async def test_retention_sweep_keeps_a_machine_inside_its_window(controller_app)
     assert item["desired_state"] == "retained"
     assert item["revision"] == 3
     assert item["retain_until"] == until.isoformat()
+
+
+async def test_machines_sweep_expires_unconfirmed_and_superseded_operations(
+    controller_app,
+):
+    client, request_id, _, _, factory, _ = controller_app
+    await update_launch(factory, request_id, revision=2)
+    now = datetime.now(UTC)
+    operations = {
+        "expired_claim": (2, "claimed", now - timedelta(minutes=6)),
+        "fresh_claim": (2, "claimed", now),
+        "current_queued": (2, "queued", now),
+        "old_queued": (1, "queued", now),
+        "old_claim": (1, "claimed", now),
+    }
+    ids = {name: str(uuid4()) for name in operations}
+    async with factory() as session:
+        for name, (revision, state, updated_at) in operations.items():
+            session.add(
+                HostedOperation(
+                    id=ids[name],
+                    launch_id=request_id,
+                    launch_revision=revision,
+                    session_id=str(uuid4()),
+                    action="start",
+                    state=state,
+                    updated_at=updated_at,
+                )
+            )
+        await session.commit()
+    await list_machines(client)
+    async with factory() as session:
+        states = {
+            name: (
+                await session.get(HostedOperation, (require_tenant_id(), ids[name]))
+            ).state
+            for name in operations
+        }
+    assert states == {
+        "expired_claim": "unknown",
+        "fresh_claim": "claimed",
+        "current_queued": "queued",
+        "old_queued": "failed",
+        "old_claim": "unknown",
+    }
 
 
 async def test_prepare_is_idempotent_per_revision_and_rotates_on_a_new_one(
@@ -696,6 +828,43 @@ async def test_stale_observation_is_ignored_unless_it_carries_an_error(
     saved = await machine_of(factory, request_id)
     assert saved.error == "The instance could not be stopped."
     assert saved.error_code == "machine_needs_attention"
+
+
+@pytest.mark.parametrize("state", ["queued", "provisioning"])
+async def test_stale_error_does_not_overwrite_a_newer_retry(controller_app, state):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    await update_machine(factory, machine.id, state=state, revision=2)
+    item = await observe(
+        client,
+        machine.id,
+        state="error",
+        revision=1,
+        error="The instance failed its status checks.",
+        error_code="machine_needs_attention",
+    )
+    assert item["state"] == state
+    saved = await machine_of(factory, request_id)
+    assert saved.state == state
+    assert saved.error is None
+    assert saved.error_code is None
+
+
+async def test_stale_error_is_recorded_on_a_ready_machine(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    await update_machine(factory, machine.id, state="ready", revision=2)
+    item = await observe(
+        client,
+        machine.id,
+        state="error",
+        revision=1,
+        error="The instance failed its status checks.",
+    )
+    assert item["state"] == "error"
+    assert (
+        await machine_of(factory, request_id)
+    ).error == "The instance failed its status checks."
 
 
 async def test_running_observation_waits_for_a_heartbeat(controller_app):
@@ -1583,3 +1752,54 @@ async def test_revocation_warning_is_scoped_to_action_owner(
             )
             is True
         )
+
+
+async def _interrupted_removal(controller_app, updated_at: datetime) -> None:
+    """Leave the launch as a removal interrupted between its two commits."""
+    _, request_id, agent_id, service, factory, _ = controller_app
+    service.client_lifecycle.stop = AsyncMock()
+    service.client_lifecycle.delete_record = AsyncMock(side_effect=ClientStore().delete)
+    service.config.hosted_disk_retention_days = 7
+    async with factory() as session:
+        agent = await session.get(Agent, agent_id)
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        launch.desired_state = "deleted"
+        launch.state = "deleting"
+        launch.revision = 2
+        launch.deletion_cleanup = {
+            "client_id": agent.client_id,
+            "key_id": agent.api_key_id,
+        }
+        launch.updated_at = updated_at
+        await session.commit()
+
+
+async def test_sweep_finishes_an_interrupted_removal(controller_app):
+    client, request_id, agent_id, _, factory, _ = controller_app
+    async with factory() as session:
+        key_id = (await session.get(Agent, agent_id)).api_key_id
+    await _interrupted_removal(
+        controller_app, datetime.now(UTC) - DELETING_RESUME_AFTER - timedelta(seconds=1)
+    )
+    [item] = await list_machines(client)
+    assert item["desired_state"] == "retained"
+    async with factory() as session:
+        assert await session.get(Agent, agent_id) is None
+        assert await session.get(ApiKey, key_id) is None
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        assert (launch.state, launch.name, launch.deletion_cleanup) == (
+            "deleted",
+            "removed:" + request_id,
+            None,
+        )
+
+
+async def test_sweep_leaves_a_recent_removal_alone(controller_app):
+    client, request_id, agent_id, _, factory, _ = controller_app
+    await _interrupted_removal(controller_app, datetime.now(UTC))
+    [item] = await list_machines(client)
+    assert item["desired_state"] == "running"
+    async with factory() as session:
+        assert await session.get(Agent, agent_id) is not None
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        assert launch.state == "deleting"

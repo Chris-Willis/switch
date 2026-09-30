@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import logging
 from datetime import UTC, datetime, timedelta
@@ -14,6 +15,7 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
+from switch_core.db.stores.hosted_machine_store import lock_machine
 from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
     HEADERS,
     SPEC,
@@ -23,6 +25,7 @@ from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
     fixture,
     machine_of,
     observe,
+    register_hosted_agent,
     update_launch,
     update_machine,
 )
@@ -105,6 +108,24 @@ async def test_supervisor_routes_require_the_machine_capability(supervisor):
             assert response.json() == {"detail": "invalid machine capability"}
     another = await client.get(f"/hosted/machines/{other.id}/agents", headers=headers)
     assert another.status_code == 401
+
+
+async def test_wrong_capability_is_refused_without_waiting_on_the_machine_lock(
+    supervisor,
+):
+    client, _, _, _, factory, machine_id, headers = supervisor
+    sent = {**headers, "Authorization": "Bearer wrong"}
+    async with factory() as holder:
+        await lock_machine(holder, machine_id)
+        try:
+            response = await asyncio.wait_for(
+                client.get(f"/hosted/machines/{machine_id}/agents", headers=sent),
+                timeout=5,
+            )
+        finally:
+            await holder.rollback()
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid machine capability"}
 
 
 @pytest.mark.parametrize(
@@ -221,45 +242,177 @@ async def test_agents_omits_deleted_and_unregistered_launches(supervisor):
     assert (await client.get(path, headers=headers)).json()["agents"] == []
 
 
-async def test_agents_omits_a_launch_whose_agent_row_does_not_exist_yet(supervisor):
-    client, request_id, agent_id, _, factory, machine_id, headers = supervisor
+UNAVAILABLE_KEYS = {
+    "launch_id",
+    "agent_id",
+    "name",
+    "revision",
+    "desired_state",
+    "unavailable",
+}
+KEY_MISSING_ERROR = (
+    "Switch lost this cloud agent's credential, so its machine cannot run it. "
+    "Remove the agent and create it again."
+)
+IDENTITY_MISSING_ERROR = (
+    "Switch lost this cloud agent's identity, so its machine cannot run it. "
+    "Retry it in Switch Console."
+)
+
+
+async def second_launch(
+    factory, service, request_id: str, *, state: str, register: bool
+) -> tuple[str, str]:
+    """Another launch on the fixture's machine, with its own agent if `register`."""
     machine = await machine_of(factory, request_id)
-    unregistered_agent_id = str(uuid4())
+    launch_id = str(uuid4())
+    agent_id = (
+        await register_hosted_agent(
+            service,
+            owner=machine.owner_id,
+            request_id=launch_id,
+            name="cloud-second",
+            spec=SPEC,
+        )
+        if register
+        else str(uuid4())
+    )
     async with factory() as session:
         await seed_launch(
             session,
             machine=machine,
-            request_id=str(uuid4()),
-            name="cloud-pending",
-            state="queued",
+            request_id=launch_id,
+            name="cloud-second",
+            state=state,
             desired_state="running",
             revision=1,
-            agent_id=unregistered_agent_id,
-            spec=SPEC,
+            agent_id=agent_id,
+            spec={**SPEC, "provider": "claude"},
         )
         await session.commit()
+    return launch_id, agent_id
+
+
+def split_entries(listed: list[dict], broken_id: str) -> tuple[dict, dict]:
+    [healthy] = [entry for entry in listed if entry["launch_id"] != broken_id]
+    [broken] = [entry for entry in listed if entry["launch_id"] == broken_id]
+    return healthy, broken
+
+
+async def test_agents_lists_a_queued_launch_whose_agent_row_does_not_exist_yet_as_unavailable(
+    supervisor, caplog
+):
+    client, request_id, agent_id, service, factory, machine_id, headers = supervisor
+    pending_id, pending_agent = await second_launch(
+        factory, service, request_id, state="queued", register=False
+    )
+    with caplog.at_level(logging.ERROR):
+        response = await client.get(
+            f"/hosted/machines/{machine_id}/agents", headers=headers
+        )
+    assert response.status_code == 200, response.text
+    healthy, broken = split_entries(response.json()["agents"], pending_id)
+    assert set(healthy) == set(fixture("agents_response.json")["agents"][0])
+    assert healthy["agent_id"] == agent_id
+    assert broken == {
+        "launch_id": pending_id,
+        "agent_id": pending_agent,
+        "name": "cloud-second",
+        "revision": 1,
+        "desired_state": "running",
+        "unavailable": "agent_identity_missing",
+    }
+    assert "agent_identity_missing" in caplog.text
+    launch = await launch_row(factory, pending_id)
+    assert launch.state == "queued"
+    assert launch.error_code is None
+    assert launch.error is None
+
+
+async def test_agents_puts_a_stale_queued_launch_without_its_agent_row_in_error(
+    supervisor,
+):
+    client, request_id, _, service, factory, machine_id, headers = supervisor
+    stale_id, stale_agent = await second_launch(
+        factory, service, request_id, state="queued", register=False
+    )
+    await update_launch(
+        factory, stale_id, updated_at=datetime.now(UTC) - timedelta(minutes=2)
+    )
     response = await client.get(
         f"/hosted/machines/{machine_id}/agents", headers=headers
     )
-    assert response.status_code == 200
-    listed = response.json()["agents"]
-    assert len(listed) == 1
-    assert listed[0]["agent_id"] == agent_id
-    assert listed[0]["name"] == "cloud-helper"
+    assert response.status_code == 200, response.text
+    _, broken = split_entries(response.json()["agents"], stale_id)
+    assert broken["agent_id"] == stale_agent
+    assert broken["unavailable"] == "agent_identity_missing"
+    launch = await launch_row(factory, stale_id)
+    assert launch.state == "error"
+    assert launch.error_code == "agent_identity_missing"
+    assert launch.error == IDENTITY_MISSING_ERROR
 
 
-async def test_agents_refuses_rather_than_omits_an_agent_without_its_key(supervisor):
-    client, _, agent_id, _, factory, machine_id, headers = supervisor
+async def test_agents_lists_a_launch_whose_agent_row_is_gone_as_unavailable(
+    supervisor,
+):
+    client, request_id, _, service, factory, machine_id, headers = supervisor
+    broken_id, broken_agent = await second_launch(
+        factory, service, request_id, state="provisioning", register=False
+    )
+    path = f"/hosted/machines/{machine_id}/agents"
+    response = await client.get(path, headers=headers)
+    assert response.status_code == 200, response.text
+    healthy, broken = split_entries(response.json()["agents"], broken_id)
+    assert set(healthy) == set(fixture("agents_response.json")["agents"][0])
+    assert "unavailable" not in healthy
+    assert set(broken) == UNAVAILABLE_KEYS
+    assert broken["agent_id"] == broken_agent
+    assert broken["unavailable"] == "agent_identity_missing"
+    launch = await launch_row(factory, broken_id)
+    assert launch.state == "error"
+    assert launch.error_code == "agent_identity_missing"
+    assert launch.error == IDENTITY_MISSING_ERROR
+    marked_at = launch.updated_at
+    again = await client.get(path, headers=headers)
+    assert again.status_code == 200, again.text
+    assert (await launch_row(factory, broken_id)).updated_at == marked_at
+
+
+async def test_agents_lists_a_launch_without_its_key_as_unavailable(supervisor, caplog):
+    client, request_id, agent_id, service, factory, machine_id, headers = supervisor
+    broken_id, broken_agent = await second_launch(
+        factory, service, request_id, state="queued", register=True
+    )
     async with factory() as session:
-        agent = await session.get(Agent, agent_id)
+        agent = await session.get(Agent, broken_agent)
         key = await session.get(ApiKey, agent.api_key_id)
         key.encrypted_key = ""
         await session.commit()
-    response = await client.get(
-        f"/hosted/machines/{machine_id}/agents", headers=headers
-    )
-    assert response.status_code == 409
-    assert "cloud-helper" in response.json()["detail"]
+    path = f"/hosted/machines/{machine_id}/agents"
+    with caplog.at_level(logging.ERROR):
+        response = await client.get(path, headers=headers)
+    assert response.status_code == 200, response.text
+    healthy, broken = split_entries(response.json()["agents"], broken_id)
+    assert set(healthy) == set(fixture("agents_response.json")["agents"][0])
+    assert healthy["agent_id"] == agent_id
+    assert broken == {
+        "launch_id": broken_id,
+        "agent_id": broken_agent,
+        "name": "cloud-second",
+        "revision": 1,
+        "desired_state": "running",
+        "unavailable": "agent_key_missing",
+    }
+    assert "agent_key_missing" in caplog.text
+    launch = await launch_row(factory, broken_id)
+    assert launch.state == "error"
+    assert launch.error_code == "agent_key_missing"
+    assert launch.error == KEY_MISSING_ERROR
+    marked_at = launch.updated_at
+    again = await client.get(path, headers=headers)
+    assert again.status_code == 200, again.text
+    assert (await launch_row(factory, broken_id)).updated_at == marked_at
+    assert (await launch_row(factory, request_id)).state == "provisioning"
 
 
 async def test_agents_sends_no_skills_to_a_provider_without_a_skills_directory(
@@ -384,6 +537,34 @@ async def test_heartbeat_confirms_a_requested_stop(supervisor):
     assert (await launch_row(factory, request_id)).state == "stopped"
 
 
+@pytest.mark.parametrize("process_state", ["crashed", "failed"])
+async def test_crash_of_an_agent_meant_to_stop_stops_it(supervisor, process_state):
+    client, request_id, agent_id, _, factory, machine_id, headers = supervisor
+    await update_launch(
+        factory,
+        request_id,
+        state="stopping",
+        desired_state="stopped",
+        error="An earlier failure.",
+        error_code="agent_failed",
+    )
+    response = await client.post(
+        f"/hosted/machines/{machine_id}/heartbeat",
+        headers=headers,
+        json=heartbeat_body(
+            launch_id=request_id,
+            agent_id=agent_id,
+            revision=1,
+            process_state=process_state,
+        ),
+    )
+    assert response.status_code == 200, response.text
+    launch = await launch_row(factory, request_id)
+    assert launch.state == "stopped"
+    assert launch.error is None
+    assert launch.error_code is None
+
+
 async def test_stopped_process_does_not_stop_an_agent_meant_to_run(supervisor):
     client, request_id, agent_id, _, factory, machine_id, headers = supervisor
     await client.post(
@@ -424,16 +605,90 @@ async def test_running_process_is_ready_only_once_its_worker_listens(supervisor)
     assert launch.active_at >= before
 
 
-async def test_stale_revision_report_writes_columns_but_not_state(supervisor):
+async def post_running_report(supervisor, *, since: datetime, updated_at: datetime):
     client, request_id, agent_id, _, factory, machine_id, headers = supervisor
-    await update_launch(factory, request_id, revision=2)
-    await client.post(
+    await update_launch(
+        factory, request_id, state="provisioning", updated_at=updated_at
+    )
+    response = await client.post(
+        f"/hosted/machines/{machine_id}/heartbeat",
+        headers=headers,
+        json=heartbeat_body(
+            launch_id=request_id,
+            agent_id=agent_id,
+            revision=1,
+            process_state="running",
+            exit=None,
+            since=since.isoformat(),
+        ),
+    )
+    assert response.status_code == 200, response.text
+    return await launch_row(factory, request_id)
+
+
+async def test_running_process_that_never_attaches_times_out(supervisor):
+    long_ago = datetime.now(UTC) - timedelta(minutes=11)
+    launch = await post_running_report(supervisor, since=long_ago, updated_at=long_ago)
+    assert launch.state == "error"
+    assert launch.error_code == "worker_attach_timeout"
+    assert launch.error == (
+        "The agent started but did not connect to Switch within 10 minutes. "
+        "Retry it in Switch Console, or check its provider login."
+    )
+    assert launch.updated_at > long_ago
+
+
+@pytest.mark.parametrize("recent", ["since", "updated_at"])
+async def test_running_process_within_the_attach_deadline_stays_provisioning(
+    supervisor, recent
+):
+    long_ago = datetime.now(UTC) - timedelta(minutes=11)
+    just_now = datetime.now(UTC) - timedelta(minutes=1)
+    times = {"since": long_ago, "updated_at": long_ago, recent: just_now}
+    launch = await post_running_report(supervisor, **times)
+    assert launch.state == "provisioning"
+    assert launch.error_code is None
+
+
+async def test_heartbeat_refuses_a_report_time_without_an_offset(supervisor):
+    client, request_id, agent_id, _, _, machine_id, headers = supervisor
+    response = await client.post(
+        f"/hosted/machines/{machine_id}/heartbeat",
+        headers=headers,
+        json=heartbeat_body(
+            launch_id=request_id, agent_id=agent_id, since="2026-01-01T00:00:00"
+        ),
+    )
+    assert response.status_code == 422
+
+
+async def test_stale_revision_report_writes_nothing(supervisor):
+    client, request_id, agent_id, _, factory, machine_id, headers = supervisor
+    reported_at = datetime.now(UTC) - timedelta(minutes=5)
+    await update_launch(
+        factory,
+        request_id,
+        revision=2,
+        process_state="starting",
+        process_restarts=0,
+        process_oom_kills=0,
+        process_exit=None,
+        process_reported_at=reported_at,
+    )
+    response = await client.post(
         f"/hosted/machines/{machine_id}/heartbeat",
         headers=headers,
         json=heartbeat_body(launch_id=request_id, agent_id=agent_id, revision=1),
     )
+    assert response.status_code == 200, response.text
     launch = await launch_row(factory, request_id)
-    assert launch.process_state == "crashed"
+    assert (
+        launch.process_state,
+        launch.process_restarts,
+        launch.process_oom_kills,
+        launch.process_exit,
+        launch.process_reported_at,
+    ) == ("starting", 0, 0, None, reported_at)
     assert launch.state == "queued"
     assert launch.error_code is None
 

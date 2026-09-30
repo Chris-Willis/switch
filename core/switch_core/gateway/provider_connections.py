@@ -18,6 +18,7 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
+from switch_core.db.stores.hosted_machine_store import HostedMachineStore
 from switch_core.db.stores.provider_connection_store import (
     ProviderConnectionBusy,
     ProviderConnectionStore,
@@ -111,6 +112,7 @@ async def connect_claude(
     await store.save(
         session, user.id, kind, encrypt_token(credential, config.jwt_secret_key), now
     )
+    await bump_machine_agents(session, user.id)
     await session.commit()
     await ring_credential_change(
         session, protocol.connections, user.id, "claude", str(now)
@@ -146,6 +148,17 @@ async def ring_credential_change(
         registry.ring_worker(agent_id, "credential", {"revision": revision})
 
 
+async def bump_machine_agents(session: AsyncSession, user_id: str) -> None:
+    """Make the owner's machine re-read its agent list, which carries the credential kind."""
+    machines = HostedMachineStore()
+    live = await machines.live_for_owner(session, user_id)
+    if live is None:
+        return
+    machine = await machines.locked(session, live.id)
+    if machine is not None:
+        machines.bump_agents(machine)
+
+
 @router.delete("/claude", status_code=204)
 async def disconnect_claude(
     user: Annotated[User, Depends(get_current_user)],
@@ -158,6 +171,7 @@ async def disconnect_claude(
     except ProviderConnectionBusy as error:
         raise HTTPException(409, str(error)) from None
     await store.delete(session, user.id)
+    await bump_machine_agents(session, user.id)
     await session.commit()
     await ring_credential_change(session, protocol.connections, user.id, "claude", None)
     return Response(status_code=204)
@@ -259,6 +273,7 @@ async def connect_other_provider(
             },
         )
     )
+    await bump_machine_agents(session, user.id)
     await session.commit()
     await ring_credential_change(
         session, protocol.connections, user.id, provider, str(now)
@@ -304,6 +319,7 @@ async def disconnect_other_provider(
             ),
         )
     )
+    await bump_machine_agents(session, user.id)
     await session.commit()
     await ring_credential_change(session, protocol.connections, user.id, provider, None)
     return Response(status_code=204)
