@@ -1,5 +1,4 @@
 import { readFile } from 'node:fs/promises';
-import type { SharedHostConfig } from '@switch-console/agent-providers';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { updateAgent } from '@main/core/agents/updateAgent';
@@ -14,7 +13,6 @@ import { controllerConnectionId } from '@main/core/switch-rooms/session-connecti
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import { adoptSubagent } from './adopt-subagent';
-import { stopLegacySidecar } from './legacy-sidecar';
 import {
   removeLocalWatcherRoots,
   startLocalWatcher,
@@ -22,12 +20,9 @@ import {
   type WatcherIntent,
 } from './local-host';
 import { buildSharedHostConfig } from './shared-agent-runtime';
-import {
-  deploySharedHost,
-  resolveWatcherRoot,
-  runSharedHostCommand,
-} from './shared-host-deployment';
-import { removeWatcherRoots, waitForWatcherStop } from './watcher-inspection';
+import { deploySharedHost, resolveWatcherRoot } from './shared-host-deployment';
+import { AUTO_APPROVE_CHOICE_FILE, bringUpRemoteWatcher } from './watcher-bring-up';
+import { removeWatcherRoots } from './watcher-inspection';
 
 const READ_SWITCH_AGENT_ID =
   "console.log(JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')).env.SWITCH_AGENT_ID)";
@@ -60,11 +55,6 @@ export type AutoApproveSource = 'host' | 'this-console';
 
 type ConsoleRuntimeMode = 'full-access' | 'approval-required';
 
-const AUTO_APPROVE_CHOICE_FILE = 'auto-approve.json';
-
-/** Prints the auto-approve choice kept beside a watcher, or nothing. */
-const READ_AUTO_APPROVE_CHOICE = `const fs=require('node:fs');try{const c=JSON.parse(fs.readFileSync(require('node:path').join(process.argv[1],'${AUTO_APPROVE_CHOICE_FILE}'),'utf8'));console.log(c?.runtimeMode??'')}catch(e){if(e.code!=='ENOENT')throw e}`;
-
 /**
  * Atomically keeps an auto-approve choice beside a watcher and, with a third
  * argument `spec`, in its saved spec too. A missing root is a no-op: the first
@@ -74,37 +64,6 @@ const RECORD_AUTO_APPROVE_CHOICE = `const fs=require('node:fs'),path=require('no
 
 function runtimeModeFor(autoApprove: boolean): ConsoleRuntimeMode {
   return autoApprove ? 'full-access' : 'approval-required';
-}
-
-type HostContext = Awaited<ReturnType<typeof deploySharedHost>>['ctx'];
-
-async function readAutoApproveChoice(
-  ctx: HostContext,
-  root: string
-): Promise<ConsoleRuntimeMode | null> {
-  const { stdout } = await ctx.exec('node', ['-e', READ_AUTO_APPROVE_CHOICE, root]);
-  const mode = stdout.trim();
-  return mode === 'full-access' || mode === 'approval-required' ? mode : null;
-}
-
-/**
- * Take the choice on the host for a watcher about to be written, and bring
- * this Console's row in line so its toggle shows what the agent runs with.
- */
-async function adoptHostAutoApprove(
-  agentId: string,
-  ctx: HostContext,
-  root: string,
-  config: SharedHostConfig
-): Promise<void> {
-  const chosen = await readAutoApproveChoice(ctx, root);
-  if (chosen === null || chosen === config.start.input.runtimeMode) return;
-  log.info('shared-watcher: taking auto-approve from the host, where another Console set it', {
-    agentId,
-    runtimeMode: chosen,
-  });
-  config.start.input.runtimeMode = chosen;
-  await updateAgent({ agentId, autoApprove: chosen === 'full-access' });
 }
 
 async function writeAutoApproveChoice(
@@ -272,33 +231,32 @@ export async function configureSharedWatcherFor(
     else await stopLocalWatcher(config.session.agentId);
     return;
   }
-  const { ctx, root, entrypoint } = await deploySharedHost(
-    transport,
-    location.dir,
-    config.session.agentId,
-    true
-  );
-  await stopLegacySidecar(ctx, location.dir, config.execution!.credentialsPath);
-  // `clear` removes the stood-down marker on the same hop that writes the
-  // enable flag: an explicit start, or any stop. A restore leaves it, so a
-  // watcher that was displaced stays displaced across a Console restart.
-  await ctx.exec('node', [
-    '-e',
-    "const fs=require('node:fs');const path=require('node:path');const [root,enabled,spawn,clear]=process.argv.slice(1);fs.mkdirSync(root,{recursive:true,mode:0o700});if(clear==='true')try{fs.unlinkSync(path.join(root,'taken-over.json'))}catch(e){if(e.code!=='ENOENT')throw e}const dest=path.join(root,'watch.json');const tmp=dest+'.'+require('node:crypto').randomUUID();const fd=fs.openSync(tmp,'wx',0o600);try{fs.writeFileSync(fd,JSON.stringify({enabled:enabled==='true',spawn:spawn==='true'}));fs.fsyncSync(fd)}finally{fs.closeSync(fd)}fs.renameSync(tmp,dest)",
-    root,
-    String(state.connected),
-    String(state.spawning),
-    String(!state.connected || intent === 'explicit'),
-  ]);
-  if (!state.connected) {
-    await ctx.exec('node', ['-e', waitForWatcherStop, root]);
-    return;
-  }
   // A subagent's watcher runs with its parent's setting, which the parent's
   // own watcher has already taken from the host.
   const ownWatcher = !name || name === agent.name;
-  if (ownWatcher && autoApprove === 'host') {
-    await adoptHostAutoApprove(agentId, ctx, root, config);
+  // `clear` removes the stood-down marker on the same hop that writes the
+  // enable flag: an explicit start, or any stop. A restore leaves it, so a
+  // watcher that was displaced stays displaced across a Console restart.
+  const brought = await bringUpRemoteWatcher({
+    transport,
+    repoDir: location.dir,
+    identity: config.session.agentId,
+    credentialsPath: config.execution!.credentialsPath,
+    state,
+    clear: !state.connected || intent === 'explicit',
+    adoptAutoApprove: state.connected && ownWatcher && autoApprove === 'host',
+    config,
+  });
+  if (brought.legacyStopped.length)
+    log.warn('Stopped a superseded sidecar deployment for this agent', {
+      agentId,
+      stopped: brought.legacyStopped,
+    });
+  if (brought.runtimeMode !== null) {
+    log.info('shared-watcher: taking auto-approve from the host, where another Console set it', {
+      agentId,
+      runtimeMode: brought.runtimeMode,
+    });
+    await updateAgent({ agentId, autoApprove: brought.runtimeMode === 'full-access' });
   }
-  await runSharedHostCommand(transport, { ctx, root, entrypoint }, config, '--ensure-watch', false);
 }
