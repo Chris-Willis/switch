@@ -117,7 +117,7 @@ def _room(room_id: str, name: str) -> SimpleNamespace:
         id=room_id,
         name=name,
         description="d",
-        matrix_room_id="!m:x",
+        transport_room_id="!m:x",
         archived_at=None,
         bridge_id=None,
     )

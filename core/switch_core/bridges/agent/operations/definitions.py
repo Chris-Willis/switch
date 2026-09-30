@@ -1156,9 +1156,9 @@ async def create_room(
     return {
         "id": result.room.id,
         "name": result.room.name,
-        "transport_room_id": result.room.matrix_room_id,
+        "transport_room_id": result.room.transport_room_id,
         # Deprecated alias, carried for the connector compatibility window.
-        "matrix_room_id": result.room.matrix_room_id,
+        "matrix_room_id": result.room.transport_room_id,
         "failed_attachments": result.failed_attachments,
     }
 

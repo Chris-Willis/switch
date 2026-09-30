@@ -33,7 +33,7 @@ from tests.conftest import RLSHarness
 pytestmark = pytest.mark.no_ambient_tenant
 
 
-class _FakeMatrix:
+class _FakeProvisioning:
     def __init__(self) -> None:
         self._n = 0
 
@@ -81,7 +81,7 @@ class _RecordingCollaborationCore:
     def __init__(self, tenant_id: str) -> None:
         self.calls: list[str] = []
         self.tenant_id = tenant_id
-        self._workspace_consumer_matrix_user_id = "@bot:switch.local"
+        self._workspace_consumer_transport_user_id = "@bot:switch.local"
         self.adapter = _RecordingAdapter(self.calls)
 
     async def resolve_external_user_id_map(self, names: list[str]) -> dict[str, str]:
@@ -133,7 +133,7 @@ async def _make_bridge(
 ) -> str:
     async with tenant_session(session_factory, tenant_id) as session:
         client = Client(
-            matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:switch.local",
+            transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:switch.local",
             display_name="bridge client",
             type="bridge",
         )
@@ -163,7 +163,7 @@ def _service(
     svc._client_lifecycle = _NoRunningClients()  # type: ignore[assignment]
     svc._collab_lifecycle = _FakeLifecycle(bridges)  # type: ignore[assignment]
     svc._collab_bridge_store = CollaborationBridgeStore()  # type: ignore[assignment]
-    svc._matrix_admin = _FakeMatrix()  # type: ignore[assignment]
+    svc._provisioning = _FakeProvisioning()  # type: ignore[assignment]
     return svc
 
 

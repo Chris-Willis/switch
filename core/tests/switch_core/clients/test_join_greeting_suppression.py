@@ -24,10 +24,10 @@ def _fake_self(
     is_direct: bool = False,
     agent_greetings_enabled: bool = True,
 ) -> SimpleNamespace:
-    async def _is_direct_room(_matrix_room_id: str) -> bool:
+    async def _is_direct_room(_transport_room_id: str) -> bool:
         return is_direct
 
-    async def _resolve_room_meta(_matrix_room_id: str) -> SimpleNamespace:
+    async def _resolve_room_meta(_transport_room_id: str) -> SimpleNamespace:
         return SimpleNamespace(
             room_id="room-uuid",
             name="Some Room",

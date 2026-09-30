@@ -273,7 +273,7 @@ def test_every_collaboration_route_requires_authentication() -> None:
 
 async def _make_bridge(session: AsyncSession, *, is_default: bool = False) -> str:
     client = Client(
-        matrix_user_id=f"@bridge-{uuid.uuid4().hex[:12]}:test",
+        transport_user_id=f"@bridge-{uuid.uuid4().hex[:12]}:test",
         display_name="bridge client",
         type="bridge",
     )

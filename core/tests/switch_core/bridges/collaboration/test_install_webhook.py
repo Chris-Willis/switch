@@ -202,7 +202,7 @@ class _Fixture:
 async def _make_bridge(factory: async_sessionmaker, tenant_id: str, suffix: str) -> str:
     async with tenant_session(factory, tenant_id) as session:
         client = Client(
-            matrix_user_id=f"@bridge-{tenant_id}:{suffix}",
+            transport_user_id=f"@bridge-{tenant_id}:{suffix}",
             display_name="bridge",
             type="collaboration_bridge",
         )

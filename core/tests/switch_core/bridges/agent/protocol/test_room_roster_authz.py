@@ -43,7 +43,7 @@ class _FakeClientLifecycle:
     async def create_client(self, *, client_type: str, display_name: str) -> Client:
         async with self._session_factory() as session:
             client = Client(
-                matrix_user_id=f"@{display_name}:test",
+                transport_user_id=f"@{display_name}:test",
                 display_name=display_name,
                 type=client_type,
             )
@@ -105,7 +105,7 @@ async def _make_public_room(
 ) -> str:
     async with session_factory() as session:
         room = Room(
-            matrix_room_id="!secret:test",
+            transport_room_id="!secret:test",
             name="secret",
             description="",
             owner_id=owner_id,

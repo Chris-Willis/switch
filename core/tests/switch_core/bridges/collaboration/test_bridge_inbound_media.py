@@ -12,7 +12,7 @@ from switch_core.bridges.collaboration.models import (
 
 
 class _FakePuppet:
-    matrix_user_id = "@puppet:s"
+    transport_user_id = "@puppet:s"
 
     def __init__(self) -> None:
         self.uploads: list[dict[str, Any]] = []
@@ -25,7 +25,7 @@ class _FakePuppet:
 
     async def send_media(
         self,
-        matrix_room_id,
+        transport_room_id,
         mxc,
         filename,
         mimetype,
@@ -39,7 +39,7 @@ class _FakePuppet:
     ):  # noqa: ANN001, ANN201
         self.media.append(
             {
-                "matrix_room_id": matrix_room_id,
+                "matrix_room_id": transport_room_id,
                 "mxc": mxc,
                 "filename": filename,
                 "mimetype": mimetype,
@@ -53,7 +53,7 @@ class _FakePuppet:
         return f"$evt-{len(self.media) - 1}"
 
     async def send_message(
-        self, matrix_room_id, content, *, metered, format=None, thread_root_id=None
+        self, transport_room_id, content, *, metered, format=None, thread_root_id=None
     ):  # noqa: ANN001, ANN201, A002
         self.messages.append({"content": content, "thread_root_id": thread_root_id})
         return "$evt-text"
@@ -76,7 +76,7 @@ def _fake_bridge() -> SimpleNamespace:
     async def _is_registered_agent(_name: str) -> bool:
         return False
 
-    async def _ensure_user_in_matrix_room(**_kwargs: Any) -> _FakePuppet:
+    async def _ensure_human_in_room(**_kwargs: Any) -> _FakePuppet:
         return puppet
 
     async def _record_message_map(**kwargs: str) -> None:
@@ -92,7 +92,7 @@ def _fake_bridge() -> SimpleNamespace:
         _adapter=_FakeAdapter(),
         _channel_to_room={"chan-1": ("room-1", "!room:s")},
         _is_registered_agent=_is_registered_agent,
-        _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
+        _ensure_human_in_room=_ensure_human_in_room,
         _record_message_map=_record_message_map,
         puppet=puppet,
         recorded=recorded,

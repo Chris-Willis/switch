@@ -71,7 +71,7 @@ async def _make_agent(
         type="agent",
     )
     client = Client(
-        matrix_user_id=f"@{name}:test",
+        transport_user_id=f"@{name}:test",
         display_name=name,
         type="agent",
     )
@@ -96,7 +96,7 @@ async def _make_agent(
 async def _make_room(
     session: AsyncSession, room_store: RoomStore, agent_ids: list[str]
 ) -> Room:
-    room = Room(matrix_room_id="!room:test", name="Room", description="d")
+    room = Room(transport_room_id="!room:test", name="Room", description="d")
     session.add(room)
     await session.flush()
     await room_store.add_agents(session, room.id, agent_ids)

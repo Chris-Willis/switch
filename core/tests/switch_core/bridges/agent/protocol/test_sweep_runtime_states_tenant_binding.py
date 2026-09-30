@@ -85,7 +85,7 @@ async def _make_stale_runtime_state(
     )
     client = Client(
         tenant_id=tenant_id,
-        matrix_user_id=f"@agent-{suffix}:test",
+        transport_user_id=f"@agent-{suffix}:test",
         display_name="agent",
         type="agent",
     )
@@ -104,7 +104,7 @@ async def _make_stale_runtime_state(
     session.add(agent)
     room = Room(
         tenant_id=tenant_id,
-        matrix_room_id=f"!room-{suffix}:test",
+        transport_room_id=f"!room-{suffix}:test",
         name="room",
         description="d",
     )

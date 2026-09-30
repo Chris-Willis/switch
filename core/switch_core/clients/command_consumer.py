@@ -75,7 +75,7 @@ class CommandConsumer(Consumer[SystemActor]):
         self._frontend_base_url = (
             frontend_base_url.rstrip("/") if frontend_base_url else None
         )
-        # matrix_room_id -> RoomMeta (None when no Switch room maps).
+        # transport_room_id -> RoomMeta (None when no Switch room maps).
         self._room_meta_cache: dict[str, RoomMeta | None] = {}
 
     # ── Event hooks ───────────────────────────────────────────────────────────
@@ -237,14 +237,16 @@ class CommandConsumer(Consumer[SystemActor]):
             return str(name)
         return str(event.sender).split(":")[0].lstrip("@")
 
-    async def _resolve_room_meta(self, matrix_room_id: str) -> RoomMeta | None:
-        if matrix_room_id in self._room_meta_cache:
-            return self._room_meta_cache[matrix_room_id]
+    async def _resolve_room_meta(self, transport_room_id: str) -> RoomMeta | None:
+        if transport_room_id in self._room_meta_cache:
+            return self._room_meta_cache[transport_room_id]
         async with tenant_session(self.session_factory, self.tenant_id) as session:
-            room = await self._room_store.get_by_matrix_room_id(session, matrix_room_id)
+            room = await self._room_store.get_by_transport_room_id(
+                session, transport_room_id
+            )
         if room is None:
-            logger.error("Room not found for matrix room ID: %s", matrix_room_id)
-            self._room_meta_cache[matrix_room_id] = None
+            logger.error("Room not found for transport room id: %s", transport_room_id)
+            self._room_meta_cache[transport_room_id] = None
             return None
         meta = RoomMeta(
             room_id=room.id,
@@ -252,9 +254,9 @@ class CommandConsumer(Consumer[SystemActor]):
             bridge_id=room.bridge_id,
             channel_type=room.channel_type,
         )
-        self._room_meta_cache[matrix_room_id] = meta
+        self._room_meta_cache[transport_room_id] = meta
         return meta
 
-    async def _is_direct_room(self, matrix_room_id: str) -> bool:
-        meta = await self._resolve_room_meta(matrix_room_id)
+    async def _is_direct_room(self, transport_room_id: str) -> bool:
+        meta = await self._resolve_room_meta(transport_room_id)
         return meta is not None and meta.channel_type == "direct"

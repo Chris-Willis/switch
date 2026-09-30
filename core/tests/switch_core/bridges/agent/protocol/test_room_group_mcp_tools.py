@@ -72,7 +72,7 @@ class TestGetRoomGroupDetail:
 
         async with session_factory() as session:
             room = await rooms.create(
-                session, Room(matrix_room_id="!r:test", name="r1", description="d")
+                session, Room(transport_room_id="!r:test", name="r1", description="d")
             )
             await rooms.set_group(session, room.id, parent["id"])
             await session.commit()

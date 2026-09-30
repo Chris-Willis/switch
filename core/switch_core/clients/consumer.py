@@ -74,8 +74,8 @@ class Consumer[ActorT: Actor[Any]]:
         return self.actor.tenant_id
 
     @property
-    def matrix_user_id(self) -> str:
-        return self.actor.matrix_user_id
+    def transport_user_id(self) -> str:
+        return self.actor.transport_user_id
 
     @property
     def display_name(self) -> str:
@@ -109,7 +109,7 @@ class Consumer[ActorT: Actor[Any]]:
         await self.actor.connect()
         self.setup()
 
-        logger.info("Consumer %s starting delivery loop", self.matrix_user_id)
+        logger.info("Consumer %s starting delivery loop", self.transport_user_id)
         retries = 0
         while self._running:
             try:
@@ -122,14 +122,14 @@ class Consumer[ActorT: Actor[Any]]:
                 if retries > SYNC_MAX_RETRIES:
                     logger.error(
                         "Consumer %s exceeded %d delivery retries, giving up",
-                        self.matrix_user_id,
+                        self.transport_user_id,
                         SYNC_MAX_RETRIES,
                     )
                     raise
                 delay = min(SYNC_BACKOFF_BASE * (2 ** (retries - 1)), SYNC_BACKOFF_CAP)
                 logger.exception(
                     "Delivery loop error for %s (attempt %d/%d), retrying in %.1fs",
-                    self.matrix_user_id,
+                    self.transport_user_id,
                     retries,
                     SYNC_MAX_RETRIES,
                     delay,
@@ -137,7 +137,7 @@ class Consumer[ActorT: Actor[Any]]:
                 await asyncio.sleep(delay)
 
     async def stop(self) -> None:
-        logger.info("Stopping consumer %s", self.matrix_user_id)
+        logger.info("Stopping consumer %s", self.transport_user_id)
         self._running = False
         await self.teardown()
         await self.actor.close()
@@ -167,7 +167,7 @@ class Consumer[ActorT: Actor[Any]]:
             await self.on_message(room, event)
         except Exception:
             logger.exception(
-                "Error in on_message for %s in %s", self.matrix_user_id, room.room_id
+                "Error in on_message for %s in %s", self.transport_user_id, room.room_id
             )
 
     async def _handle_media(self, room: RoomRef, event: InboundMedia) -> None:
@@ -177,7 +177,7 @@ class Consumer[ActorT: Actor[Any]]:
             await self.on_media(room, event)
         except Exception:
             logger.exception(
-                "Error in on_media for %s in %s", self.matrix_user_id, room.room_id
+                "Error in on_media for %s in %s", self.transport_user_id, room.room_id
             )
 
     async def _handle_reaction(self, room: RoomRef, event: InboundEvent) -> None:
@@ -187,13 +187,15 @@ class Consumer[ActorT: Actor[Any]]:
             await self.on_reaction(room, event)
         except Exception:
             logger.exception(
-                "Error in on_reaction for %s in %s", self.matrix_user_id, room.room_id
+                "Error in on_reaction for %s in %s",
+                self.transport_user_id,
+                room.room_id,
             )
 
     async def _handle_member_event(
         self, room: RoomRef, event: InboundMembership
     ) -> None:
-        if event.state_key == self.matrix_user_id:
+        if event.state_key == self.transport_user_id:
             if event.membership == "join":
                 self.actor.mark_joined(room.room_id, event.timestamp)
                 # A membership-preserving update (display name, avatar) re-fires
@@ -212,7 +214,7 @@ class Consumer[ActorT: Actor[Any]]:
                     except Exception:
                         logger.exception(
                             "Error in on_self_join for %s in %s",
-                            self.matrix_user_id,
+                            self.transport_user_id,
                             room.room_id,
                         )
                 return
@@ -226,7 +228,7 @@ class Consumer[ActorT: Actor[Any]]:
         except Exception:
             logger.exception(
                 "Error in on_member_event for %s in %s",
-                self.matrix_user_id,
+                self.transport_user_id,
                 room.room_id,
             )
 
@@ -235,7 +237,7 @@ class Consumer[ActorT: Actor[Any]]:
             await self.on_invite(room, event)
         except Exception:
             logger.exception(
-                "Error in on_invite for %s in %s", self.matrix_user_id, room.room_id
+                "Error in on_invite for %s in %s", self.transport_user_id, room.room_id
             )
 
     async def _handle_removed(self, room: RoomRef, event: InboundMembership) -> None:
@@ -246,7 +248,7 @@ class Consumer[ActorT: Actor[Any]]:
             await self.on_removed(room, event)
         except Exception:
             logger.exception(
-                "Error in on_removed for %s in %s", self.matrix_user_id, room.room_id
+                "Error in on_removed for %s in %s", self.transport_user_id, room.room_id
             )
 
     _EVENT_DISPATCH: dict[str, tuple[type[SwitchEvent], str]] = {
@@ -317,7 +319,7 @@ class Consumer[ActorT: Actor[Any]]:
     # ── Filtering ──────────────────────────────────────────────────────────────
 
     def _should_ignore(self, room: RoomRef, event: InboundEvent) -> bool:
-        if event.sender == self.matrix_user_id:
+        if event.sender == self.transport_user_id:
             return True
 
         if event.timestamp:
@@ -346,7 +348,9 @@ class Consumer[ActorT: Actor[Any]]:
 
     async def on_invite(self, room: RoomRef, event: InboundMembership) -> None:
         logger.info(
-            "Consumer %s auto-accepting invite to %s", self.matrix_user_id, room.room_id
+            "Consumer %s auto-accepting invite to %s",
+            self.transport_user_id,
+            room.room_id,
         )
         await self.actor.join_room(room.room_id)
 

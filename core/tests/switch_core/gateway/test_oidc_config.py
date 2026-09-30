@@ -19,7 +19,7 @@ def _kwargs(**overrides: object) -> dict[str, object]:
         db_user="u",
         db_password="p",
         db_name="d",
-        matrix_server_name="m",
+        id_server_name="m",
         agent_registration_token="t",
         jwt_secret_key="secret",
         gateway_admin_email="a@b.c",

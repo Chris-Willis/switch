@@ -35,7 +35,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.transport import InboundMessage, RoomRef
 
-MATRIX_ROOM_ID = "!r:test"
+TRANSPORT_ROOM_ID = "!r:test"
 
 
 class _CountingSessionFactory:
@@ -83,7 +83,7 @@ async def _seed(
                 type="agent",
             )
             client = Client(
-                matrix_user_id=f"@{name}:test",
+                transport_user_id=f"@{name}:test",
                 display_name=name,
                 type="agent",
             )
@@ -102,7 +102,7 @@ async def _seed(
             session.add(agent)
             await session.flush()
             agents[name] = agent
-        room = Room(matrix_room_id=MATRIX_ROOM_ID, name="room", description="d")
+        room = Room(transport_room_id=TRANSPORT_ROOM_ID, name="room", description="d")
         session.add(room)
         await session.flush()
         await RoomStore().add_agents(session, room.id, [a.id for a in agents.values()])
@@ -121,7 +121,7 @@ def _client(
     actor = object.__new__(AgentActor)
     actor.session_factory = counting  # type: ignore[assignment]
     actor.client_store = ClientStore()
-    actor.matrix_user_id = f"@{agent.name}:test"
+    actor.transport_user_id = f"@{agent.name}:test"
     actor.client_id = agent.client_id
     actor.tenant_id = agent.tenant_id
     actor._agent = agent
@@ -144,7 +144,7 @@ def _client(
     client._budget_guard = BudgetGuard(BudgetStore())
     client._frontend_base_url = None
     client._room_meta = {
-        MATRIX_ROOM_ID: RoomMeta(
+        TRANSPORT_ROOM_ID: RoomMeta(
             room_id=room_id,
             name="room",
             bridge_id=None,
@@ -155,7 +155,7 @@ def _client(
     client._attachment_group_timers = {}
     client.sent = []  # type: ignore[attr-defined]
 
-    async def _send_message(matrix_room_id: str, body: str, **kwargs: Any) -> str:
+    async def _send_message(transport_room_id: str, body: str, **kwargs: Any) -> str:
         client.sent.append((body, counting.live))  # type: ignore[attr-defined]
         return "$sent"
 
@@ -168,7 +168,7 @@ def _client(
 
 def _message(body: str, sender: str = "@switch-slack-louisa:test") -> InboundMessage:
     return InboundMessage(
-        room_id=MATRIX_ROOM_ID,
+        room_id=TRANSPORT_ROOM_ID,
         event_id="$trigger",
         sender=sender,
         timestamp=0,
@@ -179,7 +179,7 @@ def _message(body: str, sender: str = "@switch-slack-louisa:test") -> InboundMes
 
 
 def _room() -> RoomRef:
-    return RoomRef(room_id=MATRIX_ROOM_ID)
+    return RoomRef(room_id=TRANSPORT_ROOM_ID)
 
 
 class TestInboundMessageCheckouts:

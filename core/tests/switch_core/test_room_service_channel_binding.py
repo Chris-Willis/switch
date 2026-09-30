@@ -29,7 +29,7 @@ class _Reached(Exception):
 
 
 def _service(events: list[Any]) -> tuple[Any, _FakeCollaborationCore]:
-    bridge = _FakeCollaborationCore(events, matrix_user_id="@bot:switch.local")
+    bridge = _FakeCollaborationCore(events, transport_user_id="@bot:switch.local")
     bridge.adapter.not_bindable.add("chan-elsewhere")
     svc, _ = _build_service(
         room=SimpleNamespace(),
@@ -42,7 +42,7 @@ def _service(events: list[Any]) -> tuple[Any, _FakeCollaborationCore]:
     async def create_matrix_room(*_: Any, **__: Any) -> str:
         raise _Reached
 
-    svc._matrix_admin.create_room = create_matrix_room
+    svc._provisioning.create_room = create_matrix_room
     return svc, bridge
 
 

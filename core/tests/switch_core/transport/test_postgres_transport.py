@@ -61,28 +61,28 @@ async def _make_room(session: AsyncSession) -> tuple[str, str, str, str]:
     """
     suffix = uuid.uuid4().hex[:8]
     client = Client(
-        matrix_user_id=f"@agent-{suffix}:test",
+        transport_user_id=f"@agent-{suffix}:test",
         display_name="agent one",
         type="agent",
     )
     session.add(client)
     await session.flush()
-    room = Room(matrix_room_id=f"!room-{suffix}:test", name="a room", description="")
+    room = Room(transport_room_id=f"!room-{suffix}:test", name="a room", description="")
     session.add(room)
     await session.flush()
-    return room.id, room.matrix_room_id, client.id, client.matrix_user_id
+    return room.id, room.transport_room_id, client.id, client.transport_user_id
 
 
 async def _make_client(session: AsyncSession, label: str) -> tuple[str, str]:
     """Insert one more Client. Returns (client id, client mxid)."""
     client = Client(
-        matrix_user_id=f"@{label}-{uuid.uuid4().hex[:8]}:test",
+        transport_user_id=f"@{label}-{uuid.uuid4().hex[:8]}:test",
         display_name=label,
         type="agent",
     )
     session.add(client)
     await session.flush()
-    return client.id, client.matrix_user_id
+    return client.id, client.transport_user_id
 
 
 async def _watched_room(transport: PostgresTransport) -> str:
@@ -741,13 +741,13 @@ class TestReceiving:
 
         async with session_factory() as session:
             newcomer = Client(
-                matrix_user_id=f"@later-{uuid.uuid4().hex[:8]}:test",
+                transport_user_id=f"@later-{uuid.uuid4().hex[:8]}:test",
                 display_name="the newcomer",
                 type="agent",
             )
             session.add(newcomer)
             await session.commit()
-            newcomer_id, newcomer_mxid = newcomer.id, newcomer.matrix_user_id
+            newcomer_id, newcomer_mxid = newcomer.id, newcomer.transport_user_id
 
         joiner = _transport(
             session_factory, client_id=newcomer_id, user_id=newcomer_mxid
@@ -1104,21 +1104,21 @@ class TestDeliveryBindsTheRoomsTenant:
             suffix = uuid.uuid4().hex[:8]
             client = Client(
                 tenant_id=tenant_id,
-                matrix_user_id=f"@agent-{suffix}:test",
+                transport_user_id=f"@agent-{suffix}:test",
                 display_name="agent one",
                 type="agent",
             )
             session.add(client)
             room = Room(
                 tenant_id=tenant_id,
-                matrix_room_id=f"!room-{suffix}:test",
+                transport_room_id=f"!room-{suffix}:test",
                 name="a room",
                 description="",
             )
             session.add(room)
             await session.commit()
-            transport_room_id = room.matrix_room_id
-            client_id, user_id = client.id, client.matrix_user_id
+            transport_room_id = room.transport_room_id
+            client_id, user_id = client.id, client.transport_user_id
 
         seen: list[str | None] = []
         original = MessageStore.list_for_room
@@ -1221,14 +1221,14 @@ class TestATransportActsInItsClientsTenant:
             suffix = uuid.uuid4().hex[:8]
             client = Client(
                 tenant_id=tenant_id,
-                matrix_user_id=f"@sys-{suffix}:test",
+                transport_user_id=f"@sys-{suffix}:test",
                 display_name="admin",
                 type="admin",
             )
             session.add(client)
             room = Room(
                 tenant_id=tenant_id,
-                matrix_room_id=f"!room-{suffix}:test",
+                transport_room_id=f"!room-{suffix}:test",
                 name="a room",
                 description="",
             )
@@ -1238,8 +1238,8 @@ class TestATransportActsInItsClientsTenant:
                 ClientRoom(tenant_id=tenant_id, client_id=client.id, room_id=room.id)
             )
             await session.commit()
-            client_id, user_id = client.id, client.matrix_user_id
-            transport_room_id = room.matrix_room_id
+            client_id, user_id = client.id, client.transport_user_id
+            transport_room_id = room.transport_room_id
 
         seen: list[str | None] = []
         original = RoomStore.get_for_client
@@ -1287,14 +1287,14 @@ class TestATransportActsInItsClientsTenant:
             suffix = uuid.uuid4().hex[:8]
             client = Client(
                 tenant_id=tenant_id,
-                matrix_user_id=f"@sys-{suffix}:test",
+                transport_user_id=f"@sys-{suffix}:test",
                 display_name="admin",
                 type="admin",
             )
             session.add(client)
             room = Room(
                 tenant_id=tenant_id,
-                matrix_room_id=f"!room-{suffix}:test",
+                transport_room_id=f"!room-{suffix}:test",
                 name="a room",
                 description="",
             )
@@ -1341,28 +1341,28 @@ class TestATransportActsInItsClientsTenant:
             await session.flush()
             puppet = Client(
                 tenant_id=tenant_id,
-                matrix_user_id=f"@puppet-{suffix}:test",
+                transport_user_id=f"@puppet-{suffix}:test",
                 display_name="puppet",
                 type="user",
             )
             session.add(puppet)
             first = Room(
                 tenant_id=tenant_id,
-                matrix_room_id=f"!a-{suffix}:test",
+                transport_room_id=f"!a-{suffix}:test",
                 name="room a",
                 description="",
             )
             second = Room(
                 tenant_id=tenant_id,
-                matrix_room_id=f"!b-{suffix}:test",
+                transport_room_id=f"!b-{suffix}:test",
                 name="room b",
                 description="",
             )
             session.add_all([first, second])
             await session.commit()
             room_ids = {first.id: tenant_id, second.id: tenant_id}
-            mxid_a, mxid_b = first.matrix_room_id, second.matrix_room_id
-            client_id, user_id = puppet.id, puppet.matrix_user_id
+            mxid_a, mxid_b = first.transport_room_id, second.transport_room_id
+            client_id, user_id = puppet.id, puppet.transport_user_id
 
         seen: dict[str, list[str | None]] = {}
         original = MessageStore.list_for_room
@@ -1423,21 +1423,21 @@ class TestATransportActsInItsClientsTenant:
             await session.flush()
             client = Client(
                 tenant_id=tenant_id,
-                matrix_user_id=f"@sys-{suffix}:test",
+                transport_user_id=f"@sys-{suffix}:test",
                 display_name="admin",
                 type="admin",
             )
             session.add(client)
             elsewhere = Room(
                 tenant_id=other_tenant,
-                matrix_room_id=f"!elsewhere-{suffix}:test",
+                transport_room_id=f"!elsewhere-{suffix}:test",
                 name="somebody else's room",
                 description="",
             )
             session.add(elsewhere)
             await session.commit()
-            client_id, user_id = client.id, client.matrix_user_id
-            elsewhere_mxid = elsewhere.matrix_room_id
+            client_id, user_id = client.id, client.transport_user_id
+            elsewhere_mxid = elsewhere.transport_room_id
 
         transport = _transport(
             rls_harness.restricted,
@@ -1472,14 +1472,14 @@ async def test_the_schema_forbids_a_client_row_in_another_tenants_room(
         await session.flush()
         client = Client(
             tenant_id=tenant_a,
-            matrix_user_id=f"@sys-{suffix}:test",
+            transport_user_id=f"@sys-{suffix}:test",
             display_name="admin",
             type="admin",
         )
         session.add(client)
         room = Room(
             tenant_id=tenant_b,
-            matrix_room_id=f"!b-{suffix}:test",
+            transport_room_id=f"!b-{suffix}:test",
             name="room b",
             description="",
         )

@@ -69,7 +69,7 @@ class TestResolveSenderPrincipal:
             return list(claimants)
 
         return SimpleNamespace(
-            _client_store=SimpleNamespace(get_by_matrix_user_id=_get_by_mxid),
+            _client_store=SimpleNamespace(get_by_transport_user_id=_get_by_mxid),
             _agent_store=SimpleNamespace(get_by_client_id=_agent_by_client),
             _external_user_store=SimpleNamespace(
                 get_by_client_id=_ext_by_client, claimant_ids=_claimant_ids
@@ -544,7 +544,7 @@ def _gate_client(  # type: ignore[no-untyped-def]
     sent: list[dict] = []
 
     async def _addressing_allowed(
-        _session, _agent, _matrix_sender, _room_id, _content=None
+        _session, _agent, _sender_user_id, _room_id, _content=None
     ):  # type: ignore[no-untyped-def]
         return _AddressingDecision(allowed=allowed, refusal="" if allowed else refusal)
 
@@ -672,7 +672,7 @@ def _command_client(*, allowed: bool, targets_me: bool):  # type: ignore[no-unty
     replies: list[dict] = []
 
     async def _addressing_allowed(
-        _session, _agent, _matrix_sender, _room_id, _content=None
+        _session, _agent, _sender_user_id, _room_id, _content=None
     ):  # type: ignore[no-untyped-def]
         return _AddressingDecision(
             allowed=allowed, refusal="" if allowed else _ADDRESSING_DENIED_MESSAGE

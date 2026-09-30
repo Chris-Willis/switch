@@ -24,7 +24,7 @@ async def _agent(session: AsyncSession) -> Agent:
         type="agent",
     )
     client = Client(
-        matrix_user_id=f"@{name}:test",
+        transport_user_id=f"@{name}:test",
         display_name=name,
         type="agent",
     )
@@ -46,7 +46,7 @@ async def _agent(session: AsyncSession) -> Agent:
 
 async def _make_agent_and_room(session: AsyncSession) -> tuple[str, str]:
     room = Room(
-        matrix_room_id=f"!room-{uuid.uuid4().hex[:8]}:test",
+        transport_room_id=f"!room-{uuid.uuid4().hex[:8]}:test",
         name="a room",
         description="",
     )
@@ -134,7 +134,7 @@ class TestAdvancing:
         async with session_factory() as session:
             agent_id, first_room = await _make_agent_and_room(session)
             second_room = Room(
-                matrix_room_id=f"!room-{uuid.uuid4().hex[:8]}:test",
+                transport_room_id=f"!room-{uuid.uuid4().hex[:8]}:test",
                 name="another room",
                 description="",
             )

@@ -398,7 +398,10 @@ class Client(TenantScoped, Base):
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    matrix_user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # The column keeps its Matrix-era name; the attribute says what it is.
+    transport_user_id: Mapped[str] = mapped_column(
+        "matrix_user_id", Text, nullable=False
+    )
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -713,7 +716,10 @@ class Room(TenantScoped, Base):
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    matrix_room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # The column keeps its Matrix-era name; the attribute says what it is.
+    transport_room_id: Mapped[str] = mapped_column(
+        "matrix_room_id", Text, nullable=False
+    )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     bridge_id: Mapped[str | None] = mapped_column(Text, nullable=True)

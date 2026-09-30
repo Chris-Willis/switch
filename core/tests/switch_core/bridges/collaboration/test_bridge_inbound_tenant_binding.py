@@ -191,7 +191,7 @@ class TestAPuppetIsMintedInTheBridgesTenant:
         bridge._bridge_type = "mattermost"
         bridge._puppet_locks = {}
         bridge._user_puppets = {}
-        bridge._puppet_matrix_ids = set()
+        bridge._human_user_ids = set()
         seen: list[str | None] = []
 
         async def _locked(external_user_id: str, external_username: str) -> str:

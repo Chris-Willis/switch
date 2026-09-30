@@ -123,7 +123,7 @@ def _room(**overrides: Any) -> SimpleNamespace:
         "id": "room-1",
         "name": "Feature room",
         "description": "Work on the feature",
-        "matrix_room_id": "!abc:switch.local",
+        "transport_room_id": "!abc:switch.local",
         "channel_type": "channel_private",
         "admin_mode": False,
         "instructions": "Be excellent",
@@ -211,7 +211,7 @@ class TestGetRoomDetail:
         assert detail.channel_type == "channel_private"
         assert detail.admin_mode is False
         assert detail.instructions == "Be excellent"
-        assert detail.matrix_room_id == "!abc:switch.local"
+        assert detail.transport_room_id == "!abc:switch.local"
         assert detail.created_at == "2026-05-29T00:00:00+00:00"
         assert detail.bridge_id is None
         assert detail.bridge_display_name is None

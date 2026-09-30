@@ -22,10 +22,10 @@ class _FakeClientStore:
     def __init__(self, names: dict[str, str]) -> None:
         self._names = names
 
-    async def get_by_matrix_user_id(
-        self, _session: object, matrix_user_id: str
+    async def get_by_transport_user_id(
+        self, _session: object, transport_user_id: str
     ) -> object | None:
-        name = self._names.get(matrix_user_id)
+        name = self._names.get(transport_user_id)
         return SimpleNamespace(display_name=name) if name else None
 
 
@@ -59,7 +59,7 @@ def _client(
         channel_type="channel_public",
     )
 
-    async def _resolve_room_meta(_matrix_room_id: str) -> RoomMeta | None:
+    async def _resolve_room_meta(_transport_room_id: str) -> RoomMeta | None:
         return resolved
 
     @asynccontextmanager
@@ -174,7 +174,7 @@ class TestRoomJoinEnqueue:
         assert client._event_buffer.enqueued == []
 
     async def test_no_room_meta_does_not_enqueue(self) -> None:
-        async def _none(_matrix_room_id: str) -> RoomMeta | None:
+        async def _none(_transport_room_id: str) -> RoomMeta | None:
             return None
 
         client = _client()

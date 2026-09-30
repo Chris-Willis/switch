@@ -118,14 +118,14 @@ class _FakeAdapter:
 def _fake_bridge(
     *,
     download: DownloadResult | TransportError = DownloadResult(body=b"bytes"),
-    matrix_to_external: dict[str, str] | None = None,
+    room_to_external: dict[str, str] | None = None,
     max_bytes: int = 1024,
 ) -> SimpleNamespace:
     adapter = _FakeAdapter()
     recorded: list[dict[str, str]] = []
-    lookup = matrix_to_external or {}
+    lookup = room_to_external or {}
 
-    async def _external_post_for_matrix_event(transport_event_id: str) -> str | None:
+    async def _external_post_for_event(transport_event_id: str) -> str | None:
         return lookup.get(transport_event_id)
 
     async def _record_message_map(**kwargs: str) -> None:
@@ -137,10 +137,10 @@ def _fake_bridge(
     ns = SimpleNamespace(
         _bridge_type="slack",
         _adapter=adapter,
-        _puppet_matrix_ids={"@puppet:s"},
-        _workspace_consumer_matrix_user_id="@bridge:s",
+        _human_user_ids={"@puppet:s"},
+        _workspace_consumer_transport_user_id="@bridge:s",
         _max_attachment_bytes=max_bytes,
-        _external_post_for_matrix_event=_external_post_for_matrix_event,
+        _external_post_for_event=_external_post_for_event,
         _record_message_map=_record_message_map,
         recorded=recorded,
         _outbound_groups={},
@@ -148,13 +148,13 @@ def _fake_bridge(
         _channel_to_room={"chan-1": ("room-uuid", "!room:s")},
         _room_tenant=_room_tenant,
     )
-    ns._find_channel = lambda room_id=None, matrix_room_id=None: (
-        "chan-1" if matrix_room_id == "!room:s" else None
+    ns._find_channel = lambda room_id=None, transport_room_id=None: (
+        "chan-1" if transport_room_id == "!room:s" else None
     )
     ns._outbound_thread_root_ref = CollaborationCore._outbound_thread_root_ref.__get__(
         ns
     )
-    ns._download_matrix_media = CollaborationCore._download_matrix_media.__get__(ns)
+    ns._download_media = CollaborationCore._download_media.__get__(ns)
     ns._schedule_outbound_group_flush = (
         CollaborationCore._schedule_outbound_group_flush.__get__(ns)
     )
@@ -226,7 +226,7 @@ async def test_caption_convention_unpacks_body_and_filename() -> None:
 
 
 async def test_threaded_media_resolves_external_root() -> None:
-    bridge = _fake_bridge(matrix_to_external={"$root": "ext-root"})
+    bridge = _fake_bridge(room_to_external={"$root": "ext-root"})
 
     await CollaborationCore.handle_outbound_media(
         bridge, _room(), _media_event(thread_root="$root"), bridge.client

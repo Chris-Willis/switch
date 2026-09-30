@@ -54,7 +54,7 @@ def _fake_bridge(*, agents: set[str]) -> SimpleNamespace:
     async def _is_registered_agent(name: str) -> bool:
         return name in agents
 
-    async def _ensure_user_in_matrix_room(**kwargs: str):  # noqa: ANN202
+    async def _ensure_human_in_room(**kwargs: str):  # noqa: ANN202
         ensure_calls.append(kwargs)
         return None  # short-circuits the message path after the puppet step
 
@@ -68,7 +68,7 @@ def _fake_bridge(*, agents: set[str]) -> SimpleNamespace:
         _handle_text_answer=_no_text_answer,
         _repair_placeholder_username=_noop_repair,
         _is_registered_agent=_is_registered_agent,
-        _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
+        _ensure_human_in_room=_ensure_human_in_room,
         _handle_agent_joined_channel=_handle_agent_joined_channel,
         _maybe_guide_self_mention=_maybe_guide_self_mention,
         _channel_to_room={"chan-1": ("room-uuid", "!matrix:switch.local")},

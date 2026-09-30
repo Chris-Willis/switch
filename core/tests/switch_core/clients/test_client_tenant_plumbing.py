@@ -57,7 +57,7 @@ def _factory(session_factory: async_sessionmaker[AsyncSession]) -> ClientFactory
     factory = ClientFactory(
         client_store=ClientStore(),
         session_factory=session_factory,
-        config=SimpleNamespace(matrix_server_name="test"),  # type: ignore[arg-type]
+        config=SimpleNamespace(id_server_name="test"),  # type: ignore[arg-type]
         room_store=RoomStore(),
         message_store=MessageStore(),
         usage_store=UsageStore(),
@@ -75,7 +75,7 @@ def _record(tenant_id: str) -> Client:
     return Client(
         id=f"client-{suffix}",
         tenant_id=tenant_id,
-        matrix_user_id=f"@puppet-{suffix}:test",
+        transport_user_id=f"@puppet-{suffix}:test",
         display_name="a puppet",
         type="user",
     )
@@ -116,7 +116,7 @@ class TestTheFactoryReadsItOffTheRow:
         with pytest.raises(TypeError):
             Actor(  # type: ignore[call-arg]
                 client_id="c",
-                matrix_user_id="@a:test",
+                transport_user_id="@a:test",
                 display_name="a client",
                 session_factory=session_factory,
                 client_store=ClientStore(),
@@ -145,12 +145,12 @@ class TestAFreshlyWrittenRowAlreadyCarriesIt:
             await session.commit()
 
         service = ClientLifecycleService(
-            matrix_admin=MagicMock(),
+            provisioning=MagicMock(),
             client_store=ClientStore(),
             tenant_store=TenantStore(),
             client_factory=MagicMock(),
             session_factory=session_factory,
-            config=SimpleNamespace(matrix_server_name="test"),  # type: ignore[arg-type]
+            config=SimpleNamespace(id_server_name="test"),  # type: ignore[arg-type]
         )
 
         with tenant_scope(tenant_id):
@@ -166,12 +166,12 @@ class TestAFreshlyWrittenRowAlreadyCarriesIt:
         """The other direction, so the test above is not satisfied by a
         constant: with tenant zero bound, that is what the row gets."""
         service = ClientLifecycleService(
-            matrix_admin=MagicMock(),
+            provisioning=MagicMock(),
             client_store=ClientStore(),
             tenant_store=TenantStore(),
             client_factory=MagicMock(),
             session_factory=session_factory,
-            config=SimpleNamespace(matrix_server_name="test"),  # type: ignore[arg-type]
+            config=SimpleNamespace(id_server_name="test"),  # type: ignore[arg-type]
         )
 
         record = await service.create_client(

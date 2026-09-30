@@ -76,7 +76,7 @@ async def _make_agent(
         type="agent",
     )
     client = Client(
-        matrix_user_id=f"@{name}:example.invalid",
+        transport_user_id=f"@{name}:example.invalid",
         display_name=name,
         type="agent",
     )

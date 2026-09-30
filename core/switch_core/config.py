@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # A Postgres time value: a bare count of milliseconds, or a count with a unit.
@@ -19,7 +19,7 @@ _DB_ROLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 
 
 class SwitchConfig(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="")
+    model_config = SettingsConfigDict(env_prefix="", populate_by_name=True)
 
     db_host: str
     db_port: str
@@ -67,10 +67,15 @@ class SwitchConfig(BaseSettings):
     # deployment with no tenant isolation in it.
     db_require_restricted_role: bool = True
 
-    # The server half of every client's `@localpart:server` id. Not a
-    # homeserver address — nothing is contacted at it — but the ids are stable
+    # The server half of every member's `@localpart:server` id. Not a
+    # server address — nothing is contacted at it — but the ids are stable
     # public handles, so the shape outlives the homeserver that chose it.
-    matrix_server_name: str
+    # Read from ID_SERVER_NAME; MATRIX_SERVER_NAME, its name until the
+    # lexicon refactor, is still accepted for one release so deployments
+    # and the Console's managed servers keep starting (deprecated).
+    id_server_name: str = Field(
+        validation_alias=AliasChoices("id_server_name", "matrix_server_name")
+    )
     agent_registration_token: str
 
     # JWT auth
@@ -973,3 +978,20 @@ class SwitchConfig(BaseSettings):
         # additionally proves it was issued for the host we asked for.
         context.check_hostname = self.db_ssl_mode == "verify-full"
         return {"ssl": context}
+
+
+def deprecated_env_names() -> list[str]:
+    """Settings read from a name kept only for compatibility, as warnings.
+
+    Checked against the environment rather than the parsed config, which
+    cannot tell which of a field's names supplied it.
+    """
+    import os
+
+    warnings = []
+    if "MATRIX_SERVER_NAME" in os.environ and "ID_SERVER_NAME" not in os.environ:
+        warnings.append(
+            "MATRIX_SERVER_NAME is deprecated and will stop being read in a later "
+            "release; set ID_SERVER_NAME instead."
+        )
+    return warnings

@@ -20,7 +20,7 @@ def _client(transport: FakeTransport) -> Actor:
     client = object.__new__(Actor)
     client.transport = transport  # type: ignore[attr-defined]
     client.display_name = "Alice"  # type: ignore[attr-defined]
-    client.matrix_user_id = "@alice:switch.local"  # type: ignore[attr-defined]
+    client.transport_user_id = "@alice:switch.local"  # type: ignore[attr-defined]
     client.client_id = "client-1"  # type: ignore[attr-defined]
     return client
 

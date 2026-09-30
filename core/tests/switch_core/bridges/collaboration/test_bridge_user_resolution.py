@@ -50,7 +50,7 @@ class _FakeLifecycle:
     ):
         async with self._sf() as session:
             client = Client(
-                matrix_user_id=f"@{localpart}:test.local",
+                transport_user_id=f"@{localpart}:test.local",
                 display_name=display_name,
                 type=client_type,
             )
@@ -59,7 +59,7 @@ class _FakeLifecycle:
 
             class _Handle:
                 client_id = client.id
-                matrix_user_id = client.matrix_user_id
+                transport_user_id = client.transport_user_id
 
             return _Handle()
 
@@ -67,7 +67,7 @@ class _FakeLifecycle:
 async def _seed_bridge(session_factory) -> str:
     async with session_factory() as session:
         workspace_consumer = Client(
-            matrix_user_id="@bridge:test.local",
+            transport_user_id="@bridge:test.local",
             display_name="bridge",
             type="collaboration_bridge",
         )
@@ -99,7 +99,7 @@ def _core(
     core._client_lifecycle = _FakeLifecycle(session_factory)
     core._user_puppets = {}
     core._puppet_locks = {}
-    core._puppet_matrix_ids = set()
+    core._human_user_ids = set()
     core._bridge_tenant_id = TENANT_ZERO_ID
     return core
 

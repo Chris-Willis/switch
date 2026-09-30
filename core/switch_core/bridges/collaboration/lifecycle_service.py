@@ -316,7 +316,7 @@ class CollaborationBridgeLifecycleService:
         client_store: ClientStore,
         client_lifecycle: ClientLifecycleService,
         room_service: RoomService,
-        matrix_admin: Provisioning,
+        provisioning: Provisioning,
         session_factory: async_sessionmaker[AsyncSession],
         config: SwitchConfig,
         client_factory: ClientFactory,
@@ -334,7 +334,7 @@ class CollaborationBridgeLifecycleService:
         self._client_lifecycle = client_lifecycle
         self._telemetry = telemetry
         self._room_service = room_service
-        self._matrix_admin = matrix_admin
+        self._provisioning = provisioning
         self._session_factory = session_factory
         self._config = config
         self._client_factory = client_factory
@@ -919,10 +919,10 @@ class CollaborationBridgeLifecycleService:
                 client_store=self._client_store,
                 room_service=self._room_service,
                 client_lifecycle=self._client_lifecycle,
-                matrix_admin=self._matrix_admin,
+                provisioning=self._provisioning,
                 session_factory=self._session_factory,
-                matrix_server_name=self._config.matrix_server_name,
-                workspace_consumer_matrix_user_id=workspace_consumer_record.matrix_user_id,
+                id_server_name=self._config.id_server_name,
+                workspace_consumer_transport_user_id=workspace_consumer_record.transport_user_id,
                 max_attachment_bytes=self._config.agent_media_max_bytes,
                 gateway_public_url=self._config.gateway_public_url,
                 session_activity_listener=self._session_activity_listener,
@@ -935,7 +935,7 @@ class CollaborationBridgeLifecycleService:
                 actor=Actor(
                     client_id=workspace_consumer_record.id,
                     tenant_id=workspace_consumer_record.tenant_id,
-                    matrix_user_id=workspace_consumer_record.matrix_user_id,
+                    transport_user_id=workspace_consumer_record.transport_user_id,
                     display_name=workspace_consumer_record.display_name,
                     session_factory=self._session_factory,
                     client_store=self._client_store,

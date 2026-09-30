@@ -12,10 +12,10 @@ class ClientStore:
     async def get(self, session: AsyncSession, client_id: str) -> Client | None:
         return await session.get(Client, client_id)
 
-    async def get_by_matrix_user_id(
-        self, session: AsyncSession, matrix_user_id: str
+    async def get_by_transport_user_id(
+        self, session: AsyncSession, transport_user_id: str
     ) -> Client | None:
-        """Resolve a client by its participant id (`matrix_user_id`) within the bound tenant.
+        """Resolve a client by its participant id (`transport_user_id`) within the bound tenant.
 
         Scoped explicitly rather than left to row-level security:
         `matrix_user_id` is unique per tenant
@@ -28,7 +28,7 @@ class ClientStore:
         result = await session.execute(
             select(Client).where(
                 Client.tenant_id == require_tenant_id(),
-                Client.matrix_user_id == matrix_user_id,
+                Client.transport_user_id == transport_user_id,
             )
         )
         return result.scalar_one_or_none()

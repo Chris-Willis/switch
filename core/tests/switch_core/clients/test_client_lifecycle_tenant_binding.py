@@ -35,7 +35,7 @@ class _RecordingClient:
 
     def __init__(self, seen: list[str | None]) -> None:
         self.display_name = "recorded"
-        self.matrix_user_id = "@recorded:test"
+        self.transport_user_id = "@recorded:test"
         self._seen = seen
 
     async def start(self) -> None:
@@ -51,7 +51,7 @@ def _service(
     client_factory: object,
 ) -> ClientLifecycleService:
     return ClientLifecycleService(
-        matrix_admin=MagicMock(),
+        provisioning=MagicMock(),
         client_store=ClientStore(),
         tenant_store=TenantStore(),
         client_factory=client_factory,  # type: ignore[arg-type]
@@ -112,7 +112,7 @@ async def test_start_all_binds_nothing_around_starting_each_client(
             session.add(
                 Client(
                     tenant_id=tenant_id,
-                    matrix_user_id=f"@agent-{tenant_id}:test",
+                    transport_user_id=f"@agent-{tenant_id}:test",
                     display_name="agent",
                     type="agent",
                 )

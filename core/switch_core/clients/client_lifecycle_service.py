@@ -27,14 +27,14 @@ class ClientLifecycleService:
     def __init__(
         self,
         *,
-        matrix_admin: Provisioning,
+        provisioning: Provisioning,
         client_store: ClientStore,
         tenant_store: TenantStore,
         client_factory: ClientFactory,
         session_factory: async_sessionmaker[AsyncSession],
         config: SwitchConfig,
     ) -> None:
-        self._matrix_admin = matrix_admin
+        self._provisioning = provisioning
         self._client_store = client_store
         self._tenant_store = tenant_store
         self._client_factory = client_factory
@@ -55,7 +55,7 @@ class ClientLifecycleService:
         self._tasks: dict[str, asyncio.Task[None]] = {}
 
     def _make_user_id(self, localpart: str) -> str:
-        return f"@{localpart}:{self._config.matrix_server_name}"
+        return f"@{localpart}:{self._config.id_server_name}"
 
     COLLAB_CLIENT_TYPES = ("bridge", "user")
 
@@ -196,11 +196,11 @@ class ClientLifecycleService:
         client_id = str(uuid.uuid4())
         if localpart is None:
             localpart = f"switch-{client_type}-{client_id[:8]}"
-        matrix_user_id = self._make_user_id(localpart)
+        transport_user_id = self._make_user_id(localpart)
 
         record = Client(
             id=client_id,
-            matrix_user_id=matrix_user_id,
+            transport_user_id=transport_user_id,
             display_name=display_name,
             type=client_type,
             config=config,
@@ -209,13 +209,13 @@ class ClientLifecycleService:
             await self._client_store.create(session, record)
             await session.commit()
 
-        logger.info("Created client %s (%s)", display_name, matrix_user_id)
+        logger.info("Created client %s (%s)", display_name, transport_user_id)
         return record
 
     def start_client(self, record: Client) -> Actor[ClientConfig]:
         actor = self._register(record)
         logger.info(
-            "Started client %s (%s)", record.display_name, record.matrix_user_id
+            "Started client %s (%s)", record.display_name, record.transport_user_id
         )
         return actor
 
@@ -405,7 +405,9 @@ class ClientLifecycleService:
                     await actor.connect()
             except Exception:
                 logger.exception(
-                    "Client %s (%s) crashed", actor.display_name, actor.matrix_user_id
+                    "Client %s (%s) crashed",
+                    actor.display_name,
+                    actor.transport_user_id,
                 )
                 self._clients.pop(client_id, None)
                 self._consumers.pop(client_id, None)

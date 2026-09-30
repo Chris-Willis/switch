@@ -878,7 +878,7 @@ class PostgresTransport:
         """
         async with tenant_session(self._session_factory, self.tenant_id) as session:
             rooms = await self._room_store.get_for_client(session, self.client_id)
-        return [room.matrix_room_id for room in rooms if room.matrix_room_id]
+        return [room.transport_room_id for room in rooms if room.transport_room_id]
 
     async def set_display_name(self, display_name: str) -> None:
         """Held on the client row, which is where every reader already looks."""
@@ -900,7 +900,9 @@ class PostgresTransport:
         cached = self._room_ids.get(transport_room_id)
         if cached is not None:
             return cached
-        room = await self._room_store.get_by_matrix_room_id(session, transport_room_id)
+        room = await self._room_store.get_by_transport_room_id(
+            session, transport_room_id
+        )
         if room is None:
             raise TransportError(f"{transport_room_id} is not a Switch room")
         self._room_ids[transport_room_id] = room.id

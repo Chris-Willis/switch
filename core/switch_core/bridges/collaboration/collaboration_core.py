@@ -173,10 +173,10 @@ class CollaborationCore:
         client_store: ClientStore,
         room_service: RoomService,
         client_lifecycle: ClientLifecycleService,
-        matrix_admin: Provisioning,
+        provisioning: Provisioning,
         session_factory: async_sessionmaker[AsyncSession],
-        matrix_server_name: str,
-        workspace_consumer_matrix_user_id: str,
+        id_server_name: str,
+        workspace_consumer_transport_user_id: str,
         max_attachment_bytes: int,
         session_activity_listener: SessionActivityListener,
         session_activity_service: SessionActivityService,
@@ -202,10 +202,12 @@ class CollaborationCore:
         self._client_store = client_store
         self._room_service = room_service
         self._client_lifecycle = client_lifecycle
-        self._matrix_admin = matrix_admin
+        self._provisioning = provisioning
         self._session_factory = session_factory
-        self._matrix_server_name = matrix_server_name
-        self._workspace_consumer_matrix_user_id = workspace_consumer_matrix_user_id
+        self._id_server_name = id_server_name
+        self._workspace_consumer_transport_user_id = (
+            workspace_consumer_transport_user_id
+        )
         self._max_attachment_bytes = max_attachment_bytes
 
         self._channel_to_room: dict[str, tuple[str, str]] = {}
@@ -221,7 +223,7 @@ class CollaborationCore:
         # message. One-way, so a cached answer cannot go stale — see
         # _repair_placeholder_username.
         self._names_known_good: set[str] = set()
-        self._puppet_matrix_ids: set[str] = set()
+        self._human_user_ids: set[str] = set()
         self._channel_locks: dict[str, asyncio.Lock] = {}
         self._puppet_locks: dict[str, asyncio.Lock] = {}
         # Channels Switch is itself provisioning right now (outbound room
@@ -445,7 +447,7 @@ class CollaborationCore:
             if room.external_channel_id:
                 self.add_room_mapping(
                     room.id,
-                    room.matrix_room_id,
+                    room.transport_room_id,
                     room.external_channel_id,
                     room.tenant_id,
                 )
@@ -506,7 +508,7 @@ class CollaborationCore:
                     client = self._client_lifecycle.start_client(record)
 
             if client:
-                self._puppet_matrix_ids.add(client.matrix_user_id)
+                self._human_user_ids.add(client.transport_user_id)
 
     def _provision_identities_on_attach(self) -> None:
         """Re-run identity provisioning when a shared connection attaches.
@@ -779,7 +781,7 @@ class CollaborationCore:
             if room_ids is None:
                 return
 
-        room_id, matrix_room_id = room_ids
+        room_id, transport_room_id = room_ids
 
         # A bot @mention carries no agent name in its text (the platform tags the
         # bot, not the agent). Resolve which agent it addresses so we can inject
@@ -792,11 +794,11 @@ class CollaborationCore:
                 await self._maybe_guide_self_mention(msg, room_id)
 
         await self._repair_placeholder_username(msg.sender_id, msg.sender_name)
-        puppet = await self._ensure_user_in_matrix_room(
+        puppet = await self._ensure_human_in_room(
             external_user_id=msg.sender_id,
             external_username=msg.sender_name,
             room_id=room_id,
-            matrix_room_id=matrix_room_id,
+            transport_room_id=transport_room_id,
         )
         if puppet is None:
             return
@@ -807,9 +809,9 @@ class CollaborationCore:
         ):
             content = f"@{mention_target} {content}"
         logger.debug(
-            "[BRIDGE-IN] sending to matrix room=%s via puppet=%s attachments=%d",
-            matrix_room_id,
-            puppet.matrix_user_id,
+            "[BRIDGE-IN] writing to room=%s as human=%s attachments=%d",
+            transport_room_id,
+            puppet.transport_user_id,
             len(msg.attachments),
         )
 
@@ -817,13 +819,13 @@ class CollaborationCore:
         # resolve that external root to the room event we bridged for it.
         thread_root_id: str | None = None
         if msg.root_id is not None:
-            thread_root_id = await self._matrix_event_for_external_post(msg.root_id)
+            thread_root_id = await self._event_for_external_post(msg.root_id)
             if thread_root_id is None:
                 logger.warning(
-                    "[BRIDGE-IN] no Matrix event mapped for external root %s; "
+                    "[BRIDGE-IN] no room message mapped for external root %s; "
                     "posting top-level in room %s",
                     msg.root_id,
-                    matrix_room_id,
+                    transport_room_id,
                 )
 
         # An attachment the platform offered but we could not relay must be
@@ -838,7 +840,7 @@ class CollaborationCore:
 
         if not msg.attachments:
             event_id = await puppet.send_message(
-                matrix_room_id,
+                transport_room_id,
                 content,
                 format="markdown",
                 thread_root_id=thread_root_id,
@@ -849,7 +851,7 @@ class CollaborationCore:
                     "[BRIDGE-IN] failed to relay message from %s into room %s — "
                     "it will not reach the room",
                     msg.sender_name,
-                    matrix_room_id,
+                    transport_room_id,
                 )
                 return
             # Record the correlation so a later reply (either direction) threads.
@@ -872,15 +874,15 @@ class CollaborationCore:
         # expect. The room carries them as `total` events sharing this id.
         group_id = str(uuid.uuid4()) if total > 1 else None
         for index, attachment in enumerate(msg.attachments):
-            mxc = await puppet.upload_media(
+            media_uri = await puppet.upload_media(
                 attachment.data, attachment.mimetype, attachment.filename
             )
             msgtype = (
                 "m.image" if attachment.mimetype.startswith("image/") else "m.file"
             )
             event_id = await puppet.send_media(
-                matrix_room_id,
-                mxc,
+                transport_room_id,
+                media_uri,
                 attachment.filename,
                 attachment.mimetype,
                 len(attachment.data),
@@ -899,7 +901,7 @@ class CollaborationCore:
                     "[BRIDGE-IN] failed to relay attachment %s from %s into room %s",
                     attachment.filename,
                     msg.sender_name,
-                    matrix_room_id,
+                    transport_room_id,
                 )
             if index == 0:
                 first_event_id = event_id
@@ -927,13 +929,13 @@ class CollaborationCore:
                     )
             if room_ids is None:
                 return
-        room_id, matrix_room_id = room_ids
+        room_id, transport_room_id = room_ids
 
-        puppet = await self._ensure_user_in_matrix_room(
+        puppet = await self._ensure_human_in_room(
             external_user_id=cmd.sender_id,
             external_username=cmd.sender_name,
             room_id=room_id,
-            matrix_room_id=matrix_room_id,
+            transport_room_id=transport_room_id,
         )
         if puppet is None:
             return
@@ -944,37 +946,35 @@ class CollaborationCore:
         # Mattermost RootId. A top-level command starts its own thread, rooted
         # at the command post (message_ref).
         thread_root_post = cmd.root_id or cmd.message_ref
-        existing_matrix_root: str | None = None
+        existing_root: str | None = None
         if thread_root_post is not None:
-            existing_matrix_root = await self._matrix_event_for_external_post(
-                thread_root_post
-            )
+            existing_root = await self._event_for_external_post(thread_root_post)
 
         content: dict[str, object] = {
             "command": cmd.command,
             "args": self._adapter.translate_inbound(cmd.args),
-            "user_id": puppet.matrix_user_id,
+            "user_id": puppet.transport_user_id,
             "user_name": cmd.sender_name,
         }
         # If the thread root is already bridged, relate the command event to it
         # so the result threads onto the existing room root (which resolves
         # back to a valid Mattermost root post). Otherwise the command event
         # itself anchors the thread (mapping recorded below).
-        if existing_matrix_root is not None:
+        if existing_root is not None:
             content["m.relates_to"] = {
                 "rel_type": "m.thread",
-                "event_id": existing_matrix_root,
+                "event_id": existing_root,
             }
 
         try:
             event_id = await puppet.send_event(
-                matrix_room_id, "com.switch.command", content
+                transport_room_id, "com.switch.command", content
             )
         except TransportError as exc:
             logger.error(
                 "Failed to bridge command %s into %s: %s",
                 cmd.command,
-                matrix_room_id,
+                transport_room_id,
                 exc,
             )
             return
@@ -983,7 +983,7 @@ class CollaborationCore:
         # to it so a result threaded under the command resolves back to a valid
         # Mattermost root post (the command post for a top-level command, or the
         # thread root for an in-thread command whose root we hadn't recorded).
-        if existing_matrix_root is None and thread_root_post is not None:
+        if existing_root is None and thread_root_post is not None:
             # Anchor in memory before the DB write: the write awaits a query that
             # yields the loop, and a fast reply (e.g. !help) relayed in that gap
             # would miss the row and land at the channel root. Popped on commit.
@@ -1100,7 +1100,9 @@ class CollaborationCore:
                 await session.commit()
 
             self._channel_to_room.pop(old_id, None)
-            self.add_room_mapping(room.id, room.matrix_room_id, new_id, room.tenant_id)
+            self.add_room_mapping(
+                room.id, room.transport_room_id, new_id, room.tenant_id
+            )
             logger.warning(
                 "Re-pointed room %s from channel %s to %s after the platform "
                 "reissued the id",
@@ -1120,7 +1122,7 @@ class CollaborationCore:
     async def _adopt_existing_room(self, channel_id: str) -> tuple[str, str] | None:
         """If a room already exists in the DB for this channel on this bridge,
         register it in the in-memory map and return its (room_id,
-        matrix_room_id). Returns None if no such room exists. Idempotent."""
+        transport_room_id). Returns None if no such room exists. Idempotent."""
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
@@ -1129,9 +1131,11 @@ class CollaborationCore:
             )
         if room is None:
             return None
-        self.add_room_mapping(room.id, room.matrix_room_id, channel_id, room.tenant_id)
+        self.add_room_mapping(
+            room.id, room.transport_room_id, channel_id, room.tenant_id
+        )
         logger.debug("Adopted existing room %s for channel %s", room.id, channel_id)
-        return (room.id, room.matrix_room_id)
+        return (room.id, room.transport_room_id)
 
     async def _create_room_for_channel(
         self,
@@ -1208,11 +1212,13 @@ class CollaborationCore:
             return None
         room = result.room
 
-        self.add_room_mapping(room.id, room.matrix_room_id, channel_id, room.tenant_id)
+        self.add_room_mapping(
+            room.id, room.transport_room_id, channel_id, room.tenant_id
+        )
         logger.info(
             "Auto-created %s room %s for %s channel %s",
             channel_type,
-            room.matrix_room_id,
+            room.transport_room_id,
             bridge_name,
             channel_id,
         )
@@ -1231,7 +1237,7 @@ class CollaborationCore:
                 message_type=AdminMessageType.NO_AGENTS,
             )
 
-        return (room.id, room.matrix_room_id)
+        return (room.id, room.transport_room_id)
 
     async def _resolve_agents_for_channel(
         self, channel_id: str, channel_type: ChannelType
@@ -1312,7 +1318,7 @@ class CollaborationCore:
     async def ensure_users_in_room(
         self,
         room_id: str,
-        matrix_room_id: str,
+        transport_room_id: str,
         user_names: list[str],
     ) -> None:
         """For each resolvable name in `user_names`, ensure a running puppet
@@ -1336,20 +1342,20 @@ class CollaborationCore:
                     self._bridge_id,
                 )
                 continue
-            await self._ensure_user_in_matrix_room(
+            await self._ensure_human_in_room(
                 external_user_id=ext_user.external_user_id,
                 external_username=ext_user.external_username,
                 room_id=room_id,
-                matrix_room_id=matrix_room_id,
+                transport_room_id=transport_room_id,
             )
 
-    async def _ensure_user_in_matrix_room(
+    async def _ensure_human_in_room(
         self,
         *,
         external_user_id: str,
         external_username: str,
         room_id: str,
-        matrix_room_id: str,
+        transport_room_id: str,
     ) -> Actor[ClientConfig] | None:
         """Get-or-create the puppet for this external user and ensure it has
         actually joined the room. Returns the running puppet, or None if it
@@ -1378,13 +1384,13 @@ class CollaborationCore:
         # when its own client handles the invitation. A message sent before that
         # join lands predates the join, so the message that triggered the
         # provisioning would be lost. Block until the join is observed.
-        if not await puppet.wait_joined(matrix_room_id, PUPPET_JOIN_TIMEOUT):
+        if not await puppet.wait_joined(transport_room_id, PUPPET_JOIN_TIMEOUT):
             logger.error(
                 "Puppet %s (external user %s) did not join room %s within %ss — "
                 "cannot relay its message",
-                puppet.matrix_user_id,
+                puppet.transport_user_id,
                 external_user_id,
-                matrix_room_id,
+                transport_room_id,
                 PUPPET_JOIN_TIMEOUT,
             )
             return None
@@ -1544,14 +1550,14 @@ class CollaborationCore:
                 actor.channel_id,
             )
             return None
-        room_id, matrix_room_id = room_ids
-        puppet = await self._ensure_user_in_matrix_room(
+        room_id, transport_room_id = room_ids
+        puppet = await self._ensure_human_in_room(
             external_user_id=actor.sender_id,
             external_username=actor.sender_name,
             room_id=room_id,
-            matrix_room_id=matrix_room_id,
+            transport_room_id=transport_room_id,
         )
-        return puppet.matrix_user_id if puppet is not None else None
+        return puppet.transport_user_id if puppet is not None else None
 
     async def _handle_user_joined_channel(self, join: InboundUserJoin) -> None:
         """Called by the adapter when an external user joins a bridged
@@ -1587,12 +1593,12 @@ class CollaborationCore:
                     )
             if room_ids is None:
                 return
-        room_id, matrix_room_id = room_ids
-        await self._ensure_user_in_matrix_room(
+        room_id, transport_room_id = room_ids
+        await self._ensure_human_in_room(
             external_user_id=join.external_user_id,
             external_username=join.external_username,
             room_id=room_id,
-            matrix_room_id=matrix_room_id,
+            transport_room_id=transport_room_id,
         )
 
     # ── Puppet lifecycle ─────────────────────────────────────────────────────
@@ -1660,7 +1666,7 @@ class CollaborationCore:
             except Exception:
                 logger.warning(
                     "Renamed external user %s but could not update the display "
-                    "name of its Matrix account",
+                    "name of its HumanActor",
                     external_user_id,
                     exc_info=True,
                 )
@@ -1742,7 +1748,7 @@ class CollaborationCore:
         sanitized = re.sub(r"[^a-z0-9_-]", "-", external_username.lower()).strip("-")
         # Scope to the bridge: the same username on two bridges of the same
         # type (e.g. two Slack workspaces) must map to distinct clients,
-        # since matrix_user_id is globally unique but usernames are not.
+        # since transport_user_id is globally unique but usernames are not.
         localpart = f"switch-{self._bridge_type}-{self._bridge_id}-{sanitized}"
 
         client = await self._client_lifecycle.create_and_start(
@@ -1762,24 +1768,24 @@ class CollaborationCore:
             await session.commit()
 
         self._user_puppets[external_user_id] = client.client_id
-        self._puppet_matrix_ids.add(client.matrix_user_id)
+        self._human_user_ids.add(client.transport_user_id)
         self._adapter.prime_mention_targets({external_username: external_user_id})
 
         logger.info(
             "Created puppet %s for external user %s on bridge %s",
-            client.matrix_user_id,
+            client.transport_user_id,
             external_user_id,
             self._bridge_id,
         )
         return client.client_id
 
     def _find_channel(
-        self, room_id: str | None = None, matrix_room_id: str | None = None
+        self, room_id: str | None = None, transport_room_id: str | None = None
     ) -> str | None:
         for (rid, mrid), channel_id in self._room_to_channel.items():
             if room_id and rid == room_id:
                 return channel_id
-            if matrix_room_id and mrid == matrix_room_id:
+            if transport_room_id and mrid == transport_room_id:
                 return channel_id
         return None
 
@@ -1789,19 +1795,19 @@ class CollaborationCore:
         self, room: RoomRef, event: TransportMessage
     ) -> None:
         logger.debug(
-            "[BRIDGE-OUT] matrix event from=%s room=%s body=%s",
+            "[BRIDGE-OUT] room message from=%s room=%s body=%s",
             event.sender,
             room.room_id,
             event.body[:80] if event.body else "",
         )
-        if event.sender in self._puppet_matrix_ids:
+        if event.sender in self._human_user_ids:
             logger.debug("[BRIDGE-OUT] skipping puppet message from %s", event.sender)
             return
-        if event.sender == self._workspace_consumer_matrix_user_id:
+        if event.sender == self._workspace_consumer_transport_user_id:
             logger.debug("[BRIDGE-OUT] skipping bridge client message")
             return
 
-        channel_id = self._find_channel(matrix_room_id=room.room_id)
+        channel_id = self._find_channel(transport_room_id=room.room_id)
         if channel_id is None:
             logger.debug("[BRIDGE-OUT] no channel mapping for room %s", room.room_id)
             return
@@ -1893,7 +1899,7 @@ class CollaborationCore:
         root_event_id = relates.get("event_id")
         if not root_event_id:
             return None
-        thread_root_ref = await self._external_post_for_matrix_event(str(root_event_id))
+        thread_root_ref = await self._external_post_for_event(str(root_event_id))
         if thread_root_ref is None:
             logger.warning(
                 "[BRIDGE-OUT] no external post mapped for thread root %s; "
@@ -1925,17 +1931,17 @@ class CollaborationCore:
         media bytes.
         """
         logger.debug(
-            "[BRIDGE-OUT] matrix media event from=%s room=%s body=%s",
+            "[BRIDGE-OUT] room media from=%s room=%s body=%s",
             event.sender,
             room.room_id,
             event.body[:80] if event.body else "",
         )
-        if event.sender in self._puppet_matrix_ids:
+        if event.sender in self._human_user_ids:
             return
-        if event.sender == self._workspace_consumer_matrix_user_id:
+        if event.sender == self._workspace_consumer_transport_user_id:
             return
 
-        channel_id = self._find_channel(matrix_room_id=room.room_id)
+        channel_id = self._find_channel(transport_room_id=room.room_id)
         if channel_id is None:
             logger.debug("[BRIDGE-OUT] no channel mapping for room %s", room.room_id)
             return
@@ -1978,7 +1984,7 @@ class CollaborationCore:
         )
 
         message_ref: str | None
-        data = await self._download_matrix_media(client, event.uri, filename)
+        data = await self._download_media(client, event.uri, filename)
         if data is None or len(data) > self._max_attachment_bytes:
             if data is not None:
                 logger.warning(
@@ -2122,23 +2128,24 @@ class CollaborationCore:
                 external_post_id=message_ref,
             )
 
-    async def _download_matrix_media(
-        self, client: WorkspaceConsumer, mxc: str | None, filename: str
+    async def _download_media(
+        self, client: WorkspaceConsumer, media_uri: str | None, filename: str
     ) -> bytes | None:
-        """Fetch an mxc URI's bytes via the bridge client, or None on failure
+        """Fetch a media URI's bytes via the workspace consumer, or None on failure
         (logged — the caller posts a disclosed fallback, never a silent drop)."""
-        if not mxc:
-            logger.error("[BRIDGE-OUT] media event for %s has no mxc URI", filename)
+        if not media_uri:
+            logger.error("[BRIDGE-OUT] media event for %s has no media URI", filename)
             return None
         if client.transport is None:
             logger.error(
-                "[BRIDGE-OUT] bridge client not connected; cannot fetch %s", mxc
+                "[BRIDGE-OUT] workspace consumer not connected; cannot fetch %s",
+                media_uri,
             )
             return None
         try:
-            resp = await client.transport.download_media(mxc)
+            resp = await client.transport.download_media(media_uri)
         except TransportError as exc:
-            logger.error("[BRIDGE-OUT] failed to download media %s: %s", mxc, exc)
+            logger.error("[BRIDGE-OUT] failed to download media %s: %s", media_uri, exc)
             return None
         return resp.body
 
@@ -2182,7 +2189,7 @@ class CollaborationCore:
     # ── Message-map helpers ───────────────────────────────────────────────────
 
     def _prerecord_message_map(
-        self, matrix_event_id: str, external_post_id: str
+        self, transport_event_id: str, external_post_id: str
     ) -> None:
         """Anchor a room-event → external-post mapping in memory, synchronously,
         so it resolves before the durable _record_message_map write commits.
@@ -2194,7 +2201,7 @@ class CollaborationCore:
         room_send returns, with NO await in between, and pop it once the row is
         committed. Same discipline as begin_provisioning for the room-mapping
         race."""
-        self._pending_message_maps[matrix_event_id] = external_post_id
+        self._pending_message_maps[transport_event_id] = external_post_id
 
     async def _record_message_map(
         self,
@@ -2221,18 +2228,14 @@ class CollaborationCore:
             )
             await session.commit()
 
-    async def _matrix_event_for_external_post(
-        self, external_post_id: str
-    ) -> str | None:
+    async def _event_for_external_post(self, external_post_id: str) -> str | None:
         async with self._session_factory() as session:
             mapping = await self._bridge_message_map_store.get_by_external_post_id(
                 session, self._bridge_id, external_post_id
             )
         return mapping.transport_event_id if mapping is not None else None
 
-    async def _external_post_for_matrix_event(
-        self, transport_event_id: str
-    ) -> str | None:
+    async def _external_post_for_event(self, transport_event_id: str) -> str | None:
         pending = self._pending_message_maps.get(transport_event_id)
         if pending is not None:
             return pending
@@ -2260,7 +2263,7 @@ class CollaborationCore:
     def add_room_mapping(
         self,
         room_id: str,
-        matrix_room_id: str,
+        transport_room_id: str,
         external_channel_id: str,
         tenant_id: str,
     ) -> None:
@@ -2273,13 +2276,13 @@ class CollaborationCore:
         more to the point, without a read that would run under whatever tenant
         happened to be bound at the time.
         """
-        key = (room_id, matrix_room_id)
+        key = (room_id, transport_room_id)
         self._channel_to_room[external_channel_id] = key
         self._room_to_channel[key] = external_channel_id
         self._room_tenants[room_id] = tenant_id
 
-    def remove_room_mapping(self, room_id: str, matrix_room_id: str) -> None:
-        key = (room_id, matrix_room_id)
+    def remove_room_mapping(self, room_id: str, transport_room_id: str) -> None:
+        key = (room_id, transport_room_id)
         channel_id = self._room_to_channel.pop(key, None)
         if channel_id is not None:
             self._channel_to_room.pop(channel_id, None)

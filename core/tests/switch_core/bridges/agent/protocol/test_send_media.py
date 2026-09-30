@@ -51,9 +51,11 @@ class _FakeClient:
 
 def _build_service(client: _FakeClient, *, max_bytes: int = 100) -> AgentCore:
     async def _require(agent_id: str, room_id: str):
-        return SimpleNamespace(id=room_id, matrix_room_id="!room", bridge_id=None)
+        return SimpleNamespace(id=room_id, transport_room_id="!room", bridge_id=None)
 
-    async def _resolve_thread_root(client_: Any, matrix_room_id: str, thread_id: str):
+    async def _resolve_thread_root(
+        client_: Any, transport_room_id: str, thread_id: str
+    ):
         return f"root-of-{thread_id}"
 
     svc = object.__new__(AgentCore)

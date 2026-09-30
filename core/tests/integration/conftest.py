@@ -219,7 +219,7 @@ def _build_config(
         db_user=user or pg.username,
         db_password=password or pg.password,
         db_name=db_name,
-        matrix_server_name=SERVER_NAME,
+        id_server_name=SERVER_NAME,
         agent_registration_token=REGISTRATION_TOKEN,
         jwt_secret_key=JWT_SECRET,
         gateway_admin_email=GATEWAY_ADMIN_EMAIL,
@@ -327,11 +327,11 @@ class Harness:
             raise AssertionError(f"No running client for agent {agent_id}")
         return client  # type: ignore[return-value]
 
-    async def matrix_room_id(self, room_id: str) -> str:
+    async def transport_room_id(self, room_id: str) -> str:
         async with self.session_factory() as session:  # type: ignore[operator]
             room = await self.room_store.get(session, room_id)
         assert room is not None
-        return room.matrix_room_id
+        return room.transport_room_id
 
 
 async def _admin_dsn(stack: StackInfo) -> str:
@@ -585,7 +585,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
         client_factory.register("bridge", Actor)
 
         client_lifecycle = ClientLifecycleService(
-            matrix_admin=provisioning,
+            provisioning=provisioning,
             client_store=session_env.client_store,
             tenant_store=TenantStore(),
             client_factory=client_factory,
@@ -594,7 +594,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
         )
 
         room_service = RoomService(
-            matrix_admin=provisioning,
+            provisioning=provisioning,
             room_store=session_env.room_store,
             agent_store=session_env.agent_store,
             client_lifecycle=client_lifecycle,

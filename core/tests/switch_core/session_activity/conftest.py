@@ -53,7 +53,9 @@ async def make_agent(
         type="agent",
     )
     client = Client(
-        matrix_user_id=f"@{agent_id}:example.test", display_name=agent_id, type="agent"
+        transport_user_id=f"@{agent_id}:example.test",
+        display_name=agent_id,
+        type="agent",
     )
     db.add_all([key, client])
     await db.flush()
@@ -77,7 +79,9 @@ async def make_agent(
 
 async def make_room(db, *, member: str | None) -> str:
     suffix = uuid.uuid4().hex[:8]
-    room = Room(matrix_room_id=f"!{suffix}:test", name=f"room-{suffix}", description="")
+    room = Room(
+        transport_room_id=f"!{suffix}:test", name=f"room-{suffix}", description=""
+    )
     db.add(room)
     await db.flush()
     if member is not None:
@@ -89,10 +93,10 @@ async def make_person(db, *, claimed_by: str | None) -> str:
     """A person on a messaging platform; returns the Switch identity they answer as."""
     suffix = uuid.uuid4().hex[:8]
     workspace_consumer = Client(
-        matrix_user_id=f"@bridge-{suffix}:test", display_name="bridge", type="bridge"
+        transport_user_id=f"@bridge-{suffix}:test", display_name="bridge", type="bridge"
     )
     person = Client(
-        matrix_user_id=f"@person-{suffix}:test", display_name="person", type="user"
+        transport_user_id=f"@person-{suffix}:test", display_name="person", type="user"
     )
     db.add_all([workspace_consumer, person])
     await db.flush()
@@ -115,7 +119,7 @@ async def make_person(db, *, claimed_by: str | None) -> str:
     if claimed_by is not None:
         db.add(ExternalUserClaim(external_user_id=account.id, user_id=claimed_by))
         await db.flush()
-    return person.matrix_user_id
+    return person.transport_user_id
 
 
 @dataclass(frozen=True)

@@ -89,7 +89,7 @@ class ClientFactory:
             # flushed carries its tenant here as surely as one read back at
             # boot does.
             tenant_id=record.tenant_id,
-            matrix_user_id=record.matrix_user_id,
+            transport_user_id=record.transport_user_id,
             display_name=record.display_name,
             session_factory=self._session_factory,
             client_store=self._client_store,
@@ -109,7 +109,7 @@ class ClientFactory:
         so that every client in the process is built the same way.
         """
         return PostgresTransport(
-            user_id=client.matrix_user_id,
+            user_id=client.transport_user_id,
             client_id=client.client_id,
             tenant_id=client.tenant_id,
             display_name=client.display_name,

@@ -1311,7 +1311,7 @@ class RoomYamlService:
             return
 
         late = await self._wait_for_kickoff_audience(
-            room.matrix_room_id, admin, agent_names
+            room.transport_room_id, admin, agent_names
         )
         if late:
             fail("did not join the room in time to see the kickoff: " + ", ".join(late))
@@ -1328,13 +1328,13 @@ class RoomYamlService:
             headline = f"Template kickoff on behalf of {person.label}"
         try:
             root_id = await admin.send_platform_message(
-                room.matrix_room_id, headline, on_behalf_of=person
+                room.transport_room_id, headline, on_behalf_of=person
             )
             if root_id is None:
                 fail("the platform could not post the kickoff")
                 return
             event_id = await admin.send_platform_message(
-                room.matrix_room_id,
+                room.transport_room_id,
                 text,
                 thread_root_id=root_id,
                 on_behalf_of=person,
@@ -1348,7 +1348,7 @@ class RoomYamlService:
 
     async def _wait_for_kickoff_audience(
         self,
-        matrix_room_id: str,
+        transport_room_id: str,
         admin: SystemActor,
         agent_names: list[str],
     ) -> list[str]:
@@ -1360,7 +1360,7 @@ class RoomYamlService:
         miss anything.
         """
         late: list[str] = []
-        if not await admin.wait_joined(matrix_room_id, KICKOFF_JOIN_TIMEOUT):
+        if not await admin.wait_joined(transport_room_id, KICKOFF_JOIN_TIMEOUT):
             late.append("the platform")
         if not agent_names or self._client_lifecycle is None:
             return late
@@ -1371,7 +1371,9 @@ class RoomYamlService:
             if client is None:
                 continue
             try:
-                joined = await client.wait_joined(matrix_room_id, KICKOFF_JOIN_TIMEOUT)
+                joined = await client.wait_joined(
+                    transport_room_id, KICKOFF_JOIN_TIMEOUT
+                )
             except RuntimeError:
                 # Not connected: it is not receiving anything either way.
                 continue

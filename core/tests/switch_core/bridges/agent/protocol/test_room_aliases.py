@@ -101,7 +101,7 @@ def _room(**overrides: Any) -> SimpleNamespace:
         "id": "room-1",
         "name": "Feature room",
         "description": "desc",
-        "matrix_room_id": "!abc:switch.local",
+        "transport_room_id": "!abc:switch.local",
         "channel_type": "channel_private",
         "admin_mode": False,
         "instructions": "",

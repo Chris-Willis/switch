@@ -158,7 +158,7 @@ class RoomService:
     def __init__(
         self,
         *,
-        matrix_admin: Provisioning,
+        provisioning: Provisioning,
         room_store: RoomStore,
         agent_store: AgentStore,
         client_lifecycle: ClientLifecycleService,
@@ -168,7 +168,7 @@ class RoomService:
         session_factory: async_sessionmaker[AsyncSession],
         telemetry: TelemetryService | None = None,
     ) -> None:
-        self._matrix_admin = matrix_admin
+        self._provisioning = provisioning
         self._room_store = room_store
         self._agent_store = agent_store
         self._client_lifecycle = client_lifecycle
@@ -562,12 +562,12 @@ class RoomService:
         if collaboration_core and external_channel_id:
             collaboration_core.begin_provisioning(external_channel_id)
         try:
-            matrix_room_id = await self._matrix_admin.create_room(
+            transport_room_id = await self._provisioning.create_room(
                 config.name, config.description
             )
 
             room = Room(
-                matrix_room_id=matrix_room_id,
+                transport_room_id=transport_room_id,
                 name=config.name,
                 description=config.description,
                 channel_type=channel_type,
@@ -616,7 +616,7 @@ class RoomService:
 
             if collaboration_core and external_channel_id:
                 collaboration_core.add_room_mapping(
-                    room.id, matrix_room_id, external_channel_id, room.tenant_id
+                    room.id, transport_room_id, external_channel_id, room.tenant_id
                 )
         finally:
             if collaboration_core and external_channel_id:
@@ -676,8 +676,9 @@ class RoomService:
         # in the gap predate the bridge's join and are dropped by _should_ignore,
         # never reaching the external channel. Mirrors change_bridge's ordering.
         if collaboration_core:
-            await self._matrix_admin.invite_to_room(
-                matrix_room_id, collaboration_core._workspace_consumer_matrix_user_id
+            await self._provisioning.invite_to_room(
+                transport_room_id,
+                collaboration_core._workspace_consumer_transport_user_id,
             )
 
         unreachable_users: list[dict[str, Any]] = []
@@ -695,19 +696,19 @@ class RoomService:
                     collaboration_core, external_channel_id, config.user_names
                 )
                 await collaboration_core.ensure_users_in_room(
-                    room.id, matrix_room_id, config.user_names
+                    room.id, transport_room_id, config.user_names
                 )
 
         if collaboration_core and external_channel_id and is_dm and config.user_names:
             await collaboration_core.ensure_users_in_room(
-                room.id, matrix_room_id, config.user_names
+                room.id, transport_room_id, config.user_names
             )
 
         agent_clients = self._resolve_agent_clients(agent_ids)
         system_clients = self._resolve_system_clients(room.tenant_id)
         all_clients = {**agent_clients, **system_clients}
 
-        await self._invite_clients(matrix_room_id, all_clients)
+        await self._invite_clients(transport_room_id, all_clients)
 
         async with tenant_session(self._session_factory, room.tenant_id) as session:
             for client_id in all_clients:
@@ -717,7 +718,7 @@ class RoomService:
         logger.info(
             "Created room %s (%s) with %d agents and %d system clients",
             config.name,
-            matrix_room_id,
+            transport_room_id,
             len(agent_clients),
             len(system_clients),
         )
@@ -787,11 +788,11 @@ class RoomService:
             for client_id in client_ids:
                 client = self._client_lifecycle.get(client_id)
                 if client:
-                    await self._matrix_admin.kick_user(
-                        room.matrix_room_id, client.matrix_user_id
+                    await self._provisioning.kick_user(
+                        room.transport_room_id, client.transport_user_id
                     )
 
-            await self._matrix_admin.delete_room(room.matrix_room_id)
+            await self._provisioning.delete_room(room.transport_room_id)
 
             async with self._session_factory() as session:
                 await self._room_store.delete(session, room_id)
@@ -800,7 +801,7 @@ class RoomService:
         if bridge_id:
             collaboration_core = self._collab_lifecycle.get(bridge_id)
             if collaboration_core:
-                collaboration_core.remove_room_mapping(room.id, room.matrix_room_id)
+                collaboration_core.remove_room_mapping(room.id, room.transport_room_id)
 
         logger.info("Deleted room %s", room_id)
 
@@ -891,7 +892,7 @@ class RoomService:
                 )
                 await session.commit()
 
-            await self._invite_clients(room.matrix_room_id, agent_clients)
+            await self._invite_clients(room.transport_room_id, agent_clients)
 
             async with self._session_factory() as session:
                 for client_id in agent_clients:
@@ -942,8 +943,10 @@ class RoomService:
                 await self._room_store.remove_agents(session, room_id, agent_ids)
                 await session.commit()
 
-            for matrix_user_id in agent_clients.values():
-                await self._matrix_admin.kick_user(room.matrix_room_id, matrix_user_id)
+            for transport_user_id in agent_clients.values():
+                await self._provisioning.kick_user(
+                    room.transport_room_id, transport_user_id
+                )
 
         logger.info("Removed %d agents from room %s", len(agent_ids), room_id)
 
@@ -1140,7 +1143,7 @@ class RoomService:
         by_id = {resolved[name]: name for name in resolved_names}
         unresolved.extend(by_id.get(fid, fid) for fid in failed_ids)
         await collaboration_core.ensure_users_in_room(
-            room.id, room.matrix_room_id, resolved_names
+            room.id, room.transport_room_id, resolved_names
         )
         logger.info("Added %d users to room %s", len(resolved_names), room_id)
         if unresolved:
@@ -1192,7 +1195,7 @@ class RoomService:
 
         if collaboration_core and external_channel_id:
             collaboration_core.add_room_mapping(
-                room.id, room.matrix_room_id, external_channel_id, room.tenant_id
+                room.id, room.transport_room_id, external_channel_id, room.tenant_id
             )
             await self._ensure_channel_capture(
                 collaboration_core, external_channel_id, channel_type
@@ -1215,7 +1218,7 @@ class RoomService:
         if bridge_id:
             collaboration_core = self._collab_lifecycle.get(bridge_id)
             if collaboration_core:
-                collaboration_core.remove_room_mapping(room.id, room.matrix_room_id)
+                collaboration_core.remove_room_mapping(room.id, room.transport_room_id)
 
         logger.info("Unlinked bridge from room %s", room_id)
 
@@ -1264,7 +1267,7 @@ class RoomService:
 
         old_bridge_id = room.bridge_id
         old_external_channel_id = room.external_channel_id
-        matrix_room_id = room.matrix_room_id
+        transport_room_id = room.transport_room_id
 
         if old_bridge_id == bridge_id:
             raise ValueError(f"Room {room_id} is already bound to bridge {bridge_id}")
@@ -1309,7 +1312,7 @@ class RoomService:
                     await session.commit()
 
                 new_bridge.add_room_mapping(
-                    room_id, matrix_room_id, external_channel_id, room.tenant_id
+                    room_id, transport_room_id, external_channel_id, room.tenant_id
                 )
             finally:
                 new_bridge.end_provisioning(external_channel_id)
@@ -1317,8 +1320,8 @@ class RoomService:
             await self._ensure_channel_capture(
                 new_bridge, external_channel_id, resolved_channel_type
             )
-            await self._matrix_admin.invite_to_room(
-                matrix_room_id, new_bridge._workspace_consumer_matrix_user_id
+            await self._provisioning.invite_to_room(
+                transport_room_id, new_bridge._workspace_consumer_transport_user_id
             )
 
             if resolved_channel_type not in ("direct", "group"):
@@ -1339,9 +1342,10 @@ class RoomService:
             if old_bridge_id:
                 old_bridge = self._collab_lifecycle.get(old_bridge_id)
                 if old_bridge is not None:
-                    old_bridge.remove_room_mapping(room_id, matrix_room_id)
-                    await self._matrix_admin.kick_user(
-                        matrix_room_id, old_bridge._workspace_consumer_matrix_user_id
+                    old_bridge.remove_room_mapping(room_id, transport_room_id)
+                    await self._provisioning.kick_user(
+                        transport_room_id,
+                        old_bridge._workspace_consumer_transport_user_id,
                     )
                 logger.warning(
                     "Room %s moved from bridge %s to %s; old external channel %s "
@@ -1363,17 +1367,17 @@ class RoomService:
         )
 
     def _resolve_agent_clients(self, agent_ids: list[str]) -> dict[str, str]:
-        """Returns {client_id: matrix_user_id} for the given agent IDs."""
+        """Returns {client_id: transport_user_id} for the given agent IDs."""
         result: dict[str, str] = {}
         for agent_id in agent_ids:
             client = self._client_lifecycle.get_by_agent_id(agent_id)
             if client is None:
                 raise ValueError(f"No running client for agent: {agent_id}")
-            result[client.client_id] = client.matrix_user_id
+            result[client.client_id] = client.transport_user_id
         return result
 
     def _resolve_system_clients(self, tenant_id: str) -> dict[str, str]:
-        """`{client_id: matrix_user_id}` for `tenant_id`'s system clients.
+        """`{client_id: transport_user_id}` for `tenant_id`'s system clients.
 
         Per tenant, not per deployment. `clients` is scoped, so there is an
         admin client per tenant rather than one for everyone, and the running
@@ -1385,15 +1389,17 @@ class RoomService:
         result: dict[str, str] = {}
         for client_type in SYSTEM_CLIENT_TYPES:
             for client in self._client_lifecycle.get_by_type(client_type, tenant_id):
-                result[client.client_id] = client.matrix_user_id
+                result[client.client_id] = client.transport_user_id
         return result
 
     async def _invite_clients(
-        self, matrix_room_id: str, client_ids: dict[str, str]
+        self, transport_room_id: str, client_ids: dict[str, str]
     ) -> None:
         """Invites all clients to the room; each client auto-accepts."""
-        for matrix_user_id in client_ids.values():
-            await self._matrix_admin.invite_to_room(matrix_room_id, matrix_user_id)
+        for transport_user_id in client_ids.values():
+            await self._provisioning.invite_to_room(
+                transport_room_id, transport_user_id
+            )
 
     async def reconcile_room_clients(self) -> None:
         """Ensure every room's clients are actually in it.
@@ -1469,7 +1475,7 @@ class RoomService:
             missing = {cid: uid for cid, uid in expected.items() if cid not in existing}
             if not missing:
                 return
-            await self._invite_clients(room.matrix_room_id, missing)
+            await self._invite_clients(room.transport_room_id, missing)
             async with self._session_factory() as session:
                 for client_id in missing:
                     await self._room_store.add_client(session, client_id, room.id)
@@ -1512,8 +1518,8 @@ class RoomService:
         # so it is bound here alongside the membership record below rather
         # than left to whatever tenant happened to already be ambient.
         with tenant_scope(room.tenant_id):
-            await self._matrix_admin.invite_to_room(
-                room.matrix_room_id, client.matrix_user_id
+            await self._provisioning.invite_to_room(
+                room.transport_room_id, client.transport_user_id
             )
 
             if not already_member:

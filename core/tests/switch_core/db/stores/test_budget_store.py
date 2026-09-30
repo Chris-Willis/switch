@@ -32,7 +32,7 @@ async def _agent(session: AsyncSession, name: str) -> Agent:
     )
     session.add(owner)
     await session.flush()
-    client = Client(matrix_user_id=f"@{name}:test", display_name=name, type="agent")
+    client = Client(transport_user_id=f"@{name}:test", display_name=name, type="agent")
     key = ApiKey(
         user_id=owner.id,
         key_hash=f"hash-{name}",

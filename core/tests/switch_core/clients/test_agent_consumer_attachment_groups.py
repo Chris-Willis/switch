@@ -65,7 +65,7 @@ def _fake_client() -> SimpleNamespace:
     queue = _FakeQueue()
     meta = RoomMeta(room_id="room-1", name="Room", bridge_id="bridge-1")
 
-    async def _resolve_room_meta(_matrix_room_id: str) -> RoomMeta:
+    async def _resolve_room_meta(_transport_room_id: str) -> RoomMeta:
         return meta
 
     async def _addressed(event: Any, _meta: RoomMeta) -> bool:

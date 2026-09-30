@@ -24,7 +24,7 @@ from switch_core.bridges.collaboration.telegram.adapter import (
 def _fake_bridge(*, agent_ids: list[str], slash_hint: str | None = None):  # noqa: ANN202
     notices: list[tuple[str, str, str | None]] = []
     room = SimpleNamespace(
-        id="room-uuid", tenant_id="tenant-1", matrix_room_id="!m:switch.local"
+        id="room-uuid", tenant_id="tenant-1", transport_room_id="!m:switch.local"
     )
 
     class _Adapter:
@@ -56,7 +56,7 @@ def _fake_bridge(*, agent_ids: list[str], slash_hint: str | None = None):  # noq
         return agent_ids
 
     def add_room_mapping(
-        room_id: str, matrix_room_id: str, channel_id: str, tenant_id: str
+        room_id: str, transport_room_id: str, channel_id: str, tenant_id: str
     ) -> None:
         pass
 

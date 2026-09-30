@@ -502,7 +502,7 @@ async def _serve(
     client_factory.register("bridge", Actor)
 
     client_lifecycle = ClientLifecycleService(
-        matrix_admin=provisioning,
+        provisioning=provisioning,
         client_store=session_env.client_store,
         tenant_store=TenantStore(),
         client_factory=client_factory,
@@ -511,7 +511,7 @@ async def _serve(
     )
 
     room_service = RoomService(
-        matrix_admin=provisioning,
+        provisioning=provisioning,
         room_store=session_env.room_store,
         agent_store=session_env.agent_store,
         client_lifecycle=client_lifecycle,

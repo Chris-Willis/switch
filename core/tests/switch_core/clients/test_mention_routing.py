@@ -77,7 +77,7 @@ def _client(name: str) -> SimpleNamespace:
     """An AgentConsumer-shaped double: an agent, an mxid, and a resolver."""
     return SimpleNamespace(
         agent=SimpleNamespace(name=name),
-        matrix_user_id=f"@switch-agent-{name}:switch.local",
+        transport_user_id=f"@switch-agent-{name}:switch.local",
         _addressing=_resolver(),
         _as_incoming=AgentConsumer._as_incoming,
     )
@@ -87,7 +87,7 @@ def _is_mentioned(name: str, body: str) -> bool:
     return AddressingResolver.mentions_name(
         _resolver(),
         agent=SimpleNamespace(name=name),  # type: ignore[arg-type]
-        agent_matrix_id=f"@switch-agent-{name}:switch.local",
+        agent_user_id=f"@switch-agent-{name}:switch.local",
         message=_event(body),
     )
 

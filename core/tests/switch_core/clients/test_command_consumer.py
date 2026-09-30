@@ -373,7 +373,7 @@ def _command_host() -> tuple[SimpleNamespace, list[dict[str, object]]]:
     ):
         sent.append({"body": body, "thread_root_id": thread_root_id})
 
-    async def _is_direct_room(_matrix_room_id: str) -> bool:
+    async def _is_direct_room(_transport_room_id: str) -> bool:
         return False
 
     host = SimpleNamespace(

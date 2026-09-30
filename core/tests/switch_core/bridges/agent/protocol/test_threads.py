@@ -38,7 +38,7 @@ def _service_with_transport(transport: FakeTransport) -> AgentCore:
     svc.connections = AgentConnectionRegistry()
 
     async def _require_room_member(agent_id: str, room_id: str) -> SimpleNamespace:
-        return SimpleNamespace(matrix_room_id="!matrix:server")
+        return SimpleNamespace(transport_room_id="!matrix:server")
 
     svc.require_room_member = _require_room_member  # type: ignore[assignment]
     svc.client_lifecycle = SimpleNamespace(  # type: ignore[assignment]

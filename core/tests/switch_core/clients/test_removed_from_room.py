@@ -69,8 +69,8 @@ def _client(
         ),
     }
 
-    async def _resolve_room_meta(matrix_room_id: str) -> RoomMeta | None:
-        return meta.get(matrix_room_id)
+    async def _resolve_room_meta(transport_room_id: str) -> RoomMeta | None:
+        return meta.get(transport_room_id)
 
     return SimpleNamespace(
         _event_buffer=buffer,
@@ -143,7 +143,7 @@ class _BareClient(Consumer):
 
     def __init__(self, transport: _CapturingTransport) -> None:
         actor = Actor.__new__(Actor)
-        actor.matrix_user_id = "@agent:test"
+        actor.transport_user_id = "@agent:test"
         # `_transport` is a property over this, and raises until it is set.
         actor.transport = transport
         self.actor = actor

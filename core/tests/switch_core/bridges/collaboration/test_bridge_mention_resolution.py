@@ -71,7 +71,7 @@ def _loading_bridge(adapter: SlackAdapter, users: list[SimpleNamespace]) -> Any:
         _client_store=SimpleNamespace(get=_get_client),
         _client_lifecycle=SimpleNamespace(get=lambda _id: None),
         _user_puppets={},
-        _puppet_matrix_ids=set(),
+        _human_user_ids=set(),
     )
 
 
@@ -124,7 +124,7 @@ async def test_app_rows_are_skipped_while_human_rows_are_primed() -> None:
 async def test_new_puppet_is_mentionable_without_waiting_for_a_restart() -> None:
     adapter = _adapter()
     created_client = SimpleNamespace(
-        client_id="client-9", matrix_user_id="@ext_new:switch.local"
+        client_id="client-9", transport_user_id="@ext_new:switch.local"
     )
 
     async def _get_by_name(_session: object, _name: str) -> None:
@@ -144,7 +144,7 @@ async def test_new_puppet_is_mentionable_without_waiting_for_a_restart() -> None
         _session_factory=_session_factory(),
         _puppet_locks={},
         _user_puppets={},
-        _puppet_matrix_ids=set(),
+        _human_user_ids=set(),
         _agent_store=SimpleNamespace(get_by_name=_get_by_name),
         _client_lifecycle=SimpleNamespace(create_and_start=_create_and_start),
         _external_user_store=SimpleNamespace(create=_create),

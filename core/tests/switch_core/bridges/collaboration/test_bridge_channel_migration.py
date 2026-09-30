@@ -73,7 +73,7 @@ def _make_bridge(rooms: dict[str, SimpleNamespace]) -> CollaborationCore:
 
 def _room(room_id: str = "room-uuid") -> SimpleNamespace:
     return SimpleNamespace(
-        id=room_id, tenant_id="tenant-1", matrix_room_id=f"!{room_id}:switch.local"
+        id=room_id, tenant_id="tenant-1", transport_room_id=f"!{room_id}:switch.local"
     )
 
 
@@ -117,8 +117,8 @@ def test_the_handler_is_installed_before_the_adapter_starts() -> None:
 def test_the_room_moves_onto_the_new_channel_id() -> None:
     room = _room()
     bridge = _make_bridge({OLD_ID: room})
-    bridge._channel_to_room[OLD_ID] = (room.id, room.matrix_room_id)
-    bridge._room_to_channel[(room.id, room.matrix_room_id)] = OLD_ID
+    bridge._channel_to_room[OLD_ID] = (room.id, room.transport_room_id)
+    bridge._room_to_channel[(room.id, room.transport_room_id)] = OLD_ID
 
     asyncio.run(CollaborationCore._handle_channel_migrated(bridge, OLD_ID, NEW_ID))
 
@@ -126,8 +126,8 @@ def test_the_room_moves_onto_the_new_channel_id() -> None:
     assert store.repoints == [(room.id, NEW_ID)]
     # The in-memory routing table is what inbound traffic is matched against,
     # so a committed row alone would not fix anything until the next restart.
-    assert bridge._channel_to_room == {NEW_ID: (room.id, room.matrix_room_id)}
-    assert bridge._room_to_channel == {(room.id, room.matrix_room_id): NEW_ID}
+    assert bridge._channel_to_room == {NEW_ID: (room.id, room.transport_room_id)}
+    assert bridge._room_to_channel == {(room.id, room.transport_room_id): NEW_ID}
 
 
 def test_the_chat_is_told_its_room_followed_it() -> None:

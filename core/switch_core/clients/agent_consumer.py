@@ -372,7 +372,9 @@ class AgentConsumer(Consumer[AgentActor]):
         another way when they speak — and the log, which records the Switch
         name, disagree with what was delivered live.
         """
-        client = await self.client_store.get_by_matrix_user_id(session, event.state_key)
+        client = await self.client_store.get_by_transport_user_id(
+            session, event.state_key
+        )
         if client is not None:
             return client.display_name
         fallback = event.display_name or event.state_key.split(":")[0].lstrip("@")
@@ -489,7 +491,7 @@ class AgentConsumer(Consumer[AgentActor]):
         if not sender_name:
             sender_name = event.sender
             logger.error(
-                "Message received without sender name, using matrix name: %s",
+                "Message received without sender name, using the sender id: %s",
                 sender_name,
             )
 
@@ -550,7 +552,7 @@ class AgentConsumer(Consumer[AgentActor]):
         if not sender_name:
             sender_name = event.sender
             logger.error(
-                "Media received without sender name, using matrix name: %s",
+                "Media received without sender name, using the sender id: %s",
                 sender_name,
             )
 
@@ -863,15 +865,19 @@ class AgentConsumer(Consumer[AgentActor]):
             metered=False,
         )
 
-    async def _resolve_room_meta(self, matrix_room_id: str) -> RoomMeta | None:
-        if matrix_room_id in self._room_meta:
-            return self._room_meta[matrix_room_id]
+    async def _resolve_room_meta(self, transport_room_id: str) -> RoomMeta | None:
+        if transport_room_id in self._room_meta:
+            return self._room_meta[transport_room_id]
 
         async with tenant_session(self.session_factory, self.tenant_id) as session:
-            room = await self._room_store.get_by_matrix_room_id(session, matrix_room_id)
+            room = await self._room_store.get_by_transport_room_id(
+                session, transport_room_id
+            )
             if room is None:
-                logger.error("Room not found for matrix room ID: %s", matrix_room_id)
-                self._room_meta[matrix_room_id] = None
+                logger.error(
+                    "Room not found for transport room id: %s", transport_room_id
+                )
+                self._room_meta[transport_room_id] = None
                 return None
 
             agent_greetings_enabled = True
@@ -887,7 +893,7 @@ class AgentConsumer(Consumer[AgentActor]):
             agent_greetings_enabled=agent_greetings_enabled,
             channel_type=room.channel_type,
         )
-        self._room_meta[matrix_room_id] = meta
+        self._room_meta[transport_room_id] = meta
         return meta
 
     async def _reply_when_unavailable_here(
@@ -1120,8 +1126,8 @@ class AgentConsumer(Consumer[AgentActor]):
         )
         return self.agent.id in live
 
-    async def _is_direct_room(self, matrix_room_id: str) -> bool:
-        meta = await self._resolve_room_meta(matrix_room_id)
+    async def _is_direct_room(self, transport_room_id: str) -> bool:
+        meta = await self._resolve_room_meta(transport_room_id)
         return meta is not None and meta.channel_type == "direct"
 
     # ── Task event forwarding ────────────────────────────────────────────────
@@ -1268,7 +1274,7 @@ class AgentConsumer(Consumer[AgentActor]):
         """
         return self._addressing.addressed_without_lookup(
             agent=self.agent,
-            agent_matrix_id=self.matrix_user_id,
+            agent_user_id=self.transport_user_id,
             channel_type=meta.channel_type,
             message=self._as_incoming(event),
         )
@@ -1287,7 +1293,7 @@ class AgentConsumer(Consumer[AgentActor]):
         return await self._addressing.addresses(
             session,
             agent=self.agent,
-            agent_matrix_id=self.matrix_user_id,
+            agent_user_id=self.transport_user_id,
             room_id=meta.room_id,
             channel_type=meta.channel_type,
             message=self._as_incoming(event),
@@ -1297,11 +1303,11 @@ class AgentConsumer(Consumer[AgentActor]):
         self,
         session: AsyncSession,
         agent: Agent,
-        matrix_sender: str,
+        sender_user_id: str,
         room_id: str,
         content: Mapping[str, object] | None = None,
     ) -> AddressingDecision:
-        """Whether `matrix_sender` may address this agent in `room_id`, per the
+        """Whether `sender_user_id` may address this agent in `room_id`, per the
         agent's scoped addressing policy.
 
         `agent` is the freshly-read row rather than the cached snapshot: the
@@ -1314,7 +1320,7 @@ class AgentConsumer(Consumer[AgentActor]):
             session,
             agent=agent,
             room_id=room_id,
-            sender=matrix_sender,
+            sender=sender_user_id,
             content=content,
         )
 
@@ -1357,7 +1363,7 @@ class AgentConsumer(Consumer[AgentActor]):
 
     async def _post_auto_reply(
         self,
-        matrix_room_id: str,
+        transport_room_id: str,
         event: InboundMessage,
         msg: str,
         thread_root_id: str | None,
@@ -1367,7 +1373,7 @@ class AgentConsumer(Consumer[AgentActor]):
         handle = self._sender_handle(event)
         already_tagged = _mention_regex(handle).search(msg) is not None
         await self.actor.send_message(
-            matrix_room_id,
+            transport_room_id,
             msg if already_tagged else f"@{handle} {msg}",
             format="markdown",
             mentions=[event.sender],
@@ -1422,7 +1428,7 @@ class AgentConsumer(Consumer[AgentActor]):
     def _is_mentioned(self, event: InboundMessage) -> bool:
         return self._addressing.mentions_name(
             agent=self.agent,
-            agent_matrix_id=self.matrix_user_id,
+            agent_user_id=self.transport_user_id,
             message=self._as_incoming(event),
         )
 

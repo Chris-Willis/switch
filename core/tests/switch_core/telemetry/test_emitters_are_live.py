@@ -72,7 +72,7 @@ def _config() -> Any:
         oauth_issuer_url = None
         oauth_audience = None
         oauth_verify_issuer = True
-        matrix_server_name = "test"
+        id_server_name = "test"
 
     return _Config()
 

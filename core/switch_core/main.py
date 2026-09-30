@@ -85,7 +85,7 @@ from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.clients.command_consumer import CommandConsumer
-from switch_core.config import SwitchConfig
+from switch_core.config import SwitchConfig, deprecated_env_names
 from switch_core.crypto import encrypt_token
 from switch_core.db.boot_lock import boot_lock
 from switch_core.db.engine import (
@@ -460,7 +460,7 @@ async def run(config: SwitchConfig) -> None:
             await resource_service.log_builtin_shadowing(session)
 
     # ── Provisioning ─────────────────────────────────────────────────────────
-    matrix_admin: Provisioning = PostgresProvisioning(
+    provisioning: Provisioning = PostgresProvisioning(
         session_factory=session_factory,
         room_store=room_store,
         client_store=client_store,
@@ -510,7 +510,7 @@ async def run(config: SwitchConfig) -> None:
 
     # ── Client lifecycle ─────────────────────────────────────────────────────
     client_lifecycle = ClientLifecycleService(
-        matrix_admin=matrix_admin,
+        provisioning=provisioning,
         client_store=client_store,
         tenant_store=tenant_store,
         client_factory=client_factory,
@@ -528,7 +528,7 @@ async def run(config: SwitchConfig) -> None:
         client_store=client_store,
         client_lifecycle=client_lifecycle,
         room_service=None,  # type: ignore[arg-type]  # set after RoomService creation
-        matrix_admin=matrix_admin,
+        provisioning=provisioning,
         session_factory=session_factory,
         config=config,
         client_factory=client_factory,
@@ -540,7 +540,7 @@ async def run(config: SwitchConfig) -> None:
 
     # ── Room service ─────────────────────────────────────────────────────────
     room_service = RoomService(
-        matrix_admin=matrix_admin,
+        provisioning=provisioning,
         room_store=room_store,
         agent_store=agent_store,
         client_lifecycle=client_lifecycle,
@@ -883,7 +883,7 @@ async def run(config: SwitchConfig) -> None:
                     client_lifecycle,
                     collab_lifecycle,
                     connector_lifecycle,
-                    matrix_admin,
+                    provisioning,
                     discord_gateway,
                     discord_gateway_task,
                 )
@@ -1332,7 +1332,7 @@ async def _shutdown(
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
     connector_lifecycle: ServerSideConnectorLifecycleService,
-    matrix_admin: Provisioning,
+    provisioning: Provisioning,
     discord_gateway: DiscordGatewayClient | None,
     discord_gateway_task: asyncio.Task[None] | None,
 ) -> None:
@@ -1351,7 +1351,7 @@ async def _shutdown(
     if discord_gateway is not None:
         await discord_gateway.stop()
     await client_lifecycle.stop_all()
-    await matrix_admin.close()
+    await provisioning.close()
 
     # `should_exit` starts uvicorn's shutdown, which runs the lifespan's
     # teardown; this sleep is all the time that teardown gets.
@@ -1437,6 +1437,8 @@ def main() -> None:
     configure_logging(config, running_version)
 
     logger.info("Starting switch-core %s", running_version or "(version unknown)")
+    for warning in deprecated_env_names():
+        logger.warning(warning)
 
     asyncio.run(_migrate_and_grant(config))
 

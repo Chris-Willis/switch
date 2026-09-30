@@ -56,7 +56,7 @@ async def _room(
     channel_type: str = "channel_public",
 ) -> Room:
     room = Room(
-        matrix_room_id=f"!{uuid.uuid4().hex[:10]}:test",
+        transport_room_id=f"!{uuid.uuid4().hex[:10]}:test",
         name=f"room-{uuid.uuid4().hex[:6]}",
         description="a room",
         channel_type=channel_type,
@@ -72,7 +72,7 @@ async def _room(
 
 async def _client(session: AsyncSession, client_type: str) -> Client:
     client = Client(
-        matrix_user_id=f"@{client_type}-{uuid.uuid4().hex[:8]}:test",
+        transport_user_id=f"@{client_type}-{uuid.uuid4().hex[:8]}:test",
         display_name=f"{client_type} client",
         type=client_type,
     )
@@ -97,7 +97,7 @@ async def _agent(session: AsyncSession, runtime: str | None) -> Agent:
         type="agent",
     )
     backing = Client(
-        matrix_user_id=f"@agent-{slug}:test", display_name="agent", type="agent"
+        transport_user_id=f"@agent-{slug}:test", display_name="agent", type="agent"
     )
     session.add_all([key, backing])
     await session.flush()
@@ -145,7 +145,7 @@ async def _say(
         room_id=room.id,
         seq=seq,
         transport_event_id=f"$evt-{uuid.uuid4().hex}",
-        sender_id=sender.matrix_user_id,
+        sender_id=sender.transport_user_id,
         sender_client_id=sender.id,
         event_type="m.room.message",
         msgtype="m.text",
@@ -175,7 +175,7 @@ async def _stored(
             room_id=room.id,
             seq=seq,
             transport_event_id=f"$evt-{uuid.uuid4().hex}",
-            sender_id=sender.matrix_user_id,
+            sender_id=sender.transport_user_id,
             sender_client_id=sender.id,
             event_type=event_type,
             msgtype=None,

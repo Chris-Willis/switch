@@ -452,7 +452,9 @@ class RunService:
             return
         try:
             await admin.send_platform_message(
-                room.matrix_room_id, text, on_behalf_of=OnBehalfOf(user_id, user_name)
+                room.transport_room_id,
+                text,
+                on_behalf_of=OnBehalfOf(user_id, user_name),
             )
         except Exception:  # noqa: BLE001 - the run is running either way
             logger.warning("Could not wake the agent in %s", room.id, exc_info=True)
@@ -469,6 +471,6 @@ class RunService:
         if admin is None:
             return
         try:
-            await admin.send_notice(room.matrix_room_id, text)
+            await admin.send_notice(room.transport_room_id, text)
         except Exception:  # noqa: BLE001 - a note is not worth failing a stop
             logger.warning("Could not post a run notice in %s", room.id, exc_info=True)

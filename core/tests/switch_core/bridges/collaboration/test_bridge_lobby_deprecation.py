@@ -71,14 +71,14 @@ async def test_inbound_lobby_message_short_circuits_routing() -> None:
     async def _handle_lobby_message(msg: InboundMessage) -> None:
         handled.append(msg)
 
-    async def _ensure_user_in_matrix_room(**kwargs: str) -> None:
+    async def _ensure_human_in_room(**kwargs: str) -> None:
         ensure_calls.append(kwargs)
         return None
 
     bridge = SimpleNamespace(
         _is_registered_agent=_is_registered_agent,
         _handle_lobby_message=_handle_lobby_message,
-        _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
+        _ensure_human_in_room=_ensure_human_in_room,
         _handle_text_answer=_no_text_answer,
         _channel_to_room={},
         _channel_locks={},

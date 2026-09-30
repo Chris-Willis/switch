@@ -25,7 +25,7 @@ from switch_core.bridges.collaboration.models import InboundMessage
 # pre-warmed and always arrives here unknown — its first post hits the unjoined
 # window every single time.
 
-MATRIX_ROOM_ID = "!matrix:switch.local"
+TRANSPORT_ROOM_ID = "!matrix:switch.local"
 
 # Slack bot id of a third-party app, as the adapter reports it for a post with no
 # `user` field.
@@ -46,7 +46,7 @@ class _FakePuppet:
     """Stands in for a Actor puppet whose join lands after the invite."""
 
     def __init__(self) -> None:
-        self.matrix_user_id = "@ext_alice:switch.local"
+        self.transport_user_id = "@ext_alice:switch.local"
         self._joined = asyncio.Event()
         self.sent: list[tuple[str, str]] = []
         self.wait_joined_calls: list[tuple[str, float]] = []
@@ -103,12 +103,12 @@ async def test_waits_for_puppet_join_before_returning() -> None:
     bridge = _bridge(puppet)
 
     task = asyncio.create_task(
-        CollaborationCore._ensure_user_in_matrix_room(
+        CollaborationCore._ensure_human_in_room(
             bridge,
             external_user_id="ext-alice",
             external_username="alice",
             room_id="room-uuid",
-            matrix_room_id=MATRIX_ROOM_ID,
+            transport_room_id=TRANSPORT_ROOM_ID,
         )
     )
     await asyncio.sleep(0)
@@ -119,7 +119,7 @@ async def test_waits_for_puppet_join_before_returning() -> None:
     puppet.complete_join()
     assert await task is puppet
     assert puppet.wait_joined_calls == [
-        (MATRIX_ROOM_ID, collaboration_core_module.PUPPET_JOIN_TIMEOUT)
+        (TRANSPORT_ROOM_ID, collaboration_core_module.PUPPET_JOIN_TIMEOUT)
     ]
 
 
@@ -129,12 +129,12 @@ async def test_returns_none_when_join_never_lands(
     monkeypatch.setattr(collaboration_core_module, "PUPPET_JOIN_TIMEOUT", 0.01)
     puppet = _FakePuppet()  # never joins
 
-    result = await CollaborationCore._ensure_user_in_matrix_room(
+    result = await CollaborationCore._ensure_human_in_room(
         _bridge(puppet),
         external_user_id="ext-alice",
         external_username="alice",
         room_id="room-uuid",
-        matrix_room_id=MATRIX_ROOM_ID,
+        transport_room_id=TRANSPORT_ROOM_ID,
     )
 
     # Fail loud, never fake: no puppet handed back, so nothing is relayed into a
@@ -151,12 +151,12 @@ async def test_app_sender_puppet_is_provisioned_then_awaited() -> None:
     bridge = _bridge(puppet, known_puppets={})
 
     task = asyncio.create_task(
-        CollaborationCore._ensure_user_in_matrix_room(
+        CollaborationCore._ensure_human_in_room(
             bridge,
             external_user_id=APP_SENDER_ID,
             external_username="Datadog",
             room_id="room-uuid",
-            matrix_room_id=MATRIX_ROOM_ID,
+            transport_room_id=TRANSPORT_ROOM_ID,
         )
     )
     await asyncio.sleep(0)
@@ -167,7 +167,7 @@ async def test_app_sender_puppet_is_provisioned_then_awaited() -> None:
     puppet.complete_join()
     assert await task is puppet
     assert puppet.wait_joined_calls == [
-        (MATRIX_ROOM_ID, collaboration_core_module.PUPPET_JOIN_TIMEOUT)
+        (TRANSPORT_ROOM_ID, collaboration_core_module.PUPPET_JOIN_TIMEOUT)
     ]
 
 
@@ -186,20 +186,20 @@ async def test_first_message_from_app_sender_is_relayed() -> None:
 
     inner = _bridge(puppet, known_puppets={})
 
-    async def _ensure_user_in_matrix_room(**kwargs: object) -> object:
+    async def _ensure_human_in_room(**kwargs: object) -> object:
         # Complete the join as the real invite/join round-trip would, so the
         # relay below exercises the post-join send rather than a stubbed one.
         asyncio.get_running_loop().call_soon(puppet.complete_join)
-        return await CollaborationCore._ensure_user_in_matrix_room(inner, **kwargs)  # type: ignore[arg-type]
+        return await CollaborationCore._ensure_human_in_room(inner, **kwargs)  # type: ignore[arg-type]
 
     bridge = SimpleNamespace(
         _repair_placeholder_username=_noop_repair,
         _is_registered_agent=_is_registered_agent,
-        _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
+        _ensure_human_in_room=_ensure_human_in_room,
         _record_message_map=_record_message_map,
         _adapter=SimpleNamespace(translate_inbound=lambda text: text),
         _handle_text_answer=_no_text_answer,
-        _channel_to_room={"chan-1": ("room-uuid", MATRIX_ROOM_ID)},
+        _channel_to_room={"chan-1": ("room-uuid", TRANSPORT_ROOM_ID)},
         _channel_locks={},
     )
 
@@ -216,7 +216,7 @@ async def test_first_message_from_app_sender_is_relayed() -> None:
     )
 
     assert inner.created_puppets == [(APP_SENDER_ID, "Datadog")]
-    assert puppet.sent == [(MATRIX_ROOM_ID, "Triggered: container restart spike")]
+    assert puppet.sent == [(TRANSPORT_ROOM_ID, "Triggered: container restart spike")]
     assert relayed == [("$event-1", "slack-post-1")]
 
 
@@ -227,7 +227,7 @@ async def test_first_message_from_unknown_member_is_relayed() -> None:
     async def _is_registered_agent(_name: str) -> bool:
         return False
 
-    async def _ensure_user_in_matrix_room(**_kw: object) -> _FakePuppet:
+    async def _ensure_human_in_room(**_kw: object) -> _FakePuppet:
         # Provisioning completes the join, as the real path now guarantees.
         puppet.complete_join()
         return puppet
@@ -238,11 +238,11 @@ async def test_first_message_from_unknown_member_is_relayed() -> None:
     bridge = SimpleNamespace(
         _repair_placeholder_username=_noop_repair,
         _is_registered_agent=_is_registered_agent,
-        _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
+        _ensure_human_in_room=_ensure_human_in_room,
         _record_message_map=_record_message_map,
         _adapter=SimpleNamespace(translate_inbound=lambda text: text),
         _handle_text_answer=_no_text_answer,
-        _channel_to_room={"chan-1": ("room-uuid", MATRIX_ROOM_ID)},
+        _channel_to_room={"chan-1": ("room-uuid", TRANSPORT_ROOM_ID)},
         _channel_locks={},
     )
 
@@ -258,5 +258,5 @@ async def test_first_message_from_unknown_member_is_relayed() -> None:
         ),
     )
 
-    assert puppet.sent == [(MATRIX_ROOM_ID, "hello from a brand new member")]
+    assert puppet.sent == [(TRANSPORT_ROOM_ID, "hello from a brand new member")]
     assert relayed == [("$event-1", "mm-post-1")]

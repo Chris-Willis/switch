@@ -56,7 +56,7 @@ class ActorKwargs[ConfigT: ClientConfig](TypedDict):
 
     client_id: str
     tenant_id: str
-    matrix_user_id: str
+    transport_user_id: str
     display_name: str
     session_factory: async_sessionmaker[AsyncSession]
     client_store: ClientStore
@@ -72,7 +72,7 @@ class Actor[ConfigT: ClientConfig]:
         *,
         client_id: str,
         tenant_id: str,
-        matrix_user_id: str,
+        transport_user_id: str,
         display_name: str,
         session_factory: async_sessionmaker[AsyncSession],
         client_store: ClientStore,
@@ -88,7 +88,7 @@ class Actor[ConfigT: ClientConfig]:
         # the database again on the far side. Required, not defaulted: an
         # actor that does not know its tenant cannot write a scoped row.
         self.tenant_id = tenant_id
-        self.matrix_user_id = matrix_user_id
+        self.transport_user_id = transport_user_id
         self.display_name = display_name
         self.session_factory = session_factory
         self.client_store = client_store
@@ -132,7 +132,7 @@ class Actor[ConfigT: ClientConfig]:
     def _transport(self) -> MessageTransport:
         if self.transport is None:
             raise RuntimeError(
-                f"Actor {self.matrix_user_id} is not connected — call connect() first"
+                f"Actor {self.transport_user_id} is not connected — call connect() first"
             )
         return self.transport
 
@@ -192,7 +192,7 @@ class Actor[ConfigT: ClientConfig]:
     async def join_room(self, room_id: str) -> None:
         if await self._transport.join_room(room_id):
             self.mark_joined(room_id, int(time.time() * 1000))
-            logger.info("Actor %s joined %s", self.matrix_user_id, room_id)
+            logger.info("Actor %s joined %s", self.transport_user_id, room_id)
 
     # ── Writing ────────────────────────────────────────────────────────────────
 
@@ -247,7 +247,7 @@ class Actor[ConfigT: ClientConfig]:
     async def send_media(
         self,
         room_id: str,
-        mxc: str,
+        media_uri: str,
         filename: str,
         mimetype: str,
         size: int,
@@ -275,7 +275,7 @@ class Actor[ConfigT: ClientConfig]:
         try:
             result = await self._transport.send_media(
                 room_id,
-                mxc,
+                media_uri,
                 filename,
                 mimetype,
                 size,

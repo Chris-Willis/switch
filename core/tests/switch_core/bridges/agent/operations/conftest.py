@@ -65,7 +65,7 @@ class FakeRoomService:
                 agent_ids = [name_to_id[n] for n in config.agent_names]
 
             room = Room(
-                matrix_room_id=f"!{uuid.uuid4().hex}:test.local",
+                transport_room_id=f"!{uuid.uuid4().hex}:test.local",
                 name=config.name,
                 description=config.description,
                 channel_type=config.channel_type or "channel_public",
@@ -103,7 +103,7 @@ async def _make_agent(
         type="agent",
     )
     client = Client(
-        matrix_user_id=f"@{name}:test.local",
+        transport_user_id=f"@{name}:test.local",
         display_name=name,
         type="agent",
     )

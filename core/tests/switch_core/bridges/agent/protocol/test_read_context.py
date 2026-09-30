@@ -42,14 +42,14 @@ async def _make_room(session: AsyncSession) -> tuple[str, str]:
     """Insert the Room and Client a recorded row depends on."""
     suffix = uuid.uuid4().hex[:8]
     client = Client(
-        matrix_user_id=f"@agent-{suffix}:test",
+        transport_user_id=f"@agent-{suffix}:test",
         display_name="agent one",
         type="agent",
     )
     session.add(client)
     await session.flush()
     room = Room(
-        matrix_room_id=f"!room-{suffix}:test",
+        transport_room_id=f"!room-{suffix}:test",
         name="a room",
         description="",
     )

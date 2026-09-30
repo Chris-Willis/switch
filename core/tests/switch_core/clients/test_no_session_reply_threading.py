@@ -46,7 +46,7 @@ def _fake_self(
 ) -> SimpleNamespace:
     """A minimal AgentConsumer stand-in: addressed, offline, non-moderator."""
 
-    async def _resolve_room_meta(_matrix_room_id: str) -> SimpleNamespace:
+    async def _resolve_room_meta(_transport_room_id: str) -> SimpleNamespace:
         return _meta()
 
     def _addressed_without_lookup(_event: object, _meta: object) -> bool:

@@ -97,10 +97,10 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_api_key
 from switch_core.deeplinks import deeplink_for_platform
 from switch_core.events import (
-    LlmCallReport as MatrixLlmCallReport,
+    LlmCallReport as RoomLlmCallReport,
 )
 from switch_core.events import (
-    ToolCallReport as MatrixToolCallReport,
+    ToolCallReport as RoomToolCallReport,
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.sessions.attachments import normalise_mime_type
@@ -242,8 +242,8 @@ def _describe_room(room: Room) -> RoomDescriptor:
         id=room.id,
         name=room.name,
         description=room.description,
-        transport_room_id=room.matrix_room_id,
-        matrix_room_id=room.matrix_room_id,
+        transport_room_id=room.transport_room_id,
+        matrix_room_id=room.transport_room_id,
         archived=room.archived_at is not None,
         bridge_id=room.bridge_id,
     )
@@ -1155,7 +1155,7 @@ class AgentCore:
     # ── Messaging ──────────────────────────────────────────────────────────────
 
     async def _post_agent_notice(
-        self, client: Any, matrix_room_id: str, body: str
+        self, client: Any, transport_room_id: str, body: str
     ) -> None:
         """Best-effort post of an activity notice from the agent's own client
         identity. Used to announce resource-manager-driven side effects (e.g.
@@ -1163,24 +1163,24 @@ class AgentCore:
         bridges — the resource manager isn't a bridge participant, so its own
         notices wouldn't reach Slack/Mattermost."""
         try:
-            await client.send_message(matrix_room_id, body, metered=False)
+            await client.send_message(transport_room_id, body, metered=False)
         except Exception:
             logger.exception(
-                "Failed to post agent activity notice to %s", matrix_room_id
+                "Failed to post agent activity notice to %s", transport_room_id
             )
 
     async def _post_role_change_notice(
-        self, agent_id: str, matrix_room_id: str, action: str
+        self, agent_id: str, transport_room_id: str, action: str
     ) -> None:
         """Announce a role assume/release from the acting agent's own client
         identity, so the notice reaches collaboration bridges (Slack/Mattermost)."""
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             return
-        await self._post_agent_notice(client, matrix_room_id, f"🎭 {action}.")
+        await self._post_agent_notice(client, transport_room_id, f"🎭 {action}.")
 
     async def _resolve_thread_root(
-        self, client: Actor[Any], matrix_room_id: str, thread_id: str
+        self, client: Actor[Any], transport_room_id: str, thread_id: str
     ) -> str:
         """Resolve a caller-supplied thread_id to the actual thread root.
 
@@ -1192,7 +1192,7 @@ class AgentCore:
         """
         if client.transport is None:
             raise ValueError("Agent client not connected")
-        event = await client.transport.get_event(matrix_room_id, thread_id)
+        event = await client.transport.get_event(transport_room_id, thread_id)
         if event is None:
             raise ValueError(f"thread_id not found in room: {thread_id}")
         root = getattr(event, "thread_root_id", None)
@@ -1223,10 +1223,10 @@ class AgentCore:
         thread_root_id: str | None = None
         if thread_id is not None:
             thread_root_id = await self._resolve_thread_root(
-                client, room.matrix_room_id, thread_id
+                client, room.transport_room_id, thread_id
             )
         event_id = await client.send_message(
-            room.matrix_room_id,
+            room.transport_room_id,
             content,
             thread_root_id=thread_root_id,
             metered=True,
@@ -1234,9 +1234,9 @@ class AgentCore:
         if event_id is None:
             raise ValueError("Failed to send message")
         logger.debug(
-            "[AGENT-MSG] sent event_id=%s to matrix room=%s",
+            "[AGENT-MSG] sent event_id=%s to room=%s",
             event_id,
-            room.matrix_room_id,
+            room.transport_room_id,
         )
         # The agent has replied, so clear any typing indicator raised when the
         # inbound message arrived. The message itself is already delivered, so a
@@ -1298,18 +1298,18 @@ class AgentCore:
         thread_root_id: str | None = None
         if thread_id is not None:
             thread_root_id = await self._resolve_thread_root(
-                client, room.matrix_room_id, thread_id
+                client, room.transport_room_id, thread_id
             )
 
         total = len(files)
         group_id = str(uuid.uuid4()) if total > 1 else None
         posted: list[dict[str, str]] = []
         for index, (data, filename, mimetype) in enumerate(files):
-            mxc = await client.upload_media(data, mimetype, filename)
+            media_uri = await client.upload_media(data, mimetype, filename)
             msgtype = "m.image" if mimetype.startswith("image/") else "m.file"
             event_id = await client.send_media(
-                room.matrix_room_id,
-                mxc,
+                room.transport_room_id,
+                media_uri,
                 filename,
                 mimetype,
                 len(data),
@@ -1327,7 +1327,9 @@ class AgentCore:
             )
             if event_id is None:
                 raise ValueError(f"Failed to send media message for '{filename}'")
-            posted.append({"event_id": event_id, "mxc": mxc, "filename": filename})
+            posted.append(
+                {"event_id": event_id, "mxc": media_uri, "filename": filename}
+            )
         try:
             await self._set_typing(agent_id, room, False)
         except Exception:
@@ -1592,7 +1594,7 @@ class AgentCore:
         if client is None:
             raise ValueError("Agent client not running")
         await client.send_message(
-            room.matrix_room_id, f"*{detail}*", format="markdown", metered=True
+            room.transport_room_id, f"*{detail}*", format="markdown", metered=True
         )
 
     async def set_runtime_state(
@@ -1664,7 +1666,7 @@ class AgentCore:
         await self._emit_runtime_state(
             agent_id=agent_id,
             agent_name=agent.name,
-            matrix_room_id=room.matrix_room_id,
+            transport_room_id=room.transport_room_id,
             room_id=room.id,
             state=state,
             mention_handle=await self._mention_handle_for(
@@ -1681,7 +1683,7 @@ class AgentCore:
         *,
         agent_id: str,
         agent_name: str,
-        matrix_room_id: str,
+        transport_room_id: str,
         room_id: str,
         state: str,
         mention_handle: str | None,
@@ -1697,7 +1699,7 @@ class AgentCore:
             )
             return
         await client.send_event(
-            matrix_room_id,
+            transport_room_id,
             "com.switch.agent.runtime_state",
             {
                 "agent_id": agent_id,
@@ -1795,7 +1797,7 @@ class AgentCore:
         await self._emit_runtime_state(
             agent_id=agent.id,
             agent_name=agent.name,
-            matrix_room_id=room.matrix_room_id,
+            transport_room_id=room.transport_room_id,
             room_id=room.id,
             state=RUNTIME_STATE_IDLE,
             mention_handle=await self._mention_handle_for(agent, room.bridge_id),
@@ -2008,7 +2010,7 @@ class AgentCore:
         }
 
     async def download_media(
-        self, agent_id: str, room_id: str, mxc: str
+        self, agent_id: str, room_id: str, media_uri: str
     ) -> tuple[bytes, str, str | None]:
         """Read an attachment's bytes from Switch's media store.
 
@@ -2023,9 +2025,9 @@ class AgentCore:
             raise ValueError("Agent client not connected")
 
         try:
-            resp = await client.transport.download_media(mxc)
+            resp = await client.transport.download_media(media_uri)
         except TransportError as exc:
-            raise ValueError(f"Failed to download media {mxc}: {exc}") from exc
+            raise ValueError(f"Failed to download media {media_uri}: {exc}") from exc
         return resp.body, resp.content_type or "", resp.filename
 
     # ── Events ───────────────────────────────────────────────────────────────
@@ -2130,7 +2132,7 @@ class AgentCore:
 
         for event in events:
             if isinstance(event, ToolCallReport):
-                tool_event = MatrixToolCallReport(
+                tool_event = RoomToolCallReport(
                     agent_id=agent_id,
                     tool_id=event.tool_name,
                     args=event.arguments,
@@ -2139,12 +2141,12 @@ class AgentCore:
                     cost=event.cost,
                 )
                 await client.send_event(
-                    room.matrix_room_id,
+                    room.transport_room_id,
                     "com.switch.report.tool_call",
                     tool_event.model_dump(exclude_none=True),
                 )
             elif isinstance(event, LlmCallReport):
-                llm_event = MatrixLlmCallReport(
+                llm_event = RoomLlmCallReport(
                     agent_id=agent_id,
                     model_id=event.model,
                     messages=event.messages,
@@ -2154,7 +2156,7 @@ class AgentCore:
                     cost=event.cost,
                 )
                 await client.send_event(
-                    room.matrix_room_id,
+                    room.transport_room_id,
                     "com.switch.report.llm_call",
                     llm_event.model_dump(exclude_none=True),
                 )
@@ -2218,7 +2220,7 @@ class AgentCore:
         client = self.client_lifecycle.get_by_agent_id(requester_id)
         if client and client.transport:
             await client.send_event(
-                room.matrix_room_id,
+                room.transport_room_id,
                 "com.switch.task.delegate",
                 {
                     "task_id": task_id,
@@ -2253,7 +2255,7 @@ class AgentCore:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client and client.transport:
             await client.send_event(
-                room.matrix_room_id,
+                room.transport_room_id,
                 "com.switch.task.accept",
                 {
                     "task_id": task_id,
@@ -2286,7 +2288,7 @@ class AgentCore:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client and client.transport:
             await client.send_event(
-                room.matrix_room_id,
+                room.transport_room_id,
                 "com.switch.task.update",
                 {
                     "task_id": task_id,
@@ -2320,7 +2322,7 @@ class AgentCore:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client and client.transport:
             await client.send_event(
-                room.matrix_room_id,
+                room.transport_room_id,
                 "com.switch.task.finalise",
                 {
                     "task_id": task_id,
@@ -2330,7 +2332,7 @@ class AgentCore:
                 },
             )
             await client.send_message(
-                room.matrix_room_id, outcome, format="markdown", metered=True
+                room.transport_room_id, outcome, format="markdown", metered=True
             )
 
     async def cancel_task(self, agent_id: str, task_id: str, reason: str) -> None:
@@ -2352,7 +2354,7 @@ class AgentCore:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client and client.transport:
             await client.send_event(
-                room.matrix_room_id,
+                room.transport_room_id,
                 "com.switch.task.cancel",
                 {
                     "task_id": task_id,
@@ -3011,7 +3013,7 @@ class AgentCore:
             resolved_name = role.name
         if not already_held:
             await self._post_role_change_notice(
-                agent_id, room.matrix_room_id, f"assumed the `{resolved_name}` role"
+                agent_id, room.transport_room_id, f"assumed the `{resolved_name}` role"
             )
         return result
 
@@ -3026,18 +3028,18 @@ class AgentCore:
                 session, agent_id, live_connection_ids
             )
             released_role: str | None = None
-            matrix_room_id: str | None = None
+            transport_room_id: str | None = None
             if live is not None:
                 released_role = await self.room_role_store.agent_room_role(
                     session, live.room_id, agent_id, live_connection_ids
                 )
                 room = await self.room_store.get(session, live.room_id)
-                matrix_room_id = room.matrix_room_id if room is not None else None
+                transport_room_id = room.transport_room_id if room is not None else None
             await self.room_role_store.release_lease(session, agent_id)
             await session.commit()
-        if released_role is not None and matrix_room_id is not None:
+        if released_role is not None and transport_room_id is not None:
             await self._post_role_change_notice(
-                agent_id, matrix_room_id, f"released the `{released_role}` role"
+                agent_id, transport_room_id, f"released the `{released_role}` role"
             )
 
     async def touch_role_lease(self, agent_id: str, holder: str | None) -> bool:
@@ -3579,8 +3581,8 @@ class AgentCore:
             channel_type=room.channel_type,
             admin_mode=room.admin_mode,
             instructions=room.instructions,
-            transport_room_id=room.matrix_room_id,
-            matrix_room_id=room.matrix_room_id,
+            transport_room_id=room.transport_room_id,
+            matrix_room_id=room.transport_room_id,
             created_at=str(room.created_at),
             bridge_id=room.bridge_id,
             bridge_display_name=bridge_display_name,
@@ -3858,7 +3860,7 @@ class AgentCore:
 
         await self._announce_document(
             agent_id,
-            room.matrix_room_id,
+            room.transport_room_id,
             f"\U0001f4c4 created room document \u201c{document_name}\u201d.",
         )
         return document_id
@@ -3891,7 +3893,7 @@ class AgentCore:
 
         await self._announce_document(
             agent_id,
-            room.matrix_room_id,
+            room.transport_room_id,
             f"\U0001f4c4 updated room document \u201c{document_name}\u201d.",
         )
 
@@ -3920,12 +3922,12 @@ class AgentCore:
 
         await self._announce_document(
             agent_id,
-            room.matrix_room_id,
+            room.transport_room_id,
             f"\U0001f5d1 deleted room document \u201c{document_name}\u201d.",
         )
 
     async def _announce_document(
-        self, agent_id: str, matrix_room_id: str, body: str
+        self, agent_id: str, transport_room_id: str, body: str
     ) -> None:
         """Say in the room what the agent just did to a document.
 
@@ -3940,10 +3942,10 @@ class AgentCore:
                 "Agent %s has no connected client, so its document change in "
                 "%s was not announced in the room",
                 agent_id,
-                matrix_room_id,
+                transport_room_id,
             )
             return
-        await self._post_agent_notice(client, matrix_room_id, body)
+        await self._post_agent_notice(client, transport_room_id, body)
 
     async def post_llm_response(
         self,

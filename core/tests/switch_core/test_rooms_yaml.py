@@ -110,7 +110,7 @@ class FakeRoomService:
                 agent_ids = [name_to_id[n] for n in config.agent_names]
 
             room = Room(
-                matrix_room_id=f"!{uuid.uuid4().hex}:test.local",
+                transport_room_id=f"!{uuid.uuid4().hex}:test.local",
                 name=config.name,
                 description=config.description,
                 channel_type=config.channel_type or "channel_public",
@@ -154,7 +154,7 @@ async def _make_agent(session: AsyncSession, name: str, user_id: str) -> Agent:
         type="agent",
     )
     client = Client(
-        matrix_user_id=f"@{name}:test.local",
+        transport_user_id=f"@{name}:test.local",
         display_name=name,
         type="agent",
     )
@@ -686,12 +686,12 @@ async def test_export_includes_users_from_bridge(env):
     sf = env["session_factory"]
     async with sf() as session:
         workspace_consumer = Client(
-            matrix_user_id="@bridge:test.local",
+            transport_user_id="@bridge:test.local",
             display_name="bridge",
             type="collaboration_bridge",
         )
         user_client = Client(
-            matrix_user_id="@bob:test.local",
+            transport_user_id="@bob:test.local",
             display_name="bob",
             type="external_user",
         )
@@ -714,7 +714,7 @@ async def test_export_includes_users_from_bridge(env):
             )
         )
         room = Room(
-            matrix_room_id="!bridged:test.local",
+            transport_room_id="!bridged:test.local",
             name="Mattermost: Bridged",
             description="d",
             channel_type="channel_public",
@@ -1387,12 +1387,12 @@ async def _seed_bridge_with_claim(
     bridge id."""
     async with session_factory() as session:
         workspace_consumer = Client(
-            matrix_user_id=f"@bridge-{display_name.lower()}:test.local",
+            transport_user_id=f"@bridge-{display_name.lower()}:test.local",
             display_name=display_name,
             type="collaboration_bridge",
         )
         user_client = Client(
-            matrix_user_id=f"@{external_username}-{display_name.lower()}:test.local",
+            transport_user_id=f"@{external_username}-{display_name.lower()}:test.local",
             display_name=external_username,
             type="external_user",
         )

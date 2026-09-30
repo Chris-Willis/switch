@@ -24,7 +24,7 @@ class _BlockingClient:
 
     def __init__(self) -> None:
         self.display_name = "blocking"
-        self.matrix_user_id = "@blocking:test"
+        self.transport_user_id = "@blocking:test"
         self.stopped = False
 
     async def start(self) -> None:
@@ -36,7 +36,7 @@ class _BlockingClient:
 
 def _service() -> ClientLifecycleService:
     return ClientLifecycleService(
-        matrix_admin=MagicMock(),
+        provisioning=MagicMock(),
         client_store=ClientStore(),
         tenant_store=TenantStore(),
         client_factory=MagicMock(),

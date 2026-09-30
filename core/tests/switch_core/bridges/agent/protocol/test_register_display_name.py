@@ -38,8 +38,8 @@ async def _agent(
     return agent
 
 
-class TestMatrixIdentityStaysTheIdentifier:
-    async def test_a_display_name_does_not_reach_the_matrix_client(
+class TestTransportIdentityStaysTheIdentifier:
+    async def test_a_display_name_does_not_reach_the_transport(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         svc = make_service(session_factory)

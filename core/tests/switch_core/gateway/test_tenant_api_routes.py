@@ -263,7 +263,7 @@ async def _make_agent_with_key(
     async with session_factory() as session:
         client = Client(
             tenant_id=tenant_id,
-            matrix_user_id=f"@bot-{uuid.uuid4().hex[:8]}:test",
+            transport_user_id=f"@bot-{uuid.uuid4().hex[:8]}:test",
             display_name="test-agent-bot",
             type="agent",
         )

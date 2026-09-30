@@ -79,7 +79,7 @@ def _service(
         client_store=MagicMock(),
         client_lifecycle=client_lifecycle,
         room_service=MagicMock(),
-        matrix_admin=MagicMock(),
+        provisioning=MagicMock(),
         session_factory=session_factory,
         config=MagicMock(),
         client_factory=MagicMock(),
@@ -91,7 +91,7 @@ def _service(
 
 async def _make_client(session: AsyncSession, *, client_type: str) -> str:
     client = Client(
-        matrix_user_id=f"@{client_type}-{uuid.uuid4().hex[:8]}:test",
+        transport_user_id=f"@{client_type}-{uuid.uuid4().hex[:8]}:test",
         display_name=f"{client_type} client",
         type=client_type,
     )
@@ -115,7 +115,7 @@ async def _make_bridge(session: AsyncSession) -> tuple[str, str]:
 
 async def _make_bridged_room(session: AsyncSession, *, bridge_id: str) -> str:
     room = Room(
-        matrix_room_id=f"!{uuid.uuid4().hex[:8]}:test",
+        transport_room_id=f"!{uuid.uuid4().hex[:8]}:test",
         name="bridged room",
         description="mirror of an external channel",
         bridge_id=bridge_id,
@@ -332,7 +332,7 @@ class TestTheWorkspaceConsumerName:
 
         assert localpart.startswith("switch-bridge-telegram-telegram-louiss")
 
-    def test_it_stays_a_legal_matrix_localpart(self) -> None:
+    def test_it_stays_a_legal_localpart(self) -> None:
         localpart = _workspace_consumer_localpart("slack", "Ops & Eng (US)")
 
         assert re.fullmatch(r"[a-z0-9._=/-]+", localpart)

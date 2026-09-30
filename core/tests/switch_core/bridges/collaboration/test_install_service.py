@@ -147,7 +147,7 @@ class _FakeLifecycle:
         self.registered.append(kwargs)
         async with tenant_session(self._factory, self._tenant_id) as session:
             client = Client(
-                matrix_user_id=f"@bridge-{len(self.registered)}:{self._suffix}",
+                transport_user_id=f"@bridge-{len(self.registered)}:{self._suffix}",
                 display_name=str(kwargs["display_name"]),
                 type="collaboration_bridge",
             )

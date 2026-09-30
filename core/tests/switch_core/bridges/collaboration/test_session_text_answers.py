@@ -109,7 +109,7 @@ def _bridge(approval_answers: Any) -> tuple[Any, list[dict[str, str]]]:
     async def _repair_placeholder_username(*args: Any, **kwargs: Any) -> None:
         return None
 
-    async def _ensure_user_in_matrix_room(**kwargs: str) -> None:
+    async def _ensure_human_in_room(**kwargs: str) -> None:
         relayed.append(kwargs)
         return None
 
@@ -122,7 +122,7 @@ def _bridge(approval_answers: Any) -> tuple[Any, list[dict[str, str]]]:
     # Instance attrs shadow the class methods so the DB is never touched.
     bridge._is_registered_agent = _is_registered_agent  # type: ignore[assignment]
     bridge._repair_placeholder_username = _repair_placeholder_username  # type: ignore[assignment]
-    bridge._ensure_user_in_matrix_room = _ensure_user_in_matrix_room  # type: ignore[assignment]
+    bridge._ensure_human_in_room = _ensure_human_in_room  # type: ignore[assignment]
     return bridge, relayed
 
 
@@ -171,7 +171,7 @@ def test_a_message_the_grammar_refuses_still_reaches_the_room(said: str) -> None
             "external_user_id": "U1",
             "external_username": "someone",
             "room_id": "room-uuid",
-            "matrix_room_id": "!room:test",
+            "transport_room_id": "!room:test",
         }
     ]
 

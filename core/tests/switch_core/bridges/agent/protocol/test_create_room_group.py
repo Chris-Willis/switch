@@ -86,7 +86,7 @@ class TestListRoomGroups:
             )
             room = await rooms.create(
                 session,
-                Room(matrix_room_id="!r:test", name="r", description="d"),
+                Room(transport_room_id="!r:test", name="r", description="d"),
             )
             await rooms.set_group(session, room.id, child.id)
             await session.commit()

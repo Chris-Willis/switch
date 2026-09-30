@@ -106,7 +106,7 @@ _ROOM = SimpleNamespace(
     id="room-1",
     name="This Room",
     description="desc",
-    matrix_room_id="!mx:switch.local",
+    transport_room_id="!mx:switch.local",
     archived_at=None,
     bridge_id=None,
 )

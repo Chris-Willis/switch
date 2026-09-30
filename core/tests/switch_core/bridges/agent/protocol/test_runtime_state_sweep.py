@@ -86,7 +86,7 @@ async def _an_agent(*_a: Any, **_kw: Any) -> Any:
 
 
 async def _a_room(*_a: Any, **_kw: Any) -> Any:
-    return SimpleNamespace(id=ROOM, matrix_room_id="!m:server", bridge_id=None)
+    return SimpleNamespace(id=ROOM, transport_room_id="!m:server", bridge_id=None)
 
 
 async def _noop(*_a: Any, **_kw: Any) -> None:

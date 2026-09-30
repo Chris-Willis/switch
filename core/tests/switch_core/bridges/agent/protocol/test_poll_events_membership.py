@@ -41,7 +41,7 @@ async def _room(
     session_factory: async_sessionmaker[AsyncSession], name: str, agent_id: str
 ) -> str:
     async with session_factory() as session:
-        room = Room(matrix_room_id=f"!{name}:test", name=name, description="")
+        room = Room(transport_room_id=f"!{name}:test", name=name, description="")
         session.add(room)
         await session.flush()
         await RoomStore().add_agents(session, room.id, [agent_id])

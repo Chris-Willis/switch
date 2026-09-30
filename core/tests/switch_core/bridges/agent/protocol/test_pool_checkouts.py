@@ -103,7 +103,7 @@ async def _seed(
                 type="agent",
             )
             client = Client(
-                matrix_user_id=f"@{name}:test",
+                transport_user_id=f"@{name}:test",
                 display_name=name,
                 type="agent",
             )
@@ -123,7 +123,7 @@ async def _seed(
             session.add(agent)
             await session.flush()
             ids.append(agent.id)
-        room = Room(matrix_room_id="!r:test", name="room", description="d")
+        room = Room(transport_room_id="!r:test", name="room", description="d")
         session.add(room)
         await session.flush()
         await RoomStore().add_agents(session, room.id, [ids[0]])
@@ -316,9 +316,9 @@ class TestSendMessage:
 
         class _Client:
             async def send_message(
-                self, matrix_room_id: str, content: str, **_kwargs: Any
+                self, transport_room_id: str, content: str, **_kwargs: Any
             ) -> str:
-                sent.append((matrix_room_id, content))
+                sent.append((transport_room_id, content))
                 return "$event"
 
         svc.client_lifecycle = SimpleNamespace(  # type: ignore[assignment]

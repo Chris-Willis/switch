@@ -42,7 +42,7 @@ async def _seed(harness, tenant: str) -> SessionActivityService:
                 type="agent",
             )
             client = Client(
-                matrix_user_id=f"@agent-{tenant}:example.test",
+                transport_user_id=f"@agent-{tenant}:example.test",
                 display_name="Agent",
                 type="agent",
             )

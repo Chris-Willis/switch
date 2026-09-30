@@ -39,8 +39,8 @@ class _FakeCollaborationCore:
     def __init__(self, events: list[Any]) -> None:
         self._events = events
 
-    def remove_room_mapping(self, room_id: str, matrix_room_id: str) -> None:
-        self._events.append(("remove_room_mapping", room_id, matrix_room_id))
+    def remove_room_mapping(self, room_id: str, transport_room_id: str) -> None:
+        self._events.append(("remove_room_mapping", room_id, transport_room_id))
 
 
 class _FakeLifecycle:
@@ -59,15 +59,15 @@ class _FakeClientLifecycle:
         return self._clients.get(client_id)
 
 
-class _FakeMatrix:
+class _FakeProvisioning:
     def __init__(self, events: list[Any]) -> None:
         self._events = events
 
-    async def kick_user(self, matrix_room_id: str, matrix_user_id: str) -> None:
-        self._events.append(("kick", matrix_user_id))
+    async def kick_user(self, transport_room_id: str, transport_user_id: str) -> None:
+        self._events.append(("kick", transport_user_id))
 
-    async def delete_room(self, matrix_room_id: str) -> None:
-        self._events.append(("delete_room", matrix_room_id))
+    async def delete_room(self, transport_room_id: str) -> None:
+        self._events.append(("delete_room", transport_room_id))
 
 
 def _build_service(
@@ -84,7 +84,7 @@ def _build_service(
     svc._room_store = room_store  # type: ignore[assignment]
     svc._collab_lifecycle = _FakeLifecycle(bridges)  # type: ignore[assignment]
     svc._client_lifecycle = _FakeClientLifecycle(clients)  # type: ignore[assignment]
-    svc._matrix_admin = _FakeMatrix(events)  # type: ignore[assignment]
+    svc._provisioning = _FakeProvisioning(events)  # type: ignore[assignment]
     return svc, room_store
 
 
@@ -94,7 +94,7 @@ class TestDeleteRoom:
         room = SimpleNamespace(
             id="room-1",
             tenant_id="room-tenant",
-            matrix_room_id="!mx:switch.local",
+            transport_room_id="!mx:switch.local",
             bridge_id="bridge-x",
             external_channel_id="chan-x",
         )
@@ -118,7 +118,7 @@ class TestDeleteRoom:
         room = SimpleNamespace(
             id="room-1",
             tenant_id="room-tenant",
-            matrix_room_id="!mx:switch.local",
+            transport_room_id="!mx:switch.local",
             bridge_id=None,
             external_channel_id=None,
         )
@@ -140,7 +140,7 @@ class TestDeleteRoom:
         room = SimpleNamespace(
             id="room-1",
             tenant_id="room-tenant",
-            matrix_room_id="!mx:switch.local",
+            transport_room_id="!mx:switch.local",
             bridge_id="bridge-gone",
             external_channel_id="chan-x",
         )
@@ -162,13 +162,13 @@ class TestDeleteRoom:
         room = SimpleNamespace(
             id="room-1",
             tenant_id="room-tenant",
-            matrix_room_id="!mx:switch.local",
+            transport_room_id="!mx:switch.local",
             bridge_id=None,
             external_channel_id=None,
         )
         clients = {
-            "c1": SimpleNamespace(matrix_user_id="@a:switch.local"),
-            "c2": SimpleNamespace(matrix_user_id="@b:switch.local"),
+            "c1": SimpleNamespace(transport_user_id="@a:switch.local"),
+            "c2": SimpleNamespace(transport_user_id="@b:switch.local"),
         }
         svc, _ = _build_service(
             room=room,

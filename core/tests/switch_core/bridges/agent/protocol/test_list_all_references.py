@@ -255,9 +255,11 @@ class TestAttachedToCurrentRoom:
             attached = await _make_reference(session, owner=alice, name="attached")
             loose = await _make_reference(session, owner=alice, name="loose")
             room = Room(
-                matrix_room_id="!current:test", name="Current", description="room"
+                transport_room_id="!current:test", name="Current", description="room"
             )
-            other = Room(matrix_room_id="!other:test", name="Other", description="room")
+            other = Room(
+                transport_room_id="!other:test", name="Other", description="room"
+            )
             session.add_all([room, other])
             await session.flush()
             store = ReferenceStore()

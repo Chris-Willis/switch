@@ -20,7 +20,7 @@ def _make_bridge(**overrides: Any) -> CollaborationCore:
     touches, so the real methods run without the full dependency graph."""
     created_configs: list[Any] = []
     room = SimpleNamespace(
-        id="room-uuid", tenant_id="tenant-1", matrix_room_id="!m:switch.local"
+        id="room-uuid", tenant_id="tenant-1", transport_room_id="!m:switch.local"
     )
 
     async def create_room(config: Any) -> SimpleNamespace:
@@ -168,7 +168,7 @@ async def test_adopt_existing_room_registers_mapping() -> None:
     # The real _adopt_existing_room: a DB hit registers the in-memory mapping
     # and returns the room, so subsequent lookups short-circuit.
     room = SimpleNamespace(
-        id="db-room", tenant_id="tenant-1", matrix_room_id="!db:switch.local"
+        id="db-room", tenant_id="tenant-1", transport_room_id="!db:switch.local"
     )
 
     class _Session:

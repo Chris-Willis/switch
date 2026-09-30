@@ -95,7 +95,7 @@ def _service_with_telemetry(
         client_store=client_store if client_store is not None else ClientStore(),
         client_lifecycle=MagicMock(),
         room_service=MagicMock(),
-        matrix_admin=MagicMock(),
+        provisioning=MagicMock(),
         session_factory=session_factory,
         config=config,
         client_factory=MagicMock(),
@@ -178,7 +178,7 @@ async def _bridge_row(
     not cover."""
     client = Client(
         tenant_id=tenant_id,
-        matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+        transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
         display_name="bridge client",
         type="bridge",
     )

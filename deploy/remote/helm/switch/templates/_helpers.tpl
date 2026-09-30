@@ -564,7 +564,7 @@ Include with `nindent 12`.
   value: {{ .Values.postgresql.migrationLockTimeout | quote }}
 - name: AGENT_AUTH_CACHE_TTL_SECONDS
   value: {{ .Values.switchCore.authCache.ttlSeconds | quote }}
-- name: MATRIX_SERVER_NAME
+- name: ID_SERVER_NAME
   value: {{ .Values.clientIdentity.serverName | quote }}
 - name: AGENT_REGISTRATION_TOKEN
   valueFrom:

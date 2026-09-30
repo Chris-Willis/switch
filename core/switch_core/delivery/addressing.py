@@ -145,7 +145,7 @@ class AddressingResolver:
         self,
         *,
         agent: Agent,
-        agent_matrix_id: str,
+        agent_user_id: str,
         channel_type: str | None,
         message: IncomingMessage,
     ) -> bool | None:
@@ -161,7 +161,7 @@ class AddressingResolver:
         if channel_type == "direct":
             return True
         if self.mentions_name(
-            agent=agent, agent_matrix_id=agent_matrix_id, message=message
+            agent=agent, agent_user_id=agent_user_id, message=message
         ):
             return True
         if "@" not in message.body:
@@ -173,7 +173,7 @@ class AddressingResolver:
         session: AsyncSession,
         *,
         agent: Agent,
-        agent_matrix_id: str,
+        agent_user_id: str,
         room_id: str,
         channel_type: str | None,
         message: IncomingMessage,
@@ -192,7 +192,7 @@ class AddressingResolver:
         """
         decided = self.addressed_without_lookup(
             agent=agent,
-            agent_matrix_id=agent_matrix_id,
+            agent_user_id=agent_user_id,
             channel_type=channel_type,
             message=message,
         )
@@ -207,7 +207,7 @@ class AddressingResolver:
         )
 
     def mentions_name(
-        self, *, agent: Agent, agent_matrix_id: str, message: IncomingMessage
+        self, *, agent: Agent, agent_user_id: str, message: IncomingMessage
     ) -> bool:
         """An `@name` at a token boundary, or a rendered mention pill.
 
@@ -215,7 +215,7 @@ class AddressingResolver:
         scan is what catches everything else — media captions carry no
         formatted body, and neither does a bridged message.
         """
-        if message.formatted_body and agent_matrix_id in message.formatted_body:
+        if message.formatted_body and agent_user_id in message.formatted_body:
             return True
         return (
             mention_regex(agent.name).search(strip_emphasis(message.body)) is not None
@@ -380,7 +380,7 @@ class AddressingResolver:
     async def resolve_sender(
         self,
         session: AsyncSession,
-        matrix_user_id: str,
+        transport_user_id: str,
         content: Mapping[str, object] | None = None,
     ) -> SenderPrincipal | None:
         """Map a sender's mxid to the principal a policy is written about.
@@ -401,7 +401,9 @@ class AddressingResolver:
         owner — and `owner_user_id` is who owns an agent sender, None for a
         human.
         """
-        client = await self._client_store.get_by_matrix_user_id(session, matrix_user_id)
+        client = await self._client_store.get_by_transport_user_id(
+            session, transport_user_id
+        )
         if client is None:
             return None
         agent = await self._agent_store.get_by_client_id(session, client.id)

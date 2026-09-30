@@ -25,7 +25,7 @@ class BridgedRoom:
 async def make_bridged_room(db, *, member: str) -> BridgedRoom:
     suffix = uuid.uuid4().hex[:8]
     workspace_consumer = Client(
-        matrix_user_id=f"@bridge-{suffix}:test", display_name="bridge", type="bridge"
+        transport_user_id=f"@bridge-{suffix}:test", display_name="bridge", type="bridge"
     )
     db.add(workspace_consumer)
     await db.flush()
@@ -39,7 +39,7 @@ async def make_bridged_room(db, *, member: str) -> BridgedRoom:
     await db.flush()
     channel_id = f"C{suffix}"
     room = Room(
-        matrix_room_id=f"!{suffix}:test",
+        transport_room_id=f"!{suffix}:test",
         name=f"room-{suffix}",
         description="",
         bridge_id=bridge.id,
