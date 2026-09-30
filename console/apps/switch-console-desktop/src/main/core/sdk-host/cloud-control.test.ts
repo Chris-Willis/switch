@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const server = vi.hoisted(() => ({
   operations: new Map<string, { id: string; session_id: string; action: string }>(),
@@ -11,6 +11,17 @@ const server = vi.hoisted(() => ({
   machineActions: [] as unknown[],
   wakeRace: false,
   relayClients: 0,
+  relayList: (async () => []) as () => Promise<unknown[]>,
+}));
+const kvRows = vi.hoisted(() => new Map<string, unknown>());
+
+vi.mock('@main/db/kv', () => ({
+  KV: class {
+    get = async (key: string) => kvRows.get(key) ?? null;
+    set = async (key: string, value: unknown) => void kvRows.set(key, structuredClone(value));
+    del = async (key: string) => void kvRows.delete(key);
+    getAll = async () => Object.fromEntries(kvRows);
+  },
 }));
 
 const { FakeGatewayError } = vi.hoisted(() => ({
@@ -32,8 +43,22 @@ vi.mock('@switch-console/agent-providers', () => ({
     constructor() {
       server.relayClients += 1;
     }
+    isClosed = false;
+    onClose() {}
+    list() {
+      return server.relayList();
+    }
   },
-  CloudRelayError: class extends Error {},
+  CloudRelayError: class extends Error {
+    constructor(
+      readonly relayCode: string,
+      message: string,
+      readonly status: number,
+      readonly wakeAvailable: boolean
+    ) {
+      super(message);
+    }
+  },
   RELAY_TIMEOUT_MS: 1000,
 }));
 
@@ -108,7 +133,8 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   ),
 }));
 
-const { listCloudAgents, runCloudSessionOperation, wakeCloudAgent } =
+const { CloudRelayError } = await import('@switch-console/agent-providers');
+const { listCloudAgents, listCloudSessions, runCloudSessionOperation, wakeCloudAgent } =
   await import('./cloud-control');
 
 const agent = 'cloud:server:00000000-0000-4000-8000-000000000001';
@@ -364,4 +390,77 @@ it('reads a wake that lost the revision race to another wake as the machine waki
   server.launches = [launch('00000000-0000-4000-8000-000000000001', { machine_id: machineId })];
   server.wakeRace = true;
   expect(await wakeCloudAgent(agent)).toMatchObject({ desired_state: 'running', revision: 5 });
+});
+
+describe('the sessions last read from a worker', () => {
+  const session = { sessionId: 'b4105d35-0000', status: 'ready', connectivity: 'online' };
+  const asleep = machine({
+    state: 'stopped',
+    desired_state: 'stopped',
+    stop_reason: 'idle',
+    sleeping: true,
+  });
+  const onMachine = launch('00000000-0000-4000-8000-000000000001', { machine_id: machineId });
+
+  function relayRefuses(relayCode: string) {
+    server.relayList = async () => {
+      throw new CloudRelayError(relayCode, 'Refused.', 409, false);
+    };
+  }
+
+  beforeEach(async () => {
+    kvRows.clear();
+    server.machines = [machine({})];
+    server.launches = [onMachine];
+    server.relayList = async () => [session];
+    await expect(listCloudSessions(agent)).resolves.toEqual({
+      sessions: [session],
+      problem: null,
+    });
+  });
+
+  it('are listed after a restart while the machine is asleep or stopped', async () => {
+    vi.resetModules();
+    const restarted = await import('./cloud-control');
+    server.machines = [asleep];
+    expect((await restarted.listCloudAgents('server'))?.[0]).toMatchObject({
+      sessions: [session],
+      problem: { code: 'worker_sleeping' },
+    });
+    server.machines = [
+      machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'owner' }),
+    ];
+    expect((await restarted.listCloudAgents('server'))?.[0]).toMatchObject({
+      sessions: [session],
+      problem: { code: 'machine_stopped' },
+    });
+  });
+
+  it('stay beside a relay that answers the machine is asleep', async () => {
+    relayRefuses('worker_sleeping');
+    await expect(listCloudSessions(agent)).resolves.toMatchObject({
+      sessions: [session],
+      problem: { code: 'worker_sleeping' },
+    });
+  });
+
+  it('are not offered for a worker that is down for another reason', async () => {
+    relayRefuses('agent_crashed');
+    expect((await listCloudSessions(agent)).sessions).toBeNull();
+    server.launches = [
+      launch('00000000-0000-4000-8000-000000000001', {
+        machine_id: machineId,
+        state: 'error',
+        error_code: 'agent_crashed',
+        error: 'crashed',
+      }),
+    ];
+    expect((await listCloudAgents('server'))?.[0]?.sessions).toBeNull();
+  });
+
+  it('are forgotten once the agent is gone', async () => {
+    server.launches = [];
+    await listCloudAgents('server');
+    expect(kvRows.size).toBe(0);
+  });
 });

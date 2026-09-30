@@ -105,6 +105,7 @@ const CloudSessionPanel = observer(function CloudSessionPanel() {
         hostState={agent ? cloudAgentState(agent) : null}
         autoWake={{
           phase: agent ? cloudAgentPhase(agent.launch, agent.machine) : null,
+          machineReady: agent ? cloudMachineReady(agent.machine) : false,
           blocked: agent ? cloudHoldBlocker(agent) : null,
           wake: () => wake.mutateAsync(params.agentKey),
         }}

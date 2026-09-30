@@ -171,3 +171,47 @@ it('reads unreachable when the relay refuses the worker', async () => {
   });
   expect(status).toBe('unreachable');
 });
+
+it('opens a session on a sleeping machine whose worker cannot be read, and wakes it on send', async () => {
+  const asleep = agent({
+    launch: { ...agent({}).launch, sleeping: true, state: 'stopped' },
+    problem: {
+      code: 'worker_sleeping',
+      message: 'The cloud machine is asleep.',
+      wakeAvailable: true,
+    },
+  });
+  sdkHost.cloudWake.mockResolvedValue(undefined);
+  sdkHost.transcriptOpen.mockRejectedValue(new Error('The cloud machine is asleep.'));
+  sdkHost.cloudAgents.mockResolvedValue([asleep]);
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  const Panel = cloudSessionView.MainPanel;
+  await act(async () =>
+    root!.render(
+      <QueryClientProvider client={client}>
+        <SessionHeaderSlotsProvider>
+          <Panel />
+        </SessionHeaderSlotsProvider>
+      </QueryClientProvider>
+    )
+  );
+  await act(async () => await new Promise((resolve) => setTimeout(resolve, 50)));
+  expect(container.textContent).toContain('Send a message to wake it.');
+
+  const input = container.querySelector<HTMLTextAreaElement>(
+    'textarea[aria-label="Message the agent"]'
+  )!;
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+  await act(async () => {
+    setter.call(input, 'good morning');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  const send = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Send')!;
+  expect(send.disabled).toBe(false);
+  await act(async () => send.click());
+  expect(sdkHost.cloudWake).toHaveBeenCalledWith('cloud:server:launch');
+  expect(container.textContent).toContain('Waking… about 1–2 min.');
+});

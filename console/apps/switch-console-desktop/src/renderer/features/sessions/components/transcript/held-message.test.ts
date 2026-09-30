@@ -189,10 +189,16 @@ describe('relay refusals the user has to act on', () => {
 
 describe('what the composer says while it holds a message', () => {
   it('says waking only while the machine is not yet awake', () => {
-    expect(heldStatusText(false)).toMatch(/^Waking…/);
-    expect(heldStatusText(false)).toContain('Keep Switch Console open');
-    expect(heldStatusText(true)).not.toContain('Waking');
-    expect(heldStatusText(true)).toContain('The machine is awake. Connecting to the session');
+    expect(heldStatusText('machine')).toMatch(/^Waking…/);
+    expect(heldStatusText('machine')).toContain('Keep Switch Console open');
+    expect(heldStatusText('session')).not.toContain('Waking');
+    expect(heldStatusText('session')).toContain('The machine is awake. Connecting to the session');
+  });
+
+  it('says the agent is starting when only the agent starts on a machine already up', () => {
+    expect(heldStatusText('agent')).toBe(
+      'Starting the agent… Your message is sent when it is ready.'
+    );
   });
 });
 

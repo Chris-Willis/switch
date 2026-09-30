@@ -100,7 +100,8 @@ async function render(
   client: SessionChatClient,
   phase: CloudAgentPhase | null,
   blocked: string | null,
-  restartHost?: () => Promise<void>
+  restartHost?: () => Promise<void>,
+  machineReady = false
 ): Promise<HTMLDivElement> {
   if (!container) {
     container = document.createElement('div');
@@ -113,7 +114,7 @@ async function render(
         <SessionV1Chat
           client={client}
           hostState={null}
-          autoWake={{ phase, blocked, wake }}
+          autoWake={{ phase, machineReady, blocked, wake }}
           restartHost={restartHost}
         />
       </SessionHeaderSlotsProvider>
@@ -168,6 +169,29 @@ it('says waking while the machine wakes, and connecting once it is awake', async
   expect(el.textContent).not.toContain('Waking…');
   expect(el.textContent).toContain('The machine is awake. Connecting to the session');
   expect(button(el, /^connecting…$/i)?.disabled).toBe(true);
+});
+
+it('says the agent is starting when only the agent starts on a machine already up', async () => {
+  const { transport } = worker();
+  const client = new SessionChatClient(SESSION, transport);
+  const el = await render(client, 'waking', null, undefined, true);
+  await type(el, 'hello');
+  await act(async () => button(el, /^send$/i)!.click());
+  await settle();
+  expect(el.textContent).toContain('Starting the agent… Your message is sent when it is ready.');
+  expect(el.textContent).not.toContain('Waking…');
+  expect(button(el, /^starting…$/i)?.disabled).toBe(true);
+});
+
+it('says waking while the machine itself starts', async () => {
+  const { transport } = worker();
+  const client = new SessionChatClient(SESSION, transport);
+  const el = await render(client, 'waking', null, undefined, false);
+  await type(el, 'hello');
+  await act(async () => button(el, /^send$/i)!.click());
+  await settle();
+  expect(el.textContent).toContain('Waking… about 1–2 min.');
+  expect(el.textContent).not.toContain('Starting the agent');
 });
 
 it('keeps the connection error in view while it holds a message', async () => {

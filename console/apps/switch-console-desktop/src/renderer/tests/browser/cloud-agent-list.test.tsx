@@ -306,26 +306,25 @@ it.each([
     },
     'worker_sleeping',
   ],
-])('keeps listing the sessions last read while the machine is %s', async (_name, down, code) => {
-  sdkHost.cloudAgents.mockResolvedValue([onMachine({})]);
-  sdkHost.cloudSessions.mockResolvedValue(sessions(['b4105d35-0000']));
-  expandedCloudGroups.add(`cloud:${agentKey}`);
-  const el = await render();
-  expect(el.textContent).toContain('Session b4105d35');
-
-  sdkHost.cloudAgents.mockResolvedValue([down]);
-  sdkHost.cloudSessions.mockResolvedValue({ sessions: null, problem: down.problem });
-  await act(async () => window.dispatchEvent(new Event('focus')));
-  await act(async () => await new Promise((resolve) => setTimeout(resolve, 20)));
-  expect(el.textContent).toContain(`(${code})`);
-  const session = button(el, /Session b4105d35/);
-  expect(session).toBeDefined();
-  await act(async () => session!.click());
-  expect(navigate).toHaveBeenCalledWith(
-    'cloudSession',
-    expect.objectContaining({ agentKey, sessionId: 'b4105d35-0000' })
-  );
-});
+])(
+  'lists the stored sessions on a cold start while the machine is %s, with nothing cached',
+  async (_name, down, code) => {
+    sdkHost.cloudAgents.mockResolvedValue([
+      { ...down, sessions: sessions(['b4105d35-0000']).sessions },
+    ]);
+    expandedCloudGroups.add(`cloud:${agentKey}`);
+    const el = await render();
+    expect(sdkHost.cloudSessions).not.toHaveBeenCalled();
+    expect(el.textContent).toContain(`(${code})`);
+    const session = button(el, /Session b4105d35/);
+    expect(session).toBeDefined();
+    await act(async () => session!.click());
+    expect(navigate).toHaveBeenCalledWith(
+      'cloudSession',
+      expect.objectContaining({ agentKey, sessionId: 'b4105d35-0000' })
+    );
+  }
+);
 
 it('says the agent is starting when only its launch starts on a running machine', async () => {
   sdkHost.cloudAgents.mockResolvedValue([

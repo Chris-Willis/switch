@@ -11,6 +11,7 @@ import {
   deliverHeld,
   type HeldMessage,
   heldMessages,
+  type HeldWait,
   heldStatusText,
   isWakingError,
   relayRefusalText,
@@ -43,9 +44,11 @@ export function SessionV1Chat({
   /**
    * A cloud agent's machine, woken by the first message sent while it sleeps.
    * `blocked` says why a held message will not be delivered without the user.
+   * `machineReady` says a waking agent waits only on its own process.
    */
   autoWake?: {
     phase: CloudAgentPhase | null;
+    machineReady: boolean;
     blocked: string | null;
     wake: () => Promise<unknown>;
   };
@@ -133,6 +136,11 @@ export function SessionV1Chat({
     (session.status === 'ready' || session.status === 'running');
   const wakeable = autoWake?.phase === 'sleeping' || autoWake?.phase === 'waking';
   const machineAwake = !wakeable;
+  const heldWait: HeldWait = machineAwake
+    ? 'session'
+    : autoWake?.phase === 'waking' && autoWake.machineReady
+      ? 'agent'
+      : 'machine';
   const startable =
     Boolean(restartHost) &&
     autoWake?.phase === null &&
@@ -682,7 +690,7 @@ export function SessionV1Chat({
         {held && (
           <div role="status" className="mb-2 flex items-center gap-2 text-sm text-foreground-muted">
             <Loader2 className="size-3 shrink-0 animate-spin" />
-            <span className="min-w-0 flex-1">{heldStatusText(machineAwake)}</span>
+            <span className="min-w-0 flex-1">{heldStatusText(heldWait)}</span>
             <Button size="sm" variant="ghost" disabled={sending} onClick={cancelHeld}>
               Cancel
             </Button>
@@ -817,9 +825,7 @@ export function SessionV1Chat({
               {sending
                 ? 'Sending…'
                 : held
-                  ? machineAwake
-                    ? 'Connecting…'
-                    : 'Waking…'
+                  ? { session: 'Connecting…', agent: 'Starting…', machine: 'Waking…' }[heldWait]
                   : pendingId
                     ? 'Retry message'
                     : 'Send'}

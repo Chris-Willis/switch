@@ -2,11 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { rpc } from '@renderer/lib/ipc';
-import {
-  type CloudAgent,
-  type CloudSessions,
-  parseCloudAgentKey,
-} from '@shared/core/cloud-agents/cloud-agents';
+import { type CloudAgent, parseCloudAgentKey } from '@shared/core/cloud-agents/cloud-agents';
 
 /**
  * The server's cloud agents, from its launch list; no worker is asked. Not
@@ -44,14 +40,11 @@ export function useCloudMachines(serverId: string | null) {
   });
 }
 
-const KEEPS_LAST_SESSIONS = new Set(['machine_stopped', 'worker_sleeping', 'worker_waking']);
-
 /**
  * The agent with its worker's sessions, asked over the relay only while
  * `watched` and while the window is visible, since each ask is a round trip
- * through the server. A launch that says its worker cannot be asked is not.
- * While its machine is stopped, asleep or waking, the sessions last read stay
- * listed beside why, since opening one is how its user wakes it.
+ * through the server. A launch that says its worker cannot be asked is not,
+ * and carries the sessions last read from it while its machine is down.
  * Under `['cloud-agents']`, so every refresh of the list refreshes this too.
  */
 export function useCloudAgentSessions(agent: CloudAgent, watched: boolean): CloudAgent;
@@ -63,33 +56,19 @@ export function useCloudAgentSessions(
   agent: CloudAgent | undefined,
   watched: boolean
 ): CloudAgent | undefined {
-  const queryClient = useQueryClient();
-  const queryKey = [
-    'cloud-agents',
-    parseCloudAgentKey(agent?.key ?? '')?.serverId,
-    'sessions',
-    agent?.key,
-  ];
   const listed = useQuery({
-    queryKey,
-    queryFn: async (): Promise<CloudSessions> => {
-      const read = await rpc.sdkHost.cloudSessions(agent!.key);
-      if (read.sessions || !read.problem || !KEEPS_LAST_SESSIONS.has(read.problem.code))
-        return read;
-      return {
-        ...read,
-        sessions: queryClient.getQueryData<CloudSessions>(queryKey)?.sessions ?? null,
-      };
-    },
+    queryKey: [
+      'cloud-agents',
+      parseCloudAgentKey(agent?.key ?? '')?.serverId,
+      'sessions',
+      agent?.key,
+    ],
+    queryFn: () => rpc.sdkHost.cloudSessions(agent!.key),
     enabled: watched && agent !== undefined && !agent.problem,
     refetchInterval: 5000,
     retry: false,
   });
-  if (!agent) return agent;
-  if (agent.problem)
-    return KEEPS_LAST_SESSIONS.has(agent.problem.code) && listed.data?.sessions
-      ? { ...agent, sessions: listed.data.sessions }
-      : agent;
+  if (!agent || agent.problem) return agent;
   if (listed.error)
     return {
       ...agent,

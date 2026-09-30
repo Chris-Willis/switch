@@ -4,7 +4,7 @@ import {
   CloudRelayError,
   RELAY_TIMEOUT_MS,
 } from '@switch-console/agent-providers';
-import type { Attachment } from '@switch-console/shared/session-v1';
+import type { Attachment, Session } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import {
   GatewayError,
@@ -12,6 +12,7 @@ import {
   gatewayRequest,
 } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
+import { KV } from '@main/db/kv';
 import {
   type CloudAgent,
   cloudAgentKey,
@@ -64,6 +65,14 @@ function machinePath(machineId: string, rest = ''): string {
 }
 
 const clients = new Map<string, CloudRelayClient>();
+
+/**
+ * The sessions last read from each cloud agent's worker, by agent key, kept
+ * across restarts: while its machine is stopped, asleep or waking they stay
+ * listed beside why, since opening one is how its user wakes it.
+ */
+const lastSessions = new KV<Record<string, Session[]>>('cloud-sessions');
+const KEEPS_LAST_SESSIONS = new Set(['machine_stopped', 'worker_sleeping', 'worker_waking']);
 
 /** The relay client for this cloud agent's worker, made if there is none. */
 export async function cloudControl(agentId: string): Promise<CloudRelayClient> {
@@ -192,46 +201,58 @@ export async function listCloudAgents(serverId: string): Promise<CloudAgent[] | 
       launch.state !== 'deleted' &&
       (launch.desired_state !== 'deleted' || launch.state === 'deleting')
   );
+  const stored = await lastSessions.getAll();
+  const keys = new Set(launches.map((launch) => cloudAgentKey(serverId, launch.request_id)));
+  for (const key of Object.keys(stored))
+    if (parseCloudAgentKey(key)?.serverId === serverId && !keys.has(key))
+      await lastSessions.del(key);
   if (launches.length === 0) return [];
   const machines = new Map(
     (await listCloudMachines(server)).map((machine) => [machine.machine_id, machine])
   );
   return launches.map((launch): CloudAgent => {
     const machine = launch.machine_id === null ? null : (machines.get(launch.machine_id) ?? null);
+    const key = cloudAgentKey(serverId, launch.request_id);
+    const problem = launchProblem(launch, machine);
     return {
-      key: cloudAgentKey(serverId, launch.request_id),
+      key,
       launch,
       machine,
-      sessions: null,
-      problem: launchProblem(launch, machine),
+      sessions: problem && KEEPS_LAST_SESSIONS.has(problem.code) ? (stored[key] ?? null) : null,
+      problem,
     };
   });
 }
 
 /**
  * A cloud agent's sessions, asked of its worker over the relay. A worker that
- * cannot be asked is reported with the relay's code rather than as no sessions.
+ * cannot be asked is reported with the relay's code rather than as no sessions,
+ * beside the sessions last read while its machine is down.
  */
 export async function listCloudSessions(agentId: string): Promise<CloudSessions> {
+  let sessions: Session[];
   try {
-    return { sessions: await (await cloudControl(agentId)).list(), problem: null };
+    sessions = await (await cloudControl(agentId)).list();
   } catch (error) {
+    const problem: CloudRelayProblem =
+      error instanceof CloudRelayError
+        ? {
+            code: error.relayCode,
+            message: error.message,
+            wakeAvailable: error.wakeAvailable,
+          }
+        : {
+            code: 'failed',
+            message: error instanceof Error ? error.message : String(error),
+            wakeAvailable: false,
+          };
     return {
-      sessions: null,
-      problem:
-        error instanceof CloudRelayError
-          ? {
-              code: error.relayCode,
-              message: error.message,
-              wakeAvailable: error.wakeAvailable,
-            }
-          : {
-              code: 'failed',
-              message: error instanceof Error ? error.message : String(error),
-              wakeAvailable: false,
-            },
+      sessions: KEEPS_LAST_SESSIONS.has(problem.code) ? await lastSessions.get(agentId) : null,
+      problem,
     };
   }
+  await lastSessions.set(agentId, sessions);
+  return { sessions, problem: null };
 }
 
 /**

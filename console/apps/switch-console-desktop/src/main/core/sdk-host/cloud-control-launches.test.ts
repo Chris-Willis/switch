@@ -13,6 +13,16 @@ const { FakeGatewayError } = vi.hoisted(() => ({
 }));
 
 const gateway = vi.hoisted(() => ({ answer: null as (() => unknown) | null }));
+const kvRows = vi.hoisted(() => new Map<string, unknown>());
+
+vi.mock('@main/db/kv', () => ({
+  KV: class {
+    get = async (key: string) => kvRows.get(key) ?? null;
+    set = async (key: string, value: unknown) => void kvRows.set(key, structuredClone(value));
+    del = async (key: string) => void kvRows.delete(key);
+    getAll = async () => Object.fromEntries(kvRows);
+  },
+}));
 
 vi.mock('@switch-console/agent-providers', () => ({
   CloudRelayClient: class {},

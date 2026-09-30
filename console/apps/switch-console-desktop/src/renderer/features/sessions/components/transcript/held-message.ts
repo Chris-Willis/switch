@@ -39,11 +39,18 @@ export function relayRefusalText(error: unknown): string | null {
     : null;
 }
 
-/** What the composer says while it holds a message, by where the machine is. */
-export function heldStatusText(machineAwake: boolean): string {
-  return machineAwake
-    ? 'The machine is awake. Connecting to the session, then your message is sent.'
-    : 'Waking… about 1–2 min. Keep Switch Console open until the machine is awake.';
+/**
+ * What a held message waits on: the machine waking, only the agent starting on
+ * a machine already up, or the session connecting once both are.
+ */
+export type HeldWait = 'machine' | 'agent' | 'session';
+
+/** What the composer says while it holds a message, by what it waits on. */
+export function heldStatusText(wait: HeldWait): string {
+  if (wait === 'session')
+    return 'The machine is awake. Connecting to the session, then your message is sent.';
+  if (wait === 'agent') return 'Starting the agent… Your message is sent when it is ready.';
+  return 'Waking… about 1–2 min. Keep Switch Console open until the machine is awake.';
 }
 
 const heldBySession = new Map<string, HeldMessage>();
