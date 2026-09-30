@@ -1,18 +1,23 @@
 import asyncio
 import json
+import logging
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 
 from switch_core.bridges.agent.api.hosted_cutover_routes import (
     router as hosted_cutover_router,
+)
+from switch_core.bridges.agent.api.hosted_machine_routes import (
+    router as hosted_machine_router,
 )
 from switch_core.bridges.agent.api.hosted_routes import router as worker_router
 from switch_core.bridges.agent.api.hosted_worker_routes import (
@@ -22,6 +27,9 @@ from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import get_config as get_worker_config
 from switch_core.bridges.agent.dependencies import get_protocol as get_worker_protocol
 from switch_core.bridges.agent.dependencies import get_session as get_worker_session
+from switch_core.bridges.agent.dependencies import (
+    get_session_factory as get_worker_session_factory,
+)
 from switch_core.bridges.agent.protocol.connections import (
     ClientDeclaration,
     Connection,
@@ -32,19 +40,20 @@ from switch_core.bridges.agent.protocol.service import AgentExistsError
 from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
-    ApiKey,
     GitHubIssuedToken,
     HostedLaunch,
+    HostedMachine,
     HostedOperation,
     ProviderConnection,
-    Skill,
     TenantMember,
     User,
-    agent_skills,
     require_tenant_id,
 )
-from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
+from switch_core.db.stores.hosted_machine_store import (
+    HostedMachineStore,
+    lock_launch,
+)
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
 from switch_core.gateway.auth import get_current_user, get_current_user_in_transaction
 from switch_core.gateway.dependencies import (
@@ -53,9 +62,10 @@ from switch_core.gateway.dependencies import (
     get_session,
     get_session_factory,
 )
-from switch_core.gateway.hosted_controller import launch_by_id, router
+from switch_core.gateway.hosted_controller import router
 from switch_core.gateway.hosted_launches import router as launch_router
 from switch_core.gateway.hosted_relay import router as relay_router
+from switch_core.gateway.known_agents import KNOWN_AGENTS
 from switch_core.providers.github_installation import (
     GitHubInstallationCredentials,
     RepositoryCredential,
@@ -67,40 +77,81 @@ from tests.switch_core.bridges.agent.protocol.registration_harness import (
     make_owner,
     make_service,
 )
+from tests.switch_core.hosted_machine_helpers import seed_launch, seed_machine
 
 TOKEN = "SYNTHETIC-CONTROLLER-CREDENTIAL-FOR-TESTS"
+HEADERS = {"Authorization": "Bearer " + TOKEN}
+FIXTURES = Path(__file__).parent.parent / "fixtures" / "hosted_machines"
+MACHINE_ITEM_KEYS = {
+    "machine_id",
+    "slot_id",
+    "generation",
+    "state",
+    "desired_state",
+    "revision",
+    "data_volume_id",
+    "retain_until",
+    "bundle_revision",
+}
+
+
+def fixture(name: str) -> dict:
+    return json.loads((FIXTURES / name).read_text())
+
+
+async def register_hosted_agent(
+    service, *, owner: str, request_id: str, name: str, spec: dict
+) -> str:
+    """Register a launch's agent identity the way launch creation does."""
+    known = KNOWN_AGENTS["claude-code"]
+    options = known.parse_options(
+        {
+            "channels_enabled": True,
+            "repo_dir": "/data/worktrees/agent/workspace",
+            "auto_session": spec["auto_session"],
+        }
+    )
+    result = await service.register_agent(
+        name=name,
+        description=spec["description"],
+        display_name=spec["display_name"],
+        icon_url=spec["icon_url"],
+        connector_type=known.connector_type,
+        integration_profile=known.build_profile(options),
+        tools=known.tools,
+        models=known.models,
+        metadata={
+            "known_agent_type": "claude-code",
+            "known_agent_options": options.model_dump(),
+            "hosted_launch_id": request_id,
+        },
+        owner_id=owner,
+    )
+    return result.agent_id
+
+
+SPEC = {
+    "description": "Cloud helper",
+    "display_name": None,
+    "icon_url": None,
+    "instructions": "Help with the repository.",
+    "auto_session": True,
+    "auto_approve": False,
+    "addressing_policy": None,
+    "definition_attributes": {},
+    "installation_id": 123,
+    "repository_id": 456,
+}
 
 
 @pytest.fixture
 async def controller_app(session_factory, monkeypatch, tmp_path):
+    """A queued machine with one queued launch whose agent is registered."""
     owner = await make_owner(session_factory)
     request_id = str(uuid4())
-    agent_id = str(uuid4())
-    spec = {
-        "description": "Cloud helper",
-        "display_name": None,
-        "icon_url": None,
-        "instructions": "Help with the repository.",
-        "auto_session": True,
-        "auto_approve": False,
-        "addressing_policy": None,
-        "definition_attributes": {},
-        "installation_id": 123,
-        "repository_id": 456,
-    }
     async with session_factory() as session:
         session.add(
             TenantMember(tenant_id=require_tenant_id(), user_id=owner, role="member")
-        )
-        session.add(
-            HostedLaunch(
-                id=request_id,
-                owner_id=owner,
-                name="cloud-helper",
-                spec=spec,
-                state="queued",
-                agent_id=agent_id,
-            )
         )
         session.add(
             ProviderConnection(
@@ -133,10 +184,38 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
     service.connections = ConnectionRegistry()
     service.event_buffer = SimpleNamespace(boot=1, remove=Mock())
     service.config.hosted_idle_stop_minutes = 0
+    agent_id = await register_hosted_agent(
+        service, owner=owner, request_id=request_id, name="cloud-helper", spec=SPEC
+    )
+    async with session_factory() as session:
+        machine = await seed_machine(
+            session,
+            owner_id=owner,
+            slot_id="slot-a",
+            state="queued",
+            desired_state="running",
+            stop_reason=None,
+            revision=1,
+            generation=1,
+        )
+        await seed_launch(
+            session,
+            machine=machine,
+            request_id=request_id,
+            name="cloud-helper",
+            state="queued",
+            desired_state="running",
+            revision=1,
+            agent_id=agent_id,
+            spec=SPEC,
+        )
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        launch.repository = "example/project"
+        await session.commit()
     settings = HostedControllerSettings(
         tenant_id=require_tenant_id(),
         token=TOKEN,
-        agent_ids=[UUID(agent_id)],
+        machine_slots=["slot-a", "slot-b"],
         github_private_key_path="/tmp/synthetic-signing-key.pem",
         agent_api_endpoint="https://switch.example.com/api/agent",
     )
@@ -146,6 +225,7 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
     app.state.github_connections = SimpleNamespace(client_id="synthetic-app")
     app.include_router(router)
     app.include_router(worker_router)
+    app.include_router(hosted_machine_router)
     app.include_router(hosted_worker_router, prefix="/agents")
     app.include_router(hosted_cutover_router, prefix="/agents")
     app.include_router(launch_router)
@@ -176,6 +256,7 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
     app.dependency_overrides[get_agent_from_scope] = worker_agent
     app.dependency_overrides[get_worker_config] = lambda: service.config
     app.dependency_overrides[get_worker_session] = worker_session
+    app.dependency_overrides[get_worker_session_factory] = lambda: session_factory
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_config] = lambda: service.config
     app.dependency_overrides[get_protocol] = lambda: service
@@ -189,10 +270,6 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
         )
     )
     monkeypatch.setattr(
-        "switch_core.gateway.hosted_controller.GitHubInstallationCredentials",
-        lambda *_: SimpleNamespace(issue=issue, revoke=AsyncMock()),
-    )
-    monkeypatch.setattr(
         "switch_core.bridges.agent.api.hosted_routes.GitHubConnections",
         lambda _: app.state.github_connections,
     )
@@ -204,6 +281,32 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
         transport=httpx.ASGITransport(app=app), base_url="https://switch.example.com"
     ) as client:
         yield client, request_id, agent_id, service, session_factory, settings
+
+
+async def machine_of(factory, request_id: str) -> HostedMachine:
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        machine = await session.get(
+            HostedMachine, (require_tenant_id(), launch.machine_id)
+        )
+        assert machine is not None
+        return machine
+
+
+async def update_machine(factory, machine_id: str, **values) -> None:
+    async with factory() as session:
+        machine = await session.get(HostedMachine, (require_tenant_id(), machine_id))
+        for key, value in values.items():
+            setattr(machine, key, value)
+        await session.commit()
+
+
+async def update_launch(factory, request_id: str, **values) -> None:
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        for key, value in values.items():
+            setattr(launch, key, value)
+        await session.commit()
 
 
 def attach_worker(
@@ -253,122 +356,612 @@ def report_idle(service, conn: Connection, *, busy: bool = False, seq: int = 1) 
     )
 
 
+async def list_machines(client) -> list[dict]:
+    response = await client.get("/hosted-controller/machines", headers=HEADERS)
+    assert response.status_code == 200, response.text
+    return response.json()["machines"]
+
+
+async def observe(client, machine_id: str, **body) -> dict:
+    response = await client.post(
+        f"/hosted-controller/machines/{machine_id}/observation",
+        headers=HEADERS,
+        json=body,
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 async def test_controller_requires_its_own_credential(controller_app):
-    client, request_id, *_ = controller_app
-    for path in (
-        "/hosted-controller",
-        f"/hosted-controller/{request_id}/prepare",
-        f"/hosted-controller/{request_id}/observation",
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    for method, path, body in (
+        ("GET", "/hosted-controller/machines", None),
+        ("POST", f"/hosted-controller/machines/{machine.id}/prepare", {}),
+        (
+            "POST",
+            f"/hosted-controller/machines/{machine.id}/observation",
+            {"state": "running", "revision": 1},
+        ),
     ):
         for token in (None, "Bearer wrong"):
             response = await client.request(
-                "GET" if path == "/hosted-controller" else "POST",
+                method,
                 path,
                 headers={} if token is None else {"Authorization": token},
-                json={} if path.endswith("prepare") else {"state": "running"},
+                json=body,
             )
             assert response.status_code == 401
+    assert (await machine_of(factory, request_id)).state == "queued"
 
 
-async def test_prepare_registers_once_and_does_not_create_a_room(controller_app):
-    client, request_id, agent_id, service, factory, _ = controller_app
-    headers = {"Authorization": "Bearer " + TOKEN}
-    responses = [
-        await client.post(f"/hosted-controller/{request_id}/prepare", headers=headers)
-        for _ in range(2)
-    ]
-    assert all(response.status_code == 200 for response in responses), [
-        response.text for response in responses
-    ]
-    assert (
-        responses[0].json()["switch_credentials"]
-        == responses[1].json()["switch_credentials"]
-    )
-    assert responses[0].headers["cache-control"] == "no-store"
-    assert len(service.client_lifecycle.started) == 1
+async def test_old_per_launch_controller_routes_are_gone(controller_app):
+    client, request_id, *_ = controller_app
+    assert (await client.get("/hosted-controller", headers=HEADERS)).status_code in {
+        404,
+        405,
+    }
+    for suffix in ("prepare", "observation"):
+        response = await client.post(
+            f"/hosted-controller/{request_id}/{suffix}", headers=HEADERS, json={}
+        )
+        assert response.status_code in {404, 405}
+
+
+async def test_machines_lists_every_live_machine_with_the_contract_keys(
+    controller_app,
+):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
     async with factory() as session:
-        assert await session.scalar(select(func.count()).select_from(Agent)) == 1
-        agent = await session.get(Agent, agent_id)
-        assert agent.integration_profile["connection_model"] == "auto_session"
-        assert agent.addressing_policy is not None
-    status = await client.get("/hosted-controller", headers=headers)
-    assert "SYNTHETIC" not in status.text
-    assert "switch_credentials" not in status.text
+        gone = await seed_machine(
+            session,
+            owner_id=machine.owner_id,
+            slot_id="slot-b",
+            state="deleted",
+            desired_state="deleted",
+            stop_reason=None,
+            revision=3,
+            generation=1,
+        )
+        await session.commit()
+    listed = await list_machines(client)
+    assert [item["machine_id"] for item in listed] == [machine.id]
+    assert gone.id not in {item["machine_id"] for item in listed}
+    assert set(listed[0]) == MACHINE_ITEM_KEYS
+    assert listed[0] == {
+        "machine_id": machine.id,
+        "slot_id": "slot-a",
+        "generation": 1,
+        "state": "queued",
+        "desired_state": "running",
+        "revision": 1,
+        "data_volume_id": None,
+        "retain_until": None,
+        "bundle_revision": None,
+    }
 
 
-async def test_running_vm_is_not_ready_without_the_watcher(controller_app):
-    client, request_id, service_agent_id, service, _, _ = controller_app
-    headers = {"Authorization": "Bearer " + TOKEN}
-    first = await client.post(
-        f"/hosted-controller/{request_id}/observation",
-        headers=headers,
+async def test_queued_machine_times_out_with_an_actionable_error(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    await update_machine(
+        factory, machine.id, updated_at=datetime.now(UTC) - timedelta(minutes=11)
+    )
+    [item] = await list_machines(client)
+    assert item["state"] == "error"
+    saved = await machine_of(factory, request_id)
+    assert saved.error_code == "machine_connect_timeout"
+    assert "10 minutes" in saved.error
+    assert "Retry" in saved.error
+
+
+async def test_recent_queued_machine_is_left_alone(controller_app):
+    client, request_id, *_ = controller_app
+    [item] = await list_machines(client)
+    assert item["state"] == "queued"
+
+
+async def test_running_machine_that_never_connects_times_out(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    await update_machine(
+        factory,
+        machine.id,
+        state="provisioning",
+        running_observed_at=datetime.now(UTC) - timedelta(minutes=11),
+    )
+    [item] = await list_machines(client)
+    assert item["state"] == "error"
+    saved = await machine_of(factory, request_id)
+    assert saved.error_code == "machine_connect_timeout"
+    assert "10 minutes" in saved.error
+
+
+async def test_connect_timeout_counts_from_the_running_observation(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    await update_machine(
+        factory,
+        machine.id,
+        state="provisioning",
+        updated_at=datetime.now(UTC) - timedelta(minutes=30),
+        running_observed_at=datetime.now(UTC) - timedelta(minutes=5),
+    )
+    [item] = await list_machines(client)
+    assert item["state"] == "provisioning"
+
+
+async def test_retention_sweep_deletes_an_expired_retained_machine(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    expired = datetime.now(UTC) - timedelta(seconds=1)
+    await update_machine(
+        factory,
+        machine.id,
+        state="retained",
+        desired_state="retained",
+        retain_until=expired,
+        revision=3,
+    )
+    [item] = await list_machines(client)
+    assert item["desired_state"] == "deleted"
+    assert item["revision"] == 4
+    assert item["retain_until"] == expired.isoformat()
+
+
+async def test_retention_sweep_keeps_a_machine_inside_its_window(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    until = datetime.now(UTC) + timedelta(days=3)
+    await update_machine(
+        factory,
+        machine.id,
+        state="retained",
+        desired_state="retained",
+        retain_until=until,
+        revision=3,
+    )
+    [item] = await list_machines(client)
+    assert item["desired_state"] == "retained"
+    assert item["revision"] == 3
+    assert item["retain_until"] == until.isoformat()
+
+
+async def test_prepare_is_idempotent_per_revision_and_rotates_on_a_new_one(
+    controller_app,
+):
+    client, request_id, _, _, factory, settings = controller_app
+    machine = await machine_of(factory, request_id)
+    path = f"/hosted-controller/machines/{machine.id}/prepare"
+    first = await client.post(path, headers=HEADERS, json={})
+    again = await client.post(path, headers=HEADERS, json={})
+    assert first.status_code == again.status_code == 200, first.text
+    assert first.headers["cache-control"] == "no-store"
+    assert first.json() == again.json()
+    body = first.json()
+    assert set(body) == {
+        "machine_id",
+        "slot_id",
+        "generation",
+        "revision",
+        "bundle_revision",
+        "machine_capability",
+        "api_endpoint",
+    }
+    assert body["machine_id"] == machine.id
+    assert body["slot_id"] == "slot-a"
+    assert body["generation"] == 1
+    assert body["revision"] == body["bundle_revision"] == 1
+    assert body["api_endpoint"] == settings.agent_api_endpoint
+    saved = await machine_of(factory, request_id)
+    assert saved.state == "provisioning"
+    assert HostedMachineStore.capability_matches(saved, body["machine_capability"])
+    [item] = await list_machines(client)
+    assert item["bundle_revision"] == 1
+    assert body["machine_capability"] not in json.dumps(item)
+
+    await update_machine(factory, machine.id, revision=2)
+    rotated = (await client.post(path, headers=HEADERS, json={})).json()
+    assert rotated["revision"] == rotated["bundle_revision"] == 2
+    assert rotated["machine_capability"] != body["machine_capability"]
+    saved = await machine_of(factory, request_id)
+    assert not HostedMachineStore.capability_matches(saved, body["machine_capability"])
+    assert HostedMachineStore.capability_matches(saved, rotated["machine_capability"])
+
+
+async def test_prepare_does_not_touch_launches_or_agents(controller_app):
+    client, request_id, agent_id, service, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    started = list(service.client_lifecycle.started)
+    response = await client.post(
+        f"/hosted-controller/machines/{machine.id}/prepare", headers=HEADERS, json={}
+    )
+    assert response.status_code == 200, response.text
+    assert service.client_lifecycle.started == started
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        assert launch.state == "queued"
+        assert launch.worker_capability_hash is None
+        assert await session.scalar(select(GitHubIssuedToken)) is None
+
+
+async def test_prepare_refuses_unknown_and_deleted_machines(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    missing = await client.post(
+        f"/hosted-controller/machines/{uuid4()}/prepare", headers=HEADERS, json={}
+    )
+    assert missing.status_code == 404
+    machine = await machine_of(factory, request_id)
+    await update_machine(factory, machine.id, desired_state="deleted")
+    deleted = await client.post(
+        f"/hosted-controller/machines/{machine.id}/prepare", headers=HEADERS, json={}
+    )
+    assert deleted.status_code == 409
+    assert deleted.json() == {"detail": "machine is deleted"}
+    assert (await machine_of(factory, request_id)).machine_capability_hash is None
+
+
+async def test_prepare_for_a_departed_owner_errors_the_machine(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    async with factory() as session:
+        await session.delete(
+            await session.get(TenantMember, (require_tenant_id(), machine.owner_id))
+        )
+        await session.commit()
+    response = await client.post(
+        f"/hosted-controller/machines/{machine.id}/prepare", headers=HEADERS, json={}
+    )
+    assert response.status_code == 409
+    assert "machine_capability" not in response.text
+    saved = await machine_of(factory, request_id)
+    assert saved.state == "error"
+    assert "workspace member" in saved.error
+    assert saved.machine_capability_hash is None
+
+
+async def test_controller_observation_fixture_is_accepted(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    body = fixture("controller_observation.json")
+    await update_machine(
+        factory, machine.id, state="provisioning", revision=body["revision"]
+    )
+    response = await client.post(
+        f"/hosted-controller/machines/{machine.id}/observation",
+        headers=HEADERS,
+        json=body,
+    )
+    assert response.status_code == 200, response.text
+    item = response.json()
+    assert set(item) == MACHINE_ITEM_KEYS
+    assert item["state"] == "provisioning"
+    assert item["data_volume_id"] == body["data_volume_id"]
+    saved = await machine_of(factory, request_id)
+    assert saved.instance_id == body["instance_id"]
+    assert saved.instance_type == body["instance_type"]
+    assert saved.running_observed_at is not None
+
+
+async def test_observation_rejects_unknown_fields_and_codes(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    path = f"/hosted-controller/machines/{machine.id}/observation"
+    for body in (
+        {"state": "running", "revision": 1, "surprise": True},
+        {"state": "error", "revision": 1, "error_code": "worker_needs_attention"},
+        {"state": "sleeping", "revision": 1},
+        {"state": "running", "revision": 0},
+    ):
+        assert (await client.post(path, headers=HEADERS, json=body)).status_code == 422
+    missing = await client.post(
+        f"/hosted-controller/machines/{uuid4()}/observation",
+        headers=HEADERS,
         json={"state": "running", "revision": 1},
     )
-    assert first.json()["state"] == "provisioning"
-    attach_worker(service, service_agent_id, request_id)
-    ready = await client.post(
-        f"/hosted-controller/{request_id}/observation",
-        headers=headers,
-        json={"state": "running", "revision": 1},
+    assert missing.status_code == 404
+
+
+async def test_stale_observation_is_ignored_unless_it_carries_an_error(
+    controller_app,
+):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    await update_machine(
+        factory,
+        machine.id,
+        state="stopping",
+        desired_state="stopped",
+        stop_reason="owner",
+        revision=2,
     )
-    assert ready.json()["state"] == "ready"
+    ignored = await observe(
+        client, machine.id, state="running", revision=1, data_volume_id="vol-stale"
+    )
+    assert ignored["state"] == "stopping"
+    assert ignored["desired_state"] == "stopped"
+    assert ignored["data_volume_id"] is None
+    ahead = await observe(client, machine.id, state="stopped", revision=3)
+    assert ahead["state"] == "stopping"
+    recorded = await observe(
+        client,
+        machine.id,
+        state="error",
+        revision=1,
+        error="The instance could not be stopped.",
+        error_code="machine_needs_attention",
+    )
+    assert recorded["state"] == "error"
+    saved = await machine_of(factory, request_id)
+    assert saved.error == "The instance could not be stopped."
+    assert saved.error_code == "machine_needs_attention"
+
+
+async def test_running_observation_waits_for_a_heartbeat(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    await update_machine(factory, machine.id, state="provisioning")
+    first = await observe(client, machine.id, state="running", revision=1)
+    assert first["state"] == "provisioning"
+    observed = (await machine_of(factory, request_id)).running_observed_at
+    assert observed is not None
+    again = await observe(client, machine.id, state="running", revision=1)
+    assert again["state"] == "provisioning"
+    assert (await machine_of(factory, request_id)).running_observed_at == observed
+    await update_machine(factory, machine.id, state="ready")
+    assert (await observe(client, machine.id, state="running", revision=1))[
+        "state"
+    ] == "ready"
+    assert (await observe(client, machine.id, state="provisioning", revision=1))[
+        "state"
+    ] == "ready"
+
+
+@pytest.mark.parametrize(
+    "state", ["stopping", "stopped", "deleting", "deleted", "retained"]
+)
+async def test_lifecycle_observations_are_copied(controller_app, state):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    await update_machine(factory, machine.id, state="ready", error_code="disk_full")
+    item = await observe(client, machine.id, state=state, revision=1)
+    assert item["state"] == state
+    assert (await machine_of(factory, request_id)).error_code is None
+
+
+async def test_error_observation_is_kept_until_retry(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    await update_machine(factory, machine.id, state="provisioning")
+    errored = await observe(
+        client,
+        machine.id,
+        state="error",
+        revision=1,
+        error="The instance failed its status checks.",
+        error_code="machine_needs_attention",
+    )
+    assert errored["state"] == "error"
+    for state in ("running", "provisioning", "stopped"):
+        assert (await observe(client, machine.id, state=state, revision=1))[
+            "state"
+        ] == "error"
+    saved = await machine_of(factory, request_id)
+    assert saved.error == "The instance failed its status checks."
+    assert saved.error_code == "machine_needs_attention"
+    defaulted = await observe(client, machine.id, state="error", revision=1)
+    assert defaulted["state"] == "error"
+    saved = await machine_of(factory, request_id)
+    assert "Retry" in saved.error
+    assert saved.error_code is None
+
+
+async def test_deleted_observation_with_live_launches_logs_an_invariant_failure(
+    controller_app, caplog
+):
+    client, request_id, agent_id, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    with caplog.at_level(logging.ERROR, logger="switch_core.gateway.hosted_controller"):
+        item = await observe(client, machine.id, state="deleted", revision=1)
+    assert item["state"] == "deleted"
+    assert request_id in caplog.text
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        assert launch.state == "queued"
+        assert await session.get(Agent, agent_id) is not None
+    assert await list_machines(client) == []
+
+
+async def _idle_ready(
+    controller_app, *, minutes: int, report: bool = True, busy: bool = False
+) -> Connection:
+    """A ready machine whose one launch and the machine itself went quiet 31 minutes ago."""
+    _, request_id, agent_id, service, factory, _ = controller_app
+    service.config.hosted_idle_stop_minutes = minutes
+    machine = await machine_of(factory, request_id)
+    long_ago = datetime.now(UTC) - timedelta(minutes=31)
+    await update_machine(factory, machine.id, state="ready", active_at=long_ago)
+    await update_launch(factory, request_id, state="ready", active_at=long_ago)
+    conn = attach_worker(service, agent_id, request_id)
+    if report:
+        report_idle(service, conn, busy=busy)
+    return conn
+
+
+async def test_idle_machine_sleeps_when_every_agent_and_the_machine_are_idle(
+    controller_app,
+):
+    client, request_id, *_ = controller_app
+    await _idle_ready(controller_app, minutes=30)
+    [item] = await list_machines(client)
+    assert item["desired_state"] == "stopped"
+    assert item["revision"] == 2
+    saved = await machine_of(controller_app[4], request_id)
+    assert saved.stop_reason == "idle"
+    assert saved.running_observed_at is None
+    async with controller_app[4]() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        assert launch.state == "ready"
+        assert launch.desired_state == "running"
+        assert launch.revision == 1
+
+
+async def test_auto_session_does_not_exempt_an_agent_from_idle_stop(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    await update_launch(factory, request_id, spec={**SPEC, "auto_session": False})
+    await _idle_ready(controller_app, minutes=30)
+    [item] = await list_machines(client)
+    assert item["desired_state"] == "stopped"
+
+
+async def test_recent_machine_activity_keeps_it_awake(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    await _idle_ready(controller_app, minutes=30)
+    machine = await machine_of(factory, request_id)
+    await update_machine(
+        factory, machine.id, active_at=datetime.now(UTC) - timedelta(minutes=5)
+    )
+    [item] = await list_machines(client)
+    assert item["desired_state"] == "running"
+
+
+async def test_recent_agent_activity_keeps_it_awake(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    await _idle_ready(controller_app, minutes=30)
+    await update_launch(
+        factory, request_id, active_at=datetime.now(UTC) - timedelta(minutes=5)
+    )
+    [item] = await list_machines(client)
+    assert item["desired_state"] == "running"
+
+
+async def test_a_report_older_than_the_last_activity_is_not_evidence(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    await _idle_ready(controller_app, minutes=30)
+    await update_launch(
+        factory, request_id, active_at=datetime.now(UTC) - timedelta(seconds=1)
+    )
+    [item] = await list_machines(client)
+    assert item["desired_state"] == "running"
+
+
+async def test_missing_idle_report_counts_as_busy(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    before = datetime.now(UTC)
+    await _idle_ready(controller_app, minutes=30, report=False)
+    [item] = await list_machines(client)
+    assert item["desired_state"] == "running"
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        assert launch.active_at >= before
+
+
+async def test_busy_agent_renews_its_activity_and_keeps_the_machine_awake(
+    controller_app,
+):
+    client, request_id, _, _, factory, _ = controller_app
+    before = datetime.now(UTC)
+    await _idle_ready(controller_app, minutes=30, busy=True)
+    [item] = await list_machines(client)
+    assert item["desired_state"] == "running"
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        assert launch.active_at >= before
+
+
+async def _second_launch(controller_app, **values) -> str:
+    _, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    second = str(uuid4())
+    async with factory() as session:
+        await seed_launch(
+            session,
+            machine=machine,
+            request_id=second,
+            name="cloud-second",
+            state=values.pop("state", "ready"),
+            desired_state=values.pop("desired_state", "running"),
+            revision=1,
+            agent_id=values.pop("agent_id", None),
+            spec=SPEC,
+        )
+        await session.commit()
+    await update_launch(factory, second, **values)
+    return second
+
+
+async def test_one_busy_agent_keeps_the_whole_machine_awake(controller_app):
+    client, *_ = controller_app
+    await _idle_ready(controller_app, minutes=30)
+    await _second_launch(
+        controller_app, active_at=datetime.now(UTC) - timedelta(minutes=31)
+    )
+    [item] = await list_machines(client)
+    assert item["desired_state"] == "running"
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"state": "error", "error_code": "agent_crashed"},
+        {"state": "stopped", "desired_state": "stopped"},
+    ],
+    ids=["crashed", "stopped"],
+)
+async def test_crashed_and_stopped_agents_do_not_keep_the_machine_awake(
+    controller_app, values
+):
+    client, *_ = controller_app
+    await _idle_ready(controller_app, minutes=30)
+    await _second_launch(controller_app, **values)
+    [item] = await list_machines(client)
+    assert item["desired_state"] == "stopped"
+
+
+async def test_machine_with_no_counted_agents_sleeps(controller_app):
+    client, request_id, agent_id, service, factory, _ = controller_app
+    await _idle_ready(controller_app, minutes=30, report=False)
+    await update_launch(factory, request_id, state="stopped", desired_state="stopped")
+    [item] = await list_machines(client)
+    assert item["desired_state"] == "stopped"
+
+
+async def test_idle_stop_is_off_when_the_setting_is_zero(controller_app):
+    client, *_ = controller_app
+    await _idle_ready(controller_app, minutes=0)
+    [item] = await list_machines(client)
+    assert item["desired_state"] == "running"
+    assert item["revision"] == 1
+
+
+async def test_only_a_ready_running_machine_is_put_to_sleep(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    await _idle_ready(controller_app, minutes=30)
+    machine = await machine_of(factory, request_id)
+    await update_machine(factory, machine.id, state="provisioning")
+    [item] = await list_machines(client)
+    assert item["desired_state"] == "running"
 
 
 async def test_worker_renewal_is_bound_to_its_owner_and_selected_repository(
     controller_app,
 ):
     client, request_id, agent_id, _, factory, _ = controller_app
-    await client.post(
-        f"/hosted-controller/{request_id}/prepare",
-        headers={"Authorization": "Bearer " + TOKEN},
-    )
     renewed = await client.post("/hosted/github-credential")
     assert renewed.status_code == 200, renewed.text
     assert renewed.json()["repository"] == "example/project"
     assert renewed.headers["cache-control"] == "no-store"
-    async with factory() as session:
-        row = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-        row.agent_id = str(uuid4())
-        await session.commit()
+    await update_launch(factory, request_id, agent_id=str(uuid4()))
     denied = await client.post("/hosted/github-credential")
     assert denied.status_code == 403
     assert "SYNTHETIC" not in denied.text
 
 
-async def test_prepare_reports_a_name_taken_during_provisioning(
-    controller_app, monkeypatch
-):
-    client, request_id, _, service, *_ = controller_app
-    monkeypatch.setattr(
-        service, "register_agent", AsyncMock(side_effect=AgentExistsError())
-    )
-    response = await client.post(
-        f"/hosted-controller/{request_id}/prepare",
-        headers={"Authorization": "Bearer " + TOKEN},
-    )
-    assert response.status_code == 422
-    assert "name" in response.json()["detail"]
-
-
 async def test_worker_claim_is_durable_and_stale_claim_is_not_replayed(controller_app):
     client, request_id, agent_id, service, factory, _ = controller_app
-    await client.post(
-        f"/hosted-controller/{request_id}/prepare",
-        headers={"Authorization": "Bearer " + TOKEN},
-    )
     conn = attach_worker(service, agent_id, request_id)
-    operation_id = str(uuid4())
-    async with factory() as session:
-        session.add(
-            HostedOperation(
-                id=operation_id,
-                launch_id=request_id,
-                launch_revision=1,
-                session_id=str(uuid4()),
-                action="start",
-            )
-        )
-        await session.commit()
+    operation_id = await _queued_operation(factory, request_id)
     claim_path = f"/hosted/operations/{operation_id}/claim"
     claimed_by = f"1:{conn.id}:{conn.stream_generation}"
     claim = await client.post(claim_path, json=fence(conn))
@@ -418,10 +1011,6 @@ async def _queued_operation(factory, request_id: str, revision: int = 1) -> str:
 
 async def test_operation_claim_is_refused_to_a_non_worker(controller_app):
     client, request_id, agent_id, service, factory, _ = controller_app
-    await client.post(
-        f"/hosted-controller/{request_id}/prepare",
-        headers={"Authorization": "Bearer " + TOKEN},
-    )
     operation_id = await _queued_operation(factory, request_id)
     plain = service.connections.open(
         agent_id=agent_id,
@@ -447,10 +1036,6 @@ async def test_operation_claim_is_refused_to_a_non_worker(controller_app):
 
 async def test_a_lost_claim_reply_is_offered_again_and_claimed_once(controller_app):
     client, request_id, agent_id, service, factory, _ = controller_app
-    await client.post(
-        f"/hosted-controller/{request_id}/prepare",
-        headers={"Authorization": "Bearer " + TOKEN},
-    )
     operation_id = await _queued_operation(factory, request_id)
     conn = attach_worker(service, agent_id, request_id)
     claim_path = f"/hosted/operations/{operation_id}/claim"
@@ -488,10 +1073,6 @@ async def test_a_lost_claim_reply_is_offered_again_and_claimed_once(controller_a
 
 async def test_lost_result_is_reposted_from_a_later_generation(controller_app):
     client, request_id, agent_id, service, factory, _ = controller_app
-    await client.post(
-        f"/hosted-controller/{request_id}/prepare",
-        headers={"Authorization": "Bearer " + TOKEN},
-    )
     operation_id = await _queued_operation(factory, request_id)
     conn = attach_worker(service, agent_id, request_id)
     claimed = await client.post(
@@ -515,50 +1096,8 @@ async def test_lost_result_is_reposted_from_a_later_generation(controller_app):
     assert refused.status_code == 409
 
 
-async def test_operation_insert_rings_the_worker(controller_app, monkeypatch):
-    client, request_id, agent_id, service, factory, _ = controller_app
-    monkeypatch.setattr(
-        "switch_core.gateway.hosted_launches.OPERATION_RERING_SECONDS", 0.01
-    )
-    await client.post(
-        f"/hosted-controller/{request_id}/prepare",
-        headers={"Authorization": "Bearer " + TOKEN},
-    )
-    async with factory() as session:
-        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-        launch.state = "ready"
-        await session.commit()
-    conn = attach_worker(service, agent_id, request_id)
-    conn.worker_frames.drain()
-    body = {"id": str(uuid4()), "session_id": str(uuid4()), "action": "start"}
-    created = await client.post(f"/hosted-launches/{request_id}/sessions", json=body)
-    assert created.status_code == 202, created.text
-    assert created.json()["state"] == "queued"
-    again = await client.post(f"/hosted-launches/{request_id}/sessions", json=body)
-    assert again.json()["id"] == body["id"]
-    other = await client.post(
-        f"/hosted-launches/{request_id}/sessions",
-        json={**body, "id": str(uuid4())},
-    )
-    assert other.status_code == 409
-    await asyncio.sleep(0.2)
-    rings = [data for event, data in conn.worker_frames.drain() if event == "operation"]
-    assert rings and all(data == {"id": body["id"]} for data in rings)
-    assert len(rings) <= 1 + 2 * 6
-    claimed = await client.post(
-        f"/hosted/operations/{body['id']}/claim", json=fence(conn)
-    )
-    assert claimed.status_code == 200
-    await asyncio.sleep(0.1)
-    assert not [e for e, _ in conn.worker_frames.drain() if e == "operation"]
-
-
 async def test_provider_refresh_and_revocation_are_owner_bound(controller_app):
     client, request_id, _, _, factory, _ = controller_app
-    await client.post(
-        f"/hosted-controller/{request_id}/prepare",
-        headers={"Authorization": "Bearer " + TOKEN},
-    )
     response = await client.post("/hosted/provider-credential")
     assert response.status_code == 200
     assert response.json()["status"] == "connected"
@@ -570,197 +1109,13 @@ async def test_provider_refresh_and_revocation_are_owner_bound(controller_app):
     assert (await client.post("/hosted/provider-credential")).json() == {
         "status": "revoked"
     }
-    async with factory() as session:
-        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-        launch.desired_state = "deleted"
-        await session.commit()
+    await update_launch(factory, request_id, desired_state="deleted")
     assert (await client.post("/hosted/provider-credential")).status_code == 403
     assert (await client.post("/hosted/github-credential")).status_code == 403
 
 
-async def test_old_controller_observation_cannot_overwrite_new_desired_state(
-    controller_app,
-):
-    client, request_id, _, _, factory, _ = controller_app
-    async with factory() as session:
-        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-        launch.revision = 2
-        launch.desired_state = "stopped"
-        launch.state = "stopping"
-        await session.commit()
-    response = await client.post(
-        f"/hosted-controller/{request_id}/observation",
-        headers={"Authorization": "Bearer " + TOKEN},
-        json={"state": "running", "revision": 1},
-    )
-    assert response.json()["state"] == "stopping"
-    assert response.json()["desired_state"] == "stopped"
-
-
-async def test_error_is_preserved_until_explicit_lifecycle_retry(controller_app):
-    client, request_id, _, _, factory, _ = controller_app
-    async with factory() as session:
-        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-        launch.state = "error"
-        launch.error = "Reconnect the provider."
-        await session.commit()
-    for state in ["stopping", "stopped", "running"]:
-        response = await client.post(
-            f"/hosted-controller/{request_id}/observation",
-            headers={"Authorization": "Bearer " + TOKEN},
-            json={"state": state, "revision": 1},
-        )
-        assert response.json()["state"] == "error"
-        assert response.json()["error"] == "Reconnect the provider."
-
-
-async def test_startup_without_connection_times_out_with_actionable_error(
-    controller_app,
-):
-    client, request_id, _, _, factory, _ = controller_app
-    async with factory() as session:
-        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-        launch.state = "provisioning"
-        launch.updated_at = datetime.now(UTC) - timedelta(minutes=11)
-        await session.commit()
-    result = await client.post(
-        f"/hosted-controller/{request_id}/observation",
-        headers={"Authorization": "Bearer " + TOKEN},
-        json={"state": "running", "revision": 1},
-    )
-    assert result.json()["state"] == "error"
-    assert "10 minutes" in result.json()["error"]
-
-
-async def test_running_observation_does_not_undo_requested_stop(controller_app):
-    client, request_id, _, _, factory, _ = controller_app
-    async with factory() as session:
-        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-        launch.state = "stopping"
-        launch.desired_state = "stopped"
-        await session.commit()
-    result = await client.post(
-        f"/hosted-controller/{request_id}/observation",
-        headers={"Authorization": "Bearer " + TOKEN},
-        json={"state": "running", "revision": 1},
-    )
-    assert result.json()["state"] == "stopping"
-
-
-async def _idle_ready(controller_app, *, minutes: int, **spec) -> Connection:
-    _, request_id, agent_id, service, factory, _ = controller_app
-    service.config.hosted_idle_stop_minutes = minutes
-    conn = attach_worker(service, agent_id, request_id)
-    async with factory() as session:
-        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-        launch.spec = {**launch.spec, **spec}
-        launch.state = "ready"
-        launch.active_at = datetime.now(UTC) - timedelta(minutes=31)
-        await session.commit()
-    return conn
-
-
-async def _observe_running(controller_app) -> dict:
-    client, request_id, *_ = controller_app
-    response = await client.post(
-        f"/hosted-controller/{request_id}/observation",
-        headers={"Authorization": "Bearer " + TOKEN},
-        json={"state": "running", "revision": 1},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()
-
-
-async def test_idle_stop_is_off_when_unset(controller_app):
-    await _idle_ready(controller_app, minutes=0)
-    result = await _observe_running(controller_app)
-    assert result["state"] == "ready"
-    assert result["sleeping"] is False
-
-
-async def test_worker_without_auto_session_is_never_idle_stopped(controller_app):
-    await _idle_ready(controller_app, minutes=30, auto_session=False)
-    assert (await _observe_running(controller_app))["state"] == "ready"
-
-
-async def test_idle_stop_refuses_to_guess_whether_a_worker_is_idle(controller_app):
-    await _idle_ready(controller_app, minutes=30)
-    result = await _observe_running(controller_app)
-    assert result["state"] == "ready"
-    assert result["sleeping"] is False
-
-
-async def test_idle_stop_on_fresh_idle_report(controller_app):
-    service = controller_app[3]
-    conn = await _idle_ready(controller_app, minutes=30)
-    report_idle(service, conn)
-    result = await _observe_running(controller_app)
-    assert result["state"] == "stopping"
-    assert result["sleeping"] is True
-    assert service.connections.get(conn.id) is None
-
-
-async def test_busy_idle_report_renews_activity(controller_app):
-    service = controller_app[3]
-    conn = await _idle_ready(controller_app, minutes=30)
-    report_idle(service, conn, busy=True)
-    result = await _observe_running(controller_app)
-    assert result["state"] == "ready"
-    assert result["sleeping"] is False
-
-
-async def test_preparation_does_not_hold_launch_lock_during_github_call(
-    controller_app, monkeypatch
-):
-    client, request_id, _, _, factory, _ = controller_app
-
-    async def issue(*args):
-        async with factory() as session:
-            launch = await asyncio.wait_for(
-                launch_by_id(session, UUID(request_id)), timeout=1
-            )
-            launch.desired_state = "stopped"
-            launch.revision += 1
-            await session.commit()
-        return RepositoryCredential(
-            "SYNTHETIC-REPOSITORY",
-            datetime.now(UTC) + timedelta(hours=1),
-            456,
-            "example/project",
-        )
-
-    monkeypatch.setattr(
-        "switch_core.gateway.hosted_controller.GitHubInstallationCredentials",
-        lambda *_: SimpleNamespace(issue=issue, revoke=AsyncMock()),
-    )
-    result = await client.post(
-        f"/hosted-controller/{request_id}/prepare",
-        headers={"Authorization": "Bearer " + TOKEN},
-        json={},
-    )
-    assert result.status_code == 409
-    async with factory() as session:
-        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-        assert launch.desired_state == "stopped"
-
-
-async def test_previous_stopped_observation_cannot_label_a_wake_stopped(controller_app):
-    client, request_id, _, _, factory, _ = controller_app
-    result = await client.post(
-        f"/hosted-controller/{request_id}/observation",
-        headers={"Authorization": "Bearer " + TOKEN},
-        json={"state": "stopped", "revision": 1},
-    )
-    assert result.status_code == 200
-    assert result.json()["state"] == "provisioning"
-
-
 async def test_provider_status_waits_then_rejects_replaced_revision(controller_app):
     client, request_id, _, _, factory, _ = controller_app
-    await client.post(
-        f"/hosted-controller/{request_id}/prepare",
-        headers={"Authorization": "Bearer " + TOKEN},
-    )
     old = (await client.post("/hosted/provider-credential")).json()
     async with factory() as writer:
         launch = await writer.get(HostedLaunch, (require_tenant_id(), request_id))
@@ -795,15 +1150,11 @@ async def test_provider_status_waits_then_rejects_replaced_revision(controller_a
         assert saved.verification_status == "configured"
 
 
-@pytest.mark.parametrize("desired", ["stopped", "removed"])
+@pytest.mark.parametrize("desired", ["stopped", "deleted"])
 async def test_provider_status_does_not_overwrite_stop_during_lock_wait(
     controller_app, desired
 ):
     client, request_id, _, _, factory, _ = controller_app
-    await client.post(
-        f"/hosted-controller/{request_id}/prepare",
-        headers={"Authorization": "Bearer " + TOKEN},
-    )
     old = (await client.post("/hosted/provider-credential")).json()
     async with factory() as writer:
         launch = await writer.get(HostedLaunch, (require_tenant_id(), request_id))
@@ -829,32 +1180,11 @@ async def test_provider_status_does_not_overwrite_stop_during_lock_wait(
         assert saved.state == "stopping"
 
 
-async def test_queued_launch_times_out_without_a_worker(controller_app):
-    client, request_id, _, _, factory, _ = controller_app
-    async with factory() as session:
-        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-        launch.updated_at = datetime.now(UTC) - timedelta(minutes=11)
-        await session.commit()
-    response = await client.get(
-        "/hosted-controller", headers={"Authorization": "Bearer " + TOKEN}
-    )
-    assert response.status_code == 200
-    launch = next(row for row in response.json() if row["request_id"] == request_id)
-    assert launch["state"] == "error"
-    assert "not scheduled" in launch["error"]
-
-
 @pytest.mark.parametrize("change", ["stop", "relink", "disconnect", "revoke_failure"])
 async def test_worker_token_is_revoked_when_authorization_changes_during_issue(
     controller_app, monkeypatch, change
 ):
     client, request_id, _, _, factory, _ = controller_app
-    assert (
-        await client.post(
-            f"/hosted-controller/{request_id}/prepare",
-            headers={"Authorization": "Bearer " + TOKEN},
-        )
-    ).status_code == 200
     revoke = AsyncMock(
         side_effect=RuntimeError("Synthetic revocation failure")
         if change == "revoke_failure"
@@ -863,7 +1193,8 @@ async def test_worker_token_is_revoked_when_authorization_changes_during_issue(
 
     async def issue(*args):
         async with factory() as session:
-            launch = await asyncio.wait_for(launch_by_id(session, UUID(request_id)), 1)
+            await asyncio.wait_for(lock_launch(session, request_id), 1)
+            launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
             if change in ("stop", "revoke_failure"):
                 launch.desired_state = "stopped"
                 launch.revision += 1
@@ -902,11 +1233,11 @@ async def test_worker_token_is_revoked_when_authorization_changes_during_issue(
 
 
 async def test_local_registration_cannot_take_a_reserved_cloud_name(controller_app):
-    _, request_id, _, service, factory, _ = controller_app
+    _, request_id, agent_id, service, factory, _ = controller_app
     async with factory() as session:
         launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
         owner_id = launch.owner_id
-    with pytest.raises(AgentExistsError, match="cloud launch already reserves"):
+    with pytest.raises(AgentExistsError):
         await service.register_agent(
             name="cloud-helper",
             description="Local helper",
@@ -915,10 +1246,8 @@ async def test_local_registration_cannot_take_a_reserved_cloud_name(controller_a
             owner_id=owner_id,
         )
     async with factory() as session:
-        assert (
-            await session.scalar(select(Agent).where(Agent.name == "cloud-helper"))
-            is None
-        )
+        agent = await session.scalar(select(Agent).where(Agent.name == "cloud-helper"))
+        assert agent.id == agent_id
 
 
 @pytest.mark.parametrize("state", ["queued", "claimed"])
@@ -926,12 +1255,6 @@ async def test_operations_from_an_earlier_worker_are_not_claimed_or_completed(
     controller_app, state
 ):
     client, request_id, agent_id, service, factory, _ = controller_app
-    assert (
-        await client.post(
-            f"/hosted-controller/{request_id}/prepare",
-            headers={"Authorization": "Bearer " + TOKEN},
-        )
-    ).status_code == 200
     conn = attach_worker(service, agent_id, request_id, revision=2)
     operation_id = str(uuid4())
     async with factory() as session:
@@ -966,143 +1289,9 @@ async def test_operations_from_an_earlier_worker_are_not_claimed_or_completed(
         assert "worker changed" in row.error.lower()
 
 
-@pytest.mark.parametrize("fail_cleanup", [False, True])
-async def test_removed_worker_releases_name_and_revokes_switch_key(
-    controller_app, fail_cleanup
-):
-    client, request_id, agent_id, service, factory, _ = controller_app
-    assert (
-        await client.post(
-            f"/hosted-controller/{request_id}/prepare",
-            headers={"Authorization": "Bearer " + TOKEN},
-        )
-    ).status_code == 200
-    service.client_lifecycle.stop = AsyncMock()
-
-    cleanup_calls = 0
-
-    async def delete_client_record(session, client_id):
-        nonlocal cleanup_calls
-        cleanup_calls += 1
-        if fail_cleanup and cleanup_calls == 2:
-            raise RuntimeError("Synthetic client cleanup interruption")
-        await ClientStore().delete(session, client_id)
-
-    service.client_lifecycle.delete_record = AsyncMock(side_effect=delete_client_record)
-    service.event_buffer = SimpleNamespace(remove=Mock())
-    async with factory() as session:
-        agent = await session.get(Agent, agent_id)
-        key_id = agent.api_key_id
-        skill = Skill(
-            name="owned-skill",
-            version="1",
-            description="Skill",
-            visibility="private",
-            owner_agent_id=agent_id,
-            package_uri="https://example.com/skill",
-        )
-        session.add(skill)
-        shared_skill = Skill(
-            name="shared-owned-skill",
-            version="1",
-            description="Shared skill",
-            visibility="public",
-            owner_agent_id=agent_id,
-            package_uri="https://example.com/shared-skill",
-        )
-        session.add(shared_skill)
-        await session.flush()
-        await session.execute(
-            agent_skills.insert().values(agent_id=agent_id, skill_id=skill.id)
-        )
-        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-        launch.desired_state = "deleted"
-        await session.commit()
-    if fail_cleanup:
-        with pytest.raises(RuntimeError, match="Synthetic client cleanup interruption"):
-            await client.post(
-                f"/hosted-controller/{request_id}/observation",
-                headers={"Authorization": "Bearer " + TOKEN},
-                json={"state": "deleted", "revision": 1},
-            )
-        async with factory() as session:
-            assert await session.get(Agent, agent_id) is None
-            pending = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-            assert pending.deletion_cleanup["key_id"] == key_id
-    result = await client.post(
-        f"/hosted-controller/{request_id}/observation",
-        headers={"Authorization": "Bearer " + TOKEN},
-        json={"state": "deleted", "revision": 1},
-    )
-    assert result.status_code == 200, result.text
-    repeated = await client.post(
-        f"/hosted-controller/{request_id}/observation",
-        headers={"Authorization": "Bearer " + TOKEN},
-        json={"state": "deleted", "revision": 1},
-    )
-    assert repeated.status_code == 200, repeated.text
-    async with factory() as session:
-        assert await session.get(Skill, skill.id) is None
-        preserved = await session.get(Skill, shared_skill.id)
-        assert preserved is not None
-        assert preserved.owner_agent_id is None
-        assert await session.get(Agent, agent_id) is None
-        assert await session.get(ApiKey, key_id) is None
-        assert (
-            await session.scalar(
-                select(HostedLaunch).where(HostedLaunch.name == "cloud-helper")
-            )
-            is None
-        )
-    result = await service.register_agent(
-        name="cloud-helper",
-        description="Replacement",
-        connector_type="test",
-        integration_profile=PROFILE,
-        owner_id=launch.owner_id,
-    )
-    assert result.agent_id != agent_id
-
-
-async def test_errored_removal_completes_and_deleted_is_terminal(controller_app):
-    client, request_id, _, _, factory, _ = controller_app
-    async with factory() as session:
-        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-        launch.desired_state = "deleted"
-        launch.state = "error"
-        launch.error_code = "worker_needs_attention"
-        launch.error = "The cloud worker needs repair."
-        await session.commit()
-    deleted = await client.post(
-        f"/hosted-controller/{request_id}/observation",
-        headers={"Authorization": "Bearer " + TOKEN},
-        json={"state": "deleted", "revision": 1},
-    )
-    assert deleted.status_code == 200, deleted.text
-    assert deleted.json()["state"] == "deleted"
-    assert deleted.json()["error_code"] is None
-    for body in [
-        {
-            "state": "error",
-            "revision": 1,
-            "error": "The cloud worker needs repair.",
-            "error_code": "worker_needs_attention",
-        },
-        {"state": "running", "revision": 1},
-    ]:
-        later = await client.post(
-            f"/hosted-controller/{request_id}/observation",
-            headers={"Authorization": "Bearer " + TOKEN},
-            json=body,
-        )
-        assert later.status_code == 200, later.text
-        assert later.json()["state"] == "deleted"
-        assert later.json()["error"] is None
-        assert later.json()["error_code"] is None
-    async with factory() as session:
-        row = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-        assert row.state == "deleted"
-        assert row.name == "removed:" + request_id
+async def _issue_repository_token(client) -> None:
+    response = await client.post("/hosted/github-credential")
+    assert response.status_code == 200, response.text
 
 
 @pytest.mark.parametrize("cause", ["stop", "owner_loss", "disconnect", "expired"])
@@ -1110,11 +1299,7 @@ async def test_repository_tokens_are_revoked_after_access_commit(
     controller_app, monkeypatch, cause
 ):
     client, request_id, _, service, factory, _ = controller_app
-    response = await client.post(
-        f"/hosted-controller/{request_id}/prepare",
-        headers={"Authorization": "Bearer " + TOKEN},
-    )
-    assert response.status_code == 200, response.text
+    await _issue_repository_token(client)
     async with factory() as session:
         record = await session.scalar(select(GitHubIssuedToken))
         assert "SYNTHETIC" not in record.encrypted_token
@@ -1152,14 +1337,21 @@ async def test_repository_tokens_are_revoked_after_access_commit(
     assert revoke.await_count == (0 if cause == "expired" else 1)
 
 
+async def test_machines_listing_drains_pending_revocations(controller_app, monkeypatch):
+    client, request_id, _, _, factory, _ = controller_app
+    await _issue_repository_token(client)
+    await update_launch(factory, request_id, desired_state="stopped", revision=2)
+    revoke = AsyncMock()
+    monkeypatch.setattr(GitHubInstallationCredentials, "revoke", revoke)
+    await list_machines(client)
+    revoke.assert_awaited_once_with("SYNTHETIC-REPOSITORY")
+    async with factory() as session:
+        assert await session.scalar(select(GitHubIssuedToken)) is None
+
+
 async def test_failed_repository_revocation_remains_queued(controller_app, monkeypatch):
     client, request_id, _, service, factory, _ = controller_app
-    assert (
-        await client.post(
-            f"/hosted-controller/{request_id}/prepare",
-            headers={"Authorization": "Bearer " + TOKEN},
-        )
-    ).status_code == 200
+    await _issue_repository_token(client)
     async with factory() as session:
         await queue_revocation(session, (GitHubIssuedToken.launch_id == request_id,))
         await session.commit()
@@ -1174,68 +1366,14 @@ async def test_failed_repository_revocation_remains_queued(controller_app, monke
         assert await revoke_pending(session, service.config, ()) is False
 
 
-@pytest.mark.parametrize("action", ["stop", "remove"])
-@pytest.mark.parametrize("failure", ["github", "database"])
-async def test_lifecycle_commits_before_revocation_and_returns_warning(
-    controller_app, monkeypatch, action, failure
-):
-    client, request_id, _, _, factory, _ = controller_app
-    assert (
-        await client.post(
-            f"/hosted-controller/{request_id}/prepare",
-            headers={"Authorization": "Bearer " + TOKEN},
-        )
-    ).status_code == 200
-    if action == "remove":
-        async with factory() as session:
-            launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-            launch.state = "stopped"
-            await session.commit()
-
-    async def fail(*args):
-        async with factory() as session:
-            launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-            assert launch.desired_state == (
-                "deleted" if action == "remove" else "stopped"
-            )
-            record = await session.scalar(select(GitHubIssuedToken))
-            assert record.revoke_requested
-        raise RuntimeError("Synthetic cleanup failure")
-
-    if failure == "database":
-        monkeypatch.setattr(
-            "switch_core.providers.github_revocations._revoke_pending", fail
-        )
-    else:
-        monkeypatch.setattr(GitHubInstallationCredentials, "revoke", fail)
-    result = await client.post(
-        f"/hosted-launches/{request_id}/lifecycle",
-        json={"action": action, "revision": 1},
-    )
-    assert result.status_code == 200, result.text
-    assert "1 hour" in result.json()["access_warning"]
-
-
 async def test_error_retry_issues_a_fresh_repository_token(controller_app, monkeypatch):
     client, request_id, _, service, factory, _ = controller_app
-    assert (
-        await client.post(
-            f"/hosted-controller/{request_id}/prepare",
-            headers={"Authorization": "Bearer " + TOKEN},
-        )
-    ).status_code == 200
+    await _issue_repository_token(client)
+    await update_launch(factory, request_id, state="error")
     async with factory() as session:
-        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-        launch.state = "error"
-        await session.commit()
         assert await revoke_pending(session, service.config, ()) is False
         assert await session.scalar(select(GitHubIssuedToken)) is None
-    assert (
-        await client.post(
-            f"/hosted-launches/{request_id}/lifecycle",
-            json={"action": "retry", "revision": 1},
-        )
-    ).status_code == 200
+    await update_launch(factory, request_id, state="queued", revision=2)
     issue = AsyncMock(
         return_value=RepositoryCredential(
             "SYNTHETIC-FRESH-REPOSITORY",
@@ -1245,15 +1383,12 @@ async def test_error_retry_issues_a_fresh_repository_token(controller_app, monke
         )
     )
     monkeypatch.setattr(
-        "switch_core.gateway.hosted_controller.GitHubInstallationCredentials",
+        "switch_core.bridges.agent.api.hosted_routes.GitHubInstallationCredentials",
         lambda *_: SimpleNamespace(issue=issue, revoke=AsyncMock()),
     )
-    result = await client.post(
-        f"/hosted-controller/{request_id}/prepare",
-        headers={"Authorization": "Bearer " + TOKEN},
-    )
+    result = await client.post("/hosted/github-credential")
     assert result.status_code == 200, result.text
-    assert result.json()["github_credential"] == "SYNTHETIC-FRESH-REPOSITORY"
+    assert result.json()["token"] == "SYNTHETIC-FRESH-REPOSITORY"
     async with factory() as session:
         record = await session.scalar(select(GitHubIssuedToken))
         assert not record.revoke_requested
@@ -1262,12 +1397,7 @@ async def test_error_retry_issues_a_fresh_repository_token(controller_app, monke
 
 async def test_concurrent_revocation_drains_claim_once(controller_app, monkeypatch):
     client, request_id, _, service, factory, _ = controller_app
-    assert (
-        await client.post(
-            f"/hosted-controller/{request_id}/prepare",
-            headers={"Authorization": "Bearer " + TOKEN},
-        )
-    ).status_code == 200
+    await _issue_repository_token(client)
     async with factory() as session:
         await queue_revocation(session, ())
         await session.commit()
@@ -1300,47 +1430,30 @@ async def test_concurrent_revocation_drains_claim_once(controller_app, monkeypat
         assert await session.scalar(select(GitHubIssuedToken)) is None
 
 
-async def test_revocation_lock_timeout_preserves_committed_responses(controller_app):
+async def test_revocation_lock_timeout_preserves_the_committed_sweep(controller_app):
     client, request_id, _, _, factory, _ = controller_app
-    assert (
-        await client.post(
-            f"/hosted-controller/{request_id}/prepare",
-            headers={"Authorization": "Bearer " + TOKEN},
-        )
-    ).status_code == 200
+    await _issue_repository_token(client)
+    machine = await machine_of(factory, request_id)
+    await update_machine(
+        factory, machine.id, updated_at=datetime.now(UTC) - timedelta(minutes=11)
+    )
     async with factory() as locked:
         await locked.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
             {"key": f"github-revocation:{require_tenant_id()}"},
         )
-        stopped = await client.post(
-            f"/hosted-launches/{request_id}/lifecycle",
-            json={"action": "stop", "revision": 1},
-        )
-        assert stopped.status_code == 200, stopped.text
-        assert stopped.json()["desired_state"] == "stopped"
-        assert stopped.json()["access_warning"]
-        listed = await client.get(
-            "/hosted-controller", headers={"Authorization": "Bearer " + TOKEN}
-        )
-        assert listed.status_code == 200, listed.text
-        assert listed.json()[0]["desired_state"] == "stopped"
+        await queue_revocation(locked, ())
+        listed = await list_machines(client)
+        assert listed[0]["state"] == "error"
         await locked.rollback()
-    async with factory() as session:
-        row = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-        assert row.desired_state == "stopped"
+    assert (await machine_of(factory, request_id)).state == "error"
 
 
 async def test_failed_revocations_do_not_starve_newer_tokens(
     controller_app, monkeypatch
 ):
     client, request_id, _, service, factory, _ = controller_app
-    assert (
-        await client.post(
-            f"/hosted-controller/{request_id}/prepare",
-            headers={"Authorization": "Bearer " + TOKEN},
-        )
-    ).status_code == 200
+    await _issue_repository_token(client)
     async with factory() as session:
         first = await session.scalar(select(GitHubIssuedToken))
         for number in range(8):
@@ -1378,12 +1491,7 @@ async def test_revocation_warning_is_scoped_to_action_owner(
     controller_app, monkeypatch
 ):
     client, request_id, _, service, factory, _ = controller_app
-    assert (
-        await client.post(
-            f"/hosted-controller/{request_id}/prepare",
-            headers={"Authorization": "Bearer " + TOKEN},
-        )
-    ).status_code == 200
+    await _issue_repository_token(client)
     async with factory() as session:
         first = await session.scalar(select(GitHubIssuedToken))
         owner = first.owner_id
@@ -1432,41 +1540,3 @@ async def test_revocation_warning_is_scoped_to_action_owner(
             )
             is True
         )
-
-
-async def test_prepare_delivers_the_granted_github_skill(controller_app):
-    client, request_id, *_ = controller_app
-    result = await client.post(
-        f"/hosted-controller/{request_id}/prepare",
-        headers={"Authorization": "Bearer " + TOKEN},
-    )
-    assert result.status_code == 200, result.text
-    skills = result.json()["skills"]
-    assert [skill["slug"] for skill in skills] == ["github"]
-    assert skills[0]["files"]["SKILL.md"].startswith("---\nname: github\n")
-
-
-async def test_prepare_sends_no_skills_to_a_provider_without_a_skills_directory(
-    controller_app, caplog
-):
-    client, request_id, _, _, factory, _ = controller_app
-    async with factory() as session:
-        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-        launch.spec = {**launch.spec, "provider": "cursor"}
-        session.add(
-            ProviderConnection(
-                user_id=launch.owner_id,
-                provider="cursor",
-                kind="api-key",
-                encrypted_credential=encrypt_token("SYNTHETIC-CURSOR", "test-secret"),
-                verified_at=datetime.now(UTC),
-            )
-        )
-        await session.commit()
-    result = await client.post(
-        f"/hosted-controller/{request_id}/prepare",
-        headers={"Authorization": "Bearer " + TOKEN},
-    )
-    assert result.status_code == 200, result.text
-    assert result.json()["skills"] == []
-    assert "granted connection skills are not installed" in caplog.text

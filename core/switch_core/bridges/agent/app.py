@@ -11,6 +11,9 @@ from switch_core.bridges.agent.api.handlers import router as api_router
 from switch_core.bridges.agent.api.hosted_cutover_routes import (
     router as hosted_cutover_router,
 )
+from switch_core.bridges.agent.api.hosted_machine_routes import (
+    router as hosted_machine_router,
+)
 from switch_core.bridges.agent.api.hosted_routes import router as hosted_router
 from switch_core.bridges.agent.api.hosted_worker_routes import (
     router as hosted_worker_router,
@@ -148,6 +151,7 @@ def create_agent_bridge_app(
     app.include_router(hosted_worker_router, prefix="/agents", tags=["hosted"])
     app.include_router(hosted_cutover_router, prefix="/agents", tags=["hosted"])
     app.include_router(hosted_router, tags=["hosted"])
+    app.include_router(hosted_machine_router, tags=["hosted"])
     app.include_router(operations_router)
     app.include_router(deeplink_router, tags=["deeplink"])
     app.include_router(version_router, tags=["version"])

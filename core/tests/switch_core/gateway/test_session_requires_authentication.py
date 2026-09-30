@@ -202,9 +202,9 @@ def test_controller_credential_is_confined_to_the_controller_routes() -> None:
         ("GET", "/provider-verifications"),
         ("POST", "/provider-verifications/{job_id}/prepare"),
         ("POST", "/provider-verifications/{job_id}/observe"),
-        ("GET", "/hosted-controller"),
-        ("POST", "/hosted-controller/{request_id}/prepare"),
-        ("POST", "/hosted-controller/{request_id}/observation"),
+        ("GET", "/hosted-controller/machines"),
+        ("POST", "/hosted-controller/machines/{machine_id}/prepare"),
+        ("POST", "/hosted-controller/machines/{machine_id}/observation"),
     }
 
 
