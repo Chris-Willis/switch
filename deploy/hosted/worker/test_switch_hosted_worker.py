@@ -267,6 +267,7 @@ class Harness:
         self.commands = FakeSystemctl()
         self.client = FakeClient()
         self.git = git or FakeGit()
+        self.ownership_blocked: set[str] = set()
         self.now = 0.0
         self.clock_value = datetime(2026, 1, 1, tzinfo=UTC)
         self.supervisor = self.build()
@@ -290,6 +291,7 @@ class Harness:
                 f_frsize=4096, f_blocks=52428800, f_bfree=49807360, f_bavail=49807360
             ),
             meminfo=self.meminfo,
+            ownership_blocked=self.ownership_blocked,
         )
 
 
@@ -502,7 +504,7 @@ class MarkerTests(RootPatched):
         self.identity = worker.MachineIdentity(INSTANCE, BOOT_1, GENERATION)
 
     def reconcile(self, identity=None, fingerprint=FINGERPRINT):
-        worker.reconcile_marker(
+        return worker.reconcile_marker(
             identity or self.identity,
             worker_config(),
             FS_UUID,
@@ -656,12 +658,56 @@ class MarkerTests(RootPatched):
                 worker._write_root_json(self.paths.marker, fixture("machine.json"))
                 state = self.owner_files(AGENT)
                 (state / relative).write_text(content)
-                with self.assertRaisesRegex(
-                    worker.WorkerError, "ownership record is invalid"
-                ):
-                    self.reconcile(worker.MachineIdentity(INSTANCE, BOOT_2, GENERATION))
+                with self.assertLogs(worker.logger, "ERROR") as logs:
+                    blocked = self.reconcile(
+                        worker.MachineIdentity(INSTANCE, BOOT_2, GENERATION)
+                    )
+                self.assertEqual(blocked, {AGENT})
+                self.assertIn("ownership record is invalid", logs.output[0])
                 self.assertTrue((state / relative).exists())
-                self.assertEqual(self.marker()["bootId"], BOOT_1)
+                self.assertTrue((state / "shared-owner.lock").exists())
+                self.assertEqual(self.marker()["bootId"], BOOT_2)
+
+    def test_corrupt_owner_record_blocks_only_its_agent(self):
+        worker._write_root_json(self.paths.marker, fixture("machine.json"))
+        first = self.owner_files(AGENT)
+        second = self.owner_files(AGENT_2)
+        (first / "supervisor/owner.json").write_text("{")
+        boot_2 = worker.MachineIdentity(INSTANCE, BOOT_2, GENERATION)
+        with self.assertLogs(worker.logger, "ERROR"):
+            self.assertEqual(self.reconcile(boot_2), {AGENT})
+        self.assertFalse((second / "supervisor/owner.json").exists())
+        self.assertTrue(
+            (
+                self.paths.quarantine
+                / AGENT_2
+                / f"{BOOT_1}--{BOOT_2}"
+                / "supervisor/owner.json"
+            ).exists()
+        )
+        self.assertEqual(
+            json.loads(self.paths.ownership_blocked.read_text()),
+            {
+                "version": 1,
+                "bootId": BOOT_2,
+                "previousBootId": BOOT_1,
+                "agents": [AGENT],
+            },
+        )
+        with self.assertLogs(worker.logger, "ERROR"):
+            self.assertEqual(self.reconcile(boot_2), {AGENT})
+        (first / "supervisor/owner.json").unlink()
+        self.assertEqual(self.reconcile(boot_2), set())
+        self.assertFalse(self.paths.ownership_blocked.exists())
+        self.assertFalse((first / "shared-owner.lock").exists())
+        self.assertTrue(
+            (
+                self.paths.quarantine
+                / AGENT
+                / f"{BOOT_1}--{BOOT_2}"
+                / "shared-owner.lock"
+            ).exists()
+        )
 
     def test_partial_quarantine_is_resumed(self):
         worker._write_root_json(self.paths.marker, fixture("machine.json"))
@@ -1635,6 +1681,31 @@ class SupervisorTests(RootPatched):
         harness.git.calls.clear()
         harness.supervisor.reconcile([])
         self.assertEqual(harness.git.calls, [])
+
+    def test_agent_with_blocked_ownership_is_not_started(self):
+        self.harness.ownership_blocked.add(AGENT)
+        supervisor = self.harness.build()
+        with self.assertLogs(worker.logger, "ERROR"):
+            supervisor.reconcile([valid_agent(), second_agent()])
+        self.assertEqual(
+            self.commands.actions(),
+            [
+                ["--no-block", "stop", f"switch-agent@{AGENT}.service"],
+                ["reset-failed", f"switch-agent@{AGENT}.service"],
+                ["reset-failed", f"switch-agent@{AGENT_2}.service"],
+                ["--no-block", "restart", f"switch-agent@{AGENT_2}.service"],
+            ],
+        )
+        self.assertFalse((self.paths.agents_runtime / AGENT).exists())
+        supervisor._observe()
+        body = supervisor.heartbeat_body()
+        states = {agent["agent_id"]: agent for agent in body["agents"]}
+        self.assertEqual(states[AGENT]["process_state"], "failed")
+        self.assertEqual(
+            states[AGENT]["exit"],
+            {"code": None, "signal": None, "result": "ownership-invalid"},
+        )
+        self.assertNotEqual(states[AGENT_2]["process_state"], "failed")
 
     def test_worktree_without_mirror_skips_git(self):
         self.supervisor.reconcile([valid_agent()])

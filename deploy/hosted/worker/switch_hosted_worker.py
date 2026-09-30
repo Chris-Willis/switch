@@ -88,6 +88,7 @@ PROVIDER_CONTEXT = (
 )
 INVALID_CONFIG = "invalid-config"
 SETUP_FAILED = "setup-failed"
+OWNERSHIP_INVALID = "ownership-invalid"
 
 
 class WorkerError(RuntimeError):
@@ -270,6 +271,10 @@ class Paths:
     @property
     def quarantine(self) -> Path:
         return self.marker_directory / "quarantine"
+
+    @property
+    def ownership_blocked(self) -> Path:
+        return self.marker_directory / "ownership-blocked.json"
 
     @property
     def agents(self) -> Path:
@@ -1223,7 +1228,7 @@ def reconcile_marker(
     filesystem_uuid: str,
     runtime_fingerprint: str,
     paths: Paths,
-) -> None:
+) -> set[str]:
     marker_directory = paths.marker_directory
     marker_directory.mkdir(mode=0o700, parents=False, exist_ok=True)
     os.chown(marker_directory, 0, 0)
@@ -1240,23 +1245,21 @@ def reconcile_marker(
         if marker["filesystemUuid"] != filesystem_uuid:
             raise WorkerError("Retained disk filesystem identity changed.")
         if marker["bootId"] != identity.boot_id:
-            previous = MachineIdentity(
-                marker["instanceId"], marker["bootId"], marker["generation"]
+            blocked = _quarantine_agents(
+                paths,
+                [path.name for path in _agent_state_directories(paths.agents)],
+                marker["bootId"],
+                identity.boot_id,
             )
-            for state_path in _agent_state_directories(paths.agents):
-                _quarantine_stale_ownership(
-                    state_path,
-                    paths.quarantine,
-                    state_path.name,
-                    previous,
-                    identity.boot_id,
-                )
-        elif (
-            marker["instanceId"] == identity.instance_id
-            and marker["runtimeFingerprint"] == runtime_fingerprint
-        ):
-            return
+        else:
+            blocked = _retry_blocked_ownership(paths, identity.boot_id)
+            if (
+                marker["instanceId"] == identity.instance_id
+                and marker["runtimeFingerprint"] == runtime_fingerprint
+            ):
+                return blocked
     else:
+        blocked = set()
         unexpected = {
             child.name
             for child in paths.data.iterdir()
@@ -1280,6 +1283,73 @@ def reconcile_marker(
             "layout": MARKER_LAYOUT,
         },
     )
+    return blocked
+
+
+def _quarantine_agents(
+    paths: Paths, agent_ids: list[str], previous_boot_id: str, current_boot_id: str
+) -> set[str]:
+    blocked: set[str] = set()
+    for agent_id in agent_ids:
+        try:
+            _quarantine_stale_ownership(
+                paths.agents / agent_id,
+                paths.quarantine,
+                agent_id,
+                previous_boot_id,
+                current_boot_id,
+            )
+        except (WorkerError, OSError) as error:
+            logger.error(
+                "Agent %s ownership could not be quarantined; it will not start: %s",
+                agent_id,
+                error,
+            )
+            blocked.add(agent_id)
+    if blocked:
+        _write_root_json(
+            paths.ownership_blocked,
+            {
+                "version": 1,
+                "bootId": current_boot_id,
+                "previousBootId": previous_boot_id,
+                "agents": sorted(blocked),
+            },
+        )
+    else:
+        paths.ownership_blocked.unlink(missing_ok=True)
+    return blocked
+
+
+def _retry_blocked_ownership(paths: Paths, boot_id: str) -> set[str]:
+    path = paths.ownership_blocked
+    if not path.exists() and not path.is_symlink():
+        return set()
+    try:
+        details = path.lstat()
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or details.st_uid != ROOT_UID
+            or details.st_mode & 0o077
+        ):
+            raise ValueError()
+        value = _strict(
+            _read_json_nofollow(path),
+            {"version", "bootId", "previousBootId", "agents"},
+            set(),
+            "blocked ownership",
+        )
+        if (
+            value["version"] != 1
+            or value["bootId"] != boot_id
+            or not isinstance(value["previousBootId"], str)
+            or not isinstance(value["agents"], list)
+        ):
+            raise ValueError()
+        agent_ids = [_agent_id(agent_id) for agent_id in value["agents"]]
+    except (OSError, ValueError, WorkerError):
+        raise WorkerError("Blocked ownership record is invalid.") from None
+    return _quarantine_agents(paths, agent_ids, value["previousBootId"], boot_id)
 
 
 def _read_root_marker(path: Path) -> dict[str, Any]:
@@ -1498,7 +1568,7 @@ def _quarantine_stale_ownership(
     state_path: Path,
     quarantine_root: Path,
     agent_id: str,
-    previous: MachineIdentity,
+    previous_boot_id: str,
     current_boot_id: str,
 ) -> None:
     sources: dict[Path, Path] = {}
@@ -1511,7 +1581,7 @@ def _quarantine_stale_ownership(
     if not sources:
         return
     agent_quarantine = quarantine_root / agent_id
-    quarantine = agent_quarantine / f"{previous.boot_id}--{current_boot_id}"
+    quarantine = agent_quarantine / f"{previous_boot_id}--{current_boot_id}"
     for directory in (quarantine_root, agent_quarantine, quarantine):
         _private_root_directory(directory)
     existing = _validate_quarantine_tree(quarantine)
@@ -1894,7 +1964,9 @@ class Supervisor:
         sleep: Callable[[float], None],
         statvfs: Callable[[str], Any],
         meminfo: Path,
+        ownership_blocked: set[str],
     ) -> None:
+        self._ownership_blocked = set(ownership_blocked)
         self._runtime = runtime
         self._identity = identity
         self._machine_id = machine_id
@@ -2048,6 +2120,22 @@ class Supervisor:
             try:
                 if counts[agent_id] > 1:
                     raise WorkerError("The agent is listed more than once.")
+                if agent_id in self._ownership_blocked:
+                    logger.error(
+                        "Agent %s has invalid saved ownership; it stays stopped.",
+                        agent_id,
+                    )
+                    held.append(
+                        HeldAgent(
+                            entry["launch_id"],
+                            agent_id,
+                            entry["revision"],
+                            None,
+                            Failure("failed", OWNERSHIP_INVALID),
+                        )
+                    )
+                    self._disable(agent_id, failures)
+                    continue
                 unavailable = _unavailable_code(entry)
                 if unavailable is not None:
                     logger.warning(
@@ -2285,6 +2373,7 @@ class Supervisor:
         self._states.pop(agent_id, None)
         self._touched.discard(agent_id)
         self._obsolete_exits.pop(agent_id, None)
+        self._ownership_blocked.discard(agent_id)
         logger.warning("Removed agent %s from this machine.", agent_id)
 
     def _load_records(self) -> dict[str, dict[str, Any]]:
@@ -2488,7 +2577,7 @@ def main(argv: list[str] | None = None) -> int:
         prepare_runtime_directory(commands, paths, gid)
         write_bundle(paths, bundle)
         storage, _formatted = prepare_storage(commands, config)
-        reconcile_marker(
+        ownership_blocked = reconcile_marker(
             identity,
             config,
             storage.filesystem_uuid or "",
@@ -2512,6 +2601,7 @@ def main(argv: list[str] | None = None) -> int:
             sleep=time.sleep,
             statvfs=os.statvfs,
             meminfo=MEMINFO_PATH,
+            ownership_blocked=ownership_blocked,
         ).run()
         return 0
     finally:
