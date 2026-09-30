@@ -12,6 +12,7 @@ export function cloudAgentState(
   const phase = cloudAgentPhase(agent.launch, agent.machine);
   if (phase === 'sleeping') return { label: 'sleeping', tone: 'idle' };
   if (phase === 'machine_stopped') return { label: 'machine stopped', tone: 'idle' };
+  if (phase === 'machine_error') return { label: 'machine error', tone: 'bad' };
   if (phase === 'waking') return { label: 'waking…', tone: 'busy' };
   if (agent.launch.desired_state === 'stopped') return { label: 'stopped', tone: 'idle' };
   if (agent.launch.process_state === 'crashed' || agent.launch.error_code === 'agent_crashed')
@@ -20,3 +21,4 @@ export function cloudAgentState(
   if (agent.problem) return { label: 'unreachable', tone: 'bad' };
   return null;
 }
+

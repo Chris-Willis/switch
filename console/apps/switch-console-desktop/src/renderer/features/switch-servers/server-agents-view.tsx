@@ -184,22 +184,24 @@ const CloudAgentCard = observer(function CloudAgentCard({
       ? 'Sleeping'
       : phase === 'machine_stopped'
         ? 'Machine stopped'
-        : phase === 'waking'
-          ? 'Waking…'
-          : launch.desired_state === 'stopped'
-            ? launch.state === 'stopping'
-              ? 'Stopping…'
-              : 'Stopped'
-            : {
-                queued: 'Queued',
-                provisioning: 'Starting…',
-                ready: 'Ready',
-                error: 'Needs attention',
-                stopping: 'Stopping…',
-                stopped: 'Stopped',
-                deleting: 'Removing…',
-                deleted: 'Removed',
-              }[launch.state];
+        : phase === 'machine_error'
+          ? 'Machine error'
+          : phase === 'waking'
+            ? 'Waking…'
+            : launch.desired_state === 'stopped'
+              ? launch.state === 'stopping'
+                ? 'Stopping…'
+                : 'Stopped'
+              : {
+                  queued: 'Queued',
+                  provisioning: 'Starting…',
+                  ready: 'Ready',
+                  error: 'Needs attention',
+                  stopping: 'Stopping…',
+                  stopped: 'Stopped',
+                  deleting: 'Removing…',
+                  deleted: 'Removed',
+                }[launch.state];
   const usable = launch.agent_id !== null && launch.state === 'ready' && phase === null;
   const crashed = launch.process_state === 'crashed' || launch.error_code === 'agent_crashed';
   const add = () => {

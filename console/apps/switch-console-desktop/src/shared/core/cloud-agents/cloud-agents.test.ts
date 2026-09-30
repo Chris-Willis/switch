@@ -87,6 +87,11 @@ it.each([
     machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'owner' }),
     'machine_stopped',
   ],
+  [
+    'a machine in error',
+    machine({ state: 'error', error: 'boom', error_code: 'machine_connect_timeout' }),
+    'machine_error',
+  ],
   ['a machine on its way up', machine({ state: 'provisioning' }), 'waking'],
   ['a retained machine being reused', machine({ state: 'retained' }), 'waking'],
   ['a ready machine', machine({}), null],
@@ -119,6 +124,10 @@ it('reads a machine its owner stopped whatever the launch', () => {
       machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'owner' })
     )
   ).toBe('machine_stopped');
+});
+
+it('reads a machine in error whatever the launch', () => {
+  expect(cloudAgentPhase(stopped, machine({ state: 'error' }))).toBe('machine_error');
 });
 
 it('reads a launch without a machine from the launch', () => {

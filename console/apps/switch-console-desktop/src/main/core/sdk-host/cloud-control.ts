@@ -142,11 +142,17 @@ function launchProblem(
       message: 'The owner stopped the cloud machine.',
       wakeAvailable: false,
     };
+  if (phase === 'machine_error')
+    return {
+      code: 'machine_error',
+      message: machine?.error ?? 'The cloud machine is in error.',
+      wakeAvailable: false,
+    };
   if (machine ? machine.sleeping : launch.sleeping)
     return {
       code: 'worker_sleeping',
       message: 'The cloud machine is asleep.',
-      wakeAvailable: true,
+      wakeAvailable: phase === 'sleeping',
     };
   if (phase === 'waking')
     return {
@@ -229,8 +235,11 @@ export async function listCloudSessions(agentId: string): Promise<CloudSessions>
 }
 
 /**
- * Start the machine a sleeping cloud agent runs on. A machine already asked to
- * run is returned as it is, so a second wake does not bump its revision.
+ * Start the machine a sleeping cloud agent runs on. Only a machine that went to
+ * sleep idle is woken: one its owner stopped is started from its card. A
+ * machine already asked to run is returned as it is, so a second wake does not
+ * bump its revision, and a wake that loses the revision race to another one is
+ * the machine waking.
  */
 export async function wakeCloudAgent(agentId: string): Promise<CloudMachine> {
   const { serverId, requestId } = launchOf(agentId);
@@ -240,21 +249,36 @@ export async function wakeCloudAgent(agentId: string): Promise<CloudMachine> {
   );
   if (launch.machine_id === null)
     throw new Error(`The cloud agent ${launch.name} has no machine to start.`);
-  const machine = cloudMachineSchema.parse(
-    await (
-      await gatewayFetch(server, machinePath(launch.machine_id), { authenticated: true })
-    ).json()
-  );
+  const machineId = launch.machine_id;
+  const read = async () =>
+    cloudMachineSchema.parse(
+      await (await gatewayFetch(server, machinePath(machineId), { authenticated: true })).json()
+    );
+  const machine = await read();
   if (machine.desired_state === 'running') return machine;
-  return z.object({ machine: cloudMachineSchema }).parse(
-    await (
-      await gatewayFetch(server, machinePath(machine.machine_id, '/lifecycle'), {
-        authenticated: true,
-        method: 'POST',
-        body: { action: 'start', revision: machine.revision },
-      })
-    ).json()
-  ).machine;
+  if (!machine.sleeping)
+    throw new Error(
+      machine.desired_state === 'stopped' && machine.stop_reason === 'owner'
+        ? 'The owner stopped the cloud machine, so a message does not wake it. Start the machine in Your Agents.'
+        : `The cloud machine is ${machine.desired_state}, so it cannot be woken.`
+    );
+  try {
+    return z.object({ machine: cloudMachineSchema }).parse(
+      await (
+        await gatewayFetch(server, machinePath(machineId, '/lifecycle'), {
+          authenticated: true,
+          method: 'POST',
+          body: { action: 'start', revision: machine.revision },
+        })
+      ).json()
+    ).machine;
+  } catch (error) {
+    if (!(error instanceof GatewayError && error.kind === 'http' && error.status === 409))
+      throw error;
+    const now = await read();
+    if (now.desired_state === 'running') return now;
+    throw error;
+  }
 }
 
 const OPERATION_WAIT_MS = 180_000;
