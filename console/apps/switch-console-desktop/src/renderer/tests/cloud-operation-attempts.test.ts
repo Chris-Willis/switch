@@ -12,7 +12,7 @@ const cloudSessionOperation = vi.hoisted(() =>
   vi.fn(async (_agentKey: string, sessionId: string, operationId: string, action: string) => {
     if (server.failNext) {
       server.failNext = false;
-      return { state: 'failed', message: 'session limit' };
+      return { state: 'failed', message: 'session limit', code: null };
     }
     if (!server.operations.has(operationId)) {
       server.operations.set(operationId, { sessionId, action });
@@ -100,6 +100,7 @@ it('uses a fresh id after a definite failure', async () => {
   expect((await cloudOperationAttempts.run(key, agentKey, 'restart', 'session'))?.outcome).toEqual({
     state: 'failed',
     message: 'session limit',
+    code: null,
   });
   expect(cloudOperationAttempts.get(key)).toBeUndefined();
   await cloudOperationAttempts.run(key, agentKey, 'restart', 'session');

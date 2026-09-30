@@ -28,6 +28,7 @@ vi.mock('./servers-store', () => ({ getSessionCookie }));
 vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer }));
 
 const {
+  cloudLifecycle,
   getConnectionCatalog,
   getGitHubConnection,
   startGitHubConnection,
@@ -471,6 +472,21 @@ describe('room creation', () => {
     await expect(
       createRoom(SERVER, { name: 'x', description: 'y', bridgeId: 'b1', agentIds: [] })
     ).rejects.toMatchObject({ status: 400, detail: 'Bridge not running: b1' });
+  });
+
+  it('carries the code of a coded refusal beside its detail', async () => {
+    fetchMock.mockResolvedValue(
+      errorResponse(
+        409,
+        '{"detail":"The owner stopped the cloud machine. Start it in Switch Console.","code":"machine_stopped"}'
+      ) as never
+    );
+
+    await expect(cloudLifecycle(SERVER, 'launch', 'retry', 3)).rejects.toMatchObject({
+      status: 409,
+      detail: 'The owner stopped the cloud machine. Start it in Switch Console.',
+      code: 'machine_stopped',
+    });
   });
 
   it('leaves detail unset when the error body is not a detail envelope', async () => {

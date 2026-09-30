@@ -39,6 +39,7 @@ import {
 import type { Agent } from '@shared/core/agents/agents';
 import { type CloudAgent, cloudAgentPhase } from '@shared/core/cloud-agents/cloud-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
+import { RpcError } from '@shared/lib/ipc/rpc-error';
 import { ServerPage } from './server-page';
 import { ServerSectionTitlebar } from './server-section-titlebar';
 import { switchRoomsStore } from './switch-rooms-store';
@@ -117,6 +118,42 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
   );
 });
 
+/** What a launch in error means to its owner, by the server's `error_code`. */
+const LAUNCH_ERRORS: Record<string, string> = {
+  agent_crashed:
+    'The agent keeps crashing. Retry it. If it crashes again, contact your server administrator.',
+  identity_failed: 'Switch could not register the agent. Retry.',
+  worker_needs_attention: 'The cloud worker needs attention. Contact your server administrator.',
+  agent_key_missing:
+    'Switch lost this agent’s credential, so its machine cannot run it. Remove the agent and create it again.',
+  agent_identity_missing: 'Switch lost this agent’s identity. Retry to register it again.',
+  worker_attach_timeout:
+    'The agent started but did not connect to Switch. Check your provider connection, then retry.',
+  agent_stop_timeout: 'The agent did not stop in time. Retry to start it again, or remove it.',
+};
+
+function launchErrorText(code: string | null): string {
+  const text =
+    code !== null && Object.hasOwn(LAUNCH_ERRORS, code) ? LAUNCH_ERRORS[code] : undefined;
+  return (
+    text ??
+    'The cloud worker could not start. Check your provider and GitHub connections, then retry. If it still fails, contact your server administrator.'
+  );
+}
+
+/** Launch errors a retry cannot clear. */
+const NOT_RETRYABLE = new Set(['worker_needs_attention', 'agent_key_missing']);
+
+function lifecycleFailureText(error: unknown): string {
+  const code =
+    error instanceof RpcError && error.code === 'GatewayError'
+      ? error.stringField('code')
+      : undefined;
+  if (code === 'machine_stopped')
+    return 'The owner stopped the cloud machine. Start the machine, then try again.';
+  return failureText(error, 'Cloud operation failed.');
+}
+
 const CloudAgentCard = observer(function CloudAgentCard({
   listed,
   serverId,
@@ -169,7 +206,7 @@ const CloudAgentCard = observer(function CloudAgentCard({
       await queryClient.invalidateQueries({ queryKey: ['cloud-agents'] });
       setConfirmRemove(false);
     } catch (error) {
-      setActionError(failureText(error, 'Cloud operation failed.'));
+      setActionError(lifecycleFailureText(error));
       void queryClient.invalidateQueries({ queryKey: ['cloud-agents'] });
     } finally {
       setPending(false);
@@ -240,13 +277,7 @@ const CloudAgentCard = observer(function CloudAgentCard({
       )}
       {launch.error && (
         <p role="alert" className="mt-2 text-xs text-destructive">
-          {launch.error_code === 'agent_crashed'
-            ? 'The agent keeps crashing. Retry it. If it crashes again, contact your server administrator.'
-            : launch.error_code === 'identity_failed'
-              ? 'Switch could not register the agent. Retry.'
-              : launch.error_code === 'worker_needs_attention'
-                ? 'The cloud worker needs attention. Contact your server administrator.'
-                : 'The cloud worker could not start. Check your provider and GitHub connections, then retry. If it still fails, contact your server administrator.'}
+          {launchErrorText(launch.error_code)}
         </p>
       )}
       {actionError && (
@@ -290,7 +321,7 @@ const CloudAgentCard = observer(function CloudAgentCard({
               Stop agent
             </Button>
           )}
-        {launch.state === 'error' && launch.error_code !== 'worker_needs_attention' && (
+        {launch.state === 'error' && !NOT_RETRYABLE.has(launch.error_code ?? '') && (
           <Button variant="outline" size="sm" disabled={pending} onClick={() => void run('retry')}>
             Retry
           </Button>

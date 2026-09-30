@@ -326,7 +326,7 @@ export async function runCloudSessionOperation(
     );
   } catch (error) {
     if (isDefiniteRefusal(error))
-      return { state: 'failed', message: error.detail ?? error.message };
+      return { state: 'failed', message: error.detail ?? error.message, code: error.code ?? null };
     return {
       state: 'unknown',
       message: `The server did not confirm the session ${action}: ${errorMessage(error)}`,
@@ -359,7 +359,11 @@ export async function runCloudSessionOperation(
   }
   if (operation.state === 'applied') return { state: 'applied' };
   if (operation.state === 'failed')
-    return { state: 'failed', message: operation.error ?? `The session ${action} failed.` };
+    return {
+      state: 'failed',
+      message: operation.error ?? `The session ${action} failed.`,
+      code: null,
+    };
   return { state: 'unknown', message: `The outcome of the session ${action} is unknown.` };
 }
 

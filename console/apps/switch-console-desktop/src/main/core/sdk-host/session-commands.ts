@@ -1,4 +1,5 @@
 import {
+  CloudRelayError,
   liveSupervisor,
   SessionHostFailedError,
   SessionUnavailableError,
@@ -86,6 +87,7 @@ export async function submitSessionCommand(
     if (!(error instanceof SessionUnavailableError || error instanceof SessionHostFailedError))
       throw error;
   }
+  const notRestarted = 'The session is not running and could not be started again: ';
   try {
     if (isCloudAgent(agentId)) {
       const outcome = await runCloudSessionOperation(
@@ -94,12 +96,15 @@ export async function submitSessionCommand(
         crypto.randomUUID(),
         'restart'
       );
+      // Coded the way the relay codes the same refusal, so the composer holds
+      // the message while the machine wakes or says what the user must do.
+      if (outcome.state === 'failed' && outcome.code !== null)
+        throw new CloudRelayError(outcome.code, `${notRestarted}${outcome.message}`, 409, false);
       if (outcome.state !== 'applied') throw new Error(outcome.message);
     } else await hydrateSession(command.sessionId);
   } catch (error) {
-    throw new Error(
-      `The session is not running and could not be started again: ${error instanceof Error ? error.message : String(error)}`
-    );
+    if (error instanceof CloudRelayError) throw error;
+    throw new Error(`${notRestarted}${error instanceof Error ? error.message : String(error)}`);
   }
   return commandStatusSchema.parse(await askHost(agentId, command.sessionId, request));
 }

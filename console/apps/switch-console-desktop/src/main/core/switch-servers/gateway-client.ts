@@ -110,7 +110,11 @@ export class GatewayError extends Error {
      * envelope. Present only when the body carried one. Prefer this over
      * `message` when showing a failure to the user: `message` is prefixed with
      * the raw status line, which reads as noise in a form. */
-    readonly detail?: string
+    readonly detail?: string,
+    /** The refusal's machine-readable name, from a body such as
+     * `{"detail": …, "code": "worker_waking"}`. Present only when the body
+     * carried one. */
+    readonly code?: string
   ) {
     super(message);
     this.name = 'GatewayError';
@@ -128,6 +132,17 @@ function parseErrorDetail(body: string): string | undefined {
   try {
     const parsed = JSON.parse(body) as { detail?: unknown };
     return typeof parsed.detail === 'string' ? parsed.detail : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The `code` beside `detail` in a coded refusal, or undefined without one. */
+function parseErrorCode(body: string): string | undefined {
+  if (!body) return undefined;
+  try {
+    const parsed = JSON.parse(body) as { code?: unknown };
+    return typeof parsed.code === 'string' ? parsed.code : undefined;
   } catch {
     return undefined;
   }
@@ -245,7 +260,8 @@ export async function gatewayFetch(
       'http',
       `Switch gateway returned ${response.status}${body ? `: ${body}` : ''}`,
       response.status,
-      parseErrorDetail(body)
+      parseErrorDetail(body),
+      parseErrorCode(body)
     );
   }
   return response;

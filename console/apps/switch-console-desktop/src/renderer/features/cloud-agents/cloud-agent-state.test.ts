@@ -102,6 +102,16 @@ describe('why a held message will not be delivered', () => {
       'This agent could not start.',
     ],
     [
+      'the agent timed out connecting',
+      agent({ state: 'error', error_code: 'worker_attach_timeout' }),
+      'This agent could not start.',
+    ],
+    [
+      'the agent lost its credential',
+      agent({ state: 'error', error_code: 'agent_key_missing' }),
+      'Remove it in Your Agents and create it again.',
+    ],
+    [
       'the agent is being removed',
       agent({ desired_state: 'deleted' }),
       'This agent is being removed.',

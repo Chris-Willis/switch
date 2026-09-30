@@ -35,6 +35,8 @@ export function cloudHoldBlocker(agent: CloudAgent): string | null {
   if (launch.desired_state === 'stopped') return relayRefusal('agent_stopped');
   if (launch.process_state === 'crashed' || launch.error_code === 'agent_crashed')
     return relayRefusal('agent_crashed');
+  if (launch.state === 'error' && launch.error_code === 'agent_key_missing')
+    return 'Switch lost this agent’s credential. Remove it in Your Agents and create it again.';
   if (launch.state === 'error')
     return 'This agent could not start. Retry it in Your Agents, then send again.';
   return null;

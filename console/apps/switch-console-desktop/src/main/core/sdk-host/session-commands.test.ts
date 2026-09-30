@@ -9,11 +9,22 @@ const mocks = vi.hoisted(() => ({
   cloud: { request: vi.fn() },
   cloudOperation: vi.fn(async () => ({ state: 'applied' })),
 }));
-const { Unavailable, Failed } = vi.hoisted(() => ({
+const { Unavailable, Failed, RelayError } = vi.hoisted(() => ({
   Unavailable: class extends Error {},
   Failed: class extends Error {},
+  RelayError: class extends Error {
+    constructor(
+      readonly relayCode: string,
+      message: string,
+      readonly status: number,
+      readonly wakeAvailable: boolean
+    ) {
+      super(message);
+    }
+  },
 }));
 vi.mock('@switch-console/agent-providers', () => ({
+  CloudRelayError: RelayError,
   SessionUnavailableError: Unavailable,
   SessionHostFailedError: Failed,
   sharedSessionRoot: (id: string) => `/roots/${id}`,
@@ -165,3 +176,25 @@ it('sends a cloud command through the relay and restarts a parked cloud session 
   expect(mocks.hydrate).not.toHaveBeenCalled();
   expect(mocks.local.request).not.toHaveBeenCalled();
 });
+
+it.each(['worker_waking', 'machine_stopped', 'machine_error'])(
+  'raises a %s refusal of the cloud restart as that relay code, not sending the command',
+  async (code) => {
+    mocks.cloud.request.mockRejectedValueOnce(new Unavailable('The session host is not running.'));
+    mocks.cloudOperation.mockResolvedValueOnce({
+      state: 'failed',
+      message: 'The cloud machine is starting. Try again in a moment.',
+      code,
+    } as never);
+    const error = await submitSessionCommand('cloud:server:launch', command).catch(
+      (caught: unknown) => caught
+    );
+    expect(error).toBeInstanceOf(RelayError);
+    expect(error).toMatchObject({
+      relayCode: code,
+      message:
+        'The session is not running and could not be started again: The cloud machine is starting. Try again in a moment.',
+    });
+    expect(mocks.cloud.request).toHaveBeenCalledTimes(1);
+  }
+);

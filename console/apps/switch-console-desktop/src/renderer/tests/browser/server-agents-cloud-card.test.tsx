@@ -12,6 +12,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { CloudAgent, CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
+import { RpcError, serializeRpcError } from '@shared/lib/ipc/rpc-error';
 
 const sdkHost = vi.hoisted(() => ({
   cloudAgents: vi.fn(),
@@ -295,6 +296,73 @@ it('offers only Retry and Remove for an agent Switch could not register', async 
 
   expect(el.querySelector('[role="alert"]')?.textContent).toMatch(/could not register/);
   expect(actions(el)).toEqual(['Retry', 'Remove']);
+});
+
+it.each([
+  [
+    'agent_key_missing',
+    /lost this agent’s credential.*Remove the agent and create it again/,
+    false,
+  ],
+  ['agent_identity_missing', /lost this agent’s identity\. Retry/, true],
+  ['worker_attach_timeout', /did not connect to Switch/, true],
+  ['agent_stop_timeout', /did not stop in time/, true],
+])('explains a launch in error with %s', async (code, text, retry) => {
+  const base = agent();
+  sdkHost.cloudAgents.mockResolvedValue([
+    {
+      ...base,
+      launch: { ...base.launch, state: 'error', error: 'from the server', error_code: code },
+      problem: { code: 'worker_not_attached', message: 'error', wakeAvailable: false },
+    },
+  ]);
+  const el = await render();
+
+  expect(el.querySelector('[role="alert"]')?.textContent).toMatch(text);
+  expect(button(el, /^retry$/i) !== undefined).toBe(retry);
+});
+
+it('says to start the machine when a retry is refused because its owner stopped it', async () => {
+  const machine = {
+    ...sleepingMachine(),
+    stop_reason: 'owner',
+    sleeping: false,
+  } satisfies CloudMachine;
+  const base = agent();
+  sdkHost.cloudAgents.mockResolvedValue([
+    {
+      ...base,
+      launch: {
+        ...base.launch,
+        machine_id: machine.machine_id,
+        state: 'error',
+        error: 'from the server',
+        error_code: 'worker_attach_timeout',
+      },
+      machine,
+    },
+  ]);
+  sdkHost.cloudMachines.mockResolvedValue([machine]);
+  switchServers.cloudLifecycle.mockRejectedValue(
+    new RpcError(
+      serializeRpcError(
+        Object.assign(new Error('Switch gateway returned 409'), {
+          name: 'GatewayError',
+          kind: 'http',
+          status: 409,
+          detail: 'The owner stopped the cloud machine. Start it in Switch Console.',
+          code: 'machine_stopped',
+        })
+      )
+    )
+  );
+  const el = await render();
+
+  await act(async () => button(el, /^retry$/i)!.click());
+  await settle();
+  expect(el.textContent).toMatch(
+    /The owner stopped the cloud machine\. Start the machine, then try again\./
+  );
 });
 
 it('offers only Remove for a removal left halfway', async () => {

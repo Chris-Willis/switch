@@ -5,7 +5,7 @@ const server = vi.hoisted(() => ({
   sessions: new Set<string>(),
   restarts: 0,
   loseNextResponse: false,
-  refuseNext: null as { status: number; detail: string } | null,
+  refuseNext: null as { status: number; detail: string; code?: string } | null,
   launches: [] as { request_id: string }[],
   machines: [] as { machine_id: string; revision: number }[],
   machineActions: [] as unknown[],
@@ -19,7 +19,8 @@ const { FakeGatewayError } = vi.hoisted(() => ({
       readonly kind: 'unauthorized' | 'http' | 'network',
       message: string,
       readonly status?: number,
-      readonly detail?: string
+      readonly detail?: string,
+      readonly code?: string
     ) {
       super(message);
     }
@@ -80,9 +81,15 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
         return { json: async () => ({ machine: started }) };
       }
       if (server.refuseNext) {
-        const { status, detail } = server.refuseNext;
+        const { status, detail, code } = server.refuseNext;
         server.refuseNext = null;
-        throw new FakeGatewayError('http', `Switch gateway returned ${status}`, status, detail);
+        throw new FakeGatewayError(
+          'http',
+          `Switch gateway returned ${status}`,
+          status,
+          detail,
+          code
+        );
       }
       const body = init.body as { id: string; session_id: string; action: string };
       let operation = server.operations.get(body.id);
@@ -319,7 +326,22 @@ it('reports a refusal the server answered as a definite failure', async () => {
   expect(await runCloudSessionOperation(agent, sessionId, sessionId, 'start')).toEqual({
     state: 'failed',
     message: 'Start the cloud worker and wait until it is ready.',
+    code: null,
   });
+});
+
+it.each([
+  ['worker_waking', 'The cloud machine is starting. Try again in a moment.'],
+  ['machine_stopped', 'The owner stopped the cloud machine. Start it in Switch Console.'],
+  ['machine_error', 'The cloud machine needs attention. Retry it in Switch Console.'],
+])('reports a %s refusal with its code', async (code, detail) => {
+  server.refuseNext = { status: 409, detail, code };
+  expect(await runCloudSessionOperation(agent, sessionId, restartId, 'restart')).toEqual({
+    state: 'failed',
+    message: detail,
+    code,
+  });
+  expect(server.restarts).toBe(0);
 });
 
 it('refuses a start whose operation id is not its session id', async () => {
