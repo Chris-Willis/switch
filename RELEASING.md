@@ -83,6 +83,26 @@ peer still on it, and it can never be raised past what is running in the field.
 You can also trigger `workflow_dispatch` manually from the Actions tab to test a
 build without creating a release.
 
+### Release candidates
+
+To publish a pre-release of the stack for staging, pilot or a canary Console,
+tag a release candidate. Don't bump `core/pyproject.toml` first:
+
+```bash
+git tag switch-v0.30.0-rc.1 <commit on main>   # or on release/0.30
+git push origin switch-v0.30.0-rc.1
+```
+
+- **Only from `main` or `release/*`.** The workflow refuses a tag whose commit is on
+  neither.
+- **The version previews the next release.** The base (`0.30.0`) must be at or above
+  `core/pyproject.toml` and not already released as `switch-v0.30.0`.
+- **Never `latest`.** Images, chart and compose are pushed under `0.30.0-rc.1` only.
+  `helm install` skips the chart unless given `--devel` or that exact `--version`.
+- **The server reports the RC.** The workflow stamps `0.30.0rc1` (the PEP 440 form)
+  into `core/pyproject.toml` on the runner, so the running server's version says
+  which candidate it is. Nothing is committed.
+
 ## Switch Console desktop app release (separate)
 
 The desktop app (`console/`) releases on its own tag, `switch-console-v<version>`, via
