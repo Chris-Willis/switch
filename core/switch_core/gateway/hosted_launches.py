@@ -6,6 +6,7 @@ from typing import Annotated, Literal, Self, cast
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,12 +37,13 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.hosted_launch_store import (
     HostedLaunchConflict,
     HostedLaunchStore,
-    lock_launch,
 )
 from switch_core.db.stores.hosted_machine_store import (
     HostedMachineConflict,
     HostedMachineStore,
     idle_sleeping,
+    machine_starting,
+    owner_stopped,
 )
 from switch_core.db.stores.hosted_mailbox_store import (
     HostedMailboxStore,
@@ -77,6 +79,14 @@ router = APIRouter(prefix="/hosted-launches")
 IDENTITY_FAILED = (
     "Switch could not create this cloud agent's identity. Retry it to try again."
 )
+MACHINE_ERROR = "The cloud machine needs attention. Retry it in Switch Console."
+MACHINE_STOPPED = "The owner stopped the cloud machine. Start it in Switch Console."
+WORKER_WAKING = "The cloud machine is starting. Try again in a moment."
+
+
+def coded_conflict(code: str, message: str) -> JSONResponse:
+    """A 409 whose `detail` is the message and whose `code` names the refusal."""
+    return JSONResponse(status_code=409, content={"detail": message, "code": code})
 
 
 def controller_settings(request: Request) -> HostedControllerSettings:
@@ -584,18 +594,15 @@ async def ring_operation(
         protocol.connections.ring_worker(agent_id, "operation", {"id": operation_id})
 
 
-@router.post("/{request_id}/sessions", status_code=202)
+@router.post("/{request_id}/sessions", status_code=202, response_model=None)
 async def session_operation(
     request_id: UUID,
     body: SessionOperationRequest,
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
-) -> dict:
-    await lock_launch(session, str(request_id))
-    launch = await HostedLaunchStore().owned(session, str(request_id), user.id)
-    if launch is None:
-        raise HTTPException(404, "Cloud launch not found.")
+) -> dict | JSONResponse:
+    launch, machine = await locked_owned(session, str(request_id), user.id)
     existing = await session.get(HostedOperation, (require_tenant_id(), str(body.id)))
     if existing:
         if (
@@ -607,6 +614,22 @@ async def session_operation(
                 409, "This operation ID was already used for different details."
             )
         return operation_summary(existing)
+    if machine.state == "error":
+        return coded_conflict("machine_error", MACHINE_ERROR)
+    if owner_stopped(machine):
+        return coded_conflict("machine_stopped", MACHINE_STOPPED)
+    if (
+        idle_sleeping(machine)
+        and launch.desired_state == "running"
+        and launch.state != "error"
+    ):
+        now = datetime.now(UTC)
+        HostedMachineStore().start(machine, now)
+        launch.active_at = now
+        await session.commit()
+        return coded_conflict("worker_waking", WORKER_WAKING)
+    if machine_starting(machine):
+        return coded_conflict("worker_waking", WORKER_WAKING)
     if (
         launch.state not in ("ready", "running")
         or launch.desired_state != "running"

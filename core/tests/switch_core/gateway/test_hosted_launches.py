@@ -636,3 +636,111 @@ async def test_lifecycle_registers_an_interrupted_identity(
     assert result.json()["agent_id"] == reserved
     async with app.factory() as session:
         assert await session.get(Agent, reserved) is not None
+
+
+async def _ready_launch(app) -> dict:
+    created = (await app.client.post("/hosted-launches", json=body())).json()
+    await _update(app.factory, HostedLaunch, created["request_id"], state="ready")
+    await _update(
+        app.factory, HostedMachine, created["machine_id"], state="ready", revision=2
+    )
+    return created
+
+
+async def _session_operation(app, request_id: str, operation_id: str | None = None):
+    return await app.client.post(
+        f"/hosted-launches/{request_id}/sessions",
+        json={
+            "id": operation_id or str(uuid4()),
+            "session_id": str(uuid4()),
+            "action": "start",
+        },
+    )
+
+
+async def _operation_count(factory) -> int:
+    async with factory() as session:
+        return await session.scalar(select(func.count()).select_from(HostedOperation))
+
+
+@pytest.mark.parametrize(
+    ("machine", "code", "message"),
+    [
+        (
+            {"state": "error"},
+            "machine_error",
+            "The cloud machine needs attention. Retry it in Switch Console.",
+        ),
+        (
+            {"state": "stopped", "desired_state": "stopped", "stop_reason": "owner"},
+            "machine_stopped",
+            "The owner stopped the cloud machine. Start it in Switch Console.",
+        ),
+        (
+            {"state": "provisioning"},
+            "worker_waking",
+            "The cloud machine is starting. Try again in a moment.",
+        ),
+    ],
+)
+async def test_session_operation_refuses_a_machine_that_is_not_ready(
+    launch_app, machine, code, message
+):
+    app = launch_app
+    created = await _ready_launch(app)
+    await _update(app.factory, HostedMachine, created["machine_id"], **machine)
+    refused = await _session_operation(app, created["request_id"])
+    assert refused.status_code == 409
+    assert refused.json() == {"detail": message, "code": code}
+    assert await _operation_count(app.factory) == 0
+    assert (await _machine(app.factory, created["machine_id"])).revision == 2
+
+
+async def test_session_operation_wakes_a_sleeping_machine(launch_app):
+    app = launch_app
+    created = await _ready_launch(app)
+    await _update(
+        app.factory,
+        HostedMachine,
+        created["machine_id"],
+        state="stopped",
+        desired_state="stopped",
+        stop_reason="idle",
+    )
+    before = await _launch(app.factory, created["request_id"])
+    waking = await _session_operation(app, created["request_id"])
+    assert waking.status_code == 409
+    assert waking.json()["code"] == "worker_waking"
+    machine = await _machine(app.factory, created["machine_id"])
+    assert (machine.desired_state, machine.stop_reason, machine.revision) == (
+        "running",
+        None,
+        3,
+    )
+    assert (
+        await _launch(app.factory, created["request_id"])
+    ).active_at > before.active_at
+    assert await _operation_count(app.factory) == 0
+
+
+async def test_session_operation_is_queued_on_a_ready_machine_and_replayed(
+    launch_app,
+):
+    app = launch_app
+    created = await _ready_launch(app)
+    operation_id = str(uuid4())
+    body_ = {"id": operation_id, "session_id": str(uuid4()), "action": "start"}
+    url = f"/hosted-launches/{created['request_id']}/sessions"
+    queued = await app.client.post(url, json=body_)
+    assert queued.status_code == 202, queued.text
+    await _update(
+        app.factory,
+        HostedMachine,
+        created["machine_id"],
+        state="stopped",
+        desired_state="stopped",
+        stop_reason="owner",
+    )
+    replayed = await app.client.post(url, json=body_)
+    assert replayed.status_code == 202
+    assert replayed.json()["id"] == operation_id
