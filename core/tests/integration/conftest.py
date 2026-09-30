@@ -26,6 +26,7 @@ import subprocess
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
+from unittest.mock import MagicMock
 
 import asyncpg
 import pytest
@@ -621,6 +622,8 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             bridge_store=session_env.bridge_store,
             session_factory=session_factory,
             config=config,
+            # Required since #543; no integration test answers an approval.
+            approval_outcomes=MagicMock(),
             connections=connections,
         )
 
