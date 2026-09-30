@@ -1,13 +1,20 @@
 import { AlertTriangle, Moon } from 'lucide-react';
 import { Button } from '@renderer/lib/ui/button';
-import type { CloudLaunch, CloudRelayProblem } from '@shared/core/cloud-agents/cloud-agents';
-import { cloudLaunchPhase } from '@shared/core/cloud-agents/cloud-agents';
+import type {
+  CloudLaunch,
+  CloudMachine,
+  CloudRelayProblem,
+} from '@shared/core/cloud-agents/cloud-agents';
+import { cloudAgentPhase } from '@shared/core/cloud-agents/cloud-agents';
 import { useCloudWake } from './use-cloud-agents';
 
 /** What a relay code means to the user, beside the server's own message. */
 const PROBLEM_TITLES: Record<string, string> = {
-  worker_sleeping: 'The cloud worker is asleep.',
-  worker_waking: 'The cloud worker is starting.',
+  machine_stopped: 'The owner stopped the cloud machine.',
+  worker_sleeping: 'The cloud machine is asleep.',
+  worker_waking: 'The cloud machine is starting.',
+  agent_stopped: 'The agent is stopped.',
+  agent_crashed: 'The agent crashed.',
   worker_not_attached: 'The cloud worker is not attached.',
   worker_busy: 'The cloud worker is busy. Try again shortly.',
   generation_changed: 'The cloud worker restarted.',
@@ -24,16 +31,18 @@ const PROBLEM_TITLES: Record<string, string> = {
 export function CloudProblem({
   agentKey,
   launch,
+  machine,
   problem,
   compact,
 }: {
   agentKey: string;
   launch: CloudLaunch;
+  machine: CloudMachine | null;
   problem: CloudRelayProblem;
   compact: boolean;
 }) {
   const wake = useCloudWake();
-  const phase = cloudLaunchPhase(launch);
+  const phase = cloudAgentPhase(launch, machine);
   const sleeping = problem.code === 'worker_sleeping';
   const Icon = sleeping ? Moon : AlertTriangle;
   return (

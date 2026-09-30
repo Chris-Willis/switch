@@ -6,6 +6,7 @@ import { createRPCController } from '@shared/lib/ipc/rpc';
 import {
   listCloudAgents,
   listCloudSessions,
+  listServerCloudMachines,
   runCloudSessionOperation,
   uploadCloudAttachment,
   wakeCloudAgent,
@@ -51,6 +52,7 @@ export const sdkHostController = createRPCController({
   sessionCommandStatus: (agentId: string, sessionId: string, commandId: string) =>
     sessionCommandStatus(agentId, sessionId, commandId),
   cloudAgents: (serverId: string) => listCloudAgents(serverId),
+  cloudMachines: (serverId: string) => listServerCloudMachines(serverId),
   cloudSessions: (agentId: string) => listCloudSessions(agentId),
   cloudWake: (agentId: string) => wakeCloudAgent(agentId),
   cloudSessionOperation: async (

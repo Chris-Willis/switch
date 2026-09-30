@@ -210,6 +210,19 @@ it('reports a sleeping launch with whether it can be woken, without asking again
   expect(relayed).toHaveLength(1);
 });
 
+it.each(['machine_stopped', 'agent_stopped', 'agent_crashed'])(
+  'raises %s without asking again',
+  async (code) => {
+    answer = () => refused(409, code);
+    const error = await client()
+      .health()
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(CloudRelayError);
+    expect(error).toMatchObject({ relayCode: code, status: 409, wakeAvailable: false });
+    expect(relayed).toHaveLength(1);
+  }
+);
+
 it('asks again while the worker is waking or busy, within its window', async () => {
   const replies = [refused(409, 'worker_waking'), refused(503, 'worker_busy')];
   answer = () =>

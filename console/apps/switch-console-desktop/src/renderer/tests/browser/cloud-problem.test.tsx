@@ -37,6 +37,10 @@ const launch: CloudLaunch = {
   error: null,
   error_code: null,
   sleeping: true,
+  machine_id: null,
+  process_state: null,
+  process_restarts: 0,
+  oom_kills: 0,
 };
 
 let container: HTMLDivElement | null = null;
@@ -62,7 +66,13 @@ async function render(problem: CloudRelayProblem, state = launch): Promise<HTMLD
   await act(async () =>
     root!.render(
       <QueryClientProvider client={client}>
-        <CloudProblem agentKey="cloud:server:launch" launch={state} problem={problem} compact />
+        <CloudProblem
+          agentKey="cloud:server:launch"
+          launch={state}
+          machine={null}
+          problem={problem}
+          compact
+        />
       </QueryClientProvider>
     )
   );

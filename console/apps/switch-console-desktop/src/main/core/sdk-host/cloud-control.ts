@@ -15,11 +15,15 @@ import { getServer } from '@main/core/switch-servers/servers-store';
 import {
   type CloudAgent,
   cloudAgentKey,
+  cloudAgentPhase,
   type CloudLaunch,
   cloudLaunchSchema,
+  type CloudMachine,
+  cloudMachineSchema,
   type CloudOperation,
   type CloudOperationOutcome,
   cloudOperationSchema,
+  type CloudRelayProblem,
   type CloudSessions,
   parseCloudAgentKey,
 } from '@shared/core/cloud-agents/cloud-agents';
@@ -53,6 +57,10 @@ async function serverOf(serverId: string): Promise<SwitchServer> {
 
 function launchPath(requestId: string, rest = ''): string {
   return `/hosted-launches/${encodeURIComponent(requestId)}${rest}`;
+}
+
+function machinePath(machineId: string, rest = ''): string {
+  return `/hosted-machines/${encodeURIComponent(machineId)}${rest}`;
 }
 
 const clients = new Map<string, CloudRelayClient>();
@@ -96,40 +104,87 @@ export async function listCloudLaunches(server: SwitchServer): Promise<CloudLaun
 }
 
 /**
- * The server's cloud agents, read from the launch list alone, or null when the
- * server has no cloud agents. A launch whose
- * worker cannot be asked says why; the sessions of one that can are asked of
- * its worker by `listCloudSessions`, only for the agents being looked at.
+ * The caller's cloud machines. Unlike the launch list, a 404 here is not read
+ * as "no cloud agents": a server that lists launches but not machines is one
+ * this Console does not match.
+ */
+export async function listCloudMachines(server: SwitchServer): Promise<CloudMachine[]> {
+  const response = await gatewayFetch(server, '/hosted-machines', { authenticated: true });
+  return z.object({ machines: z.array(cloudMachineSchema) }).parse(await response.json()).machines;
+}
+
+/** The caller's cloud machines, or null when the server has no cloud agents. */
+export async function listServerCloudMachines(serverId: string): Promise<CloudMachine[] | null> {
+  const server = await serverOf(serverId);
+  if ((await listCloudLaunches(server)) === null) return null;
+  return listCloudMachines(server);
+}
+
+/** Why a launch's worker cannot be asked, machine first, or null when it can. */
+function launchProblem(
+  launch: CloudLaunch,
+  machine: CloudMachine | null
+): CloudRelayProblem | null {
+  const phase = cloudAgentPhase(launch, machine);
+  if (phase === 'machine_stopped')
+    return {
+      code: 'machine_stopped',
+      message: 'The owner stopped the cloud machine.',
+      wakeAvailable: false,
+    };
+  if (phase === 'sleeping')
+    return {
+      code: 'worker_sleeping',
+      message: 'The cloud machine is asleep.',
+      wakeAvailable: true,
+    };
+  if (phase === 'waking')
+    return {
+      code: 'worker_waking',
+      message: 'The cloud machine is starting.',
+      wakeAvailable: false,
+    };
+  if (launch.desired_state === 'stopped')
+    return { code: 'agent_stopped', message: 'The agent is stopped.', wakeAvailable: false };
+  if (launch.state === 'error' && launch.error_code === 'agent_crashed')
+    return {
+      code: 'agent_crashed',
+      message: launch.error ?? 'The agent crashed.',
+      wakeAvailable: false,
+    };
+  if (launch.state !== 'ready' && launch.state !== 'running')
+    return {
+      code: 'worker_not_attached',
+      message: `The cloud worker is ${launch.state}${launch.error ? `: ${launch.error}` : '.'}`,
+      wakeAvailable: false,
+    };
+  return null;
+}
+
+/**
+ * The server's cloud agents, read from the launch and machine lists, or null
+ * when the server has no cloud agents. A launch whose worker cannot be asked
+ * says why; the sessions of one that can are asked of its worker by
+ * `listCloudSessions`, only for the agents being looked at.
  */
 export async function listCloudAgents(serverId: string): Promise<CloudAgent[] | null> {
-  const listed = await listCloudLaunches(await serverOf(serverId));
+  const server = await serverOf(serverId);
+  const listed = await listCloudLaunches(server);
   if (listed === null) return null;
   const launches = listed.filter((launch) => launch.agent_id && launch.desired_state !== 'deleted');
+  if (launches.length === 0) return [];
+  const machines = new Map(
+    (await listCloudMachines(server)).map((machine) => [machine.machine_id, machine])
+  );
   return launches.map((launch): CloudAgent => {
-    const key = cloudAgentKey(serverId, launch.request_id);
-    if (launch.sleeping)
-      return {
-        key,
-        launch,
-        sessions: null,
-        problem: {
-          code: 'worker_sleeping',
-          message: 'The cloud worker is asleep.',
-          wakeAvailable: true,
-        },
-      };
-    if (launch.state !== 'ready' && launch.state !== 'running')
-      return {
-        key,
-        launch,
-        sessions: null,
-        problem: {
-          code: 'worker_not_attached',
-          message: `The cloud worker is ${launch.state}${launch.error ? `: ${launch.error}` : '.'}`,
-          wakeAvailable: launch.state === 'stopped',
-        },
-      };
-    return { key, launch, sessions: null, problem: null };
+    const machine = launch.machine_id === null ? null : (machines.get(launch.machine_id) ?? null);
+    return {
+      key: cloudAgentKey(serverId, launch.request_id),
+      launch,
+      machine,
+      sessions: null,
+      problem: launchProblem(launch, machine),
+    };
   });
 }
 
@@ -159,22 +214,33 @@ export async function listCloudSessions(agentId: string): Promise<CloudSessions>
   }
 }
 
-/** Start a sleeping or stopped launch's worker again. */
-export async function wakeCloudAgent(agentId: string): Promise<CloudLaunch> {
+/**
+ * Start the machine a sleeping cloud agent runs on. A machine already asked to
+ * run is returned as it is, so a second wake does not bump its revision.
+ */
+export async function wakeCloudAgent(agentId: string): Promise<CloudMachine> {
   const { serverId, requestId } = launchOf(agentId);
   const server = await serverOf(serverId);
   const launch = cloudLaunchSchema.parse(
     await (await gatewayFetch(server, launchPath(requestId), { authenticated: true })).json()
   );
-  return cloudLaunchSchema.passthrough().parse(
+  if (launch.machine_id === null)
+    throw new Error(`The cloud agent ${launch.name} has no machine to start.`);
+  const machine = cloudMachineSchema.parse(
     await (
-      await gatewayFetch(server, launchPath(requestId, '/lifecycle'), {
-        authenticated: true,
-        method: 'POST',
-        body: { action: 'start', revision: launch.revision },
-      })
+      await gatewayFetch(server, machinePath(launch.machine_id), { authenticated: true })
     ).json()
   );
+  if (machine.desired_state === 'running') return machine;
+  return z.object({ machine: cloudMachineSchema }).parse(
+    await (
+      await gatewayFetch(server, machinePath(machine.machine_id, '/lifecycle'), {
+        authenticated: true,
+        method: 'POST',
+        body: { action: 'start', revision: machine.revision },
+      })
+    ).json()
+  ).machine;
 }
 
 const OPERATION_WAIT_MS = 180_000;

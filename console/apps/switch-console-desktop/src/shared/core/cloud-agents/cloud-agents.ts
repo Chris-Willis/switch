@@ -33,8 +33,63 @@ export const cloudLaunchSchema = z.object({
   error: z.string().nullable(),
   error_code: z.string().nullable(),
   sleeping: z.boolean(),
+  machine_id: z.string().nullable(),
+  process_state: z
+    .enum([
+      'pending',
+      'starting',
+      'running',
+      'stopping',
+      'stopped',
+      'restarting',
+      'crashed',
+      'failed',
+    ])
+    .nullable(),
+  process_restarts: z.number().int().nonnegative(),
+  oom_kills: z.number().int().nonnegative(),
 });
 export type CloudLaunch = z.infer<typeof cloudLaunchSchema>;
+
+const machineCapacitySchema = z
+  .object({
+    total_bytes: z.number().int().nonnegative(),
+    available_bytes: z.number().int().nonnegative(),
+  })
+  .nullable();
+
+/**
+ * The owner's cloud machine, which every one of their launches runs on.
+ * `sleeping` is Core's reading of desired `stopped` for `idle`; `disk` and
+ * `memory` come from the machine's last heartbeat.
+ */
+export const cloudMachineSchema = z.object({
+  machine_id: z.string(),
+  state: z.enum([
+    'queued',
+    'provisioning',
+    'ready',
+    'stopping',
+    'stopped',
+    'error',
+    'retained',
+    'deleting',
+    'deleted',
+  ]),
+  desired_state: z.enum(['running', 'stopped', 'retained', 'deleted']),
+  stop_reason: z.enum(['idle', 'owner']).nullable(),
+  sleeping: z.boolean(),
+  revision: z.number().int().positive(),
+  instance_type: z.string().nullable(),
+  error: z.string().nullable(),
+  error_code: z.string().nullable(),
+  retain_until: z.string().nullable(),
+  heartbeat_at: z.string().nullable(),
+  disk: machineCapacitySchema,
+  memory: machineCapacitySchema,
+  agents: z.array(z.string()),
+});
+export type CloudMachine = z.infer<typeof cloudMachineSchema>;
 
 export const cloudOperationSchema = z.object({
   id: z.string().uuid(),
@@ -59,7 +114,7 @@ export type CloudOperationOutcome =
 export type CloudRelayProblem = {
   code: string;
   message: string;
-  /** Set on `worker_sleeping`: a start would wake the launch. */
+  /** Set on `worker_sleeping`: starting the launch's machine would wake it. */
   wakeAvailable: boolean;
 };
 
@@ -71,16 +126,31 @@ export type CloudSessions = {
 
 /**
  * A launch with its worker's sessions, or why they could not be read.
- * `sessions` is null until the worker has been asked.
+ * `sessions` is null until the worker has been asked. `machine` is the
+ * machine the launch runs on, null when it has none or it is not listed.
  */
 export type CloudAgent = CloudSessions & {
   key: string;
   launch: CloudLaunch;
+  machine: CloudMachine | null;
 };
 
-/** Whether the launch is asleep, and whether a wake has been asked for. */
-export function cloudLaunchPhase(launch: CloudLaunch): 'sleeping' | 'waking' | null {
-  if (launch.sleeping) return 'sleeping';
+/**
+ * Whether the agent's machine is asleep, stopped by its owner, or on its way
+ * up. The machine is read first; a launch without one says for itself.
+ */
+export function cloudAgentPhase(
+  launch: CloudLaunch,
+  machine: CloudMachine | null
+): 'sleeping' | 'waking' | 'machine_stopped' | null {
+  if (machine ? machine.sleeping : launch.sleeping) return 'sleeping';
+  if (machine?.desired_state === 'stopped' && machine.stop_reason === 'owner')
+    return 'machine_stopped';
+  if (
+    machine?.desired_state === 'running' &&
+    ['queued', 'provisioning', 'stopping', 'stopped'].includes(machine.state)
+  )
+    return 'waking';
   if (launch.desired_state === 'running' && ['queued', 'provisioning'].includes(launch.state))
     return 'waking';
   return null;

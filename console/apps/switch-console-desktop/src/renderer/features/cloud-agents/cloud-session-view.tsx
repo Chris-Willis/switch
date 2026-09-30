@@ -62,6 +62,7 @@ const CloudWorkerStatus = observer(function CloudWorkerStatus({
       <CloudProblem
         agentKey={agentKey}
         launch={agent.launch}
+        machine={agent.machine}
         problem={agent.problem}
         compact={false}
       />

@@ -141,6 +141,7 @@ const CloudAgentRow = observer(function CloudAgentRow({ listed }: { listed: Clou
             <CloudProblem
               agentKey={agent.key}
               launch={agent.launch}
+              machine={agent.machine}
               problem={agent.problem}
               compact
             />
