@@ -24,17 +24,21 @@ const PROBLEM_TITLES: Record<string, string> = {
  * Why a cloud agent's worker cannot be reached, said as such, with what the
  * user can do about it. A sleeping machine that can be woken and offers no
  * Wake here wakes on the next message sent to it. Every refusal shows its code.
+ * A `worker_waking` on a machine already up is only the agent starting.
  */
 export function CloudProblem({
   problem,
+  machineReady,
   compact,
   action,
 }: {
   problem: CloudRelayProblem;
+  machineReady: boolean;
   compact: boolean;
   action: CloudProblemAction | null;
 }) {
   const sleeping = problem.code === 'worker_sleeping';
+  const agentStarting = problem.code === 'worker_waking' && machineReady;
   const Icon = sleeping ? Moon : AlertTriangle;
   return (
     <div
@@ -43,8 +47,10 @@ export function CloudProblem({
     >
       <Icon className="mt-px size-3.5 shrink-0" />
       <span className="min-w-0 flex-1">
-        {PROBLEM_TITLES[problem.code] ?? 'The cloud worker could not be reached.'}{' '}
-        {problem.message !== PROBLEM_TITLES[problem.code] && (
+        {agentStarting
+          ? 'The agent is starting.'
+          : (PROBLEM_TITLES[problem.code] ?? 'The cloud worker could not be reached.')}{' '}
+        {!agentStarting && problem.message !== PROBLEM_TITLES[problem.code] && (
           <span className="text-foreground-muted">{problem.message} </span>
         )}
         {sleeping && problem.wakeAvailable && !action && 'Send a message to wake it. '}

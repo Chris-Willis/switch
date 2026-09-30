@@ -162,3 +162,11 @@ export function cloudAgentPhase(
   if (['queued', 'provisioning'].includes(launch.state)) return 'waking';
   return null;
 }
+
+/**
+ * Whether a waking agent waits only on its own process, its machine already
+ * up. The relay says `worker_waking` either way.
+ */
+export function cloudMachineReady(machine: CloudMachine | null): boolean {
+  return machine?.state === 'ready';
+}

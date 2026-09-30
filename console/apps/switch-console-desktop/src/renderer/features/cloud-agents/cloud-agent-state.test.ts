@@ -60,6 +60,22 @@ describe('a cloud agent on a machine in error', () => {
   });
 });
 
+describe('a cloud agent on its way up', () => {
+  it('reads as starting when only the agent starts on a ready machine', () => {
+    expect(cloudAgentState(agent({ state: 'provisioning', process_state: 'starting' }))).toEqual({
+      label: 'starting…',
+      tone: 'busy',
+    });
+  });
+
+  it('reads as waking while its machine starts', () => {
+    expect(cloudAgentState(agent({}, machine({ state: 'provisioning' })))).toEqual({
+      label: 'waking…',
+      tone: 'busy',
+    });
+  });
+});
+
 describe('why a held message will not be delivered', () => {
   it.each([
     [

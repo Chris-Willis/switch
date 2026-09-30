@@ -8,7 +8,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import type { CloudAgent } from '@shared/core/cloud-agents/cloud-agents';
+import type { CloudAgent, CloudLaunch, CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
 
 const sdkHost = vi.hoisted(() => ({
   cloudAgents: vi.fn(),
@@ -250,4 +250,116 @@ it('offers no wake for a stopped agent on a sleeping machine', async () => {
   expect(el.textContent).toContain('asleep');
   expect(el.textContent).not.toContain('wake it');
   expect(button(el, /^wake$/i)).toBeUndefined();
+});
+
+function onMachine(machine: Partial<CloudMachine>, launch: Partial<CloudLaunch> = {}): CloudAgent {
+  return {
+    ...agent(),
+    launch: { ...agent().launch, machine_id: 'machine', ...launch },
+    machine: {
+      machine_id: 'machine',
+      state: 'ready',
+      desired_state: 'running',
+      stop_reason: null,
+      sleeping: false,
+      revision: 2,
+      instance_type: null,
+      error: null,
+      error_code: null,
+      retain_until: null,
+      heartbeat_at: null,
+      disk: null,
+      memory: null,
+      agents: [],
+      ...machine,
+    },
+  };
+}
+
+it.each([
+  [
+    'stopped by its owner',
+    {
+      ...onMachine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'owner' }),
+      problem: {
+        code: 'machine_stopped',
+        message: 'The owner stopped the cloud machine.',
+        wakeAvailable: false,
+      },
+    },
+    'machine_stopped',
+  ],
+  [
+    'asleep',
+    {
+      ...onMachine({
+        state: 'stopped',
+        desired_state: 'stopped',
+        stop_reason: 'idle',
+        sleeping: true,
+      }),
+      problem: {
+        code: 'worker_sleeping',
+        message: 'The cloud machine is asleep.',
+        wakeAvailable: true,
+      },
+    },
+    'worker_sleeping',
+  ],
+])('keeps listing the sessions last read while the machine is %s', async (_name, down, code) => {
+  sdkHost.cloudAgents.mockResolvedValue([onMachine({})]);
+  sdkHost.cloudSessions.mockResolvedValue(sessions(['b4105d35-0000']));
+  expandedCloudGroups.add(`cloud:${agentKey}`);
+  const el = await render();
+  expect(el.textContent).toContain('Session b4105d35');
+
+  sdkHost.cloudAgents.mockResolvedValue([down]);
+  sdkHost.cloudSessions.mockResolvedValue({ sessions: null, problem: down.problem });
+  await act(async () => window.dispatchEvent(new Event('focus')));
+  await act(async () => await new Promise((resolve) => setTimeout(resolve, 20)));
+  expect(el.textContent).toContain(`(${code})`);
+  const session = button(el, /Session b4105d35/);
+  expect(session).toBeDefined();
+  await act(async () => session!.click());
+  expect(navigate).toHaveBeenCalledWith(
+    'cloudSession',
+    expect.objectContaining({ agentKey, sessionId: 'b4105d35-0000' })
+  );
+});
+
+it('says the agent is starting when only its launch starts on a running machine', async () => {
+  sdkHost.cloudAgents.mockResolvedValue([
+    {
+      ...onMachine({}, { state: 'provisioning', process_state: 'starting' }),
+      problem: {
+        code: 'worker_waking',
+        message: 'The cloud machine is starting.',
+        wakeAvailable: false,
+      },
+    },
+  ]);
+  expandedCloudGroups.add(`cloud:${agentKey}`);
+  const el = await render();
+  expect(el.textContent).toContain('starting…');
+  expect(el.textContent).toContain('The agent is starting.');
+  expect(el.textContent).not.toContain('waking…');
+  expect(el.textContent).not.toContain('The cloud machine is starting.');
+});
+
+it('says the machine is starting while the machine itself wakes', async () => {
+  sdkHost.cloudAgents.mockResolvedValue([
+    {
+      ...onMachine({ state: 'provisioning' }),
+      problem: {
+        code: 'worker_waking',
+        message: 'The cloud machine is starting.',
+        wakeAvailable: false,
+      },
+    },
+  ]);
+  expandedCloudGroups.add(`cloud:${agentKey}`);
+  const el = await render();
+  expect(el.textContent).toContain('waking…');
+  expect(el.textContent).toContain('The cloud machine is starting.');
+  expect(el.textContent).not.toContain('The agent is starting.');
 });

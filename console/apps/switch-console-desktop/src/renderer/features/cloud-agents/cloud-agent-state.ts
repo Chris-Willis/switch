@@ -1,6 +1,10 @@
 import { relayRefusal } from '@renderer/features/sessions/components/transcript/held-message';
 import type { SessionStateTone } from '@renderer/features/sessions/components/transcript/session-state';
-import { type CloudAgent, cloudAgentPhase } from '@shared/core/cloud-agents/cloud-agents';
+import {
+  type CloudAgent,
+  cloudAgentPhase,
+  cloudMachineReady,
+} from '@shared/core/cloud-agents/cloud-agents';
 
 /**
  * A cloud agent's state when its worker cannot be asked, read the same way in
@@ -14,7 +18,8 @@ export function cloudAgentState(
   if (phase === 'sleeping') return { label: 'sleeping', tone: 'idle' };
   if (phase === 'machine_stopped') return { label: 'machine stopped', tone: 'idle' };
   if (phase === 'machine_error') return { label: 'machine error', tone: 'bad' };
-  if (phase === 'waking') return { label: 'waking…', tone: 'busy' };
+  if (phase === 'waking')
+    return { label: cloudMachineReady(agent.machine) ? 'starting…' : 'waking…', tone: 'busy' };
   if (agent.launch.desired_state === 'stopped') return { label: 'stopped', tone: 'idle' };
   if (agent.launch.process_state === 'crashed' || agent.launch.error_code === 'agent_crashed')
     return { label: 'crashed', tone: 'bad' };

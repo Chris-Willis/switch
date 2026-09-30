@@ -37,7 +37,11 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import type { Agent } from '@shared/core/agents/agents';
-import { type CloudAgent, cloudAgentPhase } from '@shared/core/cloud-agents/cloud-agents';
+import {
+  type CloudAgent,
+  cloudAgentPhase,
+  cloudMachineReady,
+} from '@shared/core/cloud-agents/cloud-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 import { ServerPage } from './server-page';
@@ -224,7 +228,9 @@ const CloudAgentCard = observer(function CloudAgentCard({
         : phase === 'machine_error'
           ? 'Machine error'
           : phase === 'waking'
-            ? 'Waking…'
+            ? cloudMachineReady(listed.machine)
+              ? 'Starting…'
+              : 'Waking…'
             : launch.desired_state === 'stopped'
               ? launch.state === 'stopping'
                 ? 'Stopping…'

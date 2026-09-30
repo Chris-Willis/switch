@@ -9,7 +9,7 @@ import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
-import type { CloudAgent } from '@shared/core/cloud-agents/cloud-agents';
+import { type CloudAgent, cloudMachineReady } from '@shared/core/cloud-agents/cloud-agents';
 import { SidebarMenuButton } from '../sidebar/sidebar-primitives';
 import { cloudAgentState } from './cloud-agent-state';
 import { cloudOperationAttempts, startAttemptKey } from './cloud-operation-attempts';
@@ -30,8 +30,9 @@ function sessionLabel(session: Session): string {
 /**
  * The active server's cloud agents under the local and SSH ones: each launch,
  * and beneath it the sessions its worker reports. A launch whose worker cannot
- * be asked says why in place of its sessions. A worker is asked for its
- * sessions only while its row is expanded or one of its sessions is open.
+ * be asked says why, above the sessions last read from it. A worker is asked
+ * for its sessions only while its row is expanded or one of its sessions is
+ * open.
  */
 export const CloudAgentList = observer(function CloudAgentList() {
   const serverId = switchServersStore.activeServerId;
@@ -138,7 +139,14 @@ const CloudAgentRow = observer(function CloudAgentRow({ listed }: { listed: Clou
       />
       {expanded && (
         <div className="flex flex-col gap-[2px] pl-5">
-          {agent.problem && <CloudProblem problem={agent.problem} compact action={problemAction} />}
+          {agent.problem && (
+            <CloudProblem
+              problem={agent.problem}
+              machineReady={cloudMachineReady(agent.machine)}
+              compact
+              action={problemAction}
+            />
+          )}
           {agent.sessions && sessions.length === 0 && (
             <p className="px-2 py-1 text-xs text-foreground-muted">No sessions on this worker.</p>
           )}

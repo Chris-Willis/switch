@@ -15,6 +15,7 @@ import { useParams } from '@renderer/lib/layout/navigation-provider';
 import {
   type CloudAgent,
   cloudAgentPhase,
+  cloudMachineReady,
   parseCloudAgentKey,
 } from '@shared/core/cloud-agents/cloud-agents';
 import { cloudAgentState, cloudHoldBlocker } from './cloud-agent-state';
@@ -73,7 +74,12 @@ function CloudAgentProblem({ agent }: { agent: CloudAgent }) {
   const action = useCloudProblemAction(agent, false);
   return agent.problem ? (
     <div className="px-5 pt-3">
-      <CloudProblem problem={agent.problem} compact={false} action={action} />
+      <CloudProblem
+        problem={agent.problem}
+        machineReady={cloudMachineReady(agent.machine)}
+        compact={false}
+        action={action}
+      />
     </div>
   ) : null;
 }

@@ -22,12 +22,17 @@ afterEach(async () => {
 
 async function render(
   problem: CloudRelayProblem,
-  action: CloudProblemAction | null = null
+  action: CloudProblemAction | null = null,
+  machineReady = false
 ): Promise<HTMLDivElement> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  await act(async () => root!.render(<CloudProblem problem={problem} compact action={action} />));
+  await act(async () =>
+    root!.render(
+      <CloudProblem problem={problem} machineReady={machineReady} compact action={action} />
+    )
+  );
   return container;
 }
 
@@ -94,4 +99,23 @@ it('shows a machine in error with Retry and why a retry failed', async () => {
   expect(el.textContent).toContain('The cloud machine is in error.');
   expect(el.textContent).toContain('Could not retry the machine: boom');
   expect(el.querySelector('button')?.textContent).toBe('Retry machine');
+});
+
+const waking: CloudRelayProblem = {
+  code: 'worker_waking',
+  message: 'The cloud machine is starting.',
+  wakeAvailable: false,
+};
+
+it('says only the agent is starting when its machine is already running', async () => {
+  const el = await render(waking, null, true);
+  expect(el.textContent).toContain('The agent is starting.');
+  expect(el.textContent).not.toContain('cloud machine');
+  expect(el.textContent).toContain('(worker_waking)');
+});
+
+it('says the machine is starting while the machine itself wakes', async () => {
+  const el = await render(waking, null, false);
+  expect(el.textContent).toContain('The cloud machine is starting.');
+  expect(el.textContent).not.toContain('The agent is starting.');
 });
