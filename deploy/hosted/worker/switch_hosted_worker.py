@@ -1007,7 +1007,7 @@ class GitRunner:
 def _kill_process_group(process: subprocess.Popen[bytes], label: str) -> None:
     try:
         os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         pass
     process.wait()
     deadline = time.monotonic() + GIT_KILL_WAIT_SECONDS
@@ -1016,6 +1016,8 @@ def _kill_process_group(process: subprocess.Popen[bytes], label: str) -> None:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             return
+        except PermissionError:
+            pass
         if time.monotonic() >= deadline:
             raise GitAbandoned(f"{label} timed out and its processes did not exit.")
         time.sleep(0.1)
