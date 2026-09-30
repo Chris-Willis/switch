@@ -697,12 +697,14 @@ class DiscordAdapter(CollaborationAdapter):
 
         A shared-delivery bridge is built inert (no connection of its own); the
         deployment-level Gateway client injects its connection here so the
-        adapter's inbound handling and its outbound posting both run against it —
-        at boot for installs that already exist, and lazily on first event for
-        one added at runtime. On the first attach it fires `_on_attached`, which
-        re-runs the start-time provisioning that needed the connection (agent
-        identities). Idempotent and set-once: an own-connection bridge already
-        has one and is left alone, and repeated calls after the first are no-ops.
+        adapter's inbound handling and its outbound posting both run against it.
+        A bridge started while the connection is up is attached as it starts,
+        before anything in it runs; the rest are attached when the connection
+        first comes up, and an event reaching a bridge attaches it too, as a
+        backstop. An attach after start fires `_on_attached`, which re-runs the
+        start-time provisioning that needed the connection (agent identities).
+        Idempotent and set-once: an own-connection bridge already has one and
+        is left alone, and repeated calls after the first are no-ops.
         """
         if self._connection is not None:
             return
@@ -2250,6 +2252,7 @@ class DiscordAdapter(CollaborationAdapter):
         if not term:
             return []
 
+        self._require_connection().take_member_search()
         guild = await self._get_guild()
         try:
             members = await guild.query_members(query=term, limit=100)

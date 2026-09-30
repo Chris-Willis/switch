@@ -27,6 +27,7 @@ from typing import Any
 import discord
 
 from switch_core.bridges.agent.commands import Command as InRoomCommand
+from switch_core.bridges.collaboration.adapter import CollaborationAdapter
 from switch_core.bridges.collaboration.discord.adapter import (
     ALLOWED_MESSAGE_TYPES,
     DiscordAdapter,
@@ -67,6 +68,9 @@ class DiscordGatewayClient:
         # Fired once, after the first successful connect: boot walks the running
         # bridges and attaches the ones on a shared connection (see main.py).
         self._on_connected = on_connected
+        # Set once the first connect succeeds, and never cleared: discord.py
+        # reconnects a dropped socket on the same connection object.
+        self._live = False
         # command_guild_id=None → commands register globally, once for the
         # application across every guild (decision #7); guild-scoped registration
         # is the self-registered adapter's, which serves one guild.
@@ -101,6 +105,19 @@ class DiscordGatewayClient:
     @property
     def connection(self) -> DiscordConnection:
         return self._connection
+
+    def attach_if_live(self, adapter: CollaborationAdapter) -> None:
+        """Hand a starting Discord bridge the shared connection, if it is up.
+
+        Called as each bridge starts, before anything in it runs, so a new
+        install can post and search straight away rather than after the first
+        message in its guild. Not before the connection is up: the bridge would
+        run its start-time provisioning against a client that is not there,
+        and the attach on connect would then be a no-op that never re-runs it.
+        Those bridges are attached when the connection first comes up instead.
+        """
+        if self._live and isinstance(adapter, DiscordAdapter):
+            adapter.attach_shared_connection(self._connection)
 
     async def start(self) -> None:
         # One handler for every guild's messages: each event resolves its guild
@@ -147,6 +164,10 @@ class DiscordGatewayClient:
                 await self._connection.close()
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, _MAX_RETRY_DELAY)
+        # Before the walk, with no await between: a bridge starting from here
+        # on is attached as it starts, and every one started before is in the
+        # walk, so none falls between the two.
+        self._live = True
         await self._on_connected(self._connection)
 
     async def stop(self) -> None:

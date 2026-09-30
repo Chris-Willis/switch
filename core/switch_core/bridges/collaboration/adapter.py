@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -198,6 +199,23 @@ class ChannelNotBindable(ValueError):
     A `ValueError` because it is the caller's input that is wrong, and every
     path that binds a channel already answers those as a bad request.
     """
+
+
+class DirectorySearchBusy(RuntimeError):
+    """The platform's directory is being searched too often to take one more.
+
+    Refused at once rather than queued: a search is someone waiting on a
+    dialog, and one that sat behind a spent budget would only time out later.
+    A `RuntimeError`, so anything that reads directory failures as the
+    platform's still does.
+    """
+
+    def __init__(self, retry_after: float) -> None:
+        super().__init__(
+            "Too many directory searches right now — try again in "
+            f"{math.ceil(retry_after)} seconds"
+        )
+        self.retry_after = retry_after
 
 
 class RemovalFailed(Exception):

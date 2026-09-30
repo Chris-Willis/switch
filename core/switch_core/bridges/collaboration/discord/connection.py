@@ -2,15 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from collections import deque
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
 import discord
 from discord import app_commands
 
+from switch_core.bridges.collaboration.adapter import DirectorySearchBusy
+
 logger = logging.getLogger(__name__)
 
 _READY_TIMEOUT = 30.0
+
+# A member search is a Gateway send, and discord.py holds every send past 110 a
+# minute on one socket until the minute is up. On the shared connection that
+# budget is every organisation's at once, so searches get about half of it and
+# the rest is left for everything else the socket sends.
+_MEMBER_SEARCHES_PER_WINDOW = 60
+_MEMBER_SEARCH_WINDOW = 60.0
+_clock = time.monotonic
 
 
 class DiscordConnection:
@@ -48,6 +60,7 @@ class DiscordConnection:
         self._tree: app_commands.CommandTree[Any] | None = None
         self._connect_task: asyncio.Task[None] | None = None
         self._bot_user_id: int = 0
+        self._member_searches: deque[float] = deque()
         # Inbound message routing. A guild's messages go to the handler
         # registered for its id; a direct message (no guild) goes to the DM
         # handler if one is set, and is dropped otherwise. The self-registered
@@ -137,6 +150,25 @@ class DiscordConnection:
     @property
     def bot_user_id(self) -> int:
         return self._bot_user_id
+
+    def take_member_search(self) -> None:
+        """Spend one of this socket's member searches, or refuse at once.
+
+        Refused rather than left to discord.py, which would hold the search
+        until its minute is up — long enough for the person waiting on it to
+        see a timeout instead of being told to try again.
+        """
+        now = _clock()
+        while (
+            self._member_searches
+            and now - self._member_searches[0] >= _MEMBER_SEARCH_WINDOW
+        ):
+            self._member_searches.popleft()
+        if len(self._member_searches) >= _MEMBER_SEARCHES_PER_WINDOW:
+            raise DirectorySearchBusy(
+                _MEMBER_SEARCH_WINDOW - (now - self._member_searches[0])
+            )
+        self._member_searches.append(now)
 
     async def connect(
         self,

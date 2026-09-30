@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Iterable
 from typing import Annotated, Literal
 
@@ -8,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.bridges.collaboration.adapter import DirectorySearchBusy
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -415,6 +417,8 @@ async def search_bridge_directory(
         source = "known"
         note = str(e)
         found = _known_as_directory_users(known.values(), query)
+    except DirectorySearchBusy as e:
+        raise _search_busy(e) from e
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
 
@@ -475,6 +479,15 @@ def _known_as_directory_users(
     )
 
 
+def _search_busy(e: DirectorySearchBusy) -> HTTPException:
+    """A directory refusing more searches for now, as a 429 saying when to retry."""
+    return HTTPException(
+        status_code=429,
+        detail=str(e),
+        headers={"Retry-After": str(math.ceil(e.retry_after))},
+    )
+
+
 async def _require_directory_account(
     collab_lifecycle: CollaborationBridgeLifecycleService,
     *,
@@ -510,6 +523,8 @@ async def _require_directory_account(
                 "seen. Send one message in the workspace, then link it."
             ),
         ) from e
+    except DirectorySearchBusy as e:
+        raise _search_busy(e) from e
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
 

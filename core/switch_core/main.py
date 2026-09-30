@@ -836,6 +836,7 @@ async def run(config: SwitchConfig) -> None:
             install_service=install_service,
             on_connected=_attach_shared_discord_bridges,
         )
+        collab_lifecycle.add_bridge_starting_listener(discord_gateway.attach_if_live)
         discord_gateway_task = asyncio.create_task(
             discord_gateway.start_with_retry(), name="discord-gateway-start"
         )

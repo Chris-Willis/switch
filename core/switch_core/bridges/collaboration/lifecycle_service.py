@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -327,6 +327,9 @@ class CollaborationBridgeLifecycleService:
         self._session_activity_listener = session_activity_listener
         self._session_activity_service = session_activity_service
         self._connections = connections
+        self._bridge_starting_listeners: list[
+            Callable[[CollaborationAdapter], None]
+        ] = []
 
         self._adapter_registry: dict[str, type[CollaborationAdapter]] = {}
         self._config_registry: dict[str, type[BridgeConnectionConfig]] = {}
@@ -402,6 +405,19 @@ class CollaborationBridgeLifecycleService:
         to know the platform specifics."""
         bridge = self._bridges.get(bridge_id)
         return bridge.adapter if bridge is not None else None
+
+    def add_bridge_starting_listener(
+        self, listener: Callable[[CollaborationAdapter], None]
+    ) -> None:
+        """Be handed each bridge's adapter as it starts, before it runs.
+
+        For whatever the adapter needs from outside itself before its first
+        move — a bridge on a shared connection is given that connection here,
+        so it can reach its platform from the start. Called synchronously, and
+        with no await between the call and the bridge joining `iter_adapters`,
+        so a listener that also walks the running bridges misses none.
+        """
+        self._bridge_starting_listeners.append(listener)
 
     def iter_adapters(self) -> Iterator[CollaborationAdapter]:
         """The live adapter of every running bridge, as a snapshot.
@@ -866,6 +882,9 @@ class CollaborationBridgeLifecycleService:
                 config=BridgeClientConfig(bridge_id=bridge_id),
                 transport_factory=self._client_factory.transport_for,
             )
+
+            for listener in self._bridge_starting_listeners:
+                listener(adapter)
 
             # Stashed rather than passed: `_run_bridge`'s signature is what
             # the tenant-binding tests patch.

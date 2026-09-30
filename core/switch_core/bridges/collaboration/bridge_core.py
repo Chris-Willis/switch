@@ -387,9 +387,10 @@ class BridgeCore:
         await self._load_existing_puppets()
         self._adapter.set_channel_migration_handler(self._handle_channel_migrated)
         self._adapter.set_agent_presentation_resolver(self._agent_presentation)
-        # A bridge on a shared connection is attached after it starts (at boot,
-        # or lazily on its first event). Provisioning that ran at start against
-        # an unattached connection would have failed, so re-run it on attach.
+        # A bridge on a shared connection that started before the connection
+        # was up is attached later (when it comes up, or on its first event).
+        # Provisioning that ran at start unattached would have failed, so it is
+        # re-run on attach.
         if isinstance(self._adapter, SupportsSharedConnection):
             self._adapter.set_on_attached(self._provision_identities_on_attach)
         if self._approval_answers is not None:

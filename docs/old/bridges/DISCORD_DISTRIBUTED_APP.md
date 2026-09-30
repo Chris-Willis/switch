@@ -190,3 +190,17 @@ is created with a channel id, or moved onto a bridge with one. So the bridge
 refuses a channel outside its own guild at both, and every channel lookup the
 bridge makes refuses one as well, so nothing is posted to another guild even if
 a room names its channel.
+
+## Linking an account before speaking
+
+A new install reaches Discord as soon as its bridge starts: each bridge on the
+shared connection is handed it then, not when its server's first message
+arrives. So someone can find themselves in the server's member list and link
+their Discord account straight after **Add to Discord**, before anyone has
+said anything. The search matches the start of a username or nickname and
+needs no privileged intent.
+
+A member search is a message on the shared connection, and every tenant's
+searches share it. Searches are capped at 60 a minute across the deployment;
+past that, one is refused with a 429 saying how long to wait, rather than held
+until it times out.
