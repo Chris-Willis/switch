@@ -273,20 +273,30 @@ async def register_identity(
     """Register the launch's agent identity, unless it already has one.
 
     Core mints the agent id and records it on the launch before registering,
-    so the launch's name reservation admits only this identity. A failure
-    leaves the launch in `error` with `identity_failed`, which `retry`
-    registers again. Raises 422 when another agent holds the name.
+    so the launch's name reservation admits only this identity. A launch that
+    has an id but no agent, left by an interrupted registration, registers
+    that id again. Registration runs under the machine and launch locks, so
+    only one caller registers. A failure leaves the launch in `error` with
+    `identity_failed`, which `retry` registers again. Raises 422 when another
+    agent holds the name.
     """
     machines = HostedMachineStore()
     launch, machine = await machines.locked_launch(session, request_id)
     assert launch is not None and machine is not None
-    if launch.agent_id is not None or launch.desired_state == "deleted":
+    if launch.agent_id is None and launch.desired_state != "deleted":
+        launch.agent_id = str(uuid4())
+        launch.updated_at = datetime.now(UTC)
+        await session.commit()
+        launch, machine = await machines.locked_launch(session, request_id)
+        assert launch is not None and machine is not None
+    agent_id = launch.agent_id
+    if (
+        agent_id is None
+        or launch.desired_state == "deleted"
+        or await session.get(Agent, agent_id) is not None
+    ):
         await session.commit()
         return launch
-    agent_id = str(uuid4())
-    launch.agent_id = agent_id
-    launch.updated_at = datetime.now(UTC)
-    await session.commit()
     try:
         await _register(protocol, launch, agent_id)
     except AgentExistsError:
@@ -303,9 +313,7 @@ async def register_identity(
         return await _identity_failed(
             session, protocol, request_id, agent_id, IDENTITY_FAILED
         )
-    launch, machine = await machines.locked_launch(session, request_id)
-    assert launch is not None and machine is not None
-    agent = await session.get(Agent, agent_id)
+    agent = await session.get(Agent, agent_id, populate_existing=True)
     if agent is None:
         logger.error(
             "Cloud launch %s: agent %s is missing after registration",
@@ -315,10 +323,6 @@ async def register_identity(
         return await _identity_failed(
             session, protocol, request_id, agent_id, IDENTITY_FAILED
         )
-    if launch.desired_state == "deleted" or launch.agent_id != agent_id:
-        await session.commit()
-        await protocol.delete_agent(agent_id=agent_id)
-        return launch
     if launch.spec["addressing_policy"] is not None:
         agent.addressing_policy = launch.spec["addressing_policy"]
     launch.updated_at = datetime.now(UTC)
@@ -408,7 +412,7 @@ async def lifecycle(
     remaining = await revoke_pending(
         session, config, (GitHubIssuedToken.launch_id == launch.id,)
     )
-    if launch.desired_state == "running" and launch.agent_id is None:
+    if launch.desired_state == "running":
         launch = await register_identity(session, protocol, launch.id)
     response = await launch_summary(session, launch)
     return {**response, "access_warning": ACCESS_WARNING if remaining else None}
@@ -667,7 +671,7 @@ async def create(
             raise HTTPException(
                 409, "This launch request was already used for different agent details."
             )
-        if existing.agent_id is None and existing.state != "error":
+        if existing.state != "error" and existing.desired_state != "deleted":
             existing = await register_identity(session, protocol, existing.id)
         return await launch_summary(session, existing)
     connections = ProviderConnectionStore()

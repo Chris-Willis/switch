@@ -570,3 +570,69 @@ async def test_read_only_repository_cannot_create_cloud_agent(launch_app):
     result = await app.client.post("/hosted-launches", json=body())
     assert result.status_code == 422
     assert "needs write access" in result.json()["detail"]
+
+
+async def _interrupted_registration(app, monkeypatch, request: dict) -> str:
+    """A launch whose agent id was recorded but whose agent was never registered."""
+    register_agent = app.protocol.register_agent
+    monkeypatch.setattr(
+        app.protocol,
+        "register_agent",
+        AsyncMock(side_effect=RuntimeError("synthetic registration failure")),
+        raising=False,
+    )
+    created = await app.client.post("/hosted-launches", json=request)
+    assert created.status_code == 202, created.text
+    monkeypatch.setattr(app.protocol, "register_agent", register_agent, raising=False)
+    reserved = str(uuid4())
+    await _update(
+        app.factory,
+        HostedLaunch,
+        request["request_id"],
+        state="queued",
+        error=None,
+        error_code=None,
+        agent_id=reserved,
+    )
+    return reserved
+
+
+async def test_create_retry_registers_an_interrupted_identity(launch_app, monkeypatch):
+    app = launch_app
+    request = body()
+    reserved = await _interrupted_registration(app, monkeypatch, request)
+    retried = await app.client.post("/hosted-launches", json=request)
+    assert retried.status_code == 202, retried.text
+    assert retried.json()["agent_id"] == reserved
+    async with app.factory() as session:
+        agent = await session.get(Agent, reserved)
+        assert agent is not None
+        assert agent.metadata_["hosted_launch_id"] == request["request_id"]
+    again = await app.client.post("/hosted-launches", json=request)
+    assert again.json()["agent_id"] == reserved
+    async with app.factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Agent)) == 1
+
+
+@pytest.mark.parametrize(
+    ("state", "action"), [("error", "retry"), ("stopped", "start")]
+)
+async def test_lifecycle_registers_an_interrupted_identity(
+    launch_app, monkeypatch, state, action
+):
+    app = launch_app
+    request = body()
+    reserved = await _interrupted_registration(app, monkeypatch, request)
+    await _update(
+        app.factory,
+        HostedLaunch,
+        request["request_id"],
+        state=state,
+        desired_state="running" if state == "error" else "stopped",
+    )
+    launch = await _launch(app.factory, request["request_id"])
+    result = await _lifecycle(app, request["request_id"], action, launch.revision)
+    assert result.status_code == 200, result.text
+    assert result.json()["agent_id"] == reserved
+    async with app.factory() as session:
+        assert await session.get(Agent, reserved) is not None
