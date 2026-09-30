@@ -289,6 +289,8 @@ class Observation(BaseModel):
     instance_type: str | None = Field(default=None, max_length=256)
 
 
+ERROR_REPLACING_STATES = {"error", "retained", "deleting", "deleted"}
+
 OBSERVED_ERROR = "The cloud machine could not start. Retry it in Switch Console, or contact your administrator if it keeps failing."
 
 
@@ -318,7 +320,7 @@ async def observe(
             await session.commit()
         return machine_item(machine)
     if machine.state == "deleted" or (
-        machine.state == "error" and body.state != "error"
+        machine.state == "error" and body.state not in ERROR_REPLACING_STATES
     ):
         return machine_item(machine)
     for field in ("data_volume_id", "instance_id", "instance_type"):

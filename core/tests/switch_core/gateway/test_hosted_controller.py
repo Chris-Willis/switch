@@ -757,6 +757,49 @@ async def test_error_observation_is_kept_until_retry(controller_app):
     assert saved.error_code is None
 
 
+@pytest.mark.parametrize("state", ["retained", "deleting", "deleted"])
+async def test_retiring_an_errored_machine_replaces_its_error(controller_app, state):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    await update_launch(factory, request_id, state="deleted", desired_state="deleted")
+    await update_machine(
+        factory,
+        machine.id,
+        state="error",
+        error="The instance failed its status checks.",
+        error_code="machine_needs_attention",
+        desired_state="retained",
+        retain_until=datetime.now(UTC) + timedelta(days=7),
+        revision=2,
+    )
+    item = await observe(client, machine.id, state=state, revision=2)
+    assert item["state"] == state
+    saved = await machine_of(factory, request_id)
+    assert saved.error is None
+    assert saved.error_code is None
+
+
+async def test_errored_machine_retained_after_its_last_agent_expires(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    await update_launch(factory, request_id, state="deleted", desired_state="deleted")
+    await update_machine(
+        factory,
+        machine.id,
+        state="error",
+        error="The instance failed its status checks.",
+        error_code="machine_needs_attention",
+        desired_state="retained",
+        retain_until=datetime.now(UTC) - timedelta(seconds=1),
+        revision=2,
+    )
+    await observe(client, machine.id, state="retained", revision=2)
+    [item] = await list_machines(client)
+    assert item["state"] == "retained"
+    assert item["desired_state"] == "deleted"
+    assert item["revision"] == 3
+
+
 async def test_deleted_observation_with_live_launches_logs_an_invariant_failure(
     controller_app, caplog
 ):
