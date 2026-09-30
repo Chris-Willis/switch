@@ -29,7 +29,10 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.hosted_controller import controller_session
 from switch_core.gateway.hosted_launches import controller_settings
-from switch_core.gateway.provider_connections import ring_credential_change
+from switch_core.gateway.provider_connections import (
+    bump_machine_agents,
+    ring_credential_change,
+)
 from switch_core.providers.credentials import validate_provider_credential
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.providers.verification import ACTIVE, latest
@@ -238,6 +241,7 @@ async def result(
                 },
             )
         )
+        await bump_machine_agents(session, job.user_id)
     job.encrypted_credential = None
     job.encrypted_token = None
     await session.commit()
