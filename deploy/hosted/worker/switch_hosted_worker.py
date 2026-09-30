@@ -53,6 +53,7 @@ OBSERVE_SECONDS = 3
 DEFAULT_HEARTBEAT_SECONDS = 15
 RETIRED_HEARTBEAT_SECONDS = 60
 LIST_RETRY_SECONDS = 15
+RECONCILE_RETRY_MAX_SECONDS = 300
 HTTP_TIMEOUT_SECONDS = 30
 GIT_TIMEOUT_SECONDS = 300
 GIT_KILL_WAIT_SECONDS = 10
@@ -98,6 +99,10 @@ class ObsoleteBundle(WorkerError):
 
 
 class GitAbandoned(WorkerError):
+    pass
+
+
+class ReconcileIncomplete(WorkerError):
     pass
 
 
@@ -275,6 +280,9 @@ class Paths:
     @property
     def agents_runtime(self) -> Path:
         return self.runtime / "agents"
+
+    def pending_install(self, agent_id: str) -> Path:
+        return self.bundle.parent / f"pending-{agent_id}.json"
 
 
 def load_worker_config(assignment_path: Path, runtime_path: Path) -> WorkerConfig:
@@ -1891,6 +1899,8 @@ class Supervisor:
         self._touched: set[str] = set()
         self._obsolete_exits: dict[str, str] = {}
         self._agents_version: int | None = None
+        self._reconcile_failures = 0
+        self._pending_prunes: set[Path] = set()
         self._need_list = True
         self._next_list = 0.0
         self._next_heartbeat = 0.0
@@ -1941,9 +1951,25 @@ class Supervisor:
             logger.warning("Agent list fetch failed; retrying: %s", error)
             self._next_list = self._monotonic() + LIST_RETRY_SECONDS
             return
+        try:
+            self.reconcile(listing["agents"])
+        except (WorkerError, OSError) as error:
+            self._reconcile_failures += 1
+            delay = min(
+                LIST_RETRY_SECONDS * 2 ** (self._reconcile_failures - 1),
+                RECONCILE_RETRY_MAX_SECONDS,
+            )
+            logger.error(
+                "Agents version %s was not fully applied; retrying in %s seconds: %s",
+                listing["agents_version"],
+                delay,
+                error,
+            )
+            self._next_list = self._monotonic() + delay
+            return
+        self._reconcile_failures = 0
         self._need_list = False
         self._agents_version = listing["agents_version"]
-        self.reconcile(listing["agents"])
 
     def _send_heartbeat(self) -> None:
         interval = RETIRED_HEARTBEAT_SECONDS if self._retired else self._heartbeat_every
@@ -1983,6 +2009,7 @@ class Supervisor:
         self._next_heartbeat = self._monotonic() + RETIRED_HEARTBEAT_SECONDS
 
     def reconcile(self, entries: list[Any]) -> None:
+        failures: list[str] = []
         remove_runtime_orphans(self._paths.agents_runtime)
         counts: dict[str, int] = {}
         for entry in entries:
@@ -2019,7 +2046,7 @@ class Supervisor:
                         INVALID_CONFIG,
                     )
                 )
-                self._disable(agent_id)
+                self._disable(agent_id, failures)
                 continue
             failure = None
             try:
@@ -2027,6 +2054,7 @@ class Supervisor:
             except (WorkerError, OSError) as error:
                 logger.error("Agent %s could not be set up: %s", agent_id, error)
                 failure = SETUP_FAILED
+                failures.append(agent_id)
             held.append(
                 HeldAgent(
                     plan.launch_id,
@@ -2043,20 +2071,44 @@ class Supervisor:
                 self.remove_agent(agent_id)
             except (WorkerError, OSError) as error:
                 logger.error("Agent %s removal failed; will retry: %s", agent_id, error)
+                failures.append(agent_id)
+        self._prune_mirrors()
+        if self._pending_prunes:
+            failures.append("worktree prune")
         for agent_id in set(self._states) - {agent.agent_id for agent in held}:
             del self._states[agent_id]
+        if failures:
+            raise ReconcileIncomplete(
+                "Work is left to retry for: " + ", ".join(failures) + "."
+            )
 
-    def _disable(self, agent_id: str) -> None:
+    def _disable(self, agent_id: str, failures: list[str]) -> None:
         if not _is_agent_id(agent_id):
             return
         try:
-            self._systemd.stop(agent_id, wait=False)
-            self._touched.add(agent_id)
+            self._stop(agent_id, wait=False)
             target = self._paths.agents_runtime / agent_id
             if target.exists() or target.is_symlink():
                 _remove_secret_tree(target)
+            self._paths.pending_install(agent_id).unlink(missing_ok=True)
         except (WorkerError, OSError) as error:
             logger.error("Agent %s could not be stopped: %s", agent_id, error)
+            failures.append(agent_id)
+
+    def _stop(self, agent_id: str, *, wait: bool) -> None:
+        self._systemd.stop(agent_id, wait=wait)
+        self._systemd.reset_failed(agent_id)
+        self._touched.add(agent_id)
+
+    def _prune_mirrors(self) -> None:
+        for mirror in sorted(self._pending_prunes):
+            if mirror.is_dir() and not mirror.is_symlink():
+                try:
+                    self._git.run(mirror, ["worktree", "prune"])
+                except WorkerError as error:
+                    logger.error("Worktree prune failed; will retry: %s", error)
+                    continue
+            self._pending_prunes.discard(mirror)
 
     def _apply(self, plan: AgentPlan) -> None:
         agent_id = plan.agent_id
@@ -2071,6 +2123,8 @@ class Supervisor:
             self._gid,
         )
         if self._installed_revision(agent_id) != plan.revision:
+            pending = self._paths.pending_install(agent_id)
+            _write_root_json(pending, {"revision": plan.revision})
             install_runtime_files(
                 self._paths.agents_runtime,
                 agent_id,
@@ -2095,9 +2149,11 @@ class Supervisor:
             if plan.desired_state == "running":
                 self._systemd.reset_failed(agent_id)
                 self._systemd.restart(agent_id)
+                self._touched.add(agent_id)
             else:
-                self._systemd.stop(agent_id, wait=False)
-            self._touched.add(agent_id)
+                self._stop(agent_id, wait=False)
+            self._reset_oom_kills(agent_id, plan.revision)
+            pending.unlink()
             return
         active = self._systemd.show(agent_id)["ActiveState"]
         if plan.desired_state == "running" and active == "inactive":
@@ -2107,11 +2163,24 @@ class Supervisor:
             "active",
             "activating",
             "reloading",
+            "failed",
         }:
-            self._systemd.stop(agent_id, wait=False)
-            self._touched.add(agent_id)
+            self._stop(agent_id, wait=False)
+
+    def _reset_oom_kills(self, agent_id: str, revision: int) -> None:
+        record = self._records.get(agent_id)
+        if record is not None and record.get("revision") != revision:
+            self._records[agent_id] = {
+                "oomKills": 0,
+                "lastOomExit": record["lastOomExit"],
+                "revision": revision,
+            }
+            self._save_records()
 
     def _installed_revision(self, agent_id: str) -> int | None:
+        pending = self._paths.pending_install(agent_id)
+        if pending.exists() or pending.is_symlink():
+            return None
         try:
             value = _read_json_nofollow(
                 self._paths.agents_runtime / agent_id / "deployment.json",
@@ -2144,10 +2213,11 @@ class Supervisor:
 
     def remove_agent(self, agent_id: str) -> None:
         agent_id = _agent_id(agent_id)
-        self._systemd.stop(agent_id, wait=True)
+        self._stop(agent_id, wait=True)
         runtime_files = self._paths.agents_runtime / agent_id
         if runtime_files.exists() or runtime_files.is_symlink():
             _remove_secret_tree(runtime_files)
+        self._paths.pending_install(agent_id).unlink(missing_ok=True)
         worktree_root = self._paths.worktrees / agent_id
         mirrors: list[Path] = []
         if worktree_root.is_dir() and not worktree_root.is_symlink():
@@ -2175,8 +2245,7 @@ class Supervisor:
                     mirrors.append(mirror)
         _remove_tree(self._paths.agents / agent_id)
         _remove_tree(worktree_root)
-        for mirror in mirrors:
-            self._git.run(mirror, ["worktree", "prune"])
+        self._pending_prunes.update(mirrors)
         if self._records.pop(agent_id, None) is not None:
             self._save_records()
         self._states.pop(agent_id, None)
@@ -2206,11 +2275,15 @@ class Supervisor:
                 raise ValueError()
             for agent_id, record in value["agents"].items():
                 _agent_id(agent_id)
-                record = _strict(record, {"oomKills", "lastOomExit"}, set(), "record")
+                record = _strict(
+                    record, {"oomKills", "lastOomExit"}, {"revision"}, "record"
+                )
                 if isinstance(record["oomKills"], bool) or not isinstance(
                     record["oomKills"], int
                 ):
                     raise ValueError()
+                if "revision" in record:
+                    _positive_integer(record["revision"], "record revision")
             return value["agents"]
         except (OSError, ValueError, WorkerError):
             raise WorkerError("Agent records on the data volume are invalid.") from None
@@ -2268,6 +2341,7 @@ class Supervisor:
                 self._records[agent_id] = {
                     "oomKills": record["oomKills"] + 1,
                     "lastOomExit": key,
+                    "revision": held.revision,
                 }
                 self._save_records()
         if code == 1 and status == OBSOLETE_EXIT_CODE and ran:
