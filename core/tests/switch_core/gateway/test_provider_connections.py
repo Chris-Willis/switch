@@ -12,6 +12,7 @@ from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
     HostedLaunch,
+    HostedMachine,
     ProviderConnection,
     Tenant,
     User,
@@ -24,6 +25,7 @@ from switch_core.gateway.provider_connections import router
 from switch_core.providers.claude_verifier import ClaudeVerificationError
 from switch_core.providers.credentials import validate_provider_credential
 from switch_core.tenant_context import tenant_scope
+from tests.switch_core.hosted_machine_helpers import seed_machine
 
 
 @pytest.fixture
@@ -351,6 +353,78 @@ async def test_deeply_nested_auth_is_a_client_error(connection_app):
         },
     )
     assert response.status_code == 400
+
+
+async def agents_version(factory, machine_id: str) -> int:
+    async with factory() as session:
+        machine = await session.get(HostedMachine, (require_tenant_id(), machine_id))
+        assert machine is not None
+        return machine.agents_version
+
+
+@pytest.mark.parametrize(
+    "provider,body",
+    [
+        ("claude", {"kind": "setup-token", "credential": "sk-ant-oat-SYNTHETIC"}),
+        ("codex", {"kind": "api-key", "credential": "SYNTHETIC-PLACEHOLDER"}),
+    ],
+)
+async def test_connection_changes_bump_the_owners_machine_agents(
+    connection_app, provider, body
+):
+    client, _, _, factory, _ = connection_app
+    async with factory() as session:
+        machine = await seed_machine(
+            session,
+            owner_id="first",
+            slot_id="slot-a",
+            state="ready",
+            desired_state="running",
+            stop_reason=None,
+            revision=1,
+            generation=1,
+        )
+        other = await seed_machine(
+            session,
+            owner_id="second",
+            slot_id="slot-b",
+            state="ready",
+            desired_state="running",
+            stop_reason=None,
+            revision=1,
+            generation=1,
+        )
+        await session.commit()
+        machine_id, other_id = machine.id, other.id
+    before = await agents_version(factory, machine_id)
+    url = f"/provider-connections/{provider}"
+    assert (await client.put(url, json=body)).status_code == 200
+    assert await agents_version(factory, machine_id) == before + 1
+    assert (await client.delete(url)).status_code == 204
+    assert await agents_version(factory, machine_id) == before + 2
+    assert await agents_version(factory, other_id) == before
+
+
+@pytest.mark.parametrize(
+    "provider,body",
+    [
+        ("claude", {"kind": "setup-token", "credential": "sk-ant-oat-SYNTHETIC"}),
+        ("codex", {"kind": "api-key", "credential": "SYNTHETIC-PLACEHOLDER"}),
+    ],
+)
+async def test_connection_changes_without_a_machine_succeed(
+    connection_app, provider, body
+):
+    client, _, _, factory, _ = connection_app
+    url = f"/provider-connections/{provider}"
+    assert (await client.put(url, json=body)).status_code == 200
+    assert (await client.delete(url)).status_code == 204
+    async with factory() as session:
+        assert (
+            await session.get(
+                ProviderConnection, (require_tenant_id(), "first", provider)
+            )
+        ) is None
 
 
 @pytest.mark.parametrize(
