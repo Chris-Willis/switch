@@ -20,7 +20,12 @@ import {
 import { cloudAgentState } from './cloud-agent-state';
 import { cloudOperationAttempts, restartAttemptKey } from './cloud-operation-attempts';
 import { CloudProblem } from './cloud-problem';
-import { useCloudAgentSessions, useCloudAgents, useCloudWake } from './use-cloud-agents';
+import {
+  useCloudAgentSessions,
+  useCloudAgents,
+  useCloudProblemAction,
+  useCloudWake,
+} from './use-cloud-agents';
 
 type CloudSessionParams = { agentKey: string; sessionId: string; name: string };
 
@@ -61,12 +66,17 @@ const CloudWorkerStatus = observer(function CloudWorkerStatus({
         This cloud agent is no longer on its Switch server.
       </div>
     );
-  return agent?.problem ? (
+  return agent?.problem ? <CloudAgentProblem agent={agent} /> : null;
+});
+
+function CloudAgentProblem({ agent }: { agent: CloudAgent }) {
+  const action = useCloudProblemAction(agent, false);
+  return agent.problem ? (
     <div className="px-5 pt-3">
-      <CloudProblem problem={agent.problem} compact={false} />
+      <CloudProblem problem={agent.problem} compact={false} action={action} />
     </div>
   ) : null;
-});
+}
 
 const CloudSessionPanel = observer(function CloudSessionPanel() {
   const { params } = useParams('cloudSession');

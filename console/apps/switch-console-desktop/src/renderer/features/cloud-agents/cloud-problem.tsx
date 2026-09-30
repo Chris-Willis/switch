@@ -1,9 +1,12 @@
 import { AlertTriangle, Moon } from 'lucide-react';
+import { Button } from '@renderer/lib/ui/button';
 import type { CloudRelayProblem } from '@shared/core/cloud-agents/cloud-agents';
+import type { CloudProblemAction } from './use-cloud-agents';
 
 /** What a relay code means to the user, beside the server's own message. */
 const PROBLEM_TITLES: Record<string, string> = {
   machine_stopped: 'The owner stopped the cloud machine.',
+  machine_error: 'The cloud machine is in error.',
   worker_sleeping: 'The cloud machine is asleep.',
   worker_waking: 'The cloud machine is starting.',
   agent_stopped: 'The agent is stopped.',
@@ -18,16 +21,18 @@ const PROBLEM_TITLES: Record<string, string> = {
 };
 
 /**
- * Why a cloud agent's worker cannot be reached, said as such: a sleeping
- * machine wakes on the next message sent to it, and every other refusal shows
- * its code.
+ * Why a cloud agent's worker cannot be reached, said as such, with what the
+ * user can do about it. A sleeping machine that can be woken and offers no
+ * Wake here wakes on the next message sent to it. Every refusal shows its code.
  */
 export function CloudProblem({
   problem,
   compact,
+  action,
 }: {
   problem: CloudRelayProblem;
   compact: boolean;
+  action: CloudProblemAction | null;
 }) {
   const sleeping = problem.code === 'worker_sleeping';
   const Icon = sleeping ? Moon : AlertTriangle;
@@ -42,9 +47,25 @@ export function CloudProblem({
         {problem.message !== PROBLEM_TITLES[problem.code] && (
           <span className="text-foreground-muted">{problem.message} </span>
         )}
-        {sleeping && 'Send a message to wake it. '}
+        {sleeping && problem.wakeAvailable && !action && 'Send a message to wake it. '}
         <code className="text-foreground-muted">({problem.code})</code>
+        {action?.error && (
+          <span role="alert" className="block text-foreground-destructive">
+            {action.error}
+          </span>
+        )}
       </span>
+      {action && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-6 shrink-0 px-2 text-xs"
+          disabled={action.pending}
+          onClick={action.run}
+        >
+          {action.label}
+        </Button>
+      )}
     </div>
   );
 }

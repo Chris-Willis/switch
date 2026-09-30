@@ -15,7 +15,7 @@ import { cloudAgentState } from './cloud-agent-state';
 import { cloudOperationAttempts, startAttemptKey } from './cloud-operation-attempts';
 import { CloudProblem } from './cloud-problem';
 import { CloudStartAttemptStatus } from './cloud-start-attempt-status';
-import { useCloudAgentSessions, useCloudAgents } from './use-cloud-agents';
+import { useCloudAgentSessions, useCloudAgents, useCloudProblemAction } from './use-cloud-agents';
 
 export function cloudSessionName(session: Session): string {
   const room = session.roomIds?.[0];
@@ -74,6 +74,7 @@ const CloudAgentRow = observer(function CloudAgentRow({ listed }: { listed: Clou
       attempt?.status === 'unknown'
   );
   const label = cloudAgentState(agent)?.label;
+  const problemAction = useCloudProblemAction(agent, true);
   const queryClient = useQueryClient();
   const [startError, setStartError] = useState<string | null>(null);
   const openSession = (sessionId: string) =>
@@ -137,7 +138,7 @@ const CloudAgentRow = observer(function CloudAgentRow({ listed }: { listed: Clou
       />
       {expanded && (
         <div className="flex flex-col gap-[2px] pl-5">
-          {agent.problem && <CloudProblem problem={agent.problem} compact />}
+          {agent.problem && <CloudProblem problem={agent.problem} compact action={problemAction} />}
           {agent.sessions && sessions.length === 0 && (
             <p className="px-2 py-1 text-xs text-foreground-muted">No sessions on this worker.</p>
           )}
