@@ -318,7 +318,7 @@ class Ec2Cloud:
         material = (
             f"{self._config.installation_id}:{machine.slot_id}:{machine.generation}:{resource}"
         )
-        return f"switch-{hashlib.sha256(material.encode()).hexdigest()[:48]}"
+        return f"switch-m-{hashlib.sha256(material.encode()).hexdigest()[:48]}"
 
     def _user_data(self, machine: Machine) -> str:
         metadata: dict[str, Any] = {

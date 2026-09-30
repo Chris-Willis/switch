@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_SLOT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{2,39}$")
 _INSTANCE_TYPE = re.compile(r"^[a-z0-9][a-z0-9.]{1,30}$")
 _ARN = re.compile(r"^arn:(aws|aws-us-gov|aws-cn):[a-z0-9-]+:[a-z0-9-]*:[0-9]{12}:.+$")
 
@@ -121,7 +122,7 @@ class ControllerConfig:
             raise ConfigError("machine_slots must be a non-empty object")
         slots: dict[str, MachineSlot] = {}
         for slot_id, slot_raw in slots_raw.items():
-            _validated_value(slot_id, "machine_slots key", _ID)
+            _validated_value(slot_id, "machine_slots key", _SLOT_ID)
             if not isinstance(slot_raw, dict) or set(slot_raw) != {
                 "instance_profile_arn",
                 "assignment_secret_arn",
@@ -195,7 +196,7 @@ class ControllerConfig:
 
 
 def validate_slot_id(slot_id: str) -> str:
-    return _validated_value(slot_id, "slot_id", _ID)
+    return _validated_value(slot_id, "slot_id", _SLOT_ID)
 
 
 def _validated_string(raw: dict[str, Any], key: str, pattern: re.Pattern[str]) -> str:

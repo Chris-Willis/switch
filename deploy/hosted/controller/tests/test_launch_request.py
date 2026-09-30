@@ -1,12 +1,20 @@
 import base64
 import hashlib
 import json
+import re
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from botocore.stub import ANY, Stubber
-from test_controller import MACHINE_ID, config, ec2_client, store_and_machine
+from test_controller import (
+    MACHINE_ID,
+    WORKER_TESTDATA,
+    config,
+    ec2_client,
+    fixture_machine,
+    store_and_machine,
+)
 
 from switch_hosted_controller.cloud import Ec2Cloud
 from switch_hosted_controller.config import ConfigError, ControllerConfig
@@ -63,18 +71,10 @@ def test_run_request_is_valid_and_user_data_contains_only_assignment_refs(tmp_pa
     store.close()
 
 
-def test_user_data_matches_the_shared_assignment_fixture(tmp_path: Path):
-    cfg = replace(config(tmp_path), installation_id="inst-test")
-    store, machine = store_and_machine(cfg)
-    machine = replace(
-        machine,
-        slot_id="slot-a",
-        generation=2,
-        assignment_secret_arn="switch-hosted/inst-test/slot-a",
-        data_volume_id="vol-0123456789abcdef0",
-    )
-    fixture = (FIXTURES / "assignment.json").read_text().strip()
-    assert assignment(Ec2Cloud(ec2_client(), cfg)._user_data(machine)) == fixture
+def test_user_data_matches_the_worker_assignment_fixture(tmp_path: Path):
+    cfg, store, machine = fixture_machine(tmp_path, "m6i.large")
+    fixture = json.loads((WORKER_TESTDATA / "assignment.json").read_text())
+    assert json.loads(assignment(Ec2Cloud(ec2_client(), cfg)._user_data(machine))) == fixture
     store.close()
 
 
@@ -83,11 +83,13 @@ def test_user_data_carries_the_predecessor_only_when_set(tmp_path: Path):
     store, machine = store_and_machine(cfg)
     cloud = Ec2Cloud(ec2_client(), cfg)
     successor = replace(
-        machine, previous_instance_id="i-0123456789abcdef0", previous_runtime_fingerprint="a" * 64
+        machine,
+        previous_instance_id="i-0123456789abcdef0",
+        previous_runtime_fingerprint="sha256:" + "a" * 64,
     )
     metadata = json.loads(assignment(cloud._user_data(successor)))
     assert metadata["previousInstanceId"] == "i-0123456789abcdef0"
-    assert metadata["previousRuntimeFingerprint"] == "a" * 64
+    assert metadata["previousRuntimeFingerprint"] == "sha256:" + "a" * 64
     assert "previousInstanceId" not in json.loads(assignment(cloud._user_data(machine)))
     store.close()
 
@@ -113,8 +115,22 @@ def test_tags_filters_and_tokens_use_the_real_generation(tmp_path: Path):
         {"Name": "tag:switch:managed-by", "Values": ["switch-hosted-controller"]},
     ]
     material = f"{cfg.installation_id}:slot-1:3:instance-2"
-    expected = "switch-" + hashlib.sha256(material.encode()).hexdigest()[:48]
+    expected = "switch-m-" + hashlib.sha256(material.encode()).hexdigest()[:48]
     assert cloud._token(machine, "instance-2") == expected
+    store.close()
+
+
+@pytest.mark.parametrize("resource", ["data-volume", "instance-0", "instance-1"])
+def test_machine_tokens_never_equal_per_agent_controller_tokens(tmp_path: Path, resource):
+    cfg = config(tmp_path)
+    store, machine = store_and_machine(cfg)
+    token = Ec2Cloud(ec2_client(), cfg)._token(machine, resource)
+    material = f"{cfg.installation_id}:{machine.slot_id}:{machine.generation}:{resource}"
+    per_agent = "switch-" + hashlib.sha256(material.encode()).hexdigest()[:48]
+    assert re.fullmatch(r"switch-m-[0-9a-f]{48}", token)
+    assert len(token) <= 64
+    assert re.fullmatch(r"switch-[0-9a-f]{48}", per_agent)
+    assert token != per_agent
     store.close()
 
 

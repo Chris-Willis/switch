@@ -35,6 +35,12 @@ COPIED_STATES = {
     ObservedState.DELETING,
     ObservedState.DELETED,
 }
+PENDING_STATES = {
+    DesiredState.RUNNING: "provisioning",
+    DesiredState.STOPPED: "stopping",
+    DesiredState.RETAINED: "stopping",
+    DesiredState.DELETED: "deleting",
+}
 
 
 def bundle_token(machine_id: str, bundle_revision: int) -> str:
@@ -403,10 +409,13 @@ class Gateway:
                 state = "running"
             elif machine.observed_state is ObservedState.NEEDS_ATTENTION:
                 state = "error"
-            elif (
-                machine.observed_state is ObservedState.RETAINED and core.desired_state == "deleted"
-            ):
+            elif core.desired_state == "deleted" and machine.observed_state in {
+                ObservedState.PENDING,
+                ObservedState.RETAINED,
+            }:
                 state = "deleting"
+            elif machine.observed_state is ObservedState.PENDING:
+                state = PENDING_STATES[machine.desired_state]
             elif machine.observed_state in COPIED_STATES:
                 state = machine.observed_state.value
             if state == "error":

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -18,7 +19,59 @@ from switch_hosted_controller.store import CapacityError, MachineStore, SlotInUs
 MACHINE_ID = "3f1c2b4a-0000-4000-8000-000000000001"
 
 
+WORKER_TESTDATA = Path(__file__).parents[2] / "worker" / "testdata"
+CORE_FIXTURES = (
+    Path(__file__).parents[4] / "core" / "tests" / "switch_core" / "fixtures" / "hosted_machines"
+)
+FIXTURE_SECRET_ARN = (
+    "arn:aws:secretsmanager:us-east-1:000000000000:secret:switch-hosted/inst-test/slot-a"
+)
+
+
 def config(tmp_path: Path, *, max_machines: int = 1) -> ControllerConfig:
+    return ControllerConfig.from_dict(config_dict(tmp_path, max_machines=max_machines))
+
+
+def fixture_config(tmp_path: Path, instance_type: str) -> ControllerConfig:
+    """The installation of the cross-stream fixtures: inst-test with the one slot slot-a."""
+    raw = config_dict(tmp_path, max_machines=1)
+    raw["installation_id"] = "inst-test"
+    raw["allowed_instance_types"] = [instance_type]
+    raw["machine_slots"] = {
+        "slot-a": {
+            "instance_profile_arn": "arn:aws:iam::000000000000:instance-profile/slot-a",
+            "assignment_secret_arn": FIXTURE_SECRET_ARN,
+        }
+    }
+    return ControllerConfig.from_dict(raw)
+
+
+def fixture_machine(
+    tmp_path: Path, instance_type: str
+) -> tuple[ControllerConfig, MachineStore, Machine]:
+    """The machine Core lists in its fixture, with its volume."""
+    [listed] = json.loads((CORE_FIXTURES / "machines_response.json").read_text())["machines"]
+    cfg = fixture_config(tmp_path, instance_type)
+    store = MachineStore(cfg.state_db_path, cfg.fingerprint())
+    slot = cfg.slot(listed["slot_id"])
+    store.insert(
+        machine_id=listed["machine_id"],
+        slot_id=listed["slot_id"],
+        generation=listed["generation"],
+        core_revision=listed["revision"],
+        instance_type=instance_type,
+        image_id=cfg.image_id,
+        assignment_secret_arn=slot.assignment_secret_arn,
+        instance_profile_arn=slot.instance_profile_arn,
+        max_machines=cfg.max_machines,
+    )
+    machine = store.record_volume(
+        listed["machine_id"], listed["data_volume_id"], cfg.availability_zone
+    )
+    return cfg, store, machine
+
+
+def config_dict(tmp_path: Path, *, max_machines: int) -> dict:
     slots = {
         f"slot-{number}": {
             "instance_profile_arn": f"arn:aws:iam::123456789012:instance-profile/worker-{number}",
@@ -26,25 +79,23 @@ def config(tmp_path: Path, *, max_machines: int = 1) -> ControllerConfig:
         }
         for number in range(1, max_machines + 1)
     }
-    return ControllerConfig.from_dict(
-        {
-            "installation_id": "test-installation",
-            "region": "us-east-1",
-            "availability_zone": "us-east-1a",
-            "subnet_id": "subnet-0123456789abcdef0",
-            "security_group_ids": ["sg-0123456789abcdef0"],
-            "image_id": "ami-0123456789abcdef0",
-            "root_device_name": "/dev/xvda",
-            "allowed_instance_types": ["m6i.large"],
-            "max_machines": max_machines,
-            "root_volume_gib": 20,
-            "data_volume_gib": 40,
-            "machine_slots": slots,
-            "state_db_path": str(tmp_path / "state.db"),
-            "lock_path": str(tmp_path / "controller.lock"),
-            "poll_interval_seconds": 1,
-        }
-    )
+    return {
+        "installation_id": "test-installation",
+        "region": "us-east-1",
+        "availability_zone": "us-east-1a",
+        "subnet_id": "subnet-0123456789abcdef0",
+        "security_group_ids": ["sg-0123456789abcdef0"],
+        "image_id": "ami-0123456789abcdef0",
+        "root_device_name": "/dev/xvda",
+        "allowed_instance_types": ["m6i.large"],
+        "max_machines": max_machines,
+        "root_volume_gib": 20,
+        "data_volume_gib": 40,
+        "machine_slots": slots,
+        "state_db_path": str(tmp_path / "state.db"),
+        "lock_path": str(tmp_path / "controller.lock"),
+        "poll_interval_seconds": 1,
+    }
 
 
 def insert_machine(
@@ -466,20 +517,20 @@ def test_image_upgrade_requires_stopped_terminal_claim_and_preserves_disk(tmp_pa
     store.record_volume(machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone)
     machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0")
     with pytest.raises(StoreError, match="stopped"):
-        store.upgrade_terminated(machine, "ami-11111111111111111", "a" * 64)
+        store.upgrade_terminated(machine, "ami-11111111111111111", "sha256:" + "a" * 64)
     machine = store.set_desired(machine.machine_id, DesiredState.STOPPED, None)
     with pytest.raises(StoreError, match="terminated"):
-        store.upgrade_terminated(machine, "ami-11111111111111111", "a" * 64)
+        store.upgrade_terminated(machine, "ami-11111111111111111", "sha256:" + "a" * 64)
     machine = store.mark_instance_terminal_observed(machine.machine_id, machine.instance_id)
-    upgraded = store.upgrade_terminated(machine, "ami-11111111111111111", "a" * 64)
+    upgraded = store.upgrade_terminated(machine, "ami-11111111111111111", "sha256:" + "a" * 64)
     assert upgraded.instance_id is None
     assert upgraded.previous_instance_id == machine.instance_id
     assert upgraded.data_volume_id == machine.data_volume_id
-    assert upgraded.previous_runtime_fingerprint == "a" * 64
+    assert upgraded.previous_runtime_fingerprint == "sha256:" + "a" * 64
     assert upgraded.desired_state is DesiredState.STOPPED
     assert upgraded.image_id != machine.image_id
     with pytest.raises(StoreError, match="changed"):
-        store.upgrade_terminated(machine, "ami-11111111111111111", "a" * 64)
+        store.upgrade_terminated(machine, "ami-11111111111111111", "sha256:" + "a" * 64)
     store.close()
 
 

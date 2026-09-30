@@ -7,14 +7,23 @@ from unittest.mock import Mock, patch
 from uuid import NAMESPACE_URL, uuid5
 
 import pytest
-from test_controller import MACHINE_ID, config, insert_machine
+from test_controller import (
+    CORE_FIXTURES,
+    FIXTURE_SECRET_ARN,
+    MACHINE_ID,
+    WORKER_TESTDATA,
+    config,
+    fixture_config,
+    insert_machine,
+)
 
-from switch_hosted_controller.config import ConfigError
+from switch_hosted_controller.config import ConfigError, ControllerConfig
 from switch_hosted_controller.gateway import (
     CoreMachine,
     Gateway,
     GatewayConfig,
     GatewayError,
+    bundle_token,
 )
 from switch_hosted_controller.model import DesiredState, ObservedState
 from switch_hosted_controller.store import CapacityError, MachineStore
@@ -138,30 +147,6 @@ def test_launch_retry_reuses_the_slot_and_row(tmp_path):
         "machineCapability": CAPABILITY,
         "apiEndpoint": "https://switch.example.test/agent-api",
     }
-    store.close()
-
-
-def test_bundle_matches_the_shared_fixture(tmp_path):
-    cfg = replace(config(tmp_path), installation_id="inst-test")
-    store = open_store(cfg)
-    machine = replace(
-        insert_machine(store, cfg, "slot-1", 1, MACHINE_ID),
-        slot_id="slot-a",
-        generation=2,
-        data_volume_id=VOLUME_ID,
-    )
-    bundle = make_gateway(cfg, store).bundle(
-        prepared_machine(
-            slot_id="slot-a",
-            generation=2,
-            revision=4,
-            bundle_revision=4,
-            machine_capability="mcap-test-0000000000000000000000000000",
-        ),
-        machine,
-    )
-    fixture = (FIXTURES / "bundle.json").read_text().strip()
-    assert json.dumps(bundle, separators=(",", ":")) == fixture
     store.close()
 
 
@@ -339,30 +324,66 @@ def test_error_machine_being_deleted_is_still_reported(tmp_path):
     store.close()
 
 
-def test_running_observation_matches_the_shared_fixture(tmp_path):
-    cfg = replace(config(tmp_path), allowed_instance_types=frozenset({"c7i.2xlarge"}))
+def core_fixture(name: str) -> dict:
+    return json.loads((CORE_FIXTURES / name).read_text())
+
+
+def synced_from_core(tmp_path) -> tuple[MachineStore, Gateway, dict]:
+    [listed] = core_fixture("machines_response.json")["machines"]
+    cfg = fixture_config(tmp_path, "c7i.2xlarge")
     store = open_store(cfg)
-    gateway = make_gateway(cfg, store, instance_type="c7i.2xlarge")
-    gateway.request = routed([core_machine(state="running", revision=4)])
-    machine = store.insert(
-        machine_id=MACHINE_ID,
-        slot_id="slot-1",
-        generation=1,
-        core_revision=4,
-        instance_type="c7i.2xlarge",
-        image_id=cfg.image_id,
-        assignment_secret_arn=cfg.slot("slot-1").assignment_secret_arn,
-        instance_profile_arn=cfg.slot("slot-1").instance_profile_arn,
-        max_machines=cfg.max_machines,
+    secrets = Mock()
+    secrets.describe_secret.return_value = {"VersionIdsToStages": {}}
+    gateway = make_gateway(cfg, store, secrets, instance_type="c7i.2xlarge")
+    gateway.request = routed([listed], core_fixture("prepare_response.json"))
+    gateway.sync_machines()
+    return store, gateway, listed
+
+
+def test_core_machine_list_and_prepare_produce_the_bundle(tmp_path):
+    store, gateway, listed = synced_from_core(tmp_path)
+    prepared = core_fixture("prepare_response.json")
+    core = CoreMachine.parse(listed)
+    assert (core.machine_id, core.slot_id, core.desired_state) == (
+        listed["machine_id"],
+        "slot-a",
+        "running",
     )
-    store.record_volume(MACHINE_ID, VOLUME_ID, cfg.availability_zone)
-    store.record_instance(MACHINE_ID, "i-0123456789abcdef0")
-    store.set_observed(machine, ObservedState.RUNNING, None)
+    machine = store.get(listed["machine_id"])
+    assert (machine.generation, machine.core_revision, machine.data_volume_id) == (
+        listed["generation"],
+        listed["revision"],
+        listed["data_volume_id"],
+    )
+    token = bundle_token(listed["machine_id"], listed["revision"])
+    assert machine.bundle_token == token
+    put = gateway.secrets.put_secret_value.call_args.kwargs
+    assert (put["SecretId"], put["ClientRequestToken"]) == (FIXTURE_SECRET_ARN, token)
+    bundle = json.loads(put["SecretString"])
+    assert bundle == {
+        "version": 2,
+        "machineId": prepared["machine_id"],
+        "assignment": {
+            "installationId": "inst-test",
+            "slotId": prepared["slot_id"],
+            "generation": prepared["generation"],
+            "dataVolumeId": listed["data_volume_id"],
+        },
+        "machineCapability": prepared["machine_capability"],
+        "apiEndpoint": prepared["api_endpoint"],
+    }
+    assert bundle == json.loads((WORKER_TESTDATA / "bundle.json").read_text())
+    store.close()
+
+
+def test_running_observation_matches_the_core_fixture(tmp_path):
+    store, gateway, listed = synced_from_core(tmp_path)
+    store.record_instance(listed["machine_id"], "i-0123456789abcdef0")
+    store.set_observed(store.get(listed["machine_id"]), ObservedState.RUNNING, None)
     gateway.report_observations()
     path, body = gateway.request.call_args_list[-1].args
-    assert path == f"/machines/{MACHINE_ID}/observation"
-    fixture = (FIXTURES / "controller_observation.json").read_text().strip()
-    assert json.dumps(body, separators=(",", ":")) == fixture
+    assert path == f"/machines/{listed['machine_id']}/observation"
+    assert body == core_fixture("controller_observation.json")
     store.close()
 
 
@@ -398,6 +419,31 @@ def test_observed_states_map_onto_core_states(tmp_path, observed, state):
     else:
         assert body["error"] is None
         assert body["error_code"] is None
+    store.close()
+
+
+@pytest.mark.parametrize(
+    ("desired", "core_desired", "state"),
+    [
+        (DesiredState.RUNNING, "running", "provisioning"),
+        (DesiredState.STOPPED, "stopped", "stopping"),
+        (DesiredState.RETAINED, "retained", "stopping"),
+        (DesiredState.RETAINED, "deleted", "deleting"),
+        (DesiredState.DELETED, "deleted", "deleting"),
+    ],
+)
+def test_pending_is_reported_by_desired_state(tmp_path, desired, core_desired, state):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    insert_machine(store, cfg, "slot-1", 1, MACHINE_ID)
+    if desired is DesiredState.DELETED:
+        at_rest(store, MACHINE_ID, DesiredState.STOPPED, ObservedState.STOPPED)
+    store.set_desired(MACHINE_ID, desired, None)
+    assert store.get(MACHINE_ID).observed_state is ObservedState.PENDING
+    gateway = make_gateway(cfg, store)
+    gateway.request = routed([core_machine(desired_state=core_desired)])
+    gateway.report_observations()
+    assert gateway.request.call_args_list[-1].args[1]["state"] == state
     store.close()
 
 
@@ -590,6 +636,21 @@ def test_a_live_slot_cannot_change_its_identity(tmp_path):
 def test_invalid_core_machines_are_refused(overrides):
     with pytest.raises((ConfigError, ValueError)):
         CoreMachine.parse(core_machine(**overrides))
+
+
+@pytest.mark.parametrize("slot_id", ["ab", "Slot-1", "slot_1", "slot.1", "-slot", "s" * 41])
+def test_slot_ids_follow_the_core_and_terraform_pattern(tmp_path, slot_id):
+    with pytest.raises(ConfigError, match="slot_id"):
+        CoreMachine.parse(core_machine(slot_id=slot_id))
+    raw = json.loads((FIXTURES / "controller.json").read_text())
+    raw["machine_slots"] = {slot_id: raw["machine_slots"]["slot-a"]}
+    with pytest.raises(ConfigError, match="machine_slots key"):
+        ControllerConfig.from_dict(raw)
+
+
+@pytest.mark.parametrize("slot_id", ["abc", "slot-1", "0-a", "s" * 40])
+def test_valid_slot_ids_are_accepted(slot_id):
+    assert CoreMachine.parse(core_machine(slot_id=slot_id)).slot_id == slot_id
 
 
 def test_invalid_core_machine_does_not_block_the_others(tmp_path):

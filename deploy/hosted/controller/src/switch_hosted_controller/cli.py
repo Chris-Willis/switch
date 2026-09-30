@@ -130,9 +130,9 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
                 raise StoreError(
                     "stop the machine and confirm its recorded instance before upgrading"
                 )
-            if not re.fullmatch(r"[0-9a-f]{64}", args.previous_runtime_fingerprint):
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", args.previous_runtime_fingerprint):
                 raise ConfigError(
-                    "previous runtime fingerprint must be a SHA256 digest from the trusted disk marker"
+                    "previous runtime fingerprint must be the sha256:<64 hex> runtimeFingerprint from the trusted disk marker"
                 )
             cloud = Ec2Cloud(boto3.client("ec2", region_name=config.region), config)
             instance = cloud.get_instance(machine)

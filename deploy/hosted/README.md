@@ -1,10 +1,10 @@
 # Hosted EC2 workers
 
 This directory implements the bounded cloud-worker pilot: a controller service,
-a trusted VM launcher, a Kubernetes chart and generic Terraform. Console submits
-durable launch requests to the authenticated gateway. The controller consumes
-those requests and maintains its own durable AWS assignment database. Operator
-commands remain available for lifecycle management.
+a trusted VM launcher, a Kubernetes chart and generic Terraform. Core keeps one
+machine record per user. The controller syncs these machines from the
+authenticated gateway and keeps its own durable AWS database. Operator commands
+remain available for lifecycle management.
 
 Start from [the architecture proposal](../../docs/planning/hosted-execution-backend-proposal.md).
 One ordinary EC2 VM (a machine) runs all cloud agents of one user, with a
@@ -52,7 +52,8 @@ manual sessions. Both paths use the existing session form and conversation view.
 
 Cloud sessions appear in the agent sidebar and under their connected rooms.
 The conversation supports messages, permission requests, interruption, stop,
-resume and restart. Worker cards provide start, stop, restart, retry and removal.
+resume and restart. The machine card provides start, stop and retry for the machine. Each
+agent provides its own start, stop, restart, retry and removal actions.
 See [machine lifecycle](#machine-lifecycle) for what removal does to the machine
 and its disk. Uncertain operations are reported explicitly and are not
 automatically repeated.
@@ -165,7 +166,7 @@ assignment configuration private and backed up. Do not run two installations
 against separate databases with the same cloud installation ID. Do not manually
 scale the Deployment or bypass its reconciliation lock. Startup/readiness/liveness
 probes check a local progress timestamp, not cloud or provider readiness; handled
-AWS failures remain visible in assignment status without causing restart loops.
+AWS failures remain visible in machine status without causing restart loops.
 
 Before a standalone controller upgrade, stop the old reconciler and back up its
 SQLite database. The Helm chart uses Recreate so the old pod stops before the new
@@ -239,11 +240,9 @@ and create the agents again. Do these steps in order.
    `deleted` and observed state `deleted`.
 3. Removal kept each old data disk. These disks use the one-agent layout, and the
    new worker refuses them. Snapshot each disk that holds data you need, then
-   delete the disks. Then wait at least 24 hours before you create a new cloud
-   agent. The reason: a slot keeps its old key and starts again at generation 1,
-   so its new EC2 idempotency tokens can match the tokens of the old resources.
-   EC2 honours a client token for at least 24 hours, so a matching token does not
-   create a new resource.
+   delete the disks. You do not have to wait before you create a new cloud
+   agent: machine EC2 idempotency tokens use a different prefix, so they cannot
+   match the tokens of the old resources.
 4. Stop the controller. Back up its SQLite database.
 5. In the Terraform overlay, rename the variable `assignments` to `machine_slots`.
    Keep the keys, so no role, instance profile or secret is replaced. The output
