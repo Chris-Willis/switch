@@ -3130,6 +3130,18 @@ published on its own.
 
 ### [Unreleased]
 
+#### Fixed
+- **A session whose host hung up no longer blocks its room for good.** After a
+  reset, a session host could finish and close its link to the watcher while a
+  provider process it had started kept it alive. The watcher still saw it as
+  running, so every room message failed and it was "started again" every five
+  seconds, forever, without anyone being told. Now the host exits within five
+  seconds of finishing whatever it left running; the watcher treats a host that
+  hung up as gone, and stops it and what it started if it has not exited
+  fifteen seconds later; and a session that still will not take a message after
+  five starts in a row is left alone with its messages queued, and the room is
+  told.
+
 #### Changed
 - Claude Code sessions accept their agent definition in the launch spec and pass
   it to the SDK, rather than reading `.claude/agents/<name>.md` on the host.
