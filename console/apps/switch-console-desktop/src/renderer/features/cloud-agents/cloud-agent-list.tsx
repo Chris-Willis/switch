@@ -137,15 +137,7 @@ const CloudAgentRow = observer(function CloudAgentRow({ listed }: { listed: Clou
       />
       {expanded && (
         <div className="flex flex-col gap-[2px] pl-5">
-          {agent.problem && (
-            <CloudProblem
-              agentKey={agent.key}
-              launch={agent.launch}
-              machine={agent.machine}
-              problem={agent.problem}
-              compact
-            />
-          )}
+          {agent.problem && <CloudProblem problem={agent.problem} compact />}
           {agent.sessions && sessions.length === 0 && (
             <p className="px-2 py-1 text-xs text-foreground-muted">No sessions on this worker.</p>
           )}

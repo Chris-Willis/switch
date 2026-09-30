@@ -1,12 +1,5 @@
 import { AlertTriangle, Moon } from 'lucide-react';
-import { Button } from '@renderer/lib/ui/button';
-import type {
-  CloudLaunch,
-  CloudMachine,
-  CloudRelayProblem,
-} from '@shared/core/cloud-agents/cloud-agents';
-import { cloudAgentPhase } from '@shared/core/cloud-agents/cloud-agents';
-import { useCloudWake } from './use-cloud-agents';
+import type { CloudRelayProblem } from '@shared/core/cloud-agents/cloud-agents';
 
 /** What a relay code means to the user, beside the server's own message. */
 const PROBLEM_TITLES: Record<string, string> = {
@@ -26,23 +19,16 @@ const PROBLEM_TITLES: Record<string, string> = {
 
 /**
  * Why a cloud agent's worker cannot be reached, said as such: a sleeping
- * launch offers a wake, and every other refusal shows its code.
+ * machine wakes on the next message sent to it, and every other refusal shows
+ * its code.
  */
 export function CloudProblem({
-  agentKey,
-  launch,
-  machine,
   problem,
   compact,
 }: {
-  agentKey: string;
-  launch: CloudLaunch;
-  machine: CloudMachine | null;
   problem: CloudRelayProblem;
   compact: boolean;
 }) {
-  const wake = useCloudWake();
-  const phase = cloudAgentPhase(launch, machine);
   const sleeping = problem.code === 'worker_sleeping';
   const Icon = sleeping ? Moon : AlertTriangle;
   return (
@@ -56,23 +42,9 @@ export function CloudProblem({
         {problem.message !== PROBLEM_TITLES[problem.code] && (
           <span className="text-foreground-muted">{problem.message} </span>
         )}
+        {sleeping && 'Send a message to wake it. '}
         <code className="text-foreground-muted">({problem.code})</code>
-        {wake.error && (
-          <span className="block text-foreground-destructive">
-            Could not wake it: {String(wake.error)}
-          </span>
-        )}
       </span>
-      {problem.wakeAvailable && phase !== 'waking' && (
-        <Button
-          size="xs"
-          variant="outline"
-          disabled={wake.isPending}
-          onClick={() => wake.mutate(agentKey)}
-        >
-          {wake.isPending ? 'Waking…' : 'Wake'}
-        </Button>
-      )}
     </div>
   );
 }
