@@ -6,7 +6,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
@@ -310,6 +310,51 @@ async def test_identity_failure_is_an_error_that_retry_registers(
     assert retried.json()["agent_id"] is not None
     async with app.factory() as session:
         assert await session.get(Agent, retried.json()["agent_id"]) is not None
+
+
+async def test_identity_failure_deletes_the_partial_agent_under_the_launch_lock(
+    launch_app, monkeypatch
+):
+    app = launch_app
+    register_agent = app.protocol.register_agent
+    delete_agent = app.protocol.delete_agent
+    partial: list[str] = []
+    lock_free: list[bool] = []
+
+    async def register_then_fail(**kwargs):
+        await register_agent(**kwargs)
+        partial.append(kwargs["reserved_agent_id"])
+        raise RuntimeError("synthetic registration failure")
+
+    async def probe_then_delete(*, agent_id):
+        async with app.factory() as other:
+            lock_free.append(
+                await other.scalar(
+                    text("SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))"),
+                    {
+                        "key": f"hosted-launch:{require_tenant_id()}:{request['request_id']}"
+                    },
+                )
+            )
+            await other.rollback()
+        await delete_agent(agent_id=agent_id)
+
+    monkeypatch.setattr(
+        app.protocol, "register_agent", register_then_fail, raising=False
+    )
+    monkeypatch.setattr(app.protocol, "delete_agent", probe_then_delete, raising=False)
+    request = body()
+    created = await app.client.post("/hosted-launches", json=request)
+    assert created.status_code == 202, created.text
+    assert lock_free == [False]
+    failed = created.json()
+    assert (failed["state"], failed["error_code"], failed["agent_id"]) == (
+        "error",
+        "identity_failed",
+        None,
+    )
+    async with app.factory() as session:
+        assert await session.get(Agent, partial[0]) is None
 
 
 async def test_a_taken_name_is_refused(launch_app, monkeypatch):

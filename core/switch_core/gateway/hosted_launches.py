@@ -251,6 +251,9 @@ async def _identity_failed(
 ) -> HostedLaunch:
     """Mark the launch `identity_failed`, dropping an identity left half registered."""
     await session.rollback()
+    machines = HostedMachineStore()
+    launch, machine = await machines.locked_launch(session, request_id)
+    assert launch is not None and machine is not None
     if await session.get(Agent, agent_id) is not None:
         try:
             await protocol.delete_agent(agent_id=agent_id)
@@ -261,11 +264,10 @@ async def _identity_failed(
                 agent_id,
                 exc_info=True,
             )
-        await session.rollback()
-    machines = HostedMachineStore()
-    launch, machine = await machines.locked_launch(session, request_id)
-    assert launch is not None and machine is not None
-    if launch.agent_id == agent_id and await session.get(Agent, agent_id) is None:
+    if (
+        launch.agent_id == agent_id
+        and await session.get(Agent, agent_id, populate_existing=True) is None
+    ):
         launch.agent_id = None
     if launch.desired_state != "deleted":
         launch.state = "error"
