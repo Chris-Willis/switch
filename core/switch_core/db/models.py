@@ -339,6 +339,85 @@ class ProviderVerification(TenantScoped, Base):
     deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class HostedMachine(TenantScoped, Base):
+    """One user's hosted VM, which runs every one of that user's cloud agents."""
+
+    __tablename__ = "hosted_machines"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "id"),
+        CheckConstraint(
+            "state IN ('queued', 'provisioning', 'ready', 'stopping', 'stopped', 'error', 'retained', 'deleting', 'deleted')",
+            name="ck_hosted_machine_state",
+        ),
+        CheckConstraint(
+            "desired_state IN ('running', 'stopped', 'retained', 'deleted')",
+            name="ck_hosted_machine_desired_state",
+        ),
+        CheckConstraint(
+            "stop_reason IS NULL OR stop_reason IN ('idle', 'owner')",
+            name="ck_hosted_machine_stop_reason",
+        ),
+        CheckConstraint("generation >= 1", name="ck_hosted_machine_generation"),
+        Index(
+            "uq_hosted_machine_owner",
+            "tenant_id",
+            "owner_id",
+            unique=True,
+            postgresql_where=text("state <> 'deleted'"),
+        ),
+        Index(
+            "uq_hosted_machine_slot",
+            "tenant_id",
+            "slot_id",
+            unique=True,
+            postgresql_where=text("state <> 'deleted'"),
+        ),
+        Index(
+            "uq_hosted_machine_generation",
+            "tenant_id",
+            "slot_id",
+            "generation",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    slot_id: Mapped[str] = mapped_column(Text, nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    desired_state: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="running"
+    )
+    stop_reason: Mapped[str | None] = mapped_column(Text)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    instance_type: Mapped[str | None] = mapped_column(Text)
+    data_volume_id: Mapped[str | None] = mapped_column(Text)
+    instance_id: Mapped[str | None] = mapped_column(Text)
+    retain_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    machine_capability_hash: Mapped[str | None] = mapped_column(Text)
+    machine_capability_encrypted: Mapped[str | None] = mapped_column(Text)
+    machine_capability_revision: Mapped[int | None] = mapped_column(Integer)
+    agents_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="1"
+    )
+    active_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    heartbeat: Mapped[dict | None] = mapped_column(JSONB)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When Core first saw the controller report `running` for this revision.
+    running_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+    error_code: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class HostedLaunch(TenantScoped, Base):
     __tablename__ = "hosted_launches"
     __table_args__ = (
@@ -347,6 +426,15 @@ class HostedLaunch(TenantScoped, Base):
         CheckConstraint(
             "state IN ('queued', 'provisioning', 'ready', 'error', 'stopping', 'stopped', 'deleting', 'deleted')",
             name="ck_hosted_launch_state",
+        ),
+        CheckConstraint(
+            "process_state IS NULL OR process_state IN ('pending', 'starting', 'running', 'stopping', 'stopped', 'restarting', 'crashed', 'failed')",
+            name="ck_hosted_launch_process_state",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "machine_id"],
+            ["hosted_machines.tenant_id", "hosted_machines.id"],
+            name="fk_hosted_launches_machine",
         ),
     )
 
@@ -369,9 +457,6 @@ class HostedLaunch(TenantScoped, Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    sleeping: Mapped[bool] = mapped_column(
-        Boolean, server_default="false", nullable=False
-    )
     active_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -382,6 +467,19 @@ class HostedLaunch(TenantScoped, Base):
     )
     relay_seq: Mapped[int] = mapped_column(
         BigInteger, nullable=False, server_default="0"
+    )
+    machine_id: Mapped[str | None] = mapped_column(Text)
+    repository: Mapped[str | None] = mapped_column(Text)
+    process_state: Mapped[str | None] = mapped_column(Text)
+    process_restarts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    process_oom_kills: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    process_exit: Mapped[dict | None] = mapped_column(JSONB)
+    process_reported_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
     )
 
 

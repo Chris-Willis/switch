@@ -1,4 +1,3 @@
-import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -6,6 +5,7 @@ import pytest
 from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     HostedLaunch,
+    HostedMachine,
     ProviderConnection,
     Tenant,
     User,
@@ -15,9 +15,13 @@ from switch_core.db.stores.hosted_launch_store import (
     HostedLaunchConflict,
     HostedLaunchStore,
     ProviderDisconnected,
+    is_waking,
 )
+from switch_core.db.stores.hosted_machine_store import HostedMachineStore
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
 from switch_core.tenant_context import tenant_scope
+
+SLOTS = ["slot-a", "slot-b"]
 
 
 @pytest.fixture
@@ -54,7 +58,7 @@ async def launches(session_factory):
     return HostedLaunchStore(), session_factory
 
 
-async def reserve(store, factory, request_id, name):
+async def reserve(store, factory, request_id, name, owner_capacity=3):
     async with factory() as session:
         row = await store.reserve(
             session,
@@ -63,11 +67,24 @@ async def reserve(store, factory, request_id, name):
             name=name,
             spec={"repository_id": 123},
             capacity=1,
-            owner_capacity=3,
-            agent_ids=["00000000-0000-4000-8000-000000000001"],
+            owner_capacity=owner_capacity,
+            slots=SLOTS,
+            repository="example-org/example-repo",
+            now=datetime.now(UTC),
         )
         await session.commit()
         return row.id
+
+
+async def load(factory, launch_id):
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), launch_id))
+        assert launch is not None and launch.machine_id is not None
+        machine = await session.get(
+            HostedMachine, (require_tenant_id(), launch.machine_id)
+        )
+        assert machine is not None
+        return launch, machine
 
 
 async def test_duplicate_request_survives_new_session_without_second_launch(launches):
@@ -78,6 +95,51 @@ async def test_duplicate_request_survives_new_session_without_second_launch(laun
         await reserve(store, factory, "request-1", "different")
     with pytest.raises(HostedLaunchConflict, match="name"):
         await reserve(store, factory, "request-2", "helper")
+    _, machine = await load(factory, "request-1")
+    assert machine.agents_version == 2
+
+
+async def test_reserve_places_the_launch_on_a_new_machine(launches):
+    store, factory = launches
+    await reserve(store, factory, "request-1", "helper")
+    launch, machine = await load(factory, "request-1")
+    assert (launch.state, launch.agent_id, launch.repository) == (
+        "queued",
+        None,
+        "example-org/example-repo",
+    )
+    assert (machine.owner_id, machine.slot_id, machine.state, machine.generation) == (
+        "launch-owner",
+        "slot-a",
+        "queued",
+        1,
+    )
+
+
+async def test_an_owner_s_agents_share_one_machine(launches):
+    store, factory = launches
+    await reserve(store, factory, "request-1", "first")
+    await reserve(store, factory, "request-2", "second")
+    first, machine = await load(factory, "request-1")
+    second, _ = await load(factory, "request-2")
+    assert first.machine_id == second.machine_id == machine.id
+    assert machine.agents_version == 3
+
+
+async def test_owner_limit_counts_live_launches(launches):
+    store, factory = launches
+    await reserve(store, factory, "request-1", "first", owner_capacity=1)
+    with pytest.raises(HostedLaunchConflict, match="Remove an agent"):
+        await reserve(store, factory, "request-2", "second", owner_capacity=1)
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), "request-1"))
+        launch.state = "deleted"
+        launch.desired_state = "deleted"
+        await session.commit()
+    assert (
+        await reserve(store, factory, "request-2", "second", owner_capacity=1)
+        == "request-2"
+    )
 
 
 async def test_owner_and_tenant_scope(launches):
@@ -92,55 +154,55 @@ async def test_owner_and_tenant_scope(launches):
         assert await reserve(store, factory, "request-1", "helper") == "request-1"
 
 
-async def test_concurrent_requests_cannot_exceed_capacity(launches):
-    store, factory = launches
-    results = await asyncio.gather(
-        reserve(store, factory, "request-a", "first"),
-        reserve(store, factory, "request-b", "second"),
-        return_exceptions=True,
-    )
-    assert sum(isinstance(value, str) for value in results) == 1
-    assert sum(isinstance(value, HostedLaunchConflict) for value in results) == 1
-
-
-async def address(store, factory, launch_id, **state):
+async def address(store, factory, launch_id, machine_state=None, **state):
     async with factory() as session:
-        if state:
-            launch = await session.get(HostedLaunch, (require_tenant_id(), launch_id))
+        launch = await session.get(HostedLaunch, (require_tenant_id(), launch_id))
+        if launch is not None:
             for key, value in state.items():
                 setattr(launch, key, value)
             launch.active_at = datetime.now(UTC) - timedelta(hours=1)
+            machine = await session.get(
+                HostedMachine, (require_tenant_id(), launch.machine_id)
+            )
+            for key, value in (machine_state or {}).items():
+                setattr(machine, key, value)
+            machine.active_at = datetime.now(UTC) - timedelta(hours=1)
             await session.commit()
         result = await store.note_addressed(session, launch_id)
         await session.commit()
         return result
 
 
-async def test_addressing_a_sleeping_launch_wakes_it(launches):
+IDLE_SLEEPING = {
+    "state": "stopped",
+    "desired_state": "stopped",
+    "stop_reason": "idle",
+    "revision": 2,
+}
+
+
+async def test_addressing_a_launch_on_a_sleeping_machine_wakes_the_machine(launches):
     store, factory = launches
     await reserve(store, factory, "request-1", "helper")
-    woken = await address(
-        store,
-        factory,
-        "request-1",
-        desired_state="stopped",
-        state="stopped",
-        sleeping=True,
-        error="left over",
+    launch, machine = await address(
+        store, factory, "request-1", machine_state=IDLE_SLEEPING, state="ready"
     )
-    assert (woken.desired_state, woken.state, woken.revision) == (
+    assert (machine.desired_state, machine.stop_reason, machine.revision) == (
         "running",
-        "queued",
-        2,
+        None,
+        3,
     )
-    assert woken.sleeping is True
-    assert woken.error is None
-    assert datetime.now(UTC) - woken.active_at < timedelta(minutes=1)
+    assert (launch.desired_state, launch.state, launch.revision) == (
+        "running",
+        "ready",
+        1,
+    )
+    assert datetime.now(UTC) - launch.active_at < timedelta(minutes=1)
+    assert datetime.now(UTC) - machine.active_at < timedelta(minutes=1)
+    assert is_waking(launch, machine)
 
 
-async def test_addressing_a_sleeping_launch_without_provider_does_not_wake_it(
-    launches,
-):
+async def test_addressing_without_provider_does_not_wake_the_machine(launches):
     store, factory = launches
     await reserve(store, factory, "request-1", "helper")
     async with factory() as session:
@@ -151,58 +213,94 @@ async def test_addressing_a_sleeping_launch_without_provider_does_not_wake_it(
         await session.commit()
     with pytest.raises(ProviderDisconnected):
         await address(
-            store,
-            factory,
-            "request-1",
-            desired_state="stopped",
-            state="stopped",
-            sleeping=True,
+            store, factory, "request-1", machine_state=IDLE_SLEEPING, state="ready"
         )
-    async with factory() as session:
-        launch = await session.get(HostedLaunch, (require_tenant_id(), "request-1"))
-        assert launch is not None
-        assert (launch.desired_state, launch.revision) == ("stopped", 1)
+    launch, machine = await load(factory, "request-1")
+    assert (machine.desired_state, machine.revision) == ("stopped", 2)
+    assert launch.revision == 1
 
 
 async def test_addressing_a_ready_launch_only_marks_it_active(launches):
     store, factory = launches
     await reserve(store, factory, "request-1", "helper")
-    ready = await address(store, factory, "request-1", state="ready")
+    ready, machine = await address(
+        store, factory, "request-1", machine_state={"state": "ready"}, state="ready"
+    )
     assert (ready.desired_state, ready.state, ready.revision) == ("running", "ready", 1)
+    assert machine.revision == 1
     assert datetime.now(UTC) - ready.active_at < timedelta(minutes=1)
+    assert not is_waking(ready, machine)
+
+
+async def test_addressing_never_wakes_a_machine_its_owner_stopped(launches):
+    store, factory = launches
+    await reserve(store, factory, "request-1", "helper")
+    launch, machine = await address(
+        store,
+        factory,
+        "request-1",
+        machine_state={**IDLE_SLEEPING, "stop_reason": "owner"},
+        state="ready",
+    )
+    assert (machine.desired_state, machine.stop_reason, machine.revision) == (
+        "stopped",
+        "owner",
+        2,
+    )
+    assert datetime.now(UTC) - launch.active_at > timedelta(minutes=59)
 
 
 @pytest.mark.parametrize("desired", ["stopped", "deleted"])
-async def test_addressing_never_wakes_a_launch_its_owner_stopped(launches, desired):
+async def test_addressing_never_wakes_for_a_launch_its_owner_stopped(launches, desired):
     store, factory = launches
     await reserve(store, factory, "request-1", "helper")
-    untouched = await address(
-        store, factory, "request-1", desired_state=desired, state="stopped"
+    launch, machine = await address(
+        store,
+        factory,
+        "request-1",
+        machine_state=IDLE_SLEEPING,
+        desired_state=desired,
+        state="stopped",
     )
-    assert (untouched.desired_state, untouched.revision) == (desired, 1)
-    assert datetime.now(UTC) - untouched.active_at > timedelta(minutes=59)
+    assert (machine.desired_state, machine.revision) == ("stopped", 2)
+    assert (launch.desired_state, launch.revision) == (desired, 1)
+    assert datetime.now(UTC) - launch.active_at > timedelta(minutes=59)
 
 
 async def test_addressing_a_missing_launch_returns_none(launches):
     store, factory = launches
-    assert await address(store, factory, "no-such-launch") is None
+    assert await address(store, factory, "no-such-launch") == (None, None)
 
 
-async def test_addressing_preserves_a_sleeping_worker_error(launches):
+async def test_addressing_does_not_wake_for_an_errored_launch(launches):
     store, factory = launches
     await reserve(store, factory, "request-1", "helper")
-    launch = await address(
+    launch, machine = await address(
         store,
         factory,
         "request-1",
-        desired_state="stopped",
+        machine_state=IDLE_SLEEPING,
         state="error",
-        sleeping=True,
-        error="Stop failed",
+        error="Agent crashed",
     )
-    assert (launch.desired_state, launch.state, launch.revision, launch.error) == (
-        "stopped",
+    assert (machine.desired_state, machine.revision) == ("stopped", 2)
+    assert (launch.state, launch.revision, launch.error) == (
         "error",
         1,
-        "Stop failed",
+        "Agent crashed",
     )
+    assert not is_waking(launch, machine)
+
+
+async def test_a_queued_launch_is_waking_until_it_is_ready(launches):
+    store, factory = launches
+    await reserve(store, factory, "request-1", "helper")
+    async with factory() as session:
+        launch, machine = await HostedMachineStore().locked_launch(session, "request-1")
+        assert launch is not None and machine is not None
+        assert is_waking(launch, machine)
+        machine.state = "ready"
+        assert is_waking(launch, machine)
+        launch.state = "ready"
+        assert not is_waking(launch, machine)
+        assert not is_waking(launch, None)

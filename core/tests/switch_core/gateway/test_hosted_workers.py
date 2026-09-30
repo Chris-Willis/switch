@@ -5,27 +5,53 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import httpx
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 from sqlalchemy import event as orm_event
 from sqlalchemy import select
 
 from switch_core.bridges.agent.api.handlers import connection_placements, poll_events
+from switch_core.bridges.agent.api.hosted_cutover_routes import (
+    router as hosted_cutover_router,
+)
+from switch_core.bridges.agent.api.hosted_routes import router as hosted_routes_router
+from switch_core.bridges.agent.api.hosted_worker_routes import (
+    router as hosted_worker_router,
+)
 from switch_core.bridges.agent.api.schemas import ConnectionPlacementsRequest
-from switch_core.bridges.agent.protocol.connections import TAKEN_OVER
+from switch_core.bridges.agent.auth import get_agent_from_scope
+from switch_core.bridges.agent.dependencies import get_config as get_worker_config
+from switch_core.bridges.agent.dependencies import get_protocol as get_worker_protocol
+from switch_core.bridges.agent.dependencies import get_session as get_worker_session
+from switch_core.bridges.agent.protocol.connections import (
+    TAKEN_OVER,
+    ConnectionRegistry,
+)
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.hosted_workers import ConsoleView
+from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
     Client,
     HostedLaunch,
+    HostedMachine,
     Message,
+    ProviderConnection,
     Room,
+    TenantMember,
+    User,
     require_tenant_id,
 )
+from switch_core.db.stores.client_store import ClientStore
+from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
+from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import hosted_relay
 from switch_core.gateway.auth import (
@@ -33,27 +59,197 @@ from switch_core.gateway.auth import (
     get_current_user,
     get_current_user_in_transaction,
 )
-from switch_core.gateway.dependencies import get_session, get_user_store
-from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
-    TOKEN,
-    controller_app,
+from switch_core.gateway.dependencies import (
+    get_config,
+    get_protocol,
+    get_session,
+    get_session_factory,
+    get_user_store,
 )
+from switch_core.gateway.hosted_launches import register_identity
+from switch_core.gateway.hosted_launches import router as launch_router
+from switch_core.gateway.hosted_machines import router as machine_router
+from switch_core.gateway.hosted_relay import router as relay_router
+from switch_core.providers.github_installation import (
+    GitHubInstallationCredentials,
+    RepositoryCredential,
+)
+from switch_core.providers.hosted import HostedControllerSettings
+from tests.switch_core.bridges.agent.protocol.registration_harness import (
+    make_owner,
+    make_service,
+)
+from tests.switch_core.hosted_machine_helpers import seed_launch, seed_machine
 
+TOKEN = "SYNTHETIC-CONTROLLER-CREDENTIAL-FOR-TESTS"
 HEADERS = {"Authorization": "Bearer " + TOKEN}
+SPEC = {
+    "description": "Cloud helper",
+    "display_name": None,
+    "icon_url": None,
+    "instructions": "Help with the repository.",
+    "auto_session": True,
+    "auto_approve": False,
+    "addressing_policy": None,
+    "definition_attributes": {},
+    "installation_id": 123,
+    "repository_id": 456,
+    "session_limit": 8,
+}
 
 
 @pytest.fixture
-async def worker_app(controller_app):  # noqa: F811
-    client, request_id, agent_id, service, factory, settings = controller_app
+async def worker_app(session_factory, monkeypatch, tmp_path):
+    """A running machine with one launch whose identity Core registered.
+
+    Yields `(client, request_id, agent_id, service, factory, prepared)`, where
+    `prepared` holds the worker capability for the launch's revision and the
+    machine id.
+    """
+    owner = await make_owner(session_factory)
+    request_id = str(uuid4())
+    async with session_factory() as session:
+        session.add(
+            TenantMember(tenant_id=require_tenant_id(), user_id=owner, role="member")
+        )
+        session.add(
+            ProviderConnection(
+                user_id=owner,
+                provider="github",
+                kind="oauth",
+                encrypted_credential=encrypt_token(
+                    json.dumps(
+                        {
+                            "access_token": "SYNTHETIC-GITHUB",
+                            "expires_at": (
+                                datetime.now(UTC) + timedelta(hours=1)
+                            ).timestamp(),
+                        }
+                    ),
+                    "test-secret",
+                ),
+                verified_at=datetime.now(UTC),
+            )
+        )
+        await ProviderConnectionStore().save(
+            session,
+            owner,
+            "setup-token",
+            encrypt_token("SYNTHETIC-CLAUDE", "test-secret"),
+            datetime.now(UTC),
+        )
+        machine = await seed_machine(
+            session,
+            owner_id=owner,
+            slot_id="slot-a",
+            state="ready",
+            desired_state="running",
+            stop_reason=None,
+            revision=1,
+            generation=1,
+        )
+        machine_id = machine.id
+        await seed_launch(
+            session,
+            machine=machine,
+            request_id=request_id,
+            name="cloud-helper",
+            state="queued",
+            desired_state="running",
+            revision=1,
+            agent_id=None,
+            spec=SPEC,
+        )
+        await session.commit()
+    service = make_service(session_factory)
+    service.connections = ConnectionRegistry()
     service.event_buffer = EventBuffer(sequence_base=1 << 32)
     service.approval_outcomes = None
-    service.config.jwt_secret_key = "test-secret"
     service.config.hosted_sessions_per_agent = 8
-    prepared = await client.post(
-        f"/hosted-controller/{request_id}/prepare", headers=HEADERS
+    service.config.hosted_idle_stop_minutes = 0
+    service.config.hosted_disk_retention_days = 7
+    service.client_lifecycle.stop = AsyncMock()
+    service.client_lifecycle.delete_record = AsyncMock(side_effect=ClientStore().delete)
+    async with session_factory() as session:
+        launch = await register_identity(session, service, request_id)
+        agent_id = launch.agent_id
+        assert agent_id is not None and launch.state == "queued"
+        launch = await session.get(
+            HostedLaunch, (require_tenant_id(), request_id), populate_existing=True
+        )
+        capability = HostedLaunchStore().issue_worker_capability(launch, "test-secret")
+        await session.commit()
+    settings = HostedControllerSettings(
+        tenant_id=require_tenant_id(),
+        token=TOKEN,
+        machine_slots=["slot-a", "slot-b"],
+        github_private_key_path="/tmp/synthetic-signing-key.pem",
+        agent_api_endpoint="https://switch.example.com/api/agent",
     )
-    assert prepared.status_code == 200, prepared.text
-    return client, request_id, agent_id, service, factory, prepared.json()
+    monkeypatch.setattr(GitHubInstallationCredentials, "revoke", AsyncMock())
+    app = FastAPI()
+    app.state.hosted_controller_settings = settings
+    app.state.github_connections = SimpleNamespace(client_id="synthetic-app")
+    app.include_router(hosted_routes_router)
+    app.include_router(hosted_worker_router, prefix="/agents")
+    app.include_router(hosted_cutover_router, prefix="/agents")
+    app.include_router(launch_router)
+    app.include_router(relay_router)
+    app.include_router(machine_router)
+    settings_path = tmp_path / "controller.json"
+    settings_path.write_text(
+        json.dumps({**settings.model_dump(mode="json"), "token": TOKEN})
+    )
+    service.config.hosted_controller_config_path = str(settings_path)
+    service.config.hosted_github_config_path = "/tmp/synthetic-github.json"
+
+    async def worker_session():
+        async with session_factory() as session:
+            yield session
+
+    async def current_user():
+        async with session_factory() as session:
+            return await session.get(User, owner)
+
+    async def worker_agent():
+        async with session_factory() as session:
+            return await session.get(Agent, agent_id)
+
+    app.dependency_overrides[get_current_user] = current_user
+    app.dependency_overrides[get_current_user_in_transaction] = current_user
+    app.dependency_overrides[get_session] = worker_session
+    app.dependency_overrides[get_agent_from_scope] = worker_agent
+    app.dependency_overrides[get_worker_config] = lambda: service.config
+    app.dependency_overrides[get_worker_session] = worker_session
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
+    app.dependency_overrides[get_config] = lambda: service.config
+    app.dependency_overrides[get_protocol] = lambda: service
+    app.dependency_overrides[get_worker_protocol] = lambda: service
+    issue = AsyncMock(
+        return_value=RepositoryCredential(
+            "SYNTHETIC-REPOSITORY",
+            datetime.now(UTC) + timedelta(hours=1),
+            456,
+            "example/project",
+        )
+    )
+    monkeypatch.setattr(
+        "switch_core.bridges.agent.api.hosted_routes.GitHubConnections",
+        lambda _: app.state.github_connections,
+    )
+    monkeypatch.setattr(
+        "switch_core.bridges.agent.api.hosted_routes.GitHubInstallationCredentials",
+        lambda *_: SimpleNamespace(issue=issue, revoke=AsyncMock()),
+    )
+    prepared = {
+        "worker_capability": capability,
+        "revision": 1,
+        "machine_id": machine_id,
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://switch.example.com"
+    ) as client:
+        yield client, request_id, agent_id, service, session_factory, prepared
 
 
 async def _agent(factory, agent_id: str) -> Agent:
@@ -121,24 +317,51 @@ async def _bump(factory, request_id: str) -> None:
         await session.commit()
 
 
-async def test_prepare_idempotent_by_revision(worker_app):
-    client, request_id, agent_id, service, factory, prepared = worker_app
-    again = await client.post(
-        f"/hosted-controller/{request_id}/prepare", headers=HEADERS
-    )
-    assert again.json()["worker_capability"] == prepared["worker_capability"]
-    assert again.json()["revision"] == prepared["revision"]
+async def issue_capability(factory, request_id: str) -> str:
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        capability = HostedLaunchStore().issue_worker_capability(launch, "test-secret")
+        await session.commit()
+        return capability
+
+
+async def set_machine(factory, machine_id: str, **values: Any) -> None:
+    async with factory() as session:
+        machine = await session.get(HostedMachine, (require_tenant_id(), machine_id))
+        assert machine is not None
+        for key, value in values.items():
+            setattr(machine, key, value)
+        await session.commit()
+
+
+async def _machine(factory, machine_id: str) -> HostedMachine:
+    async with factory() as session:
+        machine = await session.get(HostedMachine, (require_tenant_id(), machine_id))
+        assert machine is not None
+        return machine
+
+
+async def test_registered_identity_works_in_the_launch_worktree(worker_app):
+    _, request_id, agent_id, _, factory, prepared = worker_app
+    agent = await _agent(factory, agent_id)
+    options = agent.metadata_["known_agent_options"]
+    assert options["repo_dir"] == f"/data/worktrees/{agent_id}/workspace"
+    assert agent.metadata_["hosted_launch_id"] == request_id
+    machine = await _machine(factory, prepared["machine_id"])
+    assert machine.agents_version >= 1
+
+
+async def test_capability_is_idempotent_by_revision(worker_app):
+    _, request_id, agent_id, service, factory, prepared = worker_app
+    assert await issue_capability(factory, request_id) == prepared["worker_capability"]
     await _bump(factory, request_id)
-    third = await client.post(
-        f"/hosted-controller/{request_id}/prepare", headers=HEADERS
-    )
-    assert third.status_code == 200
-    assert third.json()["worker_capability"] != prepared["worker_capability"]
+    third = await issue_capability(factory, request_id)
+    assert third != prepared["worker_capability"]
     agent = await _agent(factory, agent_id)
     assert await _refusal(
         _open(service, agent, capability=prepared["worker_capability"])
     ) == (403, "worker_capability_obsolete")
-    await _open(service, agent, capability=third.json()["worker_capability"])
+    await _open(service, agent, capability=third)
     async with factory() as session:
         launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
         assert prepared["worker_capability"] not in (
@@ -492,10 +715,11 @@ async def test_relay_refusals(worker_app):
         json={"message": {"health": True}, "timeout_ms": 1000},
     )
     assert missing.status_code == 404
-    not_attached = await client.post(
+    starting = await client.post(
         path, json={"message": {"health": True}, "timeout_ms": 1000}
     )
-    assert not_attached.status_code == 409
+    assert starting.status_code == 409
+    assert starting.json()["error"]["code"] == "worker_waking"
     await _ready_worker(worker_app)
     for message in ({"ensure": {}}, {"room": {}}, {"approvals": {}}):
         refused = await client.post(path, json={"message": message, "timeout_ms": 1000})
@@ -507,18 +731,126 @@ async def test_relay_refusals(worker_app):
         headers={"content-type": "application/json"},
     )
     assert too_large.status_code == 413
+
+
+async def _relay_code(client, request_id: str, message: dict) -> tuple[int, dict]:
+    response = await client.post(
+        f"/hosted-launches/{request_id}/relay",
+        json={"message": message, "timeout_ms": 1000},
+    )
+    return response.status_code, response.json()
+
+
+READ_ONLY = {"health": True}
+
+
+async def test_relay_error_codes_in_order(worker_app):
+    client, request_id, _, service, factory, prepared = worker_app
+    machine_id = prepared["machine_id"]
+    await _ready_worker(worker_app)
+    mutating = {"forget": str(uuid4())}
+
+    await set_machine(
+        factory, machine_id, desired_state="stopped", stop_reason="owner", revision=2
+    )
+    await set_launch_values(
+        factory, request_id, state="error", error_code="agent_crashed"
+    )
+    for message in (READ_ONLY, mutating):
+        status, body = await _relay_code(client, request_id, message)
+        assert (status, body["error"]["code"]) == (409, "machine_stopped")
+        assert "wake_available" not in body
+    await set_launch_values(factory, request_id, state="ready", error_code=None)
+
+    await set_machine(factory, machine_id, stop_reason="idle", state="stopped")
+    status, body = await _relay_code(client, request_id, READ_ONLY)
+    assert (status, body["error"]["code"]) == (409, "worker_sleeping")
+    assert body["wake_available"] is True
+    assert body["worker"]["sleeping"] is True
+    assert body["worker"]["request_id"] == request_id
+    assert (await _machine(factory, machine_id)).desired_state == "stopped"
+
+    status, body = await _relay_code(client, request_id, mutating)
+    assert (status, body["error"]["code"]) == (409, "worker_waking")
+    assert body["worker"]["sleeping"] is False
+    woken = await _machine(factory, machine_id)
+    assert (woken.desired_state, woken.stop_reason, woken.revision) == (
+        "running",
+        None,
+        3,
+    )
+    assert (await _launch(factory, request_id)).relay_seq == 0
+    status, body = await _relay_code(client, request_id, READ_ONLY)
+    assert body["error"]["code"] == "worker_waking"
+
+    await set_machine(factory, machine_id, state="ready")
+    await set_launch_values(
+        factory, request_id, desired_state="stopped", state="stopped"
+    )
+    status, body = await _relay_code(client, request_id, mutating)
+    assert (status, body["error"]["code"]) == (409, "agent_stopped")
+
+    await set_launch_values(
+        factory,
+        request_id,
+        desired_state="running",
+        state="error",
+        error_code="agent_crashed",
+    )
+    status, body = await _relay_code(client, request_id, READ_ONLY)
+    assert (status, body["error"]["code"]) == (409, "agent_crashed")
+
+    await set_launch_values(factory, request_id, state="ready", error_code=None)
+    service.connections = ConnectionRegistry()
+    status, body = await _relay_code(client, request_id, READ_ONLY)
+    assert (status, body["error"]["code"]) == (409, "worker_not_attached")
+    assert set(body["worker"]) >= {"machine_id", "process_state", "oom_kills"}
+
+
+async def test_idle_sleep_wakes_only_for_a_running_agent(worker_app):
+    client, request_id, _, _, factory, prepared = worker_app
+    machine_id = prepared["machine_id"]
+    await set_machine(
+        factory,
+        machine_id,
+        desired_state="stopped",
+        stop_reason="idle",
+        state="stopped",
+        revision=2,
+    )
+    await set_launch_values(
+        factory, request_id, desired_state="stopped", state="stopped"
+    )
+    status, body = await _relay_code(client, request_id, {"forget": str(uuid4())})
+    assert (status, body["error"]["code"]) == (409, "agent_stopped")
+    assert (await _machine(factory, machine_id)).desired_state == "stopped"
+
+
+async def test_mutating_relay_renews_the_machine(worker_app):
+    client, request_id, _, _, factory, prepared = worker_app
+    conn = await _ready_worker(worker_app)
+    before = await _machine(factory, prepared["machine_id"])
+    seen: list[dict] = []
+    answering = asyncio.create_task(_answer_relays(client, conn, {"accepted": 1}, seen))
+    try:
+        response = await client.post(
+            f"/hosted-launches/{request_id}/relay",
+            json={"message": {"forget": str(uuid4())}, "timeout_ms": 5000},
+        )
+    finally:
+        answering.cancel()
+    assert response.status_code == 200, response.text
+    after = await _machine(factory, prepared["machine_id"])
+    assert after.active_at > before.active_at
+
+
+async def set_launch_values(factory, request_id: str, **values: Any) -> None:
     async with factory() as session:
         launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-        launch.sleeping = True
-        launch.desired_state = "stopped"
-        launch.state = "stopped"
+        assert launch is not None
+        for key, value in values.items():
+            setattr(launch, key, value)
         await session.commit()
-    sleeping = await client.post(
-        path, json={"message": {"health": True}, "timeout_ms": 1000}
-    )
-    assert sleeping.status_code == 409
-    assert sleeping.json()["error"]["code"] == "worker_sleeping"
-    assert sleeping.json()["wake_available"] is True
 
 
 async def test_relay_timeout_cancels_on_the_worker(worker_app):

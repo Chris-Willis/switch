@@ -22,9 +22,14 @@ from switch_core.bridges.agent.protocol.types import (
     MessagePayload,
     TaskDelegatePayload,
 )
-from switch_core.clients.agent_client import AgentClient
+from switch_core.clients.agent_client import (
+    _HOSTED_MACHINE_STOPPED_MESSAGE,
+    AgentClient,
+    _hosted_unavailable,
+)
 from switch_core.db.models import (
     Agent,
+    ApiKey,
     Client,
     HostedLaunch,
     HostedWakeMailbox,
@@ -36,15 +41,14 @@ from switch_core.db.models import (
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.hosted_mailbox_store import MAILBOX_LIMIT, HostedMailboxStore
-from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
-    controller_app,
-)
 from tests.switch_core.gateway.test_hosted_workers import (  # noqa: F401
-    HEADERS,
     _agent,
     _first_frames,
     _launch,
+    _machine,
     _open,
+    issue_capability,
+    set_machine,
     worker_app,
 )
 
@@ -52,7 +56,7 @@ from tests.switch_core.gateway.test_hosted_workers import (  # noqa: F401
 @pytest.fixture
 async def mailbox_app(worker_app):  # noqa: F811
     """The worker app plus a room with addressed messages and a recorded send."""
-    client, request_id, agent_id, service, factory, _ = worker_app
+    client, request_id, agent_id, service, factory, prepared = worker_app
     async with factory() as session:
         rooms = []
         for index in range(2):
@@ -108,6 +112,7 @@ async def mailbox_app(worker_app):  # noqa: F811
         client=client,
         request_id=request_id,
         agent_id=agent_id,
+        machine_id=prepared["machine_id"],
         service=service,
         factory=factory,
         rooms=rooms,
@@ -168,11 +173,7 @@ async def rows(app) -> dict[tuple[str, str], str]:
 
 
 async def capability(app) -> str:
-    prepared = await app.client.post(
-        f"/hosted-controller/{app.request_id}/prepare", headers=HEADERS
-    )
-    assert prepared.status_code == 200, prepared.text
-    return prepared.json()["worker_capability"]
+    return await issue_capability(app.factory, app.request_id)
 
 
 def restart_core(app, boot: int) -> None:
@@ -224,23 +225,34 @@ def attached_conn(app):
     return conn
 
 
-async def sleep_launch(app) -> None:
-    await set_launch(app, desired_state="stopped", state="stopped", sleeping=True)
+async def sleep_machine(app) -> None:
+    """The machine idled out: stopped for idleness, its launch left running."""
+    await set_machine(
+        app.factory,
+        app.machine_id,
+        desired_state="stopped",
+        stop_reason="idle",
+        state="stopped",
+        revision=2,
+    )
+    await set_launch(app, state="stopped")
 
 
 @pytest.mark.parametrize("restart", ["before_attach", "after_wake", "after_ack"])
 async def test_sleep_mention_wake_delivers_once(mailbox_app, restart):
     app = mailbox_app
     room = app.rooms[0]
-    await sleep_launch(app)
+    await sleep_machine(app)
     noted = await address(app, addressed(room, "$m1", "$thread"))
     assert noted.deliver is True and noted.refusal is None
-    woken = await _launch(app.factory, app.request_id)
-    assert (woken.desired_state, woken.state, woken.revision) == (
+    woken = await _machine(app.factory, app.machine_id)
+    assert (woken.desired_state, woken.stop_reason, woken.revision) == (
         "running",
-        "queued",
-        2,
+        None,
+        3,
     )
+    launch = await _launch(app.factory, app.request_id)
+    assert (launch.desired_state, launch.revision) == ("running", 1)
     assert await rows(app) == {(room, "$m1"): "pending"}
 
     if restart == "before_attach":
@@ -366,16 +378,17 @@ async def test_task_delegate_is_written_under_its_hash(mailbox_app):
 
 async def test_commands_are_never_written(mailbox_app):
     app = mailbox_app
-    await sleep_launch(app)
+    await sleep_machine(app)
     noted = await address(app, None)
-    assert noted.launch.revision == 2
+    assert noted.machine.desired_state == "running"
+    assert noted.machine.revision == 3
     assert await rows(app) == {}
 
 
 @pytest.mark.parametrize(
     "state",
     [
-        {"desired_state": "stopped", "state": "stopped", "sleeping": False},
+        {"desired_state": "stopped", "state": "stopped"},
         {"desired_state": "deleted", "state": "deleting"},
         {"state": "error"},
     ],
@@ -390,7 +403,7 @@ async def test_not_written_when_stopped_deleted_or_failed(mailbox_app, state):
 
 async def test_wake_refused_while_provider_revoked(mailbox_app):
     app = mailbox_app
-    await sleep_launch(app)
+    await sleep_machine(app)
     async with app.factory() as session:
         launch = await session.get(HostedLaunch, (require_tenant_id(), app.request_id))
         assert launch is not None
@@ -402,11 +415,11 @@ async def test_wake_refused_while_provider_revoked(mailbox_app):
     noted = await address(app, addressed(app.rooms[0], "$m1"))
     assert noted.deliver is False
     assert "reconnect the provider" in noted.refusal
-    launch = await _launch(app.factory, app.request_id)
-    assert (launch.desired_state, launch.revision, launch.sleeping) == (
+    machine = await _machine(app.factory, app.machine_id)
+    assert (machine.desired_state, machine.stop_reason, machine.revision) == (
         "stopped",
-        1,
-        True,
+        "idle",
+        2,
     )
     assert await rows(app) == {}
 
@@ -621,10 +634,9 @@ async def test_stop_splits_the_mailbox_and_hard_stop_wins(mailbox_app):
     assert attached["cancelled"] == []
 
 
-async def test_stop_of_a_sleeping_launch_never_wakes(mailbox_app):
+async def test_stop_on_a_sleeping_machine_never_wakes_it(mailbox_app):
     app = mailbox_app
-    await sleep_launch(app)
-    await set_launch(app, revision=2)
+    await sleep_machine(app)
     async with app.factory() as session:
         session.add(
             HostedWakeMailbox(
@@ -644,10 +656,17 @@ async def test_stop_of_a_sleeping_launch_never_wakes(mailbox_app):
         json={"action": "stop", "revision": 1},
     )
     assert response.status_code == 200, response.text
+    assert response.json()["state"] == "stopped"
+    assert response.json()["sleeping"] is True
     launch = await _launch(app.factory, app.request_id)
-    assert (launch.desired_state, launch.sleeping) == ("stopped", False)
+    assert (launch.desired_state, launch.revision) == ("stopped", 2)
+    machine = await _machine(app.factory, app.machine_id)
+    assert (machine.desired_state, machine.revision) == ("stopped", 2)
     assert await rows(app) == {(app.rooms[0], "$m1"): "cancelled"}
     assert len(app.sent) == 1
+    await address(app, addressed(app.rooms[0], "$m2"))
+    assert (await _machine(app.factory, app.machine_id)).desired_state == "stopped"
+    assert (app.rooms[0], "$m2") not in await rows(app)
 
 
 async def test_remove_deletes_the_mailbox(mailbox_app):
@@ -662,6 +681,63 @@ async def test_remove_deletes_the_mailbox(mailbox_app):
     )
     assert removed.status_code == 200, removed.text
     assert await rows(app) == {}
+
+
+async def test_remove_of_a_running_agent_is_synchronous(mailbox_app):
+    app = mailbox_app
+    first, second = app.rooms
+    await address(app, addressed(first, "$m1", "$thread-1"))
+    await address(app, addressed(first, "$m2"))
+    await address(app, addressed(second, "$n1"))
+    agent = await _agent(app.factory, app.agent_id)
+    key_id = agent.api_key_id
+    before = await _machine(app.factory, app.machine_id)
+    removed = await app.client.post(
+        f"/hosted-launches/{app.request_id}/lifecycle",
+        json={"action": "remove", "revision": 1},
+    )
+    assert removed.status_code == 200, removed.text
+    assert removed.json()["state"] == "deleted"
+    assert removed.json()["desired_state"] == "deleted"
+    assert removed.json()["name"] == "removed:" + app.request_id
+    assert await rows(app) == {}
+    assert sorted(room for room, _, _ in app.sent) == sorted([first, second])
+    assert all("removed before I processed" in body for _, _, body in app.sent)
+    async with app.factory() as session:
+        assert await session.get(Agent, app.agent_id) is None
+        assert await session.scalar(select(ApiKey).where(ApiKey.id == key_id)) is None
+    machine = await _machine(app.factory, app.machine_id)
+    assert machine.desired_state == "retained"
+    assert machine.revision == before.revision + 1
+    assert machine.agents_version > before.agents_version
+    retention = machine.retain_until - datetime.now(UTC)
+    assert timedelta(days=7) - timedelta(minutes=1) < retention <= timedelta(days=7)
+    again = await app.client.post(
+        f"/hosted-launches/{app.request_id}/lifecycle",
+        json={"action": "remove", "revision": 2},
+    )
+    assert again.status_code == 409
+
+
+async def test_mention_to_an_owner_stopped_machine_is_refused_not_queued(
+    mailbox_app,
+):
+    app = mailbox_app
+    await set_machine(
+        app.factory,
+        app.machine_id,
+        desired_state="stopped",
+        stop_reason="owner",
+        state="stopped",
+        revision=2,
+    )
+    noted = await address(app, addressed(app.rooms[0], "$m1"))
+    assert await rows(app) == {}
+    assert _hosted_unavailable(noted.launch, noted.machine) == (
+        _HOSTED_MACHINE_STOPPED_MESSAGE
+    )
+    machine = await _machine(app.factory, app.machine_id)
+    assert (machine.desired_state, machine.revision) == ("stopped", 2)
 
 
 def fail_first_send(app) -> None:
@@ -759,7 +835,7 @@ async def test_ack_notice_failed_send_is_retried_by_upkeep(
 async def test_expiry_notice_failed_send_is_retried_by_upkeep(mailbox_app):
     app = mailbox_app
     await add_row(app, "$m1")
-    await set_launch(app, desired_state="stopped", state="stopped", sleeping=True)
+    await sleep_machine(app)
     async with app.factory() as session:
         row = await session.get(
             HostedWakeMailbox,

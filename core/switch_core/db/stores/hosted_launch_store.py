@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
-from sqlalchemy import and_, case, exists, or_, select, text, update
+from sqlalchemy import and_, case, exists, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.crypto import decrypt_token, encrypt_token
@@ -14,11 +13,20 @@ from switch_core.db.models import (
     Agent,
     ApprovalRequest,
     HostedLaunch,
+    HostedMachine,
     HostedOperation,
     ProviderConnection,
     require_tenant_id,
 )
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.hosted_machine_store import (
+    HostedMachineStore,
+    capability_hash,
+    idle_sleeping,
+    lock_launch,
+    lock_launches,
+    machine_starting,
+)
 from switch_core.db.stores.hosted_mailbox_store import HostedMailboxStore
 
 if TYPE_CHECKING:
@@ -39,18 +47,6 @@ class IdleEvidence:
     report: IdleReport | None
 
 
-def capability_hash(capability: str) -> str:
-    return hashlib.sha256(capability.encode()).hexdigest()
-
-
-async def lock_launch(session: AsyncSession, launch_id: str) -> None:
-    """The per-launch advisory lock every lifecycle, relay and attach step takes."""
-    await session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-        {"key": f"hosted-launch:{require_tenant_id()}:{launch_id}"},
-    )
-
-
 UNCONFIRMED_CLAIM_EXPIRY = timedelta(minutes=5)
 
 
@@ -65,13 +61,17 @@ class HostedLaunchStore:
         spec: dict,
         capacity: int,
         owner_capacity: int,
-        agent_ids: list[str],
+        slots: list[str],
+        repository: str | None,
+        now: datetime,
     ) -> HostedLaunch:
+        """Reserve a launch on the owner's machine, claiming one if needed.
+
+        Raises `HostedLaunchConflict` for the name, request and per-owner
+        checks, and `HostedMachineConflict` when no machine can take it.
+        """
         tenant_id = require_tenant_id()
-        await session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-            {"key": f"hosted-launches:{tenant_id}"},
-        )
+        await lock_launches(session)
         await AgentStore().lock_name(session, name)
         existing = await session.get(HostedLaunch, (tenant_id, request_id))
         if existing:
@@ -99,30 +99,35 @@ class HostedLaunchStore:
             raise HostedLaunchConflict(
                 "A cloud launch already reserves this agent name."
             )
-        active = [launch for launch in launches if launch.state != "deleted"]
-        if sum(launch.owner_id == owner_id for launch in active) >= owner_capacity:
-            raise HostedLaunchConflict(
-                "Your cloud agent limit has been reached. Remove a stopped worker before creating another."
+        if (
+            sum(
+                launch.owner_id == owner_id and launch.state != "deleted"
+                for launch in launches
             )
-        if len(active) >= capacity:
+            >= owner_capacity
+        ):
             raise HostedLaunchConflict(
-                "Cloud agent capacity is full. Contact your server administrator."
+                "Your cloud agent limit has been reached. Remove an agent before creating another."
             )
-        used = {launch.agent_id for launch in launches}
-        agent_id = next((value for value in agent_ids if value not in used), None)
-        if agent_id is None:
-            raise HostedLaunchConflict(
-                "No cloud worker identity is available. Removed workers retain their disk and identity until an administrator retires the retained data and adds a replacement assignment."
-            )
+        machines = HostedMachineStore()
+        machine = await machines.claim(
+            session, owner_id=owner_id, slots=slots, capacity=capacity, now=now
+        )
         launch = HostedLaunch(
             id=request_id,
             owner_id=owner_id,
             name=name,
             spec=spec,
             state="queued",
-            agent_id=agent_id,
+            agent_id=None,
+            machine_id=machine.id,
+            repository=repository,
+            active_at=now,
+            created_at=now,
+            updated_at=now,
         )
         session.add(launch)
+        machines.bump_agents(machine)
         await session.flush()
         return launch
 
@@ -314,51 +319,42 @@ class HostedLaunchStore:
 
     async def note_addressed(
         self, session: AsyncSession, launch_id: str
-    ) -> HostedLaunch | None:
-        """Record that the launch's agent was addressed, waking it if idle-stopped.
+    ) -> tuple[HostedLaunch | None, HostedMachine | None]:
+        """Record that the launch's agent was addressed, waking its machine if idle-stopped.
 
-        Takes the same lock as the lifecycle and controller routes. The caller
-        commits. Raises `ProviderDisconnected` rather than wake a launch whose
-        owner has no provider connection: the VM would only fail to start.
+        Takes the machine and launch locks. The caller commits. Raises
+        `ProviderDisconnected` rather than wake a machine for a launch whose
+        owner has no provider connection: the agent would only fail to start.
         """
-        launch = await self.locked(session, launch_id)
-        if launch is None:
-            return None
+        machines = HostedMachineStore()
+        launch, machine = await machines.locked_launch(session, launch_id)
+        if launch is None or machine is None:
+            return launch, machine
         now = datetime.now(UTC)
         if (
-            launch.sleeping
-            and launch.desired_state == "stopped"
+            idle_sleeping(machine)
+            and launch.desired_state == "running"
             and launch.state != "error"
         ):
             if await self.credential_revision(session, launch) is None:
                 raise ProviderDisconnected(
                     f"launch {launch.id} is asleep and its owner's provider connection is gone"
                 )
-            launch.desired_state = "running"
-            launch.state = "queued"
-            launch.revision += 1
-            await self.fail_stale_operations(session, launch.id, launch.revision)
-            launch.error = None
+            machines.start(machine, now)
             launch.active_at = now
-            launch.updated_at = now
-        elif launch.desired_state not in {"stopped", "deleted"}:
+        elif launch.desired_state == "running" and machine.desired_state == "running":
             launch.active_at = now
-        return launch
+        return launch, machine
 
 
 class ProviderDisconnected(Exception):
-    """A sleeping launch was addressed, but its owner's provider connection is gone."""
+    """A launch on a sleeping machine was addressed, but its owner's provider connection is gone."""
 
 
-def is_waking(launch: HostedLaunch) -> bool:
+def is_waking(launch: HostedLaunch, machine: HostedMachine | None) -> bool:
     return (
-        launch.sleeping
+        machine is not None
         and launch.desired_state == "running"
-        and launch.state
-        in {
-            "queued",
-            "provisioning",
-            "stopping",
-            "stopped",
-        }
+        and launch.state != "error"
+        and (machine_starting(machine) or launch.state in {"queued", "provisioning"})
     )

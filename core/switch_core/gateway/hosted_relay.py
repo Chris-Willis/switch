@@ -35,11 +35,17 @@ from switch_core.bridges.agent.protocol.hosted_workers import (
 )
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.stream import KEEPALIVE_INTERVAL_SECONDS
-from switch_core.db.models import HostedLaunch, User, require_tenant_id
+from switch_core.db.models import HostedLaunch, HostedMachine, User, require_tenant_id
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore, is_waking
+from switch_core.db.stores.hosted_machine_store import (
+    HostedMachineStore,
+    idle_sleeping,
+    owner_stopped,
+)
 from switch_core.gateway.auth import get_current_user, get_current_user_in_transaction
 from switch_core.gateway.dependencies import get_protocol, get_session
+from switch_core.gateway.hosted_launches import launch_summary, summary
 
 logger = logging.getLogger(__name__)
 
@@ -70,23 +76,38 @@ def worker_info(conn: Connection | None) -> dict[str, Any] | None:
     }
 
 
-def relay_error(error: RelayError, conn: Connection | None) -> JSONResponse:
+def relay_error(error: RelayError, worker: dict[str, Any] | None) -> JSONResponse:
     body: dict[str, Any] = {
         "ok": False,
         "error": {"code": error.code, "message": str(error)},
-        "worker": worker_info(conn),
+        "worker": worker,
     }
     if error.code == "worker_sleeping":
         body["wake_available"] = True
     return JSONResponse(status_code=error.status, content=body)
 
 
-def relay_target(protocol: ProtocolService, launch: HostedLaunch) -> Connection:
-    """The worker attached for the launch's current revision, or why there is none."""
-    if launch.sleeping and not is_waking(launch):
-        raise RelayError("worker_sleeping", "The cloud worker is asleep.", 409)
-    if is_waking(launch) or launch.state in ("queued", "provisioning"):
-        raise RelayError("worker_waking", "The cloud worker is starting.", 409)
+def relay_target(
+    protocol: ProtocolService,
+    launch: HostedLaunch,
+    machine: HostedMachine | None,
+    kind: str,
+) -> Connection:
+    """The worker attached for the launch's current revision, or why there is none.
+
+    A mutating message to an idle-sleeping machine is the caller's to wake
+    first; here it falls through to the launch's own state.
+    """
+    if machine is not None and owner_stopped(machine):
+        raise RelayError("machine_stopped", "The owner stopped the cloud machine.", 409)
+    if machine is not None and idle_sleeping(machine) and kind == "read_only":
+        raise RelayError("worker_sleeping", "The cloud machine is asleep.", 409)
+    if is_waking(launch, machine):
+        raise RelayError("worker_waking", "The cloud machine is starting.", 409)
+    if launch.desired_state == "stopped":
+        raise RelayError("agent_stopped", "The cloud agent is stopped.", 409)
+    if launch.state == "error" and launch.error_code == "agent_crashed":
+        raise RelayError("agent_crashed", "The cloud agent keeps crashing.", 409)
     conn = (
         protocol.connections.attached_worker(launch.agent_id)
         if launch.agent_id
@@ -155,10 +176,22 @@ async def dispatch_mutating(
     without consuming one; once committed, the frame always goes out.
     """
     async with tenant_session(protocol.session_factory, tenant_id) as session:
-        launch = await HostedLaunchStore().locked(session, launch_id)
+        machines = HostedMachineStore()
+        launch, machine = await machines.locked_launch(session, launch_id)
         if launch is None or launch.desired_state == "deleted":
             raise RelayError("worker_not_attached", "The cloud launch is gone.", 409)
-        conn = relay_target(protocol, launch)
+        now = datetime.now(UTC)
+        if (
+            machine is not None
+            and idle_sleeping(machine)
+            and launch.desired_state == "running"
+            and launch.state != "error"
+        ):
+            machines.start(machine, now)
+            launch.active_at = now
+            await session.commit()
+            raise RelayError("worker_waking", "The cloud machine is starting.", 409)
+        conn = relay_target(protocol, launch, machine, "mutating")
         assert conn.worker is not None
         slot = conn.worker_frames.reserve(
             frame_size(message) + RELAY_FRAME_ENVELOPE_BYTES
@@ -166,7 +199,9 @@ async def dispatch_mutating(
         relay: PendingRelay | None = None
         try:
             launch.relay_seq += 1
-            launch.active_at = datetime.now(UTC)
+            launch.active_at = now
+            if machine is not None:
+                machine.active_at = now
             relay = protocol.connections.relays.register(
                 tenant_id=tenant_id,
                 agent_id=conn.agent_id,
@@ -196,6 +231,15 @@ async def owned_launch(
     return launch
 
 
+async def current_summary(
+    protocol: ProtocolService, tenant_id: str, launch_id: str
+) -> dict[str, Any] | None:
+    """The launch summary as committed, after a mutating dispatch may have woken it."""
+    async with tenant_session(protocol.session_factory, tenant_id) as session:
+        launch = await session.get(HostedLaunch, (tenant_id, launch_id))
+        return None if launch is None else await launch_summary(session, launch)
+
+
 async def request_body(request: Request) -> bytes:
     """The body, read ahead of the caller's user.
 
@@ -223,12 +267,17 @@ async def relay(
     except ValidationError as exc:
         raise HTTPException(422, exc.errors(include_input=False)) from exc
     launch = await owned_launch(session, request_id, user)
+    machine = (
+        None
+        if launch.machine_id is None
+        else await HostedMachineStore().get(session, launch.machine_id)
+    )
+    worker = summary(launch, machine)
     tenant_id = require_tenant_id()
-    conn: Connection | None = None
     try:
         kind = classify_message(body.message)
         if kind == "read_only":
-            conn = relay_target(protocol, launch)
+            conn = relay_target(protocol, launch, machine, kind)
             pending = dispatch_read_only(
                 protocol, tenant_id, conn, body.message, body.timeout_ms
             )
@@ -243,11 +292,15 @@ async def relay(
             )
             _dispatches.add(task)
             task.add_done_callback(_dispatches.discard)
-            pending = await asyncio.shield(task)
-        conn = protocol.connections.get(pending.connection_id)
+            try:
+                pending = await asyncio.shield(task)
+            except RelayError as error:
+                return relay_error(
+                    error, await current_summary(protocol, tenant_id, launch_id)
+                )
         answer = await asyncio.shield(pending.future)
     except RelayError as error:
-        return relay_error(error, conn)
+        return relay_error(error, worker)
     return JSONResponse(
         content={
             **answer,

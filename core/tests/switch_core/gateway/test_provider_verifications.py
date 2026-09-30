@@ -1,7 +1,6 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from uuid import uuid4
 
 import httpx
 import pytest
@@ -49,7 +48,7 @@ async def verification_app(session_factory, tmp_path):
     app.state.hosted_controller_settings = HostedControllerSettings(
         tenant_id=require_tenant_id(),
         token=CONTROLLER,
-        agent_ids=[uuid4()],
+        machine_slots=["slot-a", "slot-b"],
         github_private_key_path=tmp_path / "unused.pem",
         agent_api_endpoint="https://switch.example.com",
     )

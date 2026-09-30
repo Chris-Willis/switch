@@ -37,7 +37,7 @@ from alembic.runtime.environment import EnvironmentContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import Connection, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 import switch_core.db.models  # noqa: F401 — registers every table on Base.metadata
 from switch_core.bridges.agent.hosted_cutover import CutoverManifest
@@ -64,6 +64,9 @@ _MERGE_REVISION = "33e037ee949f"
 _PILOT_HEAD = "95fc38e451b6"
 _MAIN_HEAD = "c4e9a1f7b203"
 _MANIFEST_REVISION = "a3c9e5f71d28"
+# The last revision a database with cloud agents that are not removed can
+# reach: `b4e1d7a2c9f0` refuses one until they are.
+_BEFORE_MACHINES = "5c1e9b7d3f02"
 
 _HOSTED_TABLES = (
     "provider_connections",
@@ -450,6 +453,20 @@ async def _assert_merged_schema(connection: AsyncConnection) -> None:
     await _require_every_policy(connection)
 
 
+async def _remove_launches_and_upgrade(engine: AsyncEngine) -> None:
+    """Remove every cloud agent, as `b4e1d7a2c9f0` requires, then upgrade to heads."""
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE hosted_launches SET state = 'deleted', desired_state = 'deleted'"
+            )
+        )
+        await connection.run_sync(_upgrade_to("heads"))
+    async with engine.begin() as connection:
+        await _assert_merged_schema(connection)
+        await _assert_runtime_grants(connection)
+
+
 async def _assert_runtime_grants(connection: AsyncConnection) -> None:
     role = f"switch_merge_test_{uuid.uuid4().hex[:12]}"
     await connection.execute(
@@ -544,11 +561,9 @@ async def test_pilot_database_keeps_hosted_rows_through_the_merge(
         assert await cutover_problems(_config(pilot_url)) == []
 
         async with engine.begin() as connection:
-            await connection.run_sync(_upgrade_to("heads"))
+            await connection.run_sync(_upgrade_to(_BEFORE_MACHINES))
 
         async with engine.begin() as connection:
-            await _assert_merged_schema(connection)
-            await _assert_runtime_grants(connection)
             connections = (
                 await connection.execute(
                     text("SELECT user_id, provider, kind FROM provider_connections")
@@ -589,6 +604,7 @@ async def test_pilot_database_keeps_hosted_rows_through_the_merge(
                     )
                 )
             }
+        await _remove_launches_and_upgrade(engine)
     finally:
         await engine.dispose()
 
@@ -890,12 +906,11 @@ async def test_pilot_upgrade_keeps_what_the_recorded_volumes_import(
     engine = create_async_engine(pilot_url)
     try:
         async with engine.begin() as connection:
-            await connection.run_sync(_upgrade_to("heads"))
+            await connection.run_sync(_upgrade_to(_BEFORE_MACHINES))
         assert await cutover_problems(config) == []
         await queue_all_imports(config)
         await queue_all_imports(config)
         async with engine.begin() as connection:
-            await _assert_merged_schema(connection)
             blobs = (
                 await connection.scalars(text("SELECT id FROM media_blobs ORDER BY id"))
             ).all()
@@ -911,6 +926,7 @@ async def test_pilot_upgrade_keeps_what_the_recorded_volumes_import(
             queued = await connection.scalar(
                 text("SELECT imports_queued_at IS NOT NULL FROM hosted_cutover_volumes")
             )
+        await _remove_launches_and_upgrade(engine)
     finally:
         await engine.dispose()
 
@@ -1087,6 +1103,20 @@ async def test_real_upgrade_completes_a_prepared_cutover(
     await _pilot_at_manifest(pilot_url, with_import=True)
     await record(_config(pilot_url), "l1", _EMPTY_MANIFEST)
 
+    with pytest.raises(RuntimeError, match="hosted_machines: 1 cloud agent"):
+        await migrate(_migration_config(pilot_url, monkeypatch))
+    assert await _head(pilot_url) == ([_MANIFEST_REVISION], True)
+
+    engine = create_async_engine(pilot_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE hosted_launches SET state = 'deleted', desired_state = 'deleted'"
+                )
+            )
+    finally:
+        await engine.dispose()
     await migrate(_migration_config(pilot_url, monkeypatch))
 
     _, script = _script_directory()

@@ -64,6 +64,7 @@ NOTICE_MESSAGES = {
     "expired": "I could not process this message in time, so I did not process it. Please send it again.",
     "cancelled": "Processing of this message was cancelled before it ran. Please send it again if it is still needed.",
     "revoked": "My owner's provider connection was removed, so I cannot process messages. Ask my owner to reconnect the provider in Switch.",
+    "removed": "My cloud agent was removed before I processed this message, so I did not process it.",
     "upgrade": "My cloud worker is being upgraded and could not process this message. Please send it again in a few minutes.",
     "started_before_stop": "I had already started processing this message before my cloud worker was stopped, so it may have been processed in part. Check the conversation before sending it again.",
     "started_before_expiry": "I had already started processing this message before it expired, so it may have been processed in part. Check the conversation before sending it again.",

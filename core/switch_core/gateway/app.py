@@ -42,6 +42,7 @@ from switch_core.gateway.ecosystem import router as ecosystem_router
 from switch_core.gateway.github_connections import router as github_connections_router
 from switch_core.gateway.hosted_controller import router as hosted_controller_router
 from switch_core.gateway.hosted_launches import router as hosted_launches_router
+from switch_core.gateway.hosted_machines import router as hosted_machines_router
 from switch_core.gateway.hosted_relay import router as hosted_relay_router
 from switch_core.gateway.messaging_installs import (
     router as messaging_installs_router,
@@ -125,14 +126,15 @@ def create_gateway_app(
     )
     if config.hosted_launch_capacity and (
         app.state.hosted_controller_settings is None
-        or len(app.state.hosted_controller_settings.agent_ids)
+        or len(app.state.hosted_controller_settings.machine_slots)
         < config.hosted_launch_capacity
     ):
         raise ValueError(
-            "Cloud launch capacity requires enough configured worker identities."
+            "Cloud launch capacity requires enough configured machine slots."
         )
     app.include_router(hosted_launches_router, tags=["hosted-launches"])
     app.include_router(hosted_relay_router, tags=["hosted-launches"])
+    app.include_router(hosted_machines_router, tags=["hosted-machines"])
     if (
         config.hosted_provider_verification_enabled
         and app.state.hosted_controller_settings is None

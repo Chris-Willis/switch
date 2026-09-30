@@ -59,7 +59,7 @@ from switch_core.clients.mentions import (
     strip_emphasis as _strip_emphasis,
 )
 from switch_core.clients.room_meta import RoomMeta
-from switch_core.db.models import Agent, HostedLaunch
+from switch_core.db.models import Agent, HostedLaunch, HostedMachine
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
@@ -71,6 +71,7 @@ from switch_core.db.stores.hosted_launch_store import (
     ProviderDisconnected,
     is_waking,
 )
+from switch_core.db.stores.hosted_machine_store import owner_stopped
 from switch_core.db.stores.hosted_mailbox_store import (
     MAILBOX_LIMIT,
     HostedMailboxStore,
@@ -188,6 +189,7 @@ class HostedNote:
     """
 
     launch: HostedLaunch | None
+    machine: HostedMachine | None
     refusal: str | None
     deliver: bool
 
@@ -203,9 +205,15 @@ _HOSTED_ERROR_MESSAGE = (
     "My cloud worker has a problem, so I did not process this message. "
     "My owner can check it in Switch Console."
 )
+_HOSTED_MACHINE_STOPPED_MESSAGE = (
+    "My owner stopped my cloud machine, so I did not process this message. "
+    "Ask my owner to start it in Switch Console, then send it again."
+)
 
 
-def _hosted_unavailable(launch: HostedLaunch) -> str | None:
+def _hosted_unavailable(
+    launch: HostedLaunch, machine: HostedMachine | None
+) -> str | None:
     """Why a hosted agent that takes no mail cannot answer, for the room.
 
     The generic unavailable reply offers a terminal command, which means
@@ -215,21 +223,24 @@ def _hosted_unavailable(launch: HostedLaunch) -> str | None:
         return _HOSTED_REMOVED_MESSAGE
     if launch.state == "error":
         return _HOSTED_ERROR_MESSAGE
-    if launch.desired_state == "stopped" and not launch.sleeping:
+    if machine is not None and owner_stopped(machine):
+        return _HOSTED_MACHINE_STOPPED_MESSAGE
+    if launch.desired_state == "stopped":
         return _HOSTED_STOPPED_MESSAGE
     return None
 
 
-def _takes_mail(launch: HostedLaunch) -> bool:
+def _takes_mail(launch: HostedLaunch, machine: HostedMachine | None) -> bool:
     """Whether an addressed event goes into the launch's wake mailbox.
 
-    Not after an explicit Stop (stopped and not sleeping), a delete, or an
-    error: the unavailable reply tells the room instead.
+    Not after an explicit Stop of the agent or its machine, a delete, or an
+    error: the unavailable reply tells the room instead. An idle-sleeping
+    machine takes mail; addressing it wakes it.
     """
     return (
-        not (launch.desired_state == "stopped" and not launch.sleeping)
-        and launch.desired_state != "deleted"
+        launch.desired_state == "running"
         and launch.state != "error"
+        and not (machine is not None and owner_stopped(machine))
     )
 
 
@@ -586,15 +597,21 @@ class AgentClient(ClientBase[ClientConfig]):
         if is_addressed:
             hosted = await self._note_hosted_addressed(agent, agent_event)
             launch = None if hosted is None else hosted.launch
+            machine = None if hosted is None else hosted.machine
             if hosted is not None and hosted.refusal is not None:
                 unavailable = hosted.refusal
-            elif unavailable is not None and launch is not None and is_waking(launch):
+            elif (
+                unavailable is not None
+                and launch is not None
+                and machine is not None
+                and is_waking(launch, machine)
+            ):
                 unavailable = None
-                if self._waking_notice_revisions.get(meta.room_id) != launch.revision:
-                    self._waking_notice_revisions[meta.room_id] = launch.revision
+                if self._waking_notice_revisions.get(meta.room_id) != machine.revision:
+                    self._waking_notice_revisions[meta.room_id] = machine.revision
                     unavailable = _WAKING_MESSAGE
             elif unavailable is not None and launch is not None:
-                stated = _hosted_unavailable(launch)
+                stated = _hosted_unavailable(launch, machine)
                 if stated is not None:
                     unavailable = stated
                 elif attached_worker_for(self._connections, launch) is None:
@@ -1025,9 +1042,9 @@ class AgentClient(ClientBase[ClientConfig]):
         `event`, when the watcher acts on it, is written to the wake mailbox
         in the same transaction, already offered when the agent's worker is
         attached at the launch's revision. None for a command, which is never
-        queued. A wake bumps the launch revision, so any worker still bound
-        to the old revision is evicted once the bump is committed. None when
-        the agent is not hosted or its launch could not be updated.
+        queued. A wake starts the launch's idle-stopped machine; an
+        owner-stopped machine is left stopped. None when the agent is not
+        hosted or its launch could not be updated.
         """
         launch_id = hosted_launch_of(agent.metadata_)
         if launch_id is None:
@@ -1040,10 +1057,14 @@ class AgentClient(ClientBase[ClientConfig]):
                 asyncio.timeout(5),
                 tenant_session(self.session_factory, self.tenant_id) as session,
             ):
-                launch = await self._hosted_launch_store.note_addressed(
+                launch, machine = await self._hosted_launch_store.note_addressed(
                     session, launch_id
                 )
-                if launch is not None and entry is not None and _takes_mail(launch):
+                if (
+                    launch is not None
+                    and entry is not None
+                    and _takes_mail(launch, machine)
+                ):
                     worker = attached_worker_for(self._connections, launch)
                     try:
                         written = await HostedMailboxStore().write(
@@ -1070,7 +1091,10 @@ class AgentClient(ClientBase[ClientConfig]):
                 agent.id,
             )
             return HostedNote(
-                launch=None, refusal=NOTICE_MESSAGES["revoked"], deliver=False
+                launch=None,
+                machine=None,
+                refusal=NOTICE_MESSAGES["revoked"],
+                deliver=False,
             )
         except Exception:
             logger.error(
@@ -1090,6 +1114,7 @@ class AgentClient(ClientBase[ClientConfig]):
         self._connections.supersede(agent.id, launch.revision)
         return HostedNote(
             launch=launch,
+            machine=machine,
             refusal=refusal,
             deliver=refusal is None and written,
         )
@@ -1355,9 +1380,10 @@ class AgentClient(ClientBase[ClientConfig]):
         )
         hosted = await self._note_hosted_addressed(agent, agent_event)
         launch = None if hosted is None else hosted.launch
+        machine = None if hosted is None else hosted.machine
         if hosted is not None and hosted.refusal is not None:
             reply = hosted.refusal
-        elif launch is not None and is_waking(launch):
+        elif launch is not None and is_waking(launch, machine):
             reply = _WAKING_MESSAGE
         else:
             reply = "Working on it."
