@@ -354,12 +354,18 @@ def _apply_process_state(
             launch.state = "error"
             launch.error_code = "worker_attach_timeout"
             launch.error = ATTACH_TIMEOUT_ERROR
-    elif report.process_state in {"crashed", "failed"}:
+    elif (
+        report.process_state in {"crashed", "failed"}
+        and launch.desired_state == "running"
+    ):
         crashed = report.process_state == "crashed"
         launch.state = "error"
         launch.error_code = "agent_crashed" if crashed else "agent_failed"
         launch.error = CRASHED_ERROR if crashed else FAILED_ERROR
-    elif report.process_state == "stopped" and launch.desired_state == "stopped":
+    elif (
+        report.process_state in {"stopped", "crashed", "failed"}
+        and launch.desired_state == "stopped"
+    ):
         launch.state = "stopped"
         launch.error = None
         launch.error_code = None

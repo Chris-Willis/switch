@@ -514,6 +514,34 @@ async def test_heartbeat_confirms_a_requested_stop(supervisor):
     assert (await launch_row(factory, request_id)).state == "stopped"
 
 
+@pytest.mark.parametrize("process_state", ["crashed", "failed"])
+async def test_crash_of_an_agent_meant_to_stop_stops_it(supervisor, process_state):
+    client, request_id, agent_id, _, factory, machine_id, headers = supervisor
+    await update_launch(
+        factory,
+        request_id,
+        state="stopping",
+        desired_state="stopped",
+        error="An earlier failure.",
+        error_code="agent_failed",
+    )
+    response = await client.post(
+        f"/hosted/machines/{machine_id}/heartbeat",
+        headers=headers,
+        json=heartbeat_body(
+            launch_id=request_id,
+            agent_id=agent_id,
+            revision=1,
+            process_state=process_state,
+        ),
+    )
+    assert response.status_code == 200, response.text
+    launch = await launch_row(factory, request_id)
+    assert launch.state == "stopped"
+    assert launch.error is None
+    assert launch.error_code is None
+
+
 async def test_stopped_process_does_not_stop_an_agent_meant_to_run(supervisor):
     client, request_id, agent_id, _, factory, machine_id, headers = supervisor
     await client.post(
