@@ -35,12 +35,12 @@ export type WelcomeCloud =
  * and a first impression made of empty containers says less about the app than
  * one question does.
  *
- * Switch Cloud is a choice only when this build has been told where it is.
- * Otherwise the two places are a list, not a choice: Cloud stays on the page,
- * marked unavailable in words as well as in grey, because the question is
- * "where should it run" and an answer that exists but is not ready yet is part
- * of that answer. A radio group would announce itself as something to pick
- * between and then answer neither arrow key nor click.
+ * Switch Cloud is on the page only when this build has been told where it is;
+ * otherwise your own server is the one place listed. A build whose Cloud
+ * configuration could not be read still shows the card, marked unavailable in
+ * words as well as in grey, since that is a broken build to fix. A radio group
+ * would announce itself as something to pick between and then answer neither
+ * arrow key nor click.
  *
  * Either way the controls are buttons that say which place they take, and the
  * emphasis on a card is a repeat of that in colour, not the only place it is
@@ -141,26 +141,12 @@ function CloudChoice({ cloud }: { cloud: WelcomeCloud }) {
           unavailable
         />
       );
+    // A build that cannot reach the Cloud does not mention it: stable ships
+    // the code before the Cloud is open to it, and a card for somewhere you
+    // cannot go is a promise the build has no way to keep.
     case 'reading':
-      return (
-        <HostingChoice
-          icon={icon}
-          title="Switch Cloud"
-          badge="Checking"
-          description="Checking whether this build can connect to Switch Cloud."
-          unavailable
-        />
-      );
     case 'closed':
-      return (
-        <HostingChoice
-          icon={icon}
-          title="Switch Cloud"
-          badge="Coming soon"
-          description="We would run it for you. Not open yet — there is nothing to sign in to."
-          unavailable
-        />
-      );
+      return null;
   }
 }
 

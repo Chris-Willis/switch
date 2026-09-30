@@ -3,8 +3,8 @@
  *
  * Its whole job is to say where Switch can run and get on with a place it can.
  * Switch Cloud is only a place when this build or run names a deployment for
- * it. When none is named it has to say so in words rather than only in grey,
- * and nothing on the page may pretend to be a choice. When one is named it is
+ * it. When none is named the page does not mention it, and nothing on the page
+ * may pretend to be a choice. When one is named it is
  * a real second way on, and the unlabelled pager must not pick between the two.
  */
 import { act } from 'react';
@@ -66,24 +66,27 @@ function button(el: HTMLElement, label: string): HTMLButtonElement {
 }
 
 describe('the welcome page with no Switch Cloud named', () => {
-  it('asks where Switch should run and offers both places', async () => {
+  it('asks where Switch should run and offers only your own server', async () => {
     const el = await renderPage();
 
     expect(el.textContent).toContain('Welcome to Switch');
     expect(el.textContent).toContain('Where should it run?');
-    expect(choice(el, 'Switch Cloud')).toBeDefined();
     expect(choice(el, 'Your own server')).toBeDefined();
   });
 
-  it('says in words that Switch Cloud is not ready, not only in grey', async () => {
-    // Shown anyway, because "where should it run" has two answers and one of
-    // them is not ready — but the reason has to be legible to someone who
-    // cannot see the card is dimmed.
+  it('does not mention Switch Cloud at all', async () => {
+    // Stable ships the Cloud code before the Cloud is open to it, so a build
+    // with no Cloud named must not advertise one.
     const el = await renderPage();
-    const cloud = choice(el, 'Switch Cloud');
 
-    expect(cloud.textContent).toContain('Coming soon');
-    expect(cloud.textContent).toContain('there is nothing to sign in to');
+    expect(el.textContent).not.toContain('Switch Cloud');
+    expect(el.querySelectorAll('li')).toHaveLength(1);
+  });
+
+  it('does not flash a Cloud card while the configuration is read', async () => {
+    const el = await renderPage({ kind: 'reading' });
+
+    expect(el.textContent).not.toContain('Switch Cloud');
   });
 
   it('offers nothing to pick between, since only one answer can be had', async () => {

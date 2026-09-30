@@ -52,6 +52,7 @@ import {
   serverSubtitleLabel,
 } from './server-presentation';
 import { switchServersStore } from './switch-servers-store';
+import { type SwitchCloudAvailability, useSwitchCloud } from './use-switch-cloud';
 
 /**
  * How the button names where you are.
@@ -68,26 +69,35 @@ function switcherSubtitle(workspace: Workspace, server: SwitchServer): string {
 }
 
 /**
- * The workspace switcher at the top of the sidebar.
+ * Whether the sidebar shows servers rather than workspaces.
  *
- * The window is scoped to one workspace: the sidebar, its sessions and
- * everything under them show that workspace's world and nothing else, so
- * exactly one is on screen at a time and the rest live behind this control.
+ * Workspaces are a Switch Cloud idea: on a build that cannot reach the Cloud,
+ * every server holds one workspace named after itself, and a menu of headings
+ * each over a single row of the same name says nothing the server list did not.
+ * So such a build keeps the server list.
  *
- * Workspaces are listed under the server hosting them rather than in one flat
- * list. A workspace only means anything on its server — two servers can each
- * have a "Default" — and the server is also what carries reachability, so the
- * group heading is where it is said once instead of on every row.
+ * Only while that holds, though. An account that has joined a second workspace
+ * on some server — by an invite link, say — gets the workspace menu, since a
+ * server list has no row for the second one and would strand it.
+ */
+export function showsServers(
+  cloud: SwitchCloudAvailability['kind'],
+  workspacesPerServer: number[]
+): boolean {
+  if (cloud === 'open' || cloud === 'failed') return false;
+  return workspacesPerServer.every((count) => count <= 1);
+}
+
+/**
+ * The switcher at the top of the sidebar: the workspace, or on a build without
+ * Switch Cloud the server, that the window is scoped to.
  *
- * With no workspace there is nothing to switch between, so it collapses to the
- * one action that leads anywhere.
+ * With nothing to switch between it collapses to the one action that leads
+ * anywhere.
  */
 export const WorkspaceSwitcher = observer(function WorkspaceSwitcher() {
   const store = switchServersStore;
-  const { navigate } = useNavigate();
-  const showAddServerModal = useShowModal('addServerModal');
-  const showCreateWorkspaceModal = useShowModal('createWorkspaceModal');
-  const showInvitePeopleModal = useShowModal('invitePeopleModal');
+  const cloud = useSwitchCloud();
 
   useEffect(() => {
     void store.init();
@@ -105,23 +115,184 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher() {
   const active = workspacesStore.active;
   const activeServer = active ? store.serverById(active.serverId) : null;
 
-  if (!active || !activeServer) {
-    return (
-      <div className="px-2">
-        <LocalServerPendingButton />
-        {localServerStore.phase === 'stopped' && (
-          <button
-            type="button"
-            onClick={() => showAddServerModal({})}
-            className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-foreground-tertiary hover:bg-[var(--sel-soft)]"
-          >
-            <Plus className="size-4 shrink-0 text-foreground-muted" />
-            Add a server
-          </button>
-        )}
-      </div>
-    );
-  }
+  if (!active || !activeServer) return <NoServerYet />;
+
+  const perServer = store.servers.map((server) => workspacesStore.onServer(server.id).length);
+  return showsServers(cloud.kind, perServer) ? (
+    <ServerMenu activeServer={activeServer} />
+  ) : (
+    <WorkspaceMenu active={active} activeServer={activeServer} />
+  );
+});
+
+const NoServerYet = observer(function NoServerYet() {
+  const showAddServerModal = useShowModal('addServerModal');
+  return (
+    <div className="px-2">
+      <LocalServerPendingButton />
+      {localServerStore.phase === 'stopped' && (
+        <button
+          type="button"
+          onClick={() => showAddServerModal({})}
+          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-foreground-tertiary hover:bg-[var(--sel-soft)]"
+        >
+          <Plus className="size-4 shrink-0 text-foreground-muted" />
+          Add a server
+        </button>
+      )}
+    </div>
+  );
+});
+
+/** One row per server, as the sidebar had before workspaces. */
+const ServerMenu = observer(function ServerMenu({ activeServer }: { activeServer: SwitchServer }) {
+  const store = switchServersStore;
+  const { navigate } = useNavigate();
+  const showAddServerModal = useShowModal('addServerModal');
+  const ActiveIcon = serverIcon(activeServer);
+  const drift = serverDrift(activeServer);
+
+  return (
+    <div className="px-2">
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={
+            <button
+              type="button"
+              aria-label="Switch server"
+              className="flex w-full items-center gap-[10px] rounded-lg px-2 py-1.5 text-left hover:bg-[var(--sel-soft)]"
+            >
+              <ServerAvatar server={activeServer} size="md" />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium text-foreground">
+                  {activeServer.name}
+                </span>
+                <span className="flex items-center gap-1.5 text-xs text-foreground-muted">
+                  <ActiveIcon className="size-3 shrink-0" />
+                  <span className="truncate">{serverSubtitleLabel(activeServer)}</span>
+                  <ServerStatusDot server={activeServer} />
+                  {drift && <ServerDriftIndicator drift={drift} />}
+                </span>
+              </span>
+              <ChevronsUpDown className="size-3.5 shrink-0 text-foreground-muted" />
+            </button>
+          }
+        />
+        <DropdownMenuContent align="start" className="min-w-72">
+          <DropdownMenuGroup>
+            <DropdownMenuLabel className="text-xs font-medium text-foreground-passive">
+              Servers
+            </DropdownMenuLabel>
+            {store.servers.map((server) => (
+              <ServerMenuItem
+                key={server.id}
+                server={server}
+                active={server.id === activeServer.id}
+              />
+            ))}
+          </DropdownMenuGroup>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onClick={() => showAddServerModal({})}>
+            <Plus className="size-4" />
+            Add server
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          {/* The welcome screen is what the app opens with before any server
+              exists; once one does, this is how it stays reachable. */}
+          <DropdownMenuItem onClick={() => navigate('home')}>
+            <SwitchConsoleMark size={16} />
+            About Switch
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+});
+
+/**
+ * A server, opened by switching to its one workspace.
+ *
+ * A server with no workspace has not finished registering, and one whose only
+ * workspace this account has lost cannot be opened; both stay listed, disabled
+ * and saying why, for the same reasons the workspace menu keeps such rows.
+ */
+const ServerMenuItem = observer(function ServerMenuItem({
+  server,
+  active,
+}: {
+  server: SwitchServer;
+  active: boolean;
+}) {
+  const { navigate } = useNavigate();
+  const { toast } = useToast();
+  const Icon = serverIcon(server);
+  const placement = serverPlacementLabel(server);
+  const drift = serverDrift(server);
+  const workspace = workspacesStore.onServer(server.id)[0] ?? null;
+  const unavailable = workspace ? workspaceUnavailability(workspace, 1) : null;
+  const reason = !workspace
+    ? 'This server has not finished being set up.'
+    : unavailable
+      ? UNAVAILABLE_REASON[unavailable](server.name)
+      : undefined;
+
+  return (
+    <DropdownMenuItem
+      aria-current={active ? 'true' : undefined}
+      className={cn(active && 'bg-[var(--sel)]')}
+      disabled={reason !== undefined}
+      title={reason}
+      onClick={() => {
+        if (!workspace) return;
+        void workspacesStore
+          .setActive(workspace.id)
+          .then(() => navigate('server', { serverId: server.id }))
+          .catch(() => {
+            toast({
+              title: 'Could not switch server',
+              description: `${server.name} is still there; the app stayed where it was.`,
+              variant: 'destructive',
+            });
+          });
+      }}
+    >
+      <ServerAvatar server={server} size="md" />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium text-foreground">{server.name}</span>
+        <span className="flex min-w-0 items-center gap-1.5 text-xs text-foreground-muted">
+          <Icon className="size-3 shrink-0" />
+          <span className="truncate">{serverStatusLabel(server)}</span>
+          <ServerStatusDot server={server} />
+          {(placement || unavailable) && (
+            <span className="shrink-0 rounded bg-background-tertiary px-1 py-px text-[10px] font-medium tracking-wide text-foreground-muted uppercase">
+              {unavailable ? UNAVAILABLE_BADGE[unavailable] : placement}
+            </span>
+          )}
+        </span>
+      </span>
+      {drift && <ServerDriftIndicator drift={drift} />}
+    </DropdownMenuItem>
+  );
+});
+
+/**
+ * Workspaces listed under the server hosting them rather than in one flat
+ * list. A workspace only means anything on its server — two servers can each
+ * have a "Default" — and the server is also what carries reachability, so the
+ * group heading is where it is said once instead of on every row.
+ */
+const WorkspaceMenu = observer(function WorkspaceMenu({
+  active,
+  activeServer,
+}: {
+  active: Workspace;
+  activeServer: SwitchServer;
+}) {
+  const store = switchServersStore;
+  const { navigate } = useNavigate();
+  const showAddServerModal = useShowModal('addServerModal');
+  const showCreateWorkspaceModal = useShowModal('createWorkspaceModal');
+  const showInvitePeopleModal = useShowModal('invitePeopleModal');
 
   const ActiveIcon = serverIcon(activeServer);
   const drift = serverDrift(activeServer);
