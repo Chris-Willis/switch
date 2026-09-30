@@ -1483,7 +1483,7 @@ class SupervisorTests(RootPatched):
         unit = f"switch-agent@{AGENT}.service"
         self.supervisor.reconcile([valid_agent()])
         self.commands.clear()
-        entry = fixture("agent-unavailable.json")
+        entry = core_fixture("agents_response_unavailable.json")["agents"][0]
         self.assertNotIn("worker_capability", entry)
         self.assertNotIn("switch_credentials", entry)
         with self.assertLogs(worker.logger, "WARNING"):
@@ -1520,7 +1520,7 @@ class SupervisorTests(RootPatched):
 
     def test_agent_with_a_missing_identity_is_stopped_and_kept(self):
         self.supervisor.reconcile([valid_agent()])
-        entry = fixture("agent-unavailable.json")
+        entry = core_fixture("agents_response_unavailable.json")["agents"][0]
         entry["unavailable"] = "agent_identity_missing"
         with self.assertLogs(worker.logger, "WARNING"):
             self.supervisor.reconcile([entry])
@@ -1529,7 +1529,7 @@ class SupervisorTests(RootPatched):
         self.assertEqual(self.state()["process_state"], "stopped")
 
     def test_malformed_unavailable_code_is_an_invalid_config(self):
-        entry = fixture("agent-unavailable.json")
+        entry = core_fixture("agents_response_unavailable.json")["agents"][0]
         entry["unavailable"] = ""
         with self.assertLogs(worker.logger, "ERROR"):
             self.supervisor.reconcile([entry])

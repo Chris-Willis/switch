@@ -398,15 +398,44 @@ frame is the connection dying or Core crashing; both end in a reattach, and
 the reattach fence settles the sequence (D2). Read-only messages take no
 lock and carry `relay_seq: null`.
 
+Core checks the refusals in this order and returns the first that applies:
+
 | Code | HTTP | When |
 |---|---|---|
-| `worker_sleeping` | 409 | `launch.sleeping` and not waking; body `wake_available: true`. Console offers an explicit wake (lifecycle route), never an implicit one. |
-| `worker_waking` / `worker_not_attached` | 409 | Waking, provisioning, or no attached worker. Console retries with backoff; nothing is queued. |
+| `machine_stopped` | 409 | The owner stopped the machine. Console does not retry; the user starts the machine. |
+| `machine_error` | 409 | The machine is in `error`. Console does not retry; the user retries the machine. |
+| `worker_sleeping` | 409 | Read-only message and the machine is idle-sleeping; body `wake_available: true`. Console offers an explicit wake. A mutating message to an idle-sleeping machine starts it instead and returns `worker_waking`. |
+| `worker_waking` | 409 | The machine is starting, or the launch is `queued` or `provisioning`. Console retries with backoff; nothing is queued. |
+| `agent_stopped` | 409 | The launch's desired state is `stopped`. Console does not retry; the user starts the agent. |
+| `agent_crashed` | 409 | The launch is in `error` with `error_code` `agent_crashed`. Console does not retry; the user retries the agent. |
+| `worker_not_attached` | 409 | No worker attached for the launch's current revision, or the launch is gone. Console retries with backoff; nothing is queued. |
 | `generation_changed` | 409 | The reply came from, or the dispatch target became, another generation or revision. Console drops its live views and resnapshots. |
 | `worker_busy` | 503 | Frame queue full. |
 | `relay_timeout` | 504 | No reply by the deadline. Outcome unknown: Console reconciles through `snapshot` → `commandStatuses` (as `reconcileSessionCommand`), never by resending blind. |
 | `refused_message` | 400 | `room`, `approvals`, `ensure`. |
 | `too_large` | 413 | Request > 2 MiB. Replies are never too large: they are paged. |
+
+The machine checks also apply outside the relay. `POST
+/gateway/hosted-launches/{request_id}/sessions` returns 409 `{"detail":
+"<message>", "code": "machine_error" | "machine_stopped" | "worker_waking"}`;
+for an idle-sleeping machine it starts the machine and returns `worker_waking`.
+`POST /gateway/hosted-launches/{request_id}/lifecycle` with action `restart` or
+`retry` returns the same body with code `machine_stopped` when the owner stopped
+the machine.
+
+Core sets these launch `error_code` values (launch `state` becomes `error`):
+
+- `agent_key_missing`: the agents list finds no stored API key for the agent.
+  The entry is listed as `unavailable`. The user removes and creates the agent
+  again.
+- `agent_identity_missing`: the agents list finds no agent row. A queued launch
+  gets one minute of grace, because launch creation commits `agent_id` before
+  it registers the agent. Retry registers the id again.
+- `worker_attach_timeout`: the supervisor reports the agent `running`, but no
+  worker attached for the current revision within 10 minutes while the launch
+  is `provisioning`.
+- `agent_stop_timeout`: the launch stayed `stopping` for more than 10 minutes
+  while its machine is `ready`.
 
 `GET /gateway/hosted-launches/{request_id}/relay/stream?subscribe=<sessionId>[&subscribe=…][&watchHealth=1]`
 is an SSE stream to Console with these frames:

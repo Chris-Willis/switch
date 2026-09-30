@@ -270,7 +270,9 @@ and create the agents again. Do these steps in order.
    not removed, and names this section. Then upgrade the controller. It refuses
    to start while its database holds per-agent rows that are not deleted, and
    also names this section. The controller keeps the old `agents` table; it does
-   not drop it.
+   not drop it. The controller creates its `machines` table on first start. A
+   database from a pre-release build of this controller is not supported; in
+   that case, start the controller on a new database.
 9. Create each agent again in Switch Console with the settings from step 1. The
    first agent of a user creates that user's machine. Later agents of the same
    user share it.
@@ -410,6 +412,11 @@ again when an agent is started or addressed, or when the user creates an agent.
 In the backend Helm chart, `switchCore.hostedIdleStopMinutes`,
 `switchCore.hostedDiskRetentionDays` and `switchCore.hostedLaunchCapacity` set
 these values when `switchCore.hostedControllerSecret` is set.
+
+A machine that does not start, or does not connect to Switch, within 10 minutes
+goes to error. An agent goes to error when its watcher does not connect within 10
+minutes after it starts, or when it does not stop within 10 minutes. Use Retry in
+Switch Console.
 
 ### GitHub sign-in availability
 

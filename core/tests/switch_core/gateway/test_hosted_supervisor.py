@@ -662,6 +662,26 @@ async def test_heartbeat_refuses_a_report_time_without_an_offset(supervisor):
     assert response.status_code == 422
 
 
+@pytest.mark.parametrize("result", ["invalid-config", "ownership-invalid"])
+async def test_heartbeat_stores_a_worker_exit_result(supervisor, result):
+    client, request_id, agent_id, _, factory, machine_id, headers = supervisor
+    response = await client.post(
+        f"/hosted/machines/{machine_id}/heartbeat",
+        headers=headers,
+        json=heartbeat_body(
+            launch_id=request_id,
+            agent_id=agent_id,
+            revision=1,
+            process_state="failed",
+            exit={"code": None, "signal": None, "result": result},
+        ),
+    )
+    assert response.status_code == 200, response.text
+    launch = await launch_row(factory, request_id)
+    assert launch.process_exit is not None
+    assert launch.process_exit["result"] == result
+
+
 async def test_stale_revision_report_writes_nothing(supervisor):
     client, request_id, agent_id, _, factory, machine_id, headers = supervisor
     reported_at = datetime.now(UTC) - timedelta(minutes=5)

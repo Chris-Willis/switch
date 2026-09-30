@@ -172,6 +172,8 @@ does these steps in a loop:
 4. It reads unit state every 3 seconds and sends
    `POST <apiEndpoint>/hosted/machines/<machineId>/heartbeat` when a state
    changes, and at the interval that core returns (15 seconds by default).
+   Each agent's `since` is a UTC time with a `Z` offset. Core refuses a time
+   without an offset.
 
 Each request sends `Authorization: Bearer <machineCapability>` and the host
 instance and boot IDs. Redirects are not followed.
@@ -222,4 +224,5 @@ make git print a secret.
 
     python3 -m unittest deploy/hosted/worker/test_switch_hosted_worker.py
 
-The contract fixtures are in `testdata/`.
+Worker-only fixtures are in `testdata/`. The fixtures shared with core are in
+`core/tests/switch_core/fixtures/hosted_machines/`.
