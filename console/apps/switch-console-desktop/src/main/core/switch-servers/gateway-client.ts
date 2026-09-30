@@ -4,7 +4,7 @@ import {
   managedServerHostBlocked,
   managedServerStoppedPhase,
 } from '@main/core/managed-switch-server/managed-server-status';
-import { cloudLaunchSchema } from '@shared/core/cloud-agents/cloud-agents';
+import { cloudLaunchSchema, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
@@ -1615,6 +1615,23 @@ export async function cloudLifecycle(
       })
     ).json()
   );
+}
+
+export async function cloudMachineLifecycle(
+  server: SwitchServer,
+  machineId: string,
+  action: 'stop' | 'start' | 'retry',
+  revision: number
+) {
+  return z.object({ machine: cloudMachineSchema }).parse(
+    await (
+      await gatewayFetch(server, `/hosted-machines/${encodeURIComponent(machineId)}/lifecycle`, {
+        authenticated: true,
+        method: 'POST',
+        body: { action, revision },
+      })
+    ).json()
+  ).machine;
 }
 
 export async function connectClaude(

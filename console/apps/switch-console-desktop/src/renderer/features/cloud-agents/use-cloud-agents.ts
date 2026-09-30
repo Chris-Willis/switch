@@ -24,6 +24,23 @@ export function useCloudAgents(serverId: string | null) {
 }
 
 /**
+ * The caller's cloud machines on the server, asked the way `useCloudAgents`
+ * asks for launches. `null` means the server has no cloud agents. Under
+ * `['cloud-agents']`, so every refresh of the list refreshes this too.
+ */
+export function useCloudMachines(serverId: string | null) {
+  const signedOut = switchRoomsStore.serversNotSignedIn.some((server) => server.id === serverId);
+  const user = serverId === null ? null : (switchServersStore.statusFor(serverId)?.user ?? null);
+  return useQuery({
+    queryKey: ['cloud-agents', serverId, 'machines', user?.id ?? null],
+    queryFn: () => rpc.sdkHost.cloudMachines(serverId!),
+    enabled: serverId !== null && !signedOut,
+    refetchInterval: (query) => (query.state.data === null ? false : 5000),
+    retry: false,
+  });
+}
+
+/**
  * The agent with its worker's sessions, asked over the relay only while
  * `watched` and while the window is visible, since each ask is a round trip
  * through the server. A launch that says its worker cannot be asked is not.
@@ -60,7 +77,7 @@ export function useCloudAgentSessions(
   return listed.data ? { ...agent, ...listed.data } : agent;
 }
 
-/** Start a sleeping launch's worker again, then look again. */
+/** Start the machine a sleeping agent runs on, then look again. */
 export function useCloudWake() {
   const queryClient = useQueryClient();
   return useMutation({

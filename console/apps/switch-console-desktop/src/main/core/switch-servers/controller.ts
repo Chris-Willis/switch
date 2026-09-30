@@ -1,4 +1,5 @@
 import type { Result } from '@switch-console/shared';
+import { z } from 'zod';
 import { propagateServerApiUrl } from '@main/core/agents/propagate-server-api-url';
 import { resolveAgentServers } from '@main/core/agents/resolve-servers';
 import { appService } from '@main/core/app/service';
@@ -76,6 +77,7 @@ import {
   getGitHubConnection,
   createCloudLaunch,
   cloudLifecycle,
+  cloudMachineLifecycle,
   getCloudProviderConnection,
   connectCloudProvider,
   disconnectCloudProvider,
@@ -338,6 +340,18 @@ export const switchServersController = createRPCController({
     action: 'stop' | 'start' | 'restart' | 'remove' | 'retry',
     revision: number
   ) => cloudLifecycle(await requireReachableServer(serverId), requestId, action, revision),
+  cloudMachineLifecycle: async (
+    serverId: string,
+    machineId: string,
+    action: 'stop' | 'start' | 'retry',
+    revision: number
+  ) =>
+    cloudMachineLifecycle(
+      await requireReachableServer(serverId),
+      machineId,
+      z.enum(['stop', 'start', 'retry']).parse(action),
+      revision
+    ),
   getClaudeConnection: async (serverId: string) =>
     getClaudeConnection(await requireServer(serverId)),
   connectClaude: async (serverId: string, kind: ClaudeCredentialKind, credential: string) => {

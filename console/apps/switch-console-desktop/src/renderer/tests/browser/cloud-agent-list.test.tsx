@@ -82,7 +82,12 @@ function agent(key = agentKey, name = 'reviewer'): CloudAgent {
       error: null,
       error_code: null,
       sleeping: false,
+      machine_id: null,
+      process_state: null,
+      process_restarts: 0,
+      oom_kills: 0,
     },
+    machine: null,
     sessions: null,
     problem: null,
   };

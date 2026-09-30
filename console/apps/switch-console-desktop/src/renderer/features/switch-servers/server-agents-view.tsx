@@ -3,6 +3,7 @@ import { Bot, ExternalLink, MoreVertical, Plus, RotateCcw, Trash2 } from 'lucide
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { CloudMachineCard } from '@renderer/features/cloud-agents/cloud-machine-card';
 import {
   cloudOperationAttempts,
   startAttemptKey,
@@ -11,6 +12,7 @@ import { CloudStartAttemptStatus } from '@renderer/features/cloud-agents/cloud-s
 import {
   useCloudAgentSessions,
   useCloudAgents,
+  useCloudMachines,
 } from '@renderer/features/cloud-agents/use-cloud-agents';
 import { useConfirmDeleteAgent } from '@renderer/features/locations/hooks/use-confirm-delete-agent';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
@@ -25,6 +27,7 @@ import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { useAgentIconUrl } from '@renderer/lib/stores/use-remote-agents';
+import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import {
   DropdownMenu,
@@ -34,7 +37,7 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import type { Agent } from '@shared/core/agents/agents';
-import type { CloudAgent } from '@shared/core/cloud-agents/cloud-agents';
+import { type CloudAgent, cloudAgentPhase } from '@shared/core/cloud-agents/cloud-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { ServerPage } from './server-page';
 import { ServerSectionTitlebar } from './server-section-titlebar';
@@ -62,12 +65,23 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
 
   const agents = agentsStore.agentsOnServer(serverId);
   const cloud = useCloudAgents(serverId);
+  const machines = useCloudMachines(serverId);
 
   return (
     <ServerPage
       title="Your Agents"
       description={`Agents on ${server?.name ?? 'this server'}. Add one, set how it is addressed, and start sessions.`}
     >
+      {machines.data
+        ?.filter((machine) => machine.state !== 'deleted')
+        .map((machine) => (
+          <CloudMachineCard key={machine.machine_id} machine={machine} serverId={serverId} />
+        ))}
+      {machines.error && (
+        <p role="alert" className="mb-3 text-sm text-destructive">
+          {failureText(machines.error, 'Could not load the cloud machine.')}
+        </p>
+      )}
       {/* The add tile leads the grid rather than sitting as a button in the
           page header: it is the same kind of thing as the cards after it, and
           on an empty server it is the only thing on screen, which says what to
@@ -164,23 +178,30 @@ const CloudAgentCard = observer(function CloudAgentCard({
   const addToRooms = useShowModal('addAgentToRoomModal');
   const { toastPromise } = useToast();
   const iconUrl = useAgentIconUrl(serverId, launch.agent_id);
+  const phase = cloudAgentPhase(launch, listed.machine);
   const stateLabel =
-    launch.sleeping && launch.state === 'stopped'
+    phase === 'sleeping'
       ? 'Sleeping'
-      : launch.sleeping && launch.state === 'stopping'
-        ? 'Going to sleep…'
-        : launch.sleeping && ['queued', 'provisioning'].includes(launch.state)
+      : phase === 'machine_stopped'
+        ? 'Machine stopped'
+        : phase === 'waking'
           ? 'Waking…'
-          : {
-              queued: 'Queued',
-              provisioning: 'Starting…',
-              ready: 'Ready',
-              error: 'Needs attention',
-              stopping: 'Stopping…',
-              stopped: 'Stopped',
-              deleting: 'Removing…',
-              deleted: 'Removed',
-            }[launch.state];
+          : launch.desired_state === 'stopped'
+            ? launch.state === 'stopping'
+              ? 'Stopping…'
+              : 'Stopped'
+            : {
+                queued: 'Queued',
+                provisioning: 'Starting…',
+                ready: 'Ready',
+                error: 'Needs attention',
+                stopping: 'Stopping…',
+                stopped: 'Stopped',
+                deleting: 'Removing…',
+                deleted: 'Removed',
+              }[launch.state];
+  const usable = launch.state === 'ready' && phase === null;
+  const crashed = launch.process_state === 'crashed' || launch.error_code === 'agent_crashed';
   const add = () => {
     if (!launch.agent_id) return;
     const agentId = launch.agent_id;
@@ -205,11 +226,25 @@ const CloudAgentCard = observer(function CloudAgentCard({
       <div className="text-xs text-foreground-muted">
         {providerDisplayName(launch.provider)} · Cloud · {stateLabel}
       </div>
+      {(launch.oom_kills > 0 || crashed) && (
+        <div className="mt-1 flex flex-wrap gap-1">
+          {launch.oom_kills > 0 && (
+            <Badge variant="secondary">
+              Restarted after running out of memory {launch.oom_kills}×
+            </Badge>
+          )}
+          {crashed && <Badge variant="destructive">Crashed</Badge>}
+        </div>
+      )}
       {launch.error && (
         <p role="alert" className="mt-2 text-xs text-destructive">
-          {launch.error_code === 'worker_needs_attention'
-            ? 'The cloud worker needs attention. Contact your server administrator.'
-            : 'The cloud worker could not start. Check your provider and GitHub connections, then retry. If it still fails, contact your server administrator.'}
+          {launch.error_code === 'agent_crashed'
+            ? 'The agent keeps crashing. Retry it. If it crashes again, contact your server administrator.'
+            : launch.error_code === 'identity_failed'
+              ? 'Switch could not register the agent. Retry.'
+              : launch.error_code === 'worker_needs_attention'
+                ? 'The cloud worker needs attention. Contact your server administrator.'
+                : 'The cloud worker could not start. Check your provider and GitHub connections, then retry. If it still fails, contact your server administrator.'}
         </p>
       )}
       {actionError && (
@@ -225,7 +260,7 @@ const CloudAgentCard = observer(function CloudAgentCard({
         className="mt-2 flex-wrap"
       />
       <div className="mt-2 flex flex-wrap gap-1">
-        {launch.state === 'ready' && (
+        {usable && (
           <>
             <Button
               variant="outline"
@@ -246,58 +281,41 @@ const CloudAgentCard = observer(function CloudAgentCard({
             </Button>
           </>
         )}
-        {launch.sleeping && launch.state === 'stopped' && (
-          <p className="text-xs text-foreground-muted">
-            Stop worker prevents mentions from waking it. You can start it again here.
-          </p>
-        )}
-        {(launch.sleeping ||
-          ['ready', 'provisioning', 'queued', 'error'].includes(launch.state)) && (
-          <Button variant="ghost" size="sm" disabled={pending} onClick={() => void run('stop')}>
-            Stop worker
-          </Button>
-        )}
+        {launch.desired_state === 'running' &&
+          ['ready', 'provisioning', 'queued', 'error'].includes(launch.state) && (
+            <Button variant="ghost" size="sm" disabled={pending} onClick={() => void run('stop')}>
+              Stop agent
+            </Button>
+          )}
         {launch.state === 'error' && launch.error_code !== 'worker_needs_attention' && (
           <Button variant="outline" size="sm" disabled={pending} onClick={() => void run('retry')}>
             Retry
           </Button>
         )}
-        {launch.state === 'stopped' && (
-          <>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={pending}
-              onClick={() => void run('start')}
-            >
-              Start worker
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={pending}
-              onClick={() => setConfirmRemove(true)}
-            >
-              Remove
-            </Button>
-          </>
+        {launch.desired_state === 'stopped' && (
+          <Button variant="outline" size="sm" disabled={pending} onClick={() => void run('start')}>
+            Start agent
+          </Button>
         )}
+        <Button variant="ghost" size="sm" disabled={pending} onClick={() => setConfirmRemove(true)}>
+          Remove
+        </Button>
       </div>
       {confirmRemove && (
         <div className="mt-2 text-xs">
           <p>
-            Remove this agent and its sessions from Switch? Its data disk will be retained for
-            administrator recovery.
+            Remove this agent and its sessions from Switch? If it is the last agent on your machine,
+            the machine shuts down and its disk is kept until the date shown on the machine card.
           </p>
           <Button size="sm" disabled={pending} onClick={() => void run('remove')}>
-            Remove worker
+            Remove agent
           </Button>
           <Button variant="ghost" size="sm" onClick={() => setConfirmRemove(false)}>
             Cancel
           </Button>
         </div>
       )}
-      {launch.state === 'ready' && (
+      {usable && (
         <Button variant="ghost" size="sm" className="mt-2" onClick={add}>
           <Plus className="size-3" />
           Add to rooms

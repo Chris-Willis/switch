@@ -12,11 +12,15 @@ import {
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
-import { type CloudAgent, parseCloudAgentKey } from '@shared/core/cloud-agents/cloud-agents';
+import {
+  type CloudAgent,
+  cloudAgentPhase,
+  parseCloudAgentKey,
+} from '@shared/core/cloud-agents/cloud-agents';
 import { cloudAgentState } from './cloud-agent-state';
 import { cloudOperationAttempts, restartAttemptKey } from './cloud-operation-attempts';
 import { CloudProblem } from './cloud-problem';
-import { useCloudAgentSessions, useCloudAgents } from './use-cloud-agents';
+import { useCloudAgentSessions, useCloudAgents, useCloudWake } from './use-cloud-agents';
 
 type CloudSessionParams = { agentKey: string; sessionId: string; name: string };
 
@@ -59,12 +63,7 @@ const CloudWorkerStatus = observer(function CloudWorkerStatus({
     );
   return agent?.problem ? (
     <div className="px-5 pt-3">
-      <CloudProblem
-        agentKey={agentKey}
-        launch={agent.launch}
-        problem={agent.problem}
-        compact={false}
-      />
+      <CloudProblem problem={agent.problem} compact={false} />
     </div>
   ) : null;
 });
@@ -80,6 +79,7 @@ const CloudSessionPanel = observer(function CloudSessionPanel() {
     () => new SessionChatClient(params.sessionId, cloudSessionTransport(params.agentKey)),
     [params.agentKey, params.sessionId]
   );
+  const wake = useCloudWake();
   return (
     <div className="flex h-full min-h-0 flex-col">
       <CloudWorkerStatus agentKey={params.agentKey} agent={agent} />
@@ -87,6 +87,10 @@ const CloudSessionPanel = observer(function CloudSessionPanel() {
         key={`${params.agentKey}:${params.sessionId}`}
         client={client}
         hostState={agent ? cloudAgentState(agent) : null}
+        autoWake={{
+          phase: agent ? cloudAgentPhase(agent.launch, agent.machine) : null,
+          wake: () => wake.mutateAsync(params.agentKey),
+        }}
         stopHost={() => rpc.sdkHost.stop(params.agentKey, params.sessionId)}
         restartHost={async () => {
           const result = await cloudOperationAttempts.run(

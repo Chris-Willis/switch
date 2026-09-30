@@ -6,7 +6,9 @@ const server = vi.hoisted(() => ({
   restarts: 0,
   loseNextResponse: false,
   refuseNext: null as { status: number; detail: string } | null,
-  launches: [] as unknown[],
+  launches: [] as { request_id: string }[],
+  machines: [] as { machine_id: string; revision: number }[],
+  machineActions: [] as unknown[],
   relayClients: 0,
 }));
 
@@ -43,6 +45,23 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   gatewayFetch: vi.fn(
     async (_server: unknown, path: string, init: { method?: string; body?: unknown }) => {
       if (path === '/hosted-launches') return { json: async () => server.launches };
+      if (path === '/hosted-machines') return { json: async () => ({ machines: server.machines }) };
+      const [, kind, id, rest] = path.split('/');
+      if (kind === 'hosted-launches' && rest === undefined)
+        return { json: async () => server.launches.find((each) => each.request_id === id) };
+      if (kind === 'hosted-machines') {
+        const machine = server.machines.find((each) => each.machine_id === id)!;
+        if (rest === undefined) return { json: async () => machine };
+        server.machineActions.push(init.body);
+        const started = {
+          ...machine,
+          desired_state: 'running',
+          stop_reason: null,
+          sleeping: false,
+          revision: machine.revision + 1,
+        };
+        return { json: async () => ({ machine: started }) };
+      }
       if (server.refuseNext) {
         const { status, detail } = server.refuseNext;
         server.refuseNext = null;
@@ -65,7 +84,8 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   ),
 }));
 
-const { listCloudAgents, runCloudSessionOperation } = await import('./cloud-control');
+const { listCloudAgents, runCloudSessionOperation, wakeCloudAgent } =
+  await import('./cloud-control');
 
 const agent = 'cloud:server:00000000-0000-4000-8000-000000000001';
 const sessionId = '00000000-0000-4000-8000-0000000000aa';
@@ -78,8 +98,12 @@ beforeEach(() => {
   server.loseNextResponse = false;
   server.refuseNext = null;
   server.launches = [];
+  server.machines = [];
+  server.machineActions = [];
   server.relayClients = 0;
 });
+
+const machineId = '3f1c2b4a-0000-4000-8000-000000000001';
 
 function launch(requestId: string, overrides: Record<string, unknown>) {
   return {
@@ -93,6 +117,30 @@ function launch(requestId: string, overrides: Record<string, unknown>) {
     error: null,
     error_code: null,
     sleeping: false,
+    machine_id: null,
+    process_state: null,
+    process_restarts: 0,
+    oom_kills: 0,
+    ...overrides,
+  };
+}
+
+function machine(overrides: Record<string, unknown>) {
+  return {
+    machine_id: machineId,
+    state: 'ready',
+    desired_state: 'running',
+    stop_reason: null,
+    sleeping: false,
+    revision: 4,
+    instance_type: null,
+    error: null,
+    error_code: null,
+    retain_until: null,
+    heartbeat_at: null,
+    disk: null,
+    memory: null,
+    agents: [],
     ...overrides,
   };
 }
@@ -108,6 +156,61 @@ it('lists cloud agents from the launch list without asking any worker', async ()
     [null, null],
     [null, 'worker_sleeping'],
   ]);
+});
+
+it('attaches each launch’s machine and reads it first', async () => {
+  server.machines = [machine({})];
+  server.launches = [launch('00000000-0000-4000-8000-000000000001', { machine_id: machineId })];
+  const [listed] = (await listCloudAgents('server'))!;
+  expect(listed?.machine?.machine_id).toBe(machineId);
+  expect(listed?.problem).toBeNull();
+});
+
+it.each([
+  [
+    'worker_sleeping',
+    machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'idle', sleeping: true }),
+    {},
+    true,
+  ],
+  [
+    'machine_stopped',
+    machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'owner' }),
+    {},
+    false,
+  ],
+  ['worker_waking', machine({ state: 'provisioning' }), {}, false],
+  ['agent_stopped', machine({}), { desired_state: 'stopped', state: 'stopped' }, false],
+  [
+    'agent_crashed',
+    machine({}),
+    { state: 'error', error_code: 'agent_crashed', error: 'The agent crashed 5 times.' },
+    false,
+  ],
+])('reports %s', async (code, onMachine, overrides, wakeAvailable) => {
+  server.machines = [onMachine];
+  server.launches = [
+    launch('00000000-0000-4000-8000-000000000001', { machine_id: machineId, ...overrides }),
+  ];
+  const [listed] = (await listCloudAgents('server'))!;
+  expect(listed?.problem).toMatchObject({ code, wakeAvailable });
+});
+
+it('wakes an agent by starting its machine at the machine’s revision', async () => {
+  server.machines = [
+    machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'idle', sleeping: true }),
+  ];
+  server.launches = [launch('00000000-0000-4000-8000-000000000001', { machine_id: machineId })];
+  const woken = await wakeCloudAgent(agent);
+  expect(server.machineActions).toEqual([{ action: 'start', revision: 4 }]);
+  expect(woken).toMatchObject({ desired_state: 'running', revision: 5 });
+});
+
+it('does not start a machine already asked to run', async () => {
+  server.machines = [machine({ state: 'provisioning' })];
+  server.launches = [launch('00000000-0000-4000-8000-000000000001', { machine_id: machineId })];
+  expect(await wakeCloudAgent(agent)).toMatchObject({ state: 'provisioning', revision: 4 });
+  expect(server.machineActions).toEqual([]);
 });
 
 it('reports a start whose response was lost as unknown, and the same id again starts one session', async () => {
