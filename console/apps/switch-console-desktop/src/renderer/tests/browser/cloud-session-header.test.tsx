@@ -151,7 +151,7 @@ it('reads ready while the worker answers', async () => {
 it('reads sleeping, not ready, while the launch is asleep', async () => {
   const status = await headerStatus(
     agent({
-      launch: { ...agent({}).launch, sleeping: true, state: 'stopped', desired_state: 'stopped' },
+      launch: { ...agent({}).launch, sleeping: true, state: 'stopped', desired_state: 'running' },
       sessions: null,
       problem: {
         code: 'worker_sleeping',
