@@ -32,6 +32,8 @@ from switch_core.bridges.agent.protocol.event_buffer import (
     CursorExpiredError,
     EventBuffer,
 )
+from switch_core.observability.catalogue import BRIDGE_EVENTS_OUT
+from switch_core.observability.metrics import metrics
 from switch_core.tenant_context import current_tenant_id
 from switch_core.version import server_declaration
 
@@ -385,6 +387,10 @@ async def _event_stream(
                 # on its heartbeat, which is the value that governs resume.
                 conn.cursor = item.seq
                 delivered = True
+                metrics().increment(
+                    BRIDGE_EVENTS_OUT,
+                    {"bridge": "agent", "platform": "switch", "kind": item.event.type},
+                )
                 yield _frame(item.event.type, payload, seq=item.seq)
 
             if delivered:

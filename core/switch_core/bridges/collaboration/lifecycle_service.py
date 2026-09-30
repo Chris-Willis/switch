@@ -980,6 +980,7 @@ class CollaborationBridgeLifecycleService:
                 self._telemetry,
                 "bridge_connected",
                 {
+                    "bridge": "collaboration",
                     "bridge_platform": platform,
                     "outcome": "failure",
                     "failure_reason": reason,
@@ -1100,6 +1101,7 @@ class CollaborationBridgeLifecycleService:
                         self._telemetry,
                         "bridge_disconnected",
                         {
+                            "bridge": "collaboration",
                             "bridge_platform": normalise_platform(platform),
                             "reason": reason,
                         },
@@ -1111,6 +1113,7 @@ class CollaborationBridgeLifecycleService:
                         self._telemetry,
                         "bridge_connected",
                         {
+                            "bridge": "collaboration",
                             "bridge_platform": normalise_platform(platform),
                             "outcome": "failure",
                             "failure_reason": reason,
@@ -1160,6 +1163,7 @@ class CollaborationBridgeLifecycleService:
             self._telemetry,
             "bridge_connected",
             {
+                "bridge": "collaboration",
                 "bridge_platform": normalise_platform(platform),
                 "outcome": "success",
                 "failure_reason": "none",
@@ -1268,6 +1272,7 @@ class CollaborationBridgeLifecycleService:
                 self._telemetry,
                 "bridge_disconnected",
                 {
+                    "bridge": "collaboration",
                     "bridge_platform": normalise_platform(platform),
                     "reason": reason,
                 },

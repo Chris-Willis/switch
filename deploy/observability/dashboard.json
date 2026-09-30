@@ -108,10 +108,10 @@
     {
       "definition": {
         "type": "query_value",
-        "title": "Room clients running",
+        "title": "Consumers running (read loops)",
         "requests": [
           {
-            "q": "avg:switch.clients.running{$env,$service}",
+            "q": "avg:switch.consumers.running{$env,$service}",
             "aggregator": "last"
           }
         ],
@@ -353,11 +353,11 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Inbound platform events per second, by platform",
+        "title": "Bridge events in per second, by bridge and platform",
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.bridge.events_in{$env,$service} by {platform}.as_rate()",
+            "q": "sum:switch.bridge.events_in{$env,$service} by {bridge,platform}.as_rate()",
             "display_type": "area"
           }
         ]
@@ -372,11 +372,11 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Outbound relays per second, by platform",
+        "title": "Bridge events out per second, by bridge and platform",
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.bridge.events_out{$env,$service} by {platform}.as_rate()",
+            "q": "sum:switch.bridge.events_out{$env,$service} by {bridge,platform}.as_rate()",
             "display_type": "area"
           }
         ]
@@ -391,11 +391,11 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Bridge errors per second, by platform and direction",
+        "title": "Bridge errors per second, by bridge, platform and direction",
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.bridge.errors{$env,$service} by {platform,direction}.as_rate()",
+            "q": "sum:switch.bridge.errors{$env,$service} by {bridge,platform,direction}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "warm"
@@ -661,11 +661,11 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Collaboration platform call duration p95 (ms) by platform \u2014 needs distribution mapping, see README",
+        "title": "Bridge call duration p95 (ms) by bridge and platform \u2014 needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.bridge.call.duration{$env,$service} by {platform}",
+            "q": "p95:switch.bridge.call.duration{$env,$service} by {bridge,platform}",
             "display_type": "line"
           }
         ]

@@ -309,19 +309,25 @@ class CollaborationCore:
         under the same name; `switch.bridge.errors` is where that shows.
         """
         metrics().increment(
-            BRIDGE_EVENTS_OUT, {"platform": self._bridge_type, "kind": kind}
+            BRIDGE_EVENTS_OUT,
+            {"bridge": "collaboration", "platform": self._bridge_type, "kind": kind},
         )
         started = time.perf_counter()
         try:
             yield
         except Exception:
             metrics().increment(
-                BRIDGE_ERRORS, {"platform": self._bridge_type, "direction": "outbound"}
+                BRIDGE_ERRORS,
+                {
+                    "bridge": "collaboration",
+                    "platform": self._bridge_type,
+                    "direction": "outbound",
+                },
             )
             raise
         metrics().observe(
             BRIDGE_CALL_DURATION,
-            {"platform": self._bridge_type, "kind": kind},
+            {"bridge": "collaboration", "platform": self._bridge_type, "kind": kind},
             (time.perf_counter() - started) * 1000.0,
         )
 
@@ -356,9 +362,18 @@ class CollaborationCore:
 
         async def traced(event: _InboundEventT) -> None:
             event_id = uuid.uuid4().hex[:16]
-            with log_context(request_id=f"{self._bridge_type}-{event_id}"):
+            with log_context(
+                request_id=f"{self._bridge_type}-{event_id}",
+                bridge="collaboration",
+                platform=self._bridge_type,
+            ):
                 metrics().increment(
-                    BRIDGE_EVENTS_IN, {"platform": self._bridge_type, "event": kind}
+                    BRIDGE_EVENTS_IN,
+                    {
+                        "bridge": "collaboration",
+                        "platform": self._bridge_type,
+                        "event": kind,
+                    },
                 )
                 room_ids = self._channel_to_room.get(event.channel_id)
                 tenant_id = (
@@ -381,7 +396,11 @@ class CollaborationCore:
                         # invisible from the platform's side.
                         metrics().increment(
                             BRIDGE_ERRORS,
-                            {"platform": self._bridge_type, "direction": "inbound"},
+                            {
+                                "bridge": "collaboration",
+                                "platform": self._bridge_type,
+                                "direction": "inbound",
+                            },
                         )
                         raise
 

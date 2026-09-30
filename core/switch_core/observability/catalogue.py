@@ -182,13 +182,20 @@ DELIVERY_LAG = _spec(
     "kind",
 )
 
-# ── Collaboration bridges ────────────────────────────────────────────────────
-# `platform` is one of the registered adapter types, bounded by the code.
+# ── Bridges ──────────────────────────────────────────────────────────────────
+# Both bridges report the same metrics. `bridge` is "collaboration" or
+# "agent". For a collaboration bridge `platform` is one of the registered
+# adapter types, bounded by the code; the agent bridge reports "switch",
+# because agents speak Switch's own protocol. On the agent side an event in is
+# an operation an agent called (`event` is the operation's name, bounded by the
+# registry), an event out is one delivered on its stream, and a call is an
+# operation's run.
 BRIDGE_EVENTS_IN = _spec(
     "switch.bridge.events_in",
     "sum",
     "{event}",
-    "Events accepted from a collaboration platform.",
+    "Events accepted by a bridge: from a platform, or operations from an agent.",
+    "bridge",
     "platform",
     "event",
 )
@@ -196,8 +203,10 @@ BRIDGE_EVENTS_OUT = _spec(
     "switch.bridge.events_out",
     "sum",
     "{event}",
-    "Relays attempted out to a collaboration platform — the denominator "
+    "Relays attempted out through a bridge, to a platform or down an agent's "
+    "stream — the denominator "
     "`switch.bridge.errors` is a fraction of.",
+    "bridge",
     "platform",
     "kind",
 )
@@ -206,6 +215,7 @@ BRIDGE_ERRORS = _spec(
     "sum",
     "{error}",
     "Bridge operations that raised, by direction.",
+    "bridge",
     "platform",
     "direction",
 )
@@ -216,6 +226,7 @@ BRIDGES_RUNNING = _spec(
     "Collaboration bridges with a live task, by platform. A configured bridge "
     "missing here has crashed — and without `platform` the total says how many "
     "died and never which, which is the first thing anyone asks.",
+    "bridge",
     "platform",
 )
 BRIDGE_CALL_DURATION = _spec(
@@ -225,6 +236,7 @@ BRIDGE_CALL_DURATION = _spec(
     "Round trip for one outbound call to a collaboration platform. The bridge "
     "counters say whether relays are failing; this says whether they are "
     "arriving late, which is what a room that feels unresponsive actually is.",
+    "bridge",
     "platform",
     "kind",
 )
@@ -258,11 +270,12 @@ AGENTS_CONNECTED = _spec(
     "{agent}",
     "Agents holding a live protocol connection.",
 )
-CLIENTS_RUNNING = _spec(
-    "switch.clients.running",
+CONSUMERS_RUNNING = _spec(
+    "switch.consumers.running",
     "gauge",
-    "{client}",
-    "Room clients with a live task.",
+    "{consumer}",
+    "Room consumers with a live read loop. Actors that only write (a person on "
+    "another platform) run no loop and are not counted.",
 )
 CONNECTORS_RUNNING = _spec(
     "switch.connectors.running",
@@ -344,7 +357,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         AGENT_EVENTS_DROPPED,
         AGENT_CONNECTIONS_EXPIRED,
         AGENTS_CONNECTED,
-        CLIENTS_RUNNING,
+        CONSUMERS_RUNNING,
         CONNECTORS_RUNNING,
         RUNTIME_MEMORY_RSS,
         RUNTIME_CPU_SECONDS,

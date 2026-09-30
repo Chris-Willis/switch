@@ -737,7 +737,7 @@ async def run(config: SwitchConfig) -> None:
         bridges_running=collab_lifecycle.running_count,
         bridges_running_by_platform=collab_lifecycle.running_by_platform,
         bridges_configured=collab_lifecycle.expected_count,
-        clients_running=client_lifecycle.running_count,
+        consumers_running=client_lifecycle.running_count,
         connectors_running=connector_lifecycle.running_count,
         connectors_configured=connector_lifecycle.expected_count,
         agents_connected=lambda: len(connections.live_agent_ids()),

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from switch_core.clients.actor import Actor, ClientConfig
 from switch_core.clients.consumer import Consumer
+from switch_core.logging_context import log_context
 from switch_core.transport import InboundMedia, InboundMessage, RoomRef
 
 if TYPE_CHECKING:
@@ -42,7 +43,10 @@ class WorkspaceConsumer(Consumer[Actor[WorkspaceConsumerConfig]]):
             room.room_id,
             event.sender,
         )
-        await self._collaboration_core.handle_outbound_message(room, event)
+        with log_context(
+            bridge="collaboration", platform=self._collaboration_core.bridge_type
+        ):
+            await self._collaboration_core.handle_outbound_message(room, event)
 
     async def on_media(self, room: RoomRef, event: InboundMedia) -> None:
         logger.debug(
@@ -50,4 +54,7 @@ class WorkspaceConsumer(Consumer[Actor[WorkspaceConsumerConfig]]):
             room.room_id,
             event.sender,
         )
-        await self._collaboration_core.handle_outbound_media(room, event, self)
+        with log_context(
+            bridge="collaboration", platform=self._collaboration_core.bridge_type
+        ):
+            await self._collaboration_core.handle_outbound_media(room, event, self)

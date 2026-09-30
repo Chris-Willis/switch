@@ -218,6 +218,7 @@ class TestEachStartFailurePointReportsAndReraises:
         events = await _bridge_connected_events(sink)
         assert events == [
             {
+                "bridge": "collaboration",
                 "bridge_platform": "unknown",
                 "outcome": "failure",
                 "failure_reason": "config_invalid",
@@ -245,6 +246,7 @@ class TestEachStartFailurePointReportsAndReraises:
         events = await _bridge_connected_events(sink)
         assert events == [
             {
+                "bridge": "collaboration",
                 "bridge_platform": "mattermost",
                 "outcome": "failure",
                 "failure_reason": "config_invalid",
@@ -276,6 +278,7 @@ class TestEachStartFailurePointReportsAndReraises:
         events = await _bridge_connected_events(sink)
         assert events == [
             {
+                "bridge": "collaboration",
                 "bridge_platform": "unknown",
                 "outcome": "failure",
                 "failure_reason": "config_invalid",
@@ -310,6 +313,7 @@ class TestEachStartFailurePointReportsAndReraises:
         events = await _bridge_connected_events(sink)
         assert events == [
             {
+                "bridge": "collaboration",
                 "bridge_platform": "teams",
                 "outcome": "failure",
                 "failure_reason": "config_invalid",
@@ -339,6 +343,7 @@ class TestEachStartFailurePointReportsAndReraises:
         events = await _bridge_connected_events(sink)
         assert events == [
             {
+                "bridge": "collaboration",
                 "bridge_platform": "mattermost",
                 "outcome": "failure",
                 "failure_reason": "config_invalid",
@@ -365,6 +370,7 @@ class TestEachStartFailurePointReportsAndReraises:
         events = await _bridge_connected_events(sink)
         assert events == [
             {
+                "bridge": "collaboration",
                 "bridge_platform": "mattermost",
                 "outcome": "failure",
                 # RuntimeError carries no reason any rule recognises -- an
@@ -402,6 +408,7 @@ class TestEachStartFailurePointReportsAndReraises:
         events = await _bridge_connected_events(sink)
         assert events == [
             {
+                "bridge": "collaboration",
                 "bridge_platform": "mattermost",
                 "outcome": "failure",
                 "failure_reason": "config_invalid",
@@ -440,6 +447,7 @@ class TestStartAllsBootPathIsCoveredToo:
         events = await _bridge_connected_events(sink)
         assert events == [
             {
+                "bridge": "collaboration",
                 "bridge_platform": "teams",
                 "outcome": "failure",
                 "failure_reason": "config_invalid",

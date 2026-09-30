@@ -22,6 +22,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.stream import event_stream
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
+from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 
 AGENT = "agent-1"
 ROOM_A = "room-a"
@@ -977,3 +978,33 @@ async def test_a_delivered_event_names_no_session() -> None:
 
     assert name == "message"
     assert "session_id" not in data
+
+
+async def test_each_delivered_event_counts_as_an_agent_bridge_event_out() -> None:
+    registry_metrics = MetricsRegistry()
+    install(registry_metrics)
+    try:
+        registry = AgentConnectionRegistry()
+        buffer = EventBuffer()
+        conn = _open(registry)
+        registry.claim_room(conn, ROOM_A)
+        registry.claim_room(conn, ROOM_B)
+        buffer.enqueue(AGENT, ROOM_A, _message("one"))
+        buffer.enqueue(AGENT, ROOM_B, _message("two", room=ROOM_B))
+
+        stream = event_stream(
+            conn=conn, registry=registry, buffer=buffer, approvals=None
+        )
+        await _take(stream, 3)
+
+        points = {
+            payload.name: {
+                tuple(sorted(p.attributes.items())): p.value for p in payload.numbers
+            }
+            for payload in registry_metrics.collect()
+        }
+        assert points["switch.bridge.events_out"] == {
+            (("bridge", "agent"), ("kind", "message"), ("platform", "switch")): 2.0
+        }
+    finally:
+        uninstall()

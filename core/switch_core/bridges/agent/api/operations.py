@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -36,6 +37,12 @@ from switch_core.bridges.agent.protocol.agent_connections import UnknownConnecti
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.budgets import BudgetExceeded
 from switch_core.db.models import Agent
+from switch_core.observability.catalogue import (
+    BRIDGE_CALL_DURATION,
+    BRIDGE_ERRORS,
+    BRIDGE_EVENTS_IN,
+)
+from switch_core.observability.metrics import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -110,13 +117,32 @@ async def call_operation(
     if missing:
         raise BadArgumentsError(f"{operation} requires: {', '.join(missing)}")
 
+    # The agent bridge's side of `switch.bridge.*`: every operation an agent
+    # calls is an event in, timed as a call, and counted as an error when it
+    # raises. `event` is the operation's name, bounded by the registry.
+    metrics().increment(
+        BRIDGE_EVENTS_IN, {"bridge": "agent", "platform": "switch", "event": operation}
+    )
+    started = time.perf_counter()
     with call_context(
         CallContext(agent_id=agent_id, session_key=connection_id, session=session)
     ):
-        result = fn(**call_args)
-        if inspect.isawaitable(result):
-            result = await result
-        return result
+        try:
+            result = fn(**call_args)
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception:
+            metrics().increment(
+                BRIDGE_ERRORS,
+                {"bridge": "agent", "platform": "switch", "direction": "inbound"},
+            )
+            raise
+    metrics().observe(
+        BRIDGE_CALL_DURATION,
+        {"bridge": "agent", "platform": "switch", "kind": operation},
+        (time.perf_counter() - started) * 1000.0,
+    )
+    return result
 
 
 # ── HTTP router ──────────────────────────────────────────────────────────────
