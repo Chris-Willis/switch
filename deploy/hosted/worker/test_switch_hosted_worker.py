@@ -1521,6 +1521,23 @@ class SupervisorTests(RootPatched):
             self.supervisor.reconcile([])
         self.assertFalse((self.paths.agents / AGENT).exists())
 
+    def test_removal_stops_when_git_outlives_its_kill(self):
+        class AbandoningGit(FakeGit):
+            def run(self, mirror, arguments):
+                super().run(mirror, arguments)
+                raise worker.GitAbandoned("git worktree remove did not exit.")
+
+        harness = Harness(self.temporary / "abandoned", git=AbandoningGit())
+        harness.supervisor.reconcile([valid_agent()])
+        (harness.paths.repos / "example-org/example-repo.git").mkdir(parents=True)
+        with self.assertLogs(worker.logger, "ERROR"):
+            harness.supervisor.reconcile([])
+        self.assertTrue(
+            (harness.paths.worktrees / AGENT / "example-org/example-repo").is_dir()
+        )
+        self.assertTrue((harness.paths.agents / AGENT).is_dir())
+        self.assertEqual([call[1][1] for call in harness.git.calls], ["remove"])
+
     def test_stale_temporary_runtime_directories_are_cleaned(self):
         stale = self.paths.agents_runtime / ".tmp-crashed"
         stale.mkdir(mode=0o750)
@@ -1900,10 +1917,12 @@ class GitTests(RootPatched):
         self.flock.write_text(
             f"#!{sys.executable}\n"
             "import fcntl, os, sys\n"
-            "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n"
+            "if sys.argv[1] != '--no-fork':\n"
+            "    sys.exit('flock must not fork')\n"
+            "fd = os.open(sys.argv[2], os.O_RDWR | os.O_CREAT, 0o600)\n"
             "fcntl.flock(fd, fcntl.LOCK_EX)\n"
             "os.set_inheritable(fd, True)\n"
-            "os.execv(sys.argv[2], sys.argv[2:])\n"
+            "os.execv(sys.argv[3], sys.argv[3:])\n"
         )
         self.record = tools / "record"
         self.git = tools / "git"
@@ -2029,10 +2048,60 @@ class GitTests(RootPatched):
         thread.join()
         self.assertEqual(errors, [])
 
-    def test_git_failure_is_a_worker_error_with_detail(self):
-        (self.temporary / "missing.git.lock").write_text("")
-        with self.assertRaisesRegex(worker.WorkerError, "failed"):
-            self.runner.run(self.temporary / "missing.git", ["worktree", "prune"])
+    def script(self, name: str, body: str) -> Path:
+        path = self.temporary / "tools" / name
+        path.write_text(f"#!{sys.executable}\n" + body)
+        path.chmod(0o755)
+        return path
+
+    def test_git_failure_reports_the_exit_status_but_not_stderr(self):
+        secret = "ghs_placeholder-secret-from-repo-config"
+        git = self.script(
+            "noisy-git", f"import sys\nsys.stderr.write({secret!r})\nsys.exit(3)\n"
+        )
+        runner = worker.GitRunner([], str(self.flock), str(git))
+        mirror = self.temporary / "mirror.git"
+        with self.assertRaises(worker.WorkerError) as raised:
+            runner.run(mirror, ["worktree", "prune"])
+        self.assertEqual(
+            str(raised.exception),
+            f"git worktree prune on {mirror} failed with exit status 3.",
+        )
+        self.assertNotIn(secret, str(raised.exception))
+
+    def test_timeout_kills_every_process_holding_the_lock(self):
+        child_record = self.temporary / "child-pid"
+        git = self.script(
+            "hanging-git",
+            "import os, time\n"
+            "pid = os.fork()\n"
+            "if pid == 0:\n"
+            "    time.sleep(60)\n"
+            "    os._exit(0)\n"
+            f"with open({str(child_record)!r}, 'w') as handle:\n"
+            "    handle.write(str(pid))\n"
+            "time.sleep(60)\n",
+        )
+        runner = worker.GitRunner([], str(self.flock), str(git))
+        mirror = self.temporary / "mirror.git"
+        with mock.patch.object(worker, "GIT_TIMEOUT_SECONDS", 1):
+            with self.assertRaises(worker.WorkerError) as raised:
+                runner.run(mirror, ["worktree", "prune"])
+        child = int(child_record.read_text())
+        self.addCleanup(self.kill_quietly, child)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(child, 0)
+        descriptor = os.open(f"{mirror}.lock", os.O_RDWR)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(descriptor)
+        self.assertIn("timed out", str(raised.exception))
+
+    @staticmethod
+    def kill_quietly(pid: int) -> None:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, 9)
 
     def test_setpriv_prefix_drops_everything(self):
         self.assertEqual(

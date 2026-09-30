@@ -13,6 +13,7 @@ import os
 import pwd
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -54,6 +55,7 @@ RETIRED_HEARTBEAT_SECONDS = 60
 LIST_RETRY_SECONDS = 15
 HTTP_TIMEOUT_SECONDS = 30
 GIT_TIMEOUT_SECONDS = 300
+GIT_KILL_WAIT_SECONDS = 10
 SLICE_RESERVE_BYTES = 1024**3
 MAX_SECRET_BYTES = 128 * 1024
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
@@ -92,6 +94,10 @@ class WorkerError(RuntimeError):
 
 
 class ObsoleteBundle(WorkerError):
+    pass
+
+
+class GitAbandoned(WorkerError):
     pass
 
 
@@ -963,6 +969,7 @@ class GitRunner:
         command = [
             *self._prefix,
             self._flock,
+            "--no-fork",
             f"{mirror}.lock",
             self._git,
             "-C",
@@ -971,13 +978,12 @@ class GitRunner:
         ]
         label = f"git {' '.join(arguments[:2])} on {mirror}"
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 command,
-                check=False,
-                text=True,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                timeout=GIT_TIMEOUT_SECONDS,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
                 env={
                     "PATH": "/usr/bin:/bin",
                     "LANG": "C",
@@ -987,11 +993,32 @@ class GitRunner:
                     "GIT_TERMINAL_PROMPT": "0",
                 },
             )
-        except (OSError, subprocess.TimeoutExpired):
+        except OSError:
             raise WorkerError(f"{label} could not run.") from None
-        if completed.returncode != 0:
-            detail = completed.stderr.strip()[-500:]
-            raise WorkerError(f"{label} failed: {detail}")
+        try:
+            returncode = process.wait(timeout=GIT_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(process, label)
+            raise WorkerError(f"{label} timed out and was killed.") from None
+        if returncode != 0:
+            raise WorkerError(f"{label} failed with exit status {returncode}.")
+
+
+def _kill_process_group(process: subprocess.Popen[bytes], label: str) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
+    deadline = time.monotonic() + GIT_KILL_WAIT_SECONDS
+    while True:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        if time.monotonic() >= deadline:
+            raise GitAbandoned(f"{label} timed out and its processes did not exit.")
+        time.sleep(0.1)
 
 
 def inspect_storage(
@@ -2139,6 +2166,8 @@ class Supervisor:
                         self._git.run(
                             mirror, ["worktree", "remove", "--force", str(repository)]
                         )
+                    except GitAbandoned:
+                        raise
                     except WorkerError as error:
                         logger.warning("Agent %s: %s", agent_id, error)
                     mirrors.append(mirror)

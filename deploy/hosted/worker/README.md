@@ -194,8 +194,13 @@ once and keeps the count in `agents.json`.
 `switch-hosted-worker.service` uses `Restart=always` and
 `RuntimeDirectoryPreserve=yes`, so agent runtime files stay in place when the
 supervisor restarts. The supervisor runs git as the agent through `setpriv`,
-which removes all capabilities, and under `flock <mirror>.lock`, so it does not
-change a mirror while the bootstrap uses it.
+which removes all capabilities, and under `flock --no-fork <mirror>.lock`, so it
+does not change a mirror while the bootstrap uses it. Each git command runs in
+its own process group. If it runs longer than 5 minutes, the supervisor kills
+the whole group and waits until every process in it is gone; while any is left,
+it does not delete the agent's directories. A git error is logged with the
+operation and the exit status only, because a repository's configuration could
+make git print a secret.
 
 ## Tests
 
