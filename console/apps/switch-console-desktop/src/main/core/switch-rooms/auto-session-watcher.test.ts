@@ -36,11 +36,13 @@ vi.mock('./auto-session-store', () => ({
   listAutoSessionSubagents: async () => [],
   setAutoSessionSubagent: vi.fn(),
 }));
+vi.mock('./current-watchers', () => ({ currentWatchers: async () => new Set<string>() }));
 vi.mock('@main/lib/logger', () => ({ log: { error: vi.fn(), warn: vi.fn() } }));
 vi.mock('@main/core/managed-switch-server/session-readiness', () => ({
   onManagedServerUpgraded: (listener: (serverId: string) => void) => mocks.upgraded.push(listener),
 }));
-const { autoSessionWatcher, RETRY_FIRST_MS, RETRY_MAX_MS } = await import('./auto-session-watcher');
+const { autoSessionWatcher, HOST_SETTLE_MS, RETRY_FIRST_MS, RETRY_MAX_MS } =
+  await import('./auto-session-watcher');
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -89,7 +91,12 @@ it('starts a controller whose host was unreachable at boot, once the host comes 
   await autoSessionWatcher.initialize();
   expect(mocks.apply).toHaveBeenCalledTimes(1);
 
+  vi.useFakeTimers();
   mocks.reachability.announce({ current: { sshHost: 'host', status: 'reachable' } });
+  // The sweep now waits for the host to hold still first, so a flapping
+  // tunnel cannot keep triggering it.
+  await vi.advanceTimersByTimeAsync(HOST_SETTLE_MS);
+  vi.useRealTimers();
 
   await vi.waitFor(() => expect(mocks.apply).toHaveBeenCalledTimes(2));
   // Still a restore: the host returning is not somebody asking for a connection
@@ -108,7 +115,12 @@ it('leaves agents on other hosts alone when one host comes back', async () => {
   await autoSessionWatcher.initialize();
   mocks.apply.mockClear();
 
+  vi.useFakeTimers();
   mocks.reachability.announce({ current: { sshHost: 'host', status: 'reachable' } });
+  // The sweep now waits for the host to hold still first, so a flapping
+  // tunnel cannot keep triggering it.
+  await vi.advanceTimersByTimeAsync(HOST_SETTLE_MS);
+  vi.useRealTimers();
 
   await vi.waitFor(() => expect(mocks.apply).toHaveBeenCalledTimes(1));
   expect(mocks.apply).toHaveBeenCalledWith('here', 'restore', 'host');
@@ -130,10 +142,16 @@ it('sweeps again for a host that flaps while its recovery is still running', asy
   });
   await autoSessionWatcher.initialize();
 
+  vi.useFakeTimers();
   mocks.reachability.announce({ current: { sshHost: 'host', status: 'reachable' } });
+  await vi.advanceTimersByTimeAsync(HOST_SETTLE_MS);
+  vi.useRealTimers();
   await vi.waitFor(() => expect(mocks.apply).toHaveBeenCalledTimes(2));
+  vi.useFakeTimers();
   mocks.reachability.announce({ current: { sshHost: 'host', status: 'unreachable' } });
   mocks.reachability.announce({ current: { sshHost: 'host', status: 'reachable' } });
+  await vi.advanceTimersByTimeAsync(HOST_SETTLE_MS);
+  vi.useRealTimers();
   arrive();
 
   await vi.waitFor(() => expect(mocks.apply).toHaveBeenCalledTimes(3));

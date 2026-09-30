@@ -9,9 +9,21 @@ import { applyControllerState, configureSharedWatcher } from '@main/core/sdk-hos
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import { listAutoSessionSubagents, setAutoSessionSubagent } from './auto-session-store';
+import { currentWatchers } from './current-watchers';
 
 type Subagent = { parentAgentId: string; name: string };
 
+/**
+ * How long a host must stay reachable before its recovery sweep runs.
+ *
+ * A tunnel that drops and returns every 10–30 seconds — which is what an
+ * overloaded SSH tunnel does — announced every return, and each one started a
+ * full sweep over the host's agents. The sweep is the most expensive thing
+ * Console does to a host, so instability triggered the work most likely to
+ * make it worse. Waiting for the host to hold still first means a flap costs
+ * nothing, and a genuine recovery is delayed by a couple of seconds.
+ */
+export const HOST_SETTLE_MS = 3_000;
 /** The wait before trying again a controller that could not be brought up. */
 export const RETRY_FIRST_MS = 30_000;
 /** Retries back off by doubling, up to this. */
@@ -22,6 +34,7 @@ class AutoSessionWatcher {
   private watchingUpgrades = false;
   private readonly recovering = new Map<string, { again: boolean }>();
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly settling = new Map<string, ReturnType<typeof setTimeout>>();
 
   /**
    * Brings up a controller for every agent linked to Switch. Each server's
@@ -73,7 +86,14 @@ class AutoSessionWatcher {
   }
 
   /**
-   * Each host's agents are brought up in turn, and the hosts side by side:
+   * Each host is asked once what its watchers are already doing, and only the
+   * agents that need something are brought up — usually none. A bring-up is
+   * about a dozen SSH round trips whose normal outcome is the launcher
+   * deciding to leave a healthy watcher alone, so twenty agents meant ~260
+   * round trips to discover twenty times that there was nothing to do. On a
+   * host that keeps reconnecting, that ran again on every recovery.
+   *
+   * Each host's agents are still brought up in turn, and the hosts side by side:
    * a host whose connection is slow or wedged holds back only its own agents,
    * never another host's or this machine's, and one host is not sent every
    * agent's launch at once over its one connection.
@@ -92,7 +112,11 @@ class AutoSessionWatcher {
     }
     await Promise.all(
       [...hosts.values()].map(async (members) => {
-        for (const agent of members) await this.bringUp(agent.id, 'restore');
+        const current = await currentWatchers(members);
+        for (const agent of members) {
+          if (current.has(agent.id)) continue;
+          await this.bringUp(agent.id, 'restore');
+        }
       })
     );
     for (const { parentAgentId, name } of subagents) {
@@ -118,8 +142,28 @@ class AutoSessionWatcher {
     if (this.watchingHosts) return;
     this.watchingHosts = true;
     hostReachabilityService.on('change', ({ current }: HostReachabilityChange) => {
-      if (current.status === 'reachable') void this.restoreHost(current.sshHost);
+      if (current.status === 'reachable') this.scheduleRestore(current.sshHost);
+      // A host that has gone away again cancels the sweep it had not earned
+      // yet: the point of waiting is to not sweep a host that cannot hold a
+      // connection.
+      else clearTimeout(this.settling.get(current.sshHost));
     });
+  }
+
+  /**
+   * Run the recovery sweep once the host has stayed reachable for
+   * `HOST_SETTLE_MS`, restarting that wait on every further announcement.
+   * A host flapping faster than that never sweeps, which is correct: there is
+   * nothing to restore onto a connection that keeps dying.
+   */
+  private scheduleRestore(sshHost: string): void {
+    clearTimeout(this.settling.get(sshHost));
+    const timer = setTimeout(() => {
+      this.settling.delete(sshHost);
+      void this.restoreHost(sshHost);
+    }, HOST_SETTLE_MS);
+    timer.unref();
+    this.settling.set(sshHost, timer);
   }
 
   private async restoreHost(sshHost: string): Promise<void> {
@@ -223,6 +267,8 @@ class AutoSessionWatcher {
   /** Stops every locally hosted watcher and session, so none outlives Console. */
   dispose(): Promise<void> {
     for (const agentId of [...this.retries.keys()]) this.cancelRetry(agentId);
+    for (const timer of this.settling.values()) clearTimeout(timer);
+    this.settling.clear();
     return disposeLocalHosts();
   }
 }
