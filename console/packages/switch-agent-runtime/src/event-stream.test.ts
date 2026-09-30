@@ -680,6 +680,286 @@ describe('the heartbeat', () => {
   });
 });
 
+describe('the heartbeat after a reconnect', () => {
+  /**
+   * A server that reattaches on every open, can drop the current stream, and
+   * records when each stream was opened and each beat arrived. The server's
+   * own rule is what these tests hold the client to: a new connection that
+   * has not beaten within `HEARTBEAT_TTL_MS` is closed for silence.
+   */
+  const HEARTBEAT_TTL_MS = 6000;
+
+  /** Either end may close a stream first; the second close is not an error here. */
+  function closeQuietly(controller: ReadableStreamDefaultController<Uint8Array>): void {
+    try {
+      controller.close();
+    } catch {
+      // Already closed by the other side.
+    }
+  }
+
+  function reattachingServer(beatReply: () => 'fail' | 'ok' | 404) {
+    const opens: number[] = [];
+    const beats: number[] = [];
+    let generation = 0;
+    let current: ReadableStreamDefaultController<Uint8Array> | null = null;
+    const fetchMock = vi.fn(async (url: string, init: { signal: AbortSignal }) => {
+      if (String(url).includes('/events')) {
+        opens.push(Date.now());
+        generation += 1;
+        const gen = generation;
+        return {
+          ok: true,
+          status: 200,
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              current = controller;
+              controller.enqueue(connected(gen));
+              init.signal.addEventListener('abort', () => closeQuietly(controller), {
+                once: true,
+              });
+            },
+          }),
+          text: async (): Promise<string> => '',
+        };
+      }
+      beats.push(Date.now());
+      const reply = beatReply();
+      if (reply === 'fail') throw new TypeError('fetch failed');
+      if (reply === 404) return { ok: false, status: 404, text: async (): Promise<string> => '' };
+      return { ok: true, status: 200, text: async (): Promise<string> => '' };
+    });
+    /** The server ends the current stream, as it does a lapsed connection. */
+    const drop = (): void => {
+      if (current) closeQuietly(current);
+    };
+    return { fetchMock, opens, beats, drop };
+  }
+
+  it('beats within the server’s deadline on a new connection, however long it had been backing off', async () => {
+    // The lockout: beats fail for a while, so the gap between them climbs to
+    // its 30-second cap. The stream then reopens. The server starts its
+    // 6-second clock on the new connection — and the client used to sit out
+    // the rest of the 30 seconds before saying anything, lose the connection
+    // for silence, and repeat that on every connection it opened afterwards.
+    vi.useFakeTimers();
+    let failing = true;
+    const server = reattachingServer(() => (failing ? 'fail' : 'ok'));
+    const { abort } = makeStream(server.fetchMock, { rooms: [] });
+
+    // Long enough of failed beats for the gap to reach its cap.
+    await vi.advanceTimersByTimeAsync(70_000);
+    failing = false;
+    server.drop();
+    await vi.advanceTimersByTimeAsync(40_000);
+
+    const reopenedAt = server.opens[1];
+    expect(reopenedAt).toBeDefined();
+    const firstBeatAfter = server.beats.find((t) => t >= reopenedAt!);
+    expect(firstBeatAfter).toBeDefined();
+    expect(firstBeatAfter! - reopenedAt!).toBeLessThan(HEARTBEAT_TTL_MS);
+    abort.abort();
+  });
+
+  it('keeps beating at the base cadence on the new connection once it lands', async () => {
+    vi.useFakeTimers();
+    let failing = true;
+    const server = reattachingServer(() => (failing ? 'fail' : 'ok'));
+    const { abort } = makeStream(server.fetchMock, { rooms: [] });
+
+    await vi.advanceTimersByTimeAsync(70_000);
+    failing = false;
+    server.drop();
+    await vi.advanceTimersByTimeAsync(5_000);
+    const settled = server.beats.length;
+    await vi.advanceTimersByTimeAsync(10 * BEAT_INTERVAL_MS);
+
+    expect(server.beats.length - settled).toBeGreaterThanOrEqual(9);
+    abort.abort();
+  });
+
+  it('does not reconnect at full rate against a server that keeps refusing its beats', async () => {
+    // The brake the old ordering provided, which beating promptly on every
+    // attach would otherwise remove: refuse, reopen, attach, beat, refuse… The
+    // wait now sits before each reopen and doubles, so a refusing server sees
+    // a handful of reopens, not one every couple of seconds per agent.
+    vi.useFakeTimers();
+    const server = reattachingServer(() => 404);
+    const { abort } = makeStream(server.fetchMock, { rooms: [] });
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    // Doubling from 4s: reopens near 4, 12, 28, 58 seconds.
+    expect(server.opens.length).toBeLessThanOrEqual(6);
+    abort.abort();
+  });
+
+  it('does not throw away a connection the stream reopened while it waited', async () => {
+    // A lapsed connection's socket is closed by the server, and the stream
+    // loop reopens it by itself. If that lands during the heartbeat's wait
+    // after a refusal, reopening again would discard a healthy connection.
+    vi.useFakeTimers();
+    let refuse = true;
+    const server = reattachingServer(() => (refuse ? 404 : 'ok'));
+    const { abort } = makeStream(server.fetchMock, { rooms: [] });
+
+    await vi.advanceTimersByTimeAsync(BEAT_INTERVAL_MS);
+    expect(server.beats.length).toBe(1);
+    refuse = false;
+    // The server ends the stream now, inside the heartbeat's wait.
+    server.drop();
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    // One open for the start, one for the stream's own reopen — not a third
+    // from the heartbeat discarding it.
+    expect(server.opens.length).toBe(2);
+    abort.abort();
+  });
+});
+
+describe('reopening while an open is still in flight', () => {
+  /**
+   * A server that keeps the incarnation the way the real one does: every open
+   * it receives makes a new one, whether or not the client stays to read the
+   * answer, and a reattach claiming an older one is refused as a takeover.
+   * The next open can be held unanswered, the way a slow connection holds it.
+   */
+  function incarnationServer() {
+    const state = {
+      generation: 0,
+      opens: 0,
+      beat: 'ok' as 'ok' | 404 | 'slow-404-and-drop',
+      subscribeDrops: false,
+      holdNext: false,
+      release: (): void => {},
+      drop: (): void => {},
+    };
+    const body = (gen: number, signal: AbortSignal) =>
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          const close = (): void => {
+            try {
+              controller.close();
+            } catch {
+              // already closed
+            }
+          };
+          state.drop = close;
+          controller.enqueue(connected(gen));
+          signal.addEventListener('abort', close, { once: true });
+        },
+      });
+    const fetchMock = vi.fn(async (url: string, init: { signal: AbortSignal }) => {
+      if (String(url).includes('connection/subscribe')) {
+        if (!state.subscribeDrops)
+          return { ok: true, status: 200, text: async (): Promise<string> => '' };
+        state.subscribeDrops = false;
+        // The stream ends while the claim is still in flight.
+        state.holdNext = true;
+        state.drop();
+        await new Promise((r) => setTimeout(r, 3_000));
+        return { ok: true, status: 200, text: async (): Promise<string> => '' };
+      }
+      if (!String(url).includes('/events')) {
+        if (state.beat === 'slow-404-and-drop') {
+          // The stream ends while this beat is in flight, and its answer comes
+          // back just after the client has started reopening.
+          state.beat = 'ok';
+          state.holdNext = true;
+          state.drop();
+          await new Promise((r) => setTimeout(r, 1_200));
+          return { ok: false, status: 404, text: async (): Promise<string> => '' };
+        }
+        if (state.beat === 404)
+          return { ok: false, status: 404, text: async (): Promise<string> => '' };
+        return { ok: true, status: 200, text: async (): Promise<string> => '' };
+      }
+      state.opens += 1;
+      const claimed = new URL(String(url)).searchParams.get('expected_generation');
+      if (claimed !== null && Number(claimed) < state.generation)
+        return {
+          ok: false,
+          status: 409,
+          body: null,
+          text: async (): Promise<string> =>
+            JSON.stringify({ detail: { code: 'taken_over', message: 'reattach refused' } }),
+        };
+      // The server acts on the open the moment it arrives.
+      state.generation += 1;
+      const gen = state.generation;
+      const answer = {
+        ok: true,
+        status: 200,
+        body: body(gen, init.signal),
+        text: async (): Promise<string> => '',
+      };
+      if (!state.holdNext) return answer;
+      state.holdNext = false;
+      return new Promise((resolve, reject) => {
+        state.release = () => resolve(answer);
+        init.signal.addEventListener(
+          'abort',
+          () => reject(new DOMException('aborted', 'AbortError')),
+          { once: true }
+        );
+      });
+    });
+    return { state, fetchMock };
+  }
+
+  it('does not cancel an open the server has already acted on, and so does not stand down', async () => {
+    // The self-takeover seen on the pilot. The server closes the stream, the
+    // client starts reopening, and a beat sent just before comes back 404.
+    // Reopening in answer used to cancel the open already in flight — which
+    // the server had acted on, moving the connection to a new incarnation.
+    // The client never read that answer, reattached claiming the old one, was
+    // refused as a takeover, and stood down for good. The "other client" was
+    // its own cancelled request.
+    vi.useFakeTimers();
+    const { state, fetchMock } = incarnationServer();
+    const onEvicted = vi.fn();
+    const { abort } = makeStream(fetchMock, { rooms: [], onEvicted });
+
+    await vi.advanceTimersByTimeAsync(3 * BEAT_INTERVAL_MS);
+    expect(state.generation).toBe(1);
+
+    state.beat = 'slow-404-and-drop';
+    // Long enough for the refused beat's wait to end while the open is held.
+    await vi.advanceTimersByTimeAsync(12_000);
+    state.release();
+    await vi.advanceTimersByTimeAsync(5 * BEAT_INTERVAL_MS);
+
+    expect(onEvicted).not.toHaveBeenCalled();
+    expect(state.opens).toBe(2);
+    expect(beatGenerations(fetchMock).at(-1)).toBe(2);
+    abort.abort();
+  });
+
+  it('carries out a repoint asked for mid-open once that open is answered', async () => {
+    // The other way into the same hole: a room change reopens to include the
+    // new room. Mid-open, it must wait for the answer rather than cancel it —
+    // and must still happen, since the open in flight was built without it.
+    vi.useFakeTimers();
+    const { state, fetchMock } = incarnationServer();
+    const onEvicted = vi.fn();
+    const { stream, abort } = makeStream(fetchMock, { rooms: ['room-a'], onEvicted });
+    await vi.advanceTimersByTimeAsync(BEAT_INTERVAL_MS);
+
+    state.subscribeDrops = true;
+    const repointing = stream.repoint('room-b');
+    // The claim returns while the stream's reopen is held unanswered.
+    await vi.advanceTimersByTimeAsync(5_000);
+    state.release();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await repointing;
+
+    expect(onEvicted).not.toHaveBeenCalled();
+    const opens = urlsFor(fetchMock, '/events');
+    expect(opens.at(-1)).toContain('rooms=room-b');
+    abort.abort();
+  });
+});
+
 describe('a connection another client takes over', () => {
   it('stands down when the room it repoints to is refused, without reopening', async () => {
     // `repoint` claims the room *before* it reopens, so the open's own fence
