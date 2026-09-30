@@ -120,6 +120,8 @@ switchCore:
   githubConnectionsSecret: ""
   hostedControllerSecret: ""
   hostedLaunchCapacity: 0
+  hostedDiskRetentionDays: 7
+  hostedIdleStopMinutes: 30
   hostedProviderVerificationEnabled: false
   image: switch-core:latest
   imagePullPolicy: Always
