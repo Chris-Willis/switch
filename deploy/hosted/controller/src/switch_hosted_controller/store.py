@@ -12,6 +12,9 @@ LEGACY_ROWS_MESSAGE = (
 )
 
 
+RECOVERY_LIMIT = 3
+
+
 class StoreError(RuntimeError):
     pass
 
@@ -67,6 +70,7 @@ class MachineStore:
                 volume_create_issued INTEGER NOT NULL DEFAULT 0,
                 instance_launch_intent INTEGER NOT NULL DEFAULT 0,
                 instance_launch_issued INTEGER NOT NULL DEFAULT 0,
+                instance_terminate_issued INTEGER NOT NULL DEFAULT 0,
                 instance_terminal_observed INTEGER NOT NULL DEFAULT 0,
                 volume_delete_issued INTEGER NOT NULL DEFAULT 0,
                 required_bundle_revision INTEGER,
@@ -255,7 +259,7 @@ class MachineStore:
                 SET desired_state = ?, desired_revision = desired_revision + 1,
                     operation_id = ?, retain_until = ?, observed_state = ?,
                     observed_revision = desired_revision + 1,
-                    observed_operation_id = ?, error = NULL,
+                    observed_operation_id = ?, recovery_count = 0, error = NULL,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE machine_id = ?
                 """,
@@ -301,8 +305,8 @@ class MachineStore:
             """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
             image_id = ?, previous_runtime_fingerprint = ?, instance_seq = instance_seq + 1,
             desired_revision = desired_revision + 1, operation_id = ?,
-            instance_launch_intent = 0, instance_launch_issued = 0, instance_terminal_observed = 0,
-            observed_state = 'stopped', error = NULL, updated_at = CURRENT_TIMESTAMP
+            instance_launch_intent = 0, instance_launch_issued = 0, instance_terminate_issued = 0,
+            instance_terminal_observed = 0, observed_state = 'stopped', error = NULL, updated_at = CURRENT_TIMESTAMP
             WHERE machine_id = ? AND desired_revision = ? AND operation_id = ?
             AND desired_state = 'stopped' AND instance_id = ? AND instance_terminal_observed = 1""",
             (
@@ -319,20 +323,32 @@ class MachineStore:
             raise StoreError("machine state changed during image upgrade; refresh before retrying")
         return self.get(claim.machine_id)
 
-    def replace_terminated(self, claim: Machine) -> Machine:
+    def replace_terminated(self, claim: Machine, *, unexpected: bool) -> Machine:
+        """Launch a successor to a terminated instance.
+
+        Only an `unexpected` termination, one the controller did not cause,
+        counts toward the recovery limit of the current operation.
+        """
         if not claim.instance_terminal_observed or not claim.instance_id:
             raise StoreError("replacement requires a confirmed terminated predecessor")
-        if claim.recovery_count >= 3:
-            raise StoreError("automatic worker recovery limit reached; operator review is required")
+        if unexpected:
+            require_recovery_allowed(claim)
         self._connection.execute(
             """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
             previous_runtime_fingerprint = NULL, instance_seq = instance_seq + 1,
-            recovery_count = recovery_count + 1, instance_launch_intent = 0,
-            instance_launch_issued = 0, instance_terminal_observed = 0,
+            recovery_count = recovery_count + ?, instance_launch_intent = 0,
+            instance_launch_issued = 0, instance_terminate_issued = 0,
+            instance_terminal_observed = 0,
             observed_state = 'provisioning', error = NULL, updated_at = CURRENT_TIMESTAMP
             WHERE machine_id = ? AND desired_revision = ? AND operation_id = ?
             AND desired_state = 'running' AND instance_id = ? AND instance_terminal_observed = 1""",
-            (claim.machine_id, claim.desired_revision, claim.operation_id, claim.instance_id),
+            (
+                1 if unexpected else 0,
+                claim.machine_id,
+                claim.desired_revision,
+                claim.operation_id,
+                claim.instance_id,
+            ),
         )
         return self.get(claim.machine_id)
 
@@ -343,7 +359,7 @@ class MachineStore:
         self._connection.execute(
             """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
             previous_runtime_fingerprint = NULL, instance_seq = instance_seq + 1,
-            instance_launch_intent = 0, instance_launch_issued = 0,
+            instance_launch_intent = 0, instance_launch_issued = 0, instance_terminate_issued = 0,
             instance_terminal_observed = 0, updated_at = CURRENT_TIMESTAMP
             WHERE machine_id = ? AND desired_revision = ? AND operation_id = ?
             AND desired_state = 'retained' AND instance_id = ? AND instance_terminal_observed = 1""",
@@ -392,6 +408,9 @@ class MachineStore:
             (claim.machine_id, claim.instance_seq),
         )
         return self.get(claim.machine_id)
+
+    def mark_instance_terminate_issued(self, claim: Machine) -> Machine:
+        return self._mark_intent(claim, "instance_terminate_issued")
 
     def mark_volume_delete_issued(self, claim: Machine) -> Machine:
         return self._mark_intent(claim, "volume_delete_issued")
@@ -507,6 +526,7 @@ class MachineStore:
             "volume_create_issued",
             "instance_launch_intent",
             "instance_launch_issued",
+            "instance_terminate_issued",
             "volume_delete_issued",
         }:
             raise ValueError("invalid intent column")
@@ -550,6 +570,11 @@ class MachineStore:
             if self._connection.in_transaction:
                 self._connection.execute("ROLLBACK")
             raise
+
+
+def require_recovery_allowed(machine: Machine) -> None:
+    if machine.recovery_count >= RECOVERY_LIMIT:
+        raise StoreError("automatic worker recovery limit reached; operator review is required")
 
 
 def _later(stored: datetime | None, requested: datetime | None) -> datetime | None:
@@ -597,6 +622,7 @@ def _machine(row: sqlite3.Row) -> Machine:
         volume_create_issued=bool(row["volume_create_issued"]),
         instance_launch_intent=bool(row["instance_launch_intent"]),
         instance_launch_issued=bool(row["instance_launch_issued"]),
+        instance_terminate_issued=bool(row["instance_terminate_issued"]),
         instance_terminal_observed=bool(row["instance_terminal_observed"]),
         volume_delete_issued=bool(row["volume_delete_issued"]),
         required_bundle_revision=row["required_bundle_revision"],

@@ -171,3 +171,54 @@ def test_launch_token_lookup_filters_on_the_current_sequence(tmp_path: Path):
         assert cloud.find_launched_instance(machine) is None
         stubber.assert_no_pending_responses()
     store.close()
+
+
+def launched_instance(tmp_path: Path):
+    cfg = config(tmp_path)
+    store, machine = store_and_machine(cfg)
+    machine = store.record_volume(
+        machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone
+    )
+    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0")
+    cloud = Mock()
+    cloud.get_volume.return_value = volume(cfg, machine)
+    return cfg, store, machine, cloud
+
+
+def test_controller_termination_is_not_a_recovery(tmp_path: Path):
+    cfg, store, machine, cloud = launched_instance(tmp_path)
+    store.set_desired(machine.machine_id, DesiredState.RETAINED, None)
+    cloud.get_instance.return_value = instance(cfg, machine, "stopped")
+    terminating = Reconciler(store, cloud).reconcile(machine.machine_id)
+    assert terminating.observed_state is ObservedState.STOPPING
+    cloud.terminate_instance.assert_called_once()
+
+    store.set_desired(machine.machine_id, DesiredState.RUNNING, None)
+    cloud.get_instance.return_value = instance(cfg, machine, "terminated")
+    replaced = Reconciler(store, cloud).reconcile(machine.machine_id)
+    assert replaced.instance_id is None
+    assert replaced.instance_seq == 1
+    assert replaced.recovery_count == 0
+    store.close()
+
+
+def test_recovery_limit_applies_per_operation(tmp_path: Path):
+    cfg, store, machine, cloud = launched_instance(tmp_path)
+    reconciler = Reconciler(store, cloud)
+    cloud.get_instance.return_value = instance(cfg, machine, "terminated")
+    for index in range(3):
+        replaced = reconciler.reconcile(machine.machine_id)
+        assert replaced.recovery_count == index + 1
+        store.record_instance(machine.machine_id, "i-0123456789abcdef0")
+    reconciler.reconcile_all()
+    assert store.get(machine.machine_id).observed_state is ObservedState.NEEDS_ATTENTION
+
+    store.set_desired(machine.machine_id, DesiredState.STOPPED, None)
+    assert reconciler.reconcile(machine.machine_id).observed_state is ObservedState.STOPPED
+    store.set_desired(machine.machine_id, DesiredState.RUNNING, None)
+    replaced = reconciler.reconcile(machine.machine_id)
+    assert replaced.instance_id is None
+    assert replaced.recovery_count == 0
+    store.record_instance(machine.machine_id, "i-0123456789abcdef0")
+    assert reconciler.reconcile(machine.machine_id).recovery_count == 1
+    store.close()

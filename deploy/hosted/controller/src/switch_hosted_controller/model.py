@@ -53,6 +53,7 @@ class Machine:
     volume_create_issued: bool
     instance_launch_intent: bool
     instance_launch_issued: bool
+    instance_terminate_issued: bool
     instance_terminal_observed: bool
     volume_delete_issued: bool
     required_bundle_revision: int | None

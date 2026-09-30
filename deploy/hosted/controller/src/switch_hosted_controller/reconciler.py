@@ -9,7 +9,7 @@ from botocore.exceptions import ClientError
 
 from .cloud import CloudResourceError, Ec2Cloud, rejected
 from .model import DesiredState, Machine, ObservedState
-from .store import MachineStore
+from .store import MachineStore, require_recovery_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -114,10 +114,15 @@ class Reconciler:
                 return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
             if not self._unchanged(claim, DesiredState.RUNNING):
                 return self._store.get(claim.machine_id)
+            unexpected = not (
+                machine.instance_terminate_issued or machine.instance_terminal_observed
+            )
+            if unexpected:
+                require_recovery_allowed(machine)
             terminated = self._store.mark_instance_terminal_observed(
                 machine.machine_id, instance["InstanceId"]
             )
-            return self._store.replace_terminated(terminated)
+            return self._store.replace_terminated(terminated, unexpected=unexpected)
         if state == "stopped":
             if _bundle_ready(machine) and self._unchanged(claim, DesiredState.RUNNING):
                 self._cloud.start_instance(machine)
@@ -279,6 +284,9 @@ class Reconciler:
             return self._store.set_observed(claim, busy, None)
         if state == "stopped":
             if self._unchanged(claim, desired):
+                machine = self._store.mark_instance_terminate_issued(claim)
+                if not self._same_claim(claim, machine):
+                    return machine
                 self._cloud.terminate_instance(machine)
             return self._store.set_observed(claim, busy, None)
         if state != "terminated":
