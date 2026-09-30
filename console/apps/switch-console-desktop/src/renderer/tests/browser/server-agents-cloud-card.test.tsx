@@ -3,23 +3,31 @@
  * sidebar: while a new session is being started the card says so, and a start
  * whose reply was lost is shown as not yet known, with Check again (the same
  * session, never a second one) or, once the session exists, Open.
+ *
+ * The card reads the machine before the launch, and the machine card above the
+ * grid stops the machine only once the owner confirms.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import type { CloudAgent } from '@shared/core/cloud-agents/cloud-agents';
+import type { CloudAgent, CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
 
 const sdkHost = vi.hoisted(() => ({
   cloudAgents: vi.fn(),
+  cloudMachines: vi.fn(),
   cloudSessions: vi.fn(),
   cloudSessionOperation: vi.fn(),
+}));
+const switchServers = vi.hoisted(() => ({
+  cloudLifecycle: vi.fn(),
+  cloudMachineLifecycle: vi.fn(),
 }));
 const navigate = vi.hoisted(() => vi.fn());
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { sdkHost, switchServers: {} },
+  rpc: { sdkHost, switchServers },
 }));
 
 vi.mock('@renderer/features/locations/stores/agents-store', () => ({
@@ -85,6 +93,25 @@ function agent(): CloudAgent {
   };
 }
 
+function sleepingMachine(): CloudMachine {
+  return {
+    machine_id: '3f1c2b4a-0000-4000-8000-000000000001',
+    state: 'stopped',
+    desired_state: 'stopped',
+    stop_reason: 'idle',
+    sleeping: true,
+    revision: 5,
+    instance_type: 'c7i.2xlarge',
+    error: null,
+    error_code: null,
+    retain_until: null,
+    heartbeat_at: '2026-01-01T00:00:00Z',
+    disk: { total_bytes: 214748364800, available_bytes: 204010946560 },
+    memory: { total_bytes: 17179869184, available_bytes: 12884901888 },
+    agents: ['00000000-0000-4000-8000-000000000001'],
+  };
+}
+
 function sessions(sessionIds: string[]) {
   return {
     sessions: sessionIds.map(
@@ -101,6 +128,10 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
   navigate.mockReset();
   sdkHost.cloudAgents.mockReset();
+  sdkHost.cloudMachines.mockReset();
+  sdkHost.cloudMachines.mockResolvedValue(null);
+  switchServers.cloudLifecycle.mockReset();
+  switchServers.cloudMachineLifecycle.mockReset();
   sdkHost.cloudSessions.mockReset();
   sdkHost.cloudSessionOperation.mockReset();
   cloudOperationAttempts.settle(startAttemptKey(agentKey));
@@ -201,4 +232,83 @@ it('offers Open once the unconfirmed session exists', async () => {
     expect.objectContaining({ agentKey, sessionId: started })
   );
   expect(sdkHost.cloudSessionOperation).toHaveBeenCalledTimes(1);
+});
+
+it('reads a sleeping machine before the launch and offers no session on it', async () => {
+  const machine = sleepingMachine();
+  sdkHost.cloudAgents.mockResolvedValue([
+    { ...agent(), launch: { ...agent().launch, machine_id: machine.machine_id }, machine },
+  ]);
+  sdkHost.cloudMachines.mockResolvedValue([machine]);
+  const el = await render();
+
+  expect(el.textContent).toMatch(/Cloud · Sleeping/);
+  expect(button(el, /new session/i)).toBeUndefined();
+  expect(button(el, /add to rooms/i)).toBeUndefined();
+  expect(button(el, /^remove$/i)).toBeDefined();
+});
+
+it('shows a crashed agent with its out-of-memory restarts and offers Retry', async () => {
+  const base = agent();
+  sdkHost.cloudAgents.mockResolvedValue([
+    {
+      ...base,
+      launch: {
+        ...base.launch,
+        state: 'error',
+        error: 'crashed',
+        error_code: 'agent_crashed',
+        process_state: 'crashed',
+        oom_kills: 2,
+      },
+    },
+  ]);
+  const el = await render();
+
+  expect(el.textContent).toMatch(/Restarted after running out of memory 2×/);
+  expect(el.textContent).toMatch(/Crashed/);
+  expect(el.querySelector('[role="alert"]')?.textContent).toMatch(/keeps crashing/);
+  expect(button(el, /^retry$/i)).toBeDefined();
+  expect(button(el, /stop agent/i)).toBeDefined();
+});
+
+it('removes a running agent once confirmed', async () => {
+  switchServers.cloudLifecycle.mockResolvedValue({});
+  sdkHost.cloudAgents.mockResolvedValue([agent()]);
+  const el = await render();
+
+  await act(async () => button(el, /^remove$/i)!.click());
+  expect(el.textContent).toMatch(/the machine shuts down and its disk is kept/);
+  expect(switchServers.cloudLifecycle).not.toHaveBeenCalled();
+  await act(async () => button(el, /remove agent/i)!.click());
+  expect(switchServers.cloudLifecycle).toHaveBeenCalledWith(
+    'server',
+    agent().launch.request_id,
+    'remove',
+    4
+  );
+});
+
+it('shows the machine card and stops the machine once confirmed', async () => {
+  const machine = sleepingMachine();
+  switchServers.cloudMachineLifecycle.mockResolvedValue(machine);
+  sdkHost.cloudAgents.mockResolvedValue([]);
+  sdkHost.cloudMachines.mockResolvedValue([machine]);
+  const el = await render();
+
+  expect(el.textContent).toMatch(/Cloud machine/);
+  expect(el.textContent).toMatch(/Sleeping · c7i\.2xlarge · 1 agent/);
+  expect(el.textContent).toMatch(/190\.0 GB free of 200\.0 GB/);
+  expect(button(el, /start machine/i)).toBeDefined();
+
+  await act(async () => button(el, /stop machine/i)!.click());
+  expect(el.textContent).toMatch(/mentions will not wake it/);
+  expect(switchServers.cloudMachineLifecycle).not.toHaveBeenCalled();
+  await act(async () => button(el, /stop machine/i)!.click());
+  expect(switchServers.cloudMachineLifecycle).toHaveBeenCalledWith(
+    'server',
+    machine.machine_id,
+    'stop',
+    5
+  );
 });
