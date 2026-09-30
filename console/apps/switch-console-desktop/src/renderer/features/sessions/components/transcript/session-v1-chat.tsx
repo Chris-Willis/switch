@@ -133,6 +133,16 @@ export function SessionV1Chat({
     (session.status === 'ready' || session.status === 'running');
   const wakeable = autoWake?.phase === 'sleeping' || autoWake?.phase === 'waking';
   const machineAwake = !wakeable;
+  const startable =
+    Boolean(restartHost) &&
+    autoWake?.phase === null &&
+    !autoWake.blocked &&
+    view.connected &&
+    session?.connectivity === 'offline' &&
+    !session.retired &&
+    session.status !== 'stopped' &&
+    session.status !== 'error';
+  const restartedFor = useRef<string | null>(null);
   const runningTurn = view.snapshot?.turns.find((turn) => turn.status === 'running');
   const lastItems = new Map(view.snapshot?.items.map((item) => [item.turnId, item.itemId]));
   const stoppedTurns = new Map(
@@ -172,7 +182,7 @@ export function SessionV1Chat({
   };
   const send = async () => {
     if (
-      (!available && !wakeable) ||
+      (!available && !wakeable && !startable) ||
       held ||
       sending ||
       uploads.blocked ||
@@ -213,20 +223,29 @@ export function SessionV1Chat({
   };
   const heldStuck = !held
     ? null
-    : autoWake?.blocked
-      ? `${autoWake.blocked} Your message was not sent.`
-      : autoWake?.phase === null &&
-          view.connected &&
-          (session?.status === 'stopped' || session?.status === 'error')
-        ? 'The machine is awake, but the session is not ready for messages. Your message was not sent.'
-        : null;
+    : actionError && restartedFor.current === held.commandId
+      ? `${actionError} Your message was not sent.`
+      : autoWake?.blocked
+        ? `${autoWake.blocked} Your message was not sent.`
+        : autoWake?.phase === null &&
+            view.connected &&
+            (session?.status === 'stopped' || session?.status === 'error')
+          ? 'The machine is awake, but the session is not ready for messages. Your message was not sent.'
+          : null;
   useEffect(() => {
     if (!heldStuck || sending) return;
+    restartedFor.current = null;
     setHeld(null);
     setHeldRetryWait(false);
     if (!client.hasPendingCommand()) setPendingId(null);
     setSendError(heldStuck);
   }, [heldStuck, sending, client]);
+  useEffect(() => {
+    if (!held || heldStuck || !startable || busy || !restartHost) return;
+    if (restartedFor.current === held.commandId) return;
+    restartedFor.current = held.commandId;
+    void runAction('restart', restartHost);
+  });
   const cancelHeld = () => {
     setHeld(null);
     setHeldRetryWait(false);
@@ -787,7 +806,7 @@ export function SessionV1Chat({
               size="sm"
               className="ml-auto shrink-0"
               disabled={
-                (!available && !wakeable) ||
+                (!available && !wakeable && !startable) ||
                 held !== null ||
                 sending ||
                 uploads.blocked ||

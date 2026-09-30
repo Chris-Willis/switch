@@ -99,7 +99,8 @@ const wake = vi.fn(async () => undefined);
 async function render(
   client: SessionChatClient,
   phase: CloudAgentPhase | null,
-  blocked: string | null
+  blocked: string | null,
+  restartHost?: () => Promise<void>
 ): Promise<HTMLDivElement> {
   if (!container) {
     container = document.createElement('div');
@@ -109,7 +110,12 @@ async function render(
   await act(async () =>
     root!.render(
       <SessionHeaderSlotsProvider>
-        <SessionV1Chat client={client} hostState={null} autoWake={{ phase, blocked, wake }} />
+        <SessionV1Chat
+          client={client}
+          hostState={null}
+          autoWake={{ phase, blocked, wake }}
+          restartHost={restartHost}
+        />
       </SessionHeaderSlotsProvider>
     )
   );
@@ -210,4 +216,86 @@ it('keeps holding a message after leaving the session, and sends it once on retu
   ]);
   expect(el.textContent).not.toContain('The machine is awake');
   expect(textarea(el).value).toBe('');
+});
+
+/**
+ * A worker whose relay reattaches after its machine restarts, but whose session
+ * host stays offline until the session is restarted.
+ */
+function restartable(restart: () => Promise<void>) {
+  const { state, transport } = worker();
+  const host = { online: false };
+  const restartHost = vi.fn(async () => {
+    await restart();
+    host.online = true;
+  });
+  const client = new SessionChatClient(SESSION, {
+    ...transport,
+    snapshot: async (...args) => {
+      const current = (await transport.snapshot(...args)) as typeof snapshot;
+      return {
+        ...current,
+        session: { ...current.session, connectivity: host.online ? 'online' : 'offline' },
+      };
+    },
+  });
+  return { state, client, restartHost };
+}
+
+it('restarts an offline session host once for a message held across a machine restart, and sends it once', async () => {
+  const { state, client, restartHost } = restartable(async () => undefined);
+  const el = await render(client, 'sleeping', null, restartHost);
+  await type(el, 'hello');
+  await act(async () => button(el, /^send$/i)!.click());
+  await settle();
+  expect(el.textContent).toContain('Waking…');
+
+  state.awake = true;
+  await render(client, null, null, restartHost);
+  await act(async () => await client.connect());
+  await settle();
+  await render(client, null, null, restartHost);
+  expect(restartHost).toHaveBeenCalledTimes(1);
+  expect(state.submitted.map((command) => command.body)).toEqual([
+    expect.objectContaining({ type: 'message.send', text: 'hello' }),
+  ]);
+  expect(el.textContent).not.toContain('The machine is awake');
+  expect(textarea(el).value).toBe('');
+});
+
+it('lets the user send to an offline session on an awake machine, restarting its host first', async () => {
+  const { state, client, restartHost } = restartable(async () => undefined);
+  state.awake = true;
+  const el = await render(client, null, null, restartHost);
+  await type(el, 'hello');
+  expect(textarea(el).readOnly).toBe(false);
+  expect(button(el, /^send$/i)?.disabled).toBe(false);
+  expect(restartHost).not.toHaveBeenCalled();
+
+  await act(async () => button(el, /^send$/i)!.click());
+  await settle();
+  expect(restartHost).toHaveBeenCalledTimes(1);
+  expect(state.submitted.map((command) => command.body)).toEqual([
+    expect.objectContaining({ type: 'message.send', text: 'hello' }),
+  ]);
+  expect(textarea(el).value).toBe('');
+});
+
+it('stops holding when the session host does not restart, says why and unlocks the draft', async () => {
+  const { state, client, restartHost } = restartable(async () => {
+    throw new Error('The worker did not start the session.');
+  });
+  state.awake = true;
+  const el = await render(client, null, null, restartHost);
+  await type(el, 'hello');
+  await act(async () => button(el, /^send$/i)!.click());
+  await settle();
+  expect(restartHost).toHaveBeenCalledTimes(1);
+  expect(state.submitted).toEqual([]);
+  expect(el.textContent).not.toContain('The machine is awake');
+  expect(
+    [...el.querySelectorAll('[role="alert"]')].map((alert) => alert.textContent).join('\n')
+  ).toContain('The worker did not start the session. Your message was not sent.');
+  expect(textarea(el).value).toBe('hello');
+  expect(textarea(el).readOnly).toBe(false);
 });
