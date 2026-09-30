@@ -2344,11 +2344,7 @@ class Supervisor:
         mirrors: list[Path] = []
         if worktree_root.is_dir() and not worktree_root.is_symlink():
             for owner in sorted(worktree_root.iterdir()):
-                if (
-                    owner.name == "workspace"
-                    or owner.is_symlink()
-                    or not owner.is_dir()
-                ):
+                if owner.is_symlink() or not owner.is_dir():
                     continue
                 for repository in sorted(owner.iterdir()):
                     if repository.is_symlink() or not repository.is_dir():

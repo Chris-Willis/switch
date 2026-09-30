@@ -1682,6 +1682,21 @@ class SupervisorTests(RootPatched):
         harness.supervisor.reconcile([])
         self.assertEqual(harness.git.calls, [])
 
+    def test_owner_named_workspace_is_cleaned_up(self):
+        self.supervisor.reconcile([valid_agent(repository="workspace/example-repo")])
+        mirror = self.paths.repos / "workspace/example-repo.git"
+        mirror.mkdir(parents=True)
+        with self.assertLogs(worker.logger, "WARNING"):
+            self.supervisor.reconcile([])
+        worktree = self.paths.worktrees / AGENT / "workspace/example-repo"
+        self.assertEqual(
+            self.harness.git.calls,
+            [
+                (mirror, ["worktree", "remove", "--force", str(worktree)]),
+                (mirror, ["worktree", "prune"]),
+            ],
+        )
+
     def test_agent_with_blocked_ownership_is_not_started(self):
         self.harness.ownership_blocked.add(AGENT)
         supervisor = self.harness.build()
