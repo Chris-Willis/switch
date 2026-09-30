@@ -145,9 +145,10 @@ git push origin v0.38.0-canary.1
 - **A failed run leaves a draft**, which no updater can see. Re-run the failed
   job; the tag stays.
 
-The canary app only reads GitHub's 10 most recent releases, and core and stable
-releases count toward them. If 10 of those are published after the newest canary,
-canary installs find no update until the next canary is tagged.
+The canary app only reads the 10 newest entries of the repo's release feed, and
+every tag counts toward them — core, stable, agent-runtime and any other tag, with
+or without a Release. If 10 of those are pushed after the newest canary, canary
+installs find no update until the next canary is tagged.
 
 ## Where artifacts are published
 
