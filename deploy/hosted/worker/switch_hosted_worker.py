@@ -160,6 +160,16 @@ def _agent_id(value: Any) -> str:
     raise WorkerError("Agent ID must be a lowercase UUID.")
 
 
+def _unavailable_code(entry: dict[str, Any]) -> str | None:
+    code = entry.get("unavailable")
+    if code is None:
+        return None
+    _text(code, "Unavailable code", maximum=128)
+    _agent_id(entry["agent_id"])
+    _identifier(entry["launch_id"], "Launch ID")
+    return code
+
+
 def _is_agent_id(value: str) -> bool:
     try:
         _agent_id(value)
@@ -1842,13 +1852,19 @@ def read_meminfo(path: Path) -> tuple[int, int]:
         raise WorkerError("Memory information is unavailable.") from None
 
 
+@dataclass(frozen=True)
+class Failure:
+    process_state: str
+    result: str
+
+
 @dataclass
 class HeldAgent:
     launch_id: str
     agent_id: str
     revision: int
     desired_state: str | None
-    failure: str | None
+    failure: Failure | None
 
 
 @dataclass
@@ -2032,6 +2048,24 @@ class Supervisor:
             try:
                 if counts[agent_id] > 1:
                     raise WorkerError("The agent is listed more than once.")
+                unavailable = _unavailable_code(entry)
+                if unavailable is not None:
+                    logger.warning(
+                        "Agent %s is unavailable (%s); stopping it and keeping its data.",
+                        agent_id,
+                        unavailable,
+                    )
+                    held.append(
+                        HeldAgent(
+                            entry["launch_id"],
+                            agent_id,
+                            entry["revision"],
+                            "stopped",
+                            Failure("stopped", INVALID_CONFIG),
+                        )
+                    )
+                    self._disable(agent_id, failures)
+                    continue
                 plan = build_agent_plan(entry, self._runtime, self._paths)
             except WorkerError as error:
                 logger.error(
@@ -2043,17 +2077,17 @@ class Supervisor:
                         agent_id,
                         entry["revision"],
                         None,
-                        INVALID_CONFIG,
+                        Failure("failed", INVALID_CONFIG),
                     )
                 )
                 self._disable(agent_id, failures)
                 continue
-            failure = None
+            failure: Failure | None = None
             try:
                 self._apply(plan)
             except (WorkerError, OSError) as error:
                 logger.error("Agent %s could not be set up: %s", agent_id, error)
-                failure = SETUP_FAILED
+                failure = Failure("failed", SETUP_FAILED)
                 failures.append(agent_id)
             held.append(
                 HeldAgent(
@@ -2297,11 +2331,12 @@ class Supervisor:
         changed = False
         now = self._clock().astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         for held in self._held:
+            observed: tuple[str, int, dict[str, Any] | None]
             if held.failure is not None:
                 observed = (
-                    "failed",
+                    held.failure.process_state,
                     0,
-                    {"code": None, "signal": None, "result": held.failure},
+                    {"code": None, "signal": None, "result": held.failure.result},
                 )
             else:
                 try:

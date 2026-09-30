@@ -1433,6 +1433,64 @@ class SupervisorTests(RootPatched):
             },
         )
 
+    def test_unavailable_agent_is_stopped_and_kept(self):
+        unit = f"switch-agent@{AGENT}.service"
+        self.supervisor.reconcile([valid_agent()])
+        self.commands.clear()
+        entry = fixture("agent-unavailable.json")
+        self.assertNotIn("worker_capability", entry)
+        self.assertNotIn("switch_credentials", entry)
+        with self.assertLogs(worker.logger, "WARNING"):
+            self.supervisor.reconcile([entry])
+        self.assertEqual(
+            self.commands.actions(),
+            [["--no-block", "stop", unit], ["reset-failed", unit]],
+        )
+        self.assertFalse((self.paths.agents_runtime / AGENT).exists())
+        self.assertTrue((self.paths.agents / AGENT / "home").is_dir())
+        self.assertTrue(
+            (self.paths.worktrees / AGENT / "example-org/example-repo").is_dir()
+        )
+        self.supervisor._observe()
+        self.assertEqual(
+            self.state(),
+            {
+                "launch_id": entry["launch_id"],
+                "agent_id": AGENT,
+                "revision": 1,
+                "process_state": "stopped",
+                "restarts": 0,
+                "oom_kills": 0,
+                "exit": {"code": None, "signal": None, "result": "invalid-config"},
+                "since": "2026-01-01T00:00:00Z",
+            },
+        )
+        self.commands.clear()
+        self.supervisor.reconcile([valid_agent()])
+        self.assertEqual(
+            self.commands.actions(),
+            [["reset-failed", unit], ["--no-block", "restart", unit]],
+        )
+
+    def test_agent_with_a_missing_identity_is_stopped_and_kept(self):
+        self.supervisor.reconcile([valid_agent()])
+        entry = fixture("agent-unavailable.json")
+        entry["unavailable"] = "agent_identity_missing"
+        with self.assertLogs(worker.logger, "WARNING"):
+            self.supervisor.reconcile([entry])
+        self.assertTrue((self.paths.agents / AGENT / "home").is_dir())
+        self.supervisor._observe()
+        self.assertEqual(self.state()["process_state"], "stopped")
+
+    def test_malformed_unavailable_code_is_an_invalid_config(self):
+        entry = fixture("agent-unavailable.json")
+        entry["unavailable"] = ""
+        with self.assertLogs(worker.logger, "ERROR"):
+            self.supervisor.reconcile([entry])
+        self.supervisor._observe()
+        self.assertEqual(self.state()["process_state"], "failed")
+        self.assertEqual(self.state()["exit"]["result"], "invalid-config")
+
     def test_invalid_revision_stops_a_running_agent_but_keeps_its_data(self):
         self.supervisor.reconcile([valid_agent()])
         self.commands.clear()
