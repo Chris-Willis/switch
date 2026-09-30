@@ -71,7 +71,7 @@ resource "aws_iam_policy" "controller_assignments" {
   name = "${local.prefix}-assignments"
   tags = local.tags
   policy = jsonencode({ Version = "2012-10-17", Statement = [
-    { Sid = "PopulateWorkerAssignments", Effect = "Allow", Action = ["secretsmanager:DescribeSecret", "secretsmanager:PutSecretValue"], Resource = [for slot in values(var.machine_slots) : slot.secret_arn] },
+    { Sid = "PopulateWorkerAssignments", Effect = "Allow", Action = ["secretsmanager:DescribeSecret", "secretsmanager:PutSecretValue", "secretsmanager:UpdateSecretVersionStage"], Resource = [for slot in values(var.machine_slots) : slot.secret_arn] },
     { Sid = "EncryptWorkerAssignments", Effect = "Allow", Action = ["kms:GenerateDataKey", "kms:Decrypt"], Resource = distinct([for slot in values(var.machine_slots) : slot.kms_key_arn]),
       Condition = { StringEquals = {
         "kms:ViaService"                  = "secretsmanager.${data.aws_region.current.name}.${data.aws_partition.current.dns_suffix}"
