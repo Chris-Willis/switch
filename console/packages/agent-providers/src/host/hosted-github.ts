@@ -275,7 +275,7 @@ export async function ensureHostedRepository(input: {
         if ((await origin()) === null) throw error;
       }
     }
-    if ((await origin()) !== url)
+    if ((await origin())?.toLowerCase() !== url.toLowerCase())
       throw new RepositoryStepError('the mirror belongs to a different repository');
     await locked('fetch the repository', ['-C', mirror, 'fetch', '--prune', 'origin']);
     await locked('resolve the default branch', [
