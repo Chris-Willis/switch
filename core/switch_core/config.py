@@ -55,6 +55,12 @@ class SwitchConfig(BaseSettings):
     db_owner_user: str | None = None
     db_owner_password: str | None = None
 
+    # Apply migrations and re-issue grants at boot. Turn off where a separate
+    # step runs `switch-migrate` as the owner before the server starts (the
+    # Helm chart's init container), so the serving process never holds the
+    # owner's password. Boot then only checks the schema is at head.
+    db_migrate_on_boot: bool = True
+
     # Refuse to serve when the runtime connection is not actually subject to
     # the policies — a superuser, a `BYPASSRLS` role, or the owner of the
     # scoped tables. On by default because the failure it catches is silent: a
@@ -128,10 +134,10 @@ class SwitchConfig(BaseSettings):
     gateway_oidc_require_email_verified: bool = True
     # Lets the password login path be disabled (OIDC-only) without code changes.
     gateway_password_login_enabled: bool = True
-    # Sets the Secure flag on the switch_auth cookie. Defaults to False so local
-    # dev over plain HTTP keeps working; deployments serving over HTTPS must set
-    # this true so the JWT session cookie is never sent over an insecure channel.
-    gateway_cookie_secure: bool = False
+    # Sets the Secure flag on the gateway's cookies (the switch_auth session
+    # and the OIDC sign-in cookie), so they are never sent over plain HTTP.
+    # Only a local stack served over http:// should turn it off.
+    gateway_cookie_secure: bool = True
 
     # Off by default: a person who belongs to more than one tenant and has not
     # selected one on their session gets the same 403 a single-tenant

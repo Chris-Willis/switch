@@ -123,6 +123,7 @@ def create_gateway_app(
         secret_key=config.jwt_secret_key,
         same_site="lax",
         max_age=600,
+        https_only=config.gateway_cookie_secure,
     )
     if config.gateway_oidc_enabled:
         register_oidc_client(config)

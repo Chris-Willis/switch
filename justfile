@@ -71,7 +71,7 @@ reset:
 # while keeping the repo root as the working directory. Tool configs are passed explicitly since the repo root no longer
 # holds pyproject.toml / alembic.ini.
 run:
-    uv run --project core python -m switch_core.main
+    GATEWAY_COOKIE_SECURE="${GATEWAY_COOKIE_SECURE:-false}" uv run --project core python -m switch_core.main
 
 # ── Run switch-core as a stand-in for Switch Cloud ────────────────────────────
 # For testing Switch Console against this checkout instead of whatever a shared
@@ -84,7 +84,7 @@ local-cloud:
     GATEWAY_SMTP_HOST=127.0.0.1 GATEWAY_SMTP_PORT=1025 GATEWAY_SMTP_TLS=none \
     GATEWAY_SMTP_USERNAME= GATEWAY_SMTP_PASSWORD= \
     GATEWAY_SMTP_FROM="Switch <invites@switch.local>" \
-    FRONTEND_BASE_URL=http://localhost:8000 \
+    FRONTEND_BASE_URL=http://localhost:8000 GATEWAY_COOKIE_SECURE=false \
     uv run --project core python -m switch_core.main
 
 # Run Switch Console with "Switch Cloud" pointing at `just local-cloud`, in

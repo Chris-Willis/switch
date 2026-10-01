@@ -74,7 +74,7 @@ spec:
               set -eu
               psql -v ON_ERROR_STOP=1 --host "$PGHOST" --port "$PGPORT" \
                 --username {{ include "switch.postgresSuperUser" . }} --dbname postgres \
-                -v role="$RUNTIME_ROLE" -v pw="$PGPASSWORD" <<'SQL'
+                -v role="$RUNTIME_ROLE" -v pw="$RUNTIME_ROLE_PASSWORD" <<'SQL'
               SELECT format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS', :'role', :'pw')
               WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role')
               \gexec
@@ -87,14 +87,16 @@ spec:
               value: {{ include "switch.postgresPort" . | quote }}
             - name: RUNTIME_ROLE
               value: {{ include "switch.postgresUser" . | quote }}
-            # The same secret PGPASSWORD authenticates this connection as the
-            # superuser AND the value ALTER ROLE sets the runtime role's
-            # password to — see the values.yaml comment on
-            # postgresql.managed.runtimeUsername for why that is one password,
-            # not two.
             - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "switch.postgresSecretName" $ctx }}
                   key: {{ include "switch.postgresSecretKey" $ctx }}
+            # The superuser's own unless a separate runtime password is
+            # configured; see postgresql.managed.runtimeUsername in values.yaml.
+            - name: RUNTIME_ROLE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "switch.runtimeSecretName" $ctx }}
+                  key: {{ include "switch.runtimeSecretKey" $ctx }}
 {{- end }}

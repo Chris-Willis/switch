@@ -99,6 +99,7 @@ from switch_core.db.runtime_role import (
     grant_runtime_role,
     verify_restricted_role,
 )
+from switch_core.db.schema_version import require_schema_at_head
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
@@ -1389,8 +1390,7 @@ async def _migrate_and_grant(config: SwitchConfig) -> None:
     `asyncio.to_thread`, on a worker thread that starts with no event loop of
     its own, which is exactly what that inner `asyncio.run` needs.
     """
-    alembic_ini = Path(__file__).resolve().parent.parent / "alembic.ini"
-    alembic_cfg = AlembicConfig(str(alembic_ini))
+    alembic_cfg = _alembic_config()
     async with boot_lock(config):
         await asyncio.to_thread(alembic_command.upgrade, alembic_cfg, "head")
         await _prepare_database(config)
@@ -1398,6 +1398,27 @@ async def _migrate_and_grant(config: SwitchConfig) -> None:
         "Database migrations applied as %s",
         config.db_owner_user or config.db_user,
     )
+
+
+async def _check_schema_at_head(config: SwitchConfig) -> None:
+    """Stand in for `_migrate_and_grant` on a server that does not migrate."""
+    if config.db_owner_password is not None:
+        logger.warning(
+            "DB_OWNER_PASSWORD is set on a server with DB_MIGRATE_ON_BOOT=false, "
+            "which never uses it. Remove it from this process's environment."
+        )
+    engine = create_async_engine(
+        config.database_url, poolclass=NullPool, connect_args=config.db_connect_args
+    )
+    try:
+        await require_schema_at_head(engine, _alembic_config())
+    finally:
+        await engine.dispose()
+    logger.info("Database schema is at head; migrations were applied before boot")
+
+
+def _alembic_config() -> AlembicConfig:
+    return AlembicConfig(str(Path(__file__).resolve().parent.parent / "alembic.ini"))
 
 
 def migrate() -> None:
@@ -1434,7 +1455,10 @@ def main() -> None:
 
     logger.info("Starting switch-core %s", running_version or "(version unknown)")
 
-    asyncio.run(_migrate_and_grant(config))
+    if config.db_migrate_on_boot:
+        asyncio.run(_migrate_and_grant(config))
+    else:
+        asyncio.run(_check_schema_at_head(config))
 
     asyncio.run(run(config))
 
