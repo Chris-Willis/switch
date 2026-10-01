@@ -76,6 +76,12 @@ _BUILTIN_RE = re.compile(r"\{(\$[A-Za-z_][A-Za-z0-9_]*)\}")
 # would refuse a document the Console wizard renders happily.
 _BLOCKING_CODES = frozenset({"empty", "invalid_yaml", "not_a_mapping"})
 
+# What runs an agent, where, and in which folder. Switch Console supplies none
+# of these itself, so a template that creates an agent must say all three.
+# Only ever a warning here: the Console refuses to create an agent the template
+# leaves one unsaid for, and that is where the refusal belongs.
+_RUNTIME_FIELDS = ("provider", "location", "directory")
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -227,6 +233,56 @@ def _check_params(raw: Any, errors: list[Finding], warnings: list[Finding]) -> s
     return declared
 
 
+def _check_agent_runtime(document: dict[str, Any], warnings: list[Finding]) -> None:
+    """Warn for each agent the document never says how to run.
+
+    An agent entry says a runtime setting with its own field, or the document
+    says it for every agent with a param of that type that no entry's field
+    reads.
+    """
+    if isinstance(document.get("agents"), list):
+        entries = [e for e in document["agents"] if isinstance(e, dict)]
+    elif isinstance(document.get("agent"), dict):
+        entries = [document["agent"]]
+    else:
+        return
+    params = document.get("params")
+    params = params if isinstance(params, dict) else {}
+    field_texts = [
+        str(entry[field])
+        for entry in entries
+        for field in _RUNTIME_FIELDS
+        if entry.get(field) is not None
+    ]
+
+    def applies_to_all(field: str) -> bool:
+        return any(
+            isinstance(spec, dict)
+            and spec.get("type") == field
+            and not any(f"{{{name}}}" in text for text in field_texts)
+            for name, spec in params.items()
+        )
+
+    for index, entry in enumerate(entries):
+        label = entry.get("name") or entry.get("display_name") or f"agent {index + 1}"
+        for field in _RUNTIME_FIELDS:
+            if entry.get(field) is None and not applies_to_all(field):
+                what = {
+                    "provider": f"which coding agent runs {label}",
+                    "location": f"which machine {label} runs on",
+                    "directory": f"which directory {label} works in",
+                }[field]
+                warnings.append(
+                    Finding(
+                        "agent_runtime_unsaid",
+                        f"The template never says {what}. Give it a '{field}:' or "
+                        f"declare a '{field}' param. Switch Console will not create "
+                        "the agent until it does.",
+                        field,
+                    )
+                )
+
+
 def lint_template(text: str) -> LintResult:
     """Check a template document without storing or provisioning anything."""
     errors: list[Finding] = []
@@ -300,6 +356,8 @@ def lint_template(text: str) -> LintResult:
                         name,
                     )
                 )
+
+    _check_agent_runtime(document, warnings)
 
     # Placeholders are looked for everywhere except the params block, which
     # declares them rather than using them.

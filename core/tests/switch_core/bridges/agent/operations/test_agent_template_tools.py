@@ -353,6 +353,27 @@ async def test_save_is_owned_by_the_owner_and_marked_with_the_agent(tools):
 
 
 @pytest.mark.asyncio
+async def test_save_warns_about_an_incomplete_agent_template_but_saves_it(tools):
+    """Completeness is warned at save and enforced at run: an agent template
+    that never says what runs its agent is stored, and the agent is told."""
+    saved = await _as(
+        tools["agent_id"],
+        save_template,
+        name="jq",
+        description="jq expert",
+        yaml=AGENT_TEMPLATE,
+    )
+    async with tools["session_factory"]() as session:
+        assert await session.get(Template, saved["id"]) is not None
+    assert any("which coding agent runs jq-expert" in w for w in saved["warnings"])
+
+    updated = await _as(
+        tools["agent_id"], update_template, template_id=saved["id"], description="x"
+    )
+    assert updated["warnings"] == [], "no document was passed, so none was checked"
+
+
+@pytest.mark.asyncio
 async def test_save_refuses_a_template_anyone_could_change(tools, caplog):
     with pytest.raises(AgentRefused, match="not one an agent can set"):
         await _as(

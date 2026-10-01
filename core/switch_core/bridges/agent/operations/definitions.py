@@ -43,6 +43,7 @@ from switch_core.db.models import CollaborationBridge, User
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.rooms_yaml import GroupSpec, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
+from switch_core.template_lint import lint_template
 
 logger = logging.getLogger(__name__)
 
@@ -1938,6 +1939,10 @@ async def run_template(
         )
 
 
+def _lint_warnings(content: str) -> list[str]:
+    return [f.message for f in lint_template(content).warnings]
+
+
 @operation
 async def save_template(
     name: str,
@@ -1959,7 +1964,10 @@ async def save_template(
             (everyone on the workspace sees it, only you change it).
 
     Returns:
-        ``{id, name, kind, visibility}``.
+        ``{id, name, kind, visibility, warnings}``. ``warnings`` is advice
+        about the document, such as an agent it never says which provider
+        runs. The template is saved regardless; Switch Console refuses to
+        create from it until what a warning names is fixed.
     """
     protocol = get_protocol()
     async with _refusals_reported("save_template"):
@@ -1979,6 +1987,7 @@ async def save_template(
                 "name": template.name,
                 "kind": template.kind,
                 "visibility": visibility,
+                "warnings": _lint_warnings(yaml),
             }
 
 
@@ -1996,7 +2005,9 @@ async def update_template(
     you; save your own version under another name instead.
 
     Returns:
-        ``{id, name, kind, visibility, version}``.
+        ``{id, name, kind, visibility, version, warnings}``. ``warnings`` is
+        advice about the new document, as ``save_template`` gives it; empty
+        when ``yaml`` was not passed.
     """
     protocol = get_protocol()
     async with _refusals_reported("update_template"):
@@ -2020,6 +2031,7 @@ async def update_template(
                 if template.read_visibility == "public"
                 else "private",
                 "version": template.version,
+                "warnings": _lint_warnings(yaml) if yaml is not None else [],
             }
 
 
