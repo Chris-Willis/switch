@@ -554,3 +554,11 @@ class TestAgentRuntime:
     def test_a_room_template_is_not_asked_about_agents(self) -> None:
         result = lint_template("room:\n  name: r\n")
         assert "agent_runtime_unsaid" not in _codes(result.warnings)
+
+    def test_a_runtime_param_for_every_agent_is_not_unused(self) -> None:
+        result = lint_template(
+            "params:\n  where: {type: location, default: local}\n"
+            "agent:\n  name: a\n  provider: claude\n  directory: /a\n  instructions: A.\n"
+        )
+        assert "unused_param" not in _codes(result.warnings)
+        assert "agent_runtime_unsaid" not in _codes(result.warnings)

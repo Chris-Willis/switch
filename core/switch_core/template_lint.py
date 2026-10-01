@@ -397,8 +397,20 @@ def lint_template(text: str) -> LintResult:
             )
         )
     # `agent` is the Console's to fill, not a declared param, so a room that
-    # never names the agent is not an unused parameter.
-    for name in sorted(declared - used - {"agent"}):
+    # never names the agent is not an unused parameter. Nor is a provider,
+    # location or directory param in a document with agents: one no agent's
+    # field reads applies to every agent.
+    applies_to_all = (
+        {
+            name
+            for name, spec in document["params"].items()
+            if isinstance(spec, dict) and spec.get("type") in _RUNTIME_FIELDS
+        }
+        if ("agent" in document or "agents" in document)
+        and isinstance(document.get("params"), dict)
+        else set()
+    )
+    for name in sorted(declared - used - {"agent"} - applies_to_all):
         warnings.append(
             Finding(
                 "unused_param",

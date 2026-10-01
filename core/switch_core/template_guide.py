@@ -24,6 +24,13 @@ it with save_template, or run a saved one with run_template.
 - agent / agents: agents to create. Only Switch Console creates agents. To
   run such a template yourself, fill every agent it describes with an agent
   that already exists: run_template(agents={slot name: agent name}).
+  The Console fills in nothing the document does not say, so every agent
+  must say its provider, location and directory: its own field (a literal
+  or "{param}"), or a param of that type no agent's field reads, which then
+  applies to every agent. save_template warns about each one missing and
+  saves anyway; the Console will not create the agent until it is there.
+  An entry whose name is exactly one agent-typed param ("{reviewer}") is
+  filled by the existing agent the deployer picks rather than created.
 
 ## A room
 
@@ -63,9 +70,9 @@ params:
     min: number, max: number     # number only
 
 provider, location and directory params are the Console's. run_template
-drops them from an agent or team template; in a document you write yourself,
-leave them out, since the server reads them as text and requires a value
-like any other param. Give values in the inputs argument; a required param
+drops them from an agent or team template. In a room or group document with
+no agents, leave them out, since the server reads them as text and requires
+a value like any other param. Give values in the inputs argument; a required param
 with no value is refused with its name.
 
 ## Placeholders

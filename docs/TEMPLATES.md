@@ -43,9 +43,19 @@ params:
     type: provider
     default: [claude, codex, opencode]
     input: advanced
+  location:
+    type: location
+    default: local
+    input: advanced
+  directory:
+    type: directory
+    default: "{$agents_dir}/{agent}"
+    input: advanced
 agent:
   display_name: "{name}"
   provider: "{provider}"
+  location: "{location}"
+  directory: "{directory}"
   repo: https://github.com/jqlang/jq
   addressing: anyone
   instructions: |
@@ -60,9 +70,13 @@ kickoff: "@{agent} hi, introduce yourself in two lines."
 ```
 
 The form for this template shows two inputs, the agent's name and the
-messaging app, both filled in, and an Advanced fold with the provider. One
-click creates the agent, then the room with the agent and the deployer in
-it, then posts the kickoff.
+messaging app, both filled in, and an Advanced fold with the provider, the
+machine and the directory. One click creates the agent, then the room with
+the agent and the deployer in it, then posts the kickoff.
+
+Every agent a template creates must say what runs it, where, and in which
+folder; the Console has no defaults of its own for them. See
+[The agent block](#the-agent-block).
 
 ## Document structure
 
@@ -201,15 +215,23 @@ param. Checked on the form and by the server.
 
 ### What the form does with a param
 
-The form has an agent section per agent the template creates, then a room
-section. A param is shown in the section of the block that reads it: one
-written into an agent's fields sits with that agent, one written into the
-room sits with the room, and a `room` param always sits with the room since
-it says where the agent works. A `provider`, `location` or `directory`
-param that no agent binds applies to every agent.
+The form lists the params in the order the document declares them, so the
+author decides the order. The `ask` params come first; the `advanced` and
+`fixed` ones sit together in one fold below them (see
+[The form block](#the-form-block)), in the same order. A param that only the
+room part reads is left out while the room is not being created, since it
+does nothing then.
 
-The Create button stays disabled while a required param is empty or a
-value breaks its `pattern` or bounds, and says which.
+Beside the inputs, a preview shows a card for every agent and room the
+template creates. An agent's card shows the provider, machine and directory
+it will get, as the inputs resolve them.
+
+A `provider`, `location` or `directory` param that no agent's field reads
+applies to every agent.
+
+The Create button stays disabled while a required param is empty, a value
+breaks its `pattern` or bounds, or an agent is missing its provider,
+location or directory, and says which.
 
 ## Placeholders and builtins
 
@@ -252,8 +274,27 @@ agent:
 
 `agents:` is a list of the same block, for a template that creates a team.
 In that form a room refers to each agent by the text written as its `name`
-(`"{team}-triager"`), and the form lets the deployer point each entry at an
-agent the server already has instead of creating it.
+(`"{team}-triager"`).
+
+An entry whose `name` is exactly one `agent` param is filled by the
+existing agent the deployer picks for that param, and is not created. This
+is how a template asks for an existing agent; the form offers no such
+choice otherwise.
+
+```yaml
+params:
+  reviewer: { type: agent, label: Reviewer }
+agents:
+  - name: "{reviewer}"
+    instructions: Review what the fixer opens.
+```
+
+**`provider`**, **`location`** and **`directory`** are required for every
+agent the template creates: each written on the entry, literally or as a
+`{param}`, or through a param of that type that no entry's field reads,
+which then applies to every agent. The Console fills in none of them. A
+document missing one is still saved, with a warning; the form refuses to
+create from it and names what is missing.
 
 **`name`**. The identifier the agent is created under and addressed by:
 lowercase letters, digits, `.`, `-` and `_`, starting with a letter or
@@ -273,16 +314,13 @@ template stored on a server or pasted into the Console carries it inline.
 
 **`provider`**. The coding agent that runs it. A literal fixes it; `{param}`
 of type `provider` lets the template say how much choice the deployer has.
-When the field is absent and no `provider` param is declared, the form asks,
-with nothing selected: the Console never picks one on its own.
 
 **`location`**. Where it runs. `local` is this computer; otherwise an SSH
-host the Console knows. When absent and no `location` param is declared,
-the agent runs on this computer.
+host the Console knows. A host the Console does not know blocks creation.
 
 **`directory`**. Its working directory on that machine. `{$agents_dir}` and
-`{agent}` are useful here. When absent and no `directory` param is declared,
-the agent gets `{$agents_dir}/{agent}`, shown on the form under Advanced.
+`{agent}` are useful here: `"{$agents_dir}/{agent}"` gives the agent a
+folder of its own under the one the Console keeps agents in.
 
 **`repo`**. A repository the agent works from. The Console clones it
 (shallow) into the directory before the agent first runs; if that fails
@@ -415,9 +453,10 @@ param resolves to `$new`. A document with neither `room:` nor `join:`
 creates the agent and stops.
 
 On the form, a `room` param an agent joins is a switch with the param's
-label, on when its chain resolved to a room and off otherwise. The room
-choice and the room's own params (its messaging app, its members) sit
-under the switch and only while it is on. With `required: false` and no
+label, in its declared place, on when its chain resolved to a room and off
+otherwise. The room choice sits under the switch, only while it is on. The
+room's own params (its messaging app, its members) are shown only while the
+template's room is the one being created. With `required: false` and no
 default the switch starts off, and turning it on offers the template's
 room first; the Switch expert ships that way. With `default: [$new]` it
 starts on.
@@ -439,10 +478,9 @@ form:
     open: false
 ```
 
-Every `input: advanced` and `input: fixed` param of an agent, and the
-agent's directory when the template names none, sit together in one fold
-under the agent's asked inputs. `label` names the fold; `open` says whether
-it starts open. Folded, it shows its values on one line with a Change
+Every `input: advanced` and `input: fixed` param sits in one fold below
+the asked inputs, in declaration order. `label` names the fold; `open` says
+whether it starts open. Folded, it shows its values on one line with a Change
 button, and it opens by itself when something inside it is empty or wrong.
 The block is the Console's; the server ignores it.
 
@@ -465,7 +503,9 @@ documents against (`core/switch_core/template_guide.py`; keep it in step).
   Console-only params are dropped, and the room half runs.
 - **Saving.** An agent saves for its owner, `private` or `shared` (everyone
   reads it, only the saver changes it), and the template records which
-  agent saved it. A name the owner already uses is refused.
+  agent saved it. A name the owner already uses is refused. The reply
+  carries the document's warnings, an agent with no provider for example;
+  the template is saved regardless.
 - **Changing and deleting.** Only the agent that saved a template may change
   or delete it; not its owner's templates, and not another agent's.
 
@@ -480,7 +520,13 @@ document outright: not YAML, empty, or not a mapping. Everything else is a
 warning or an error the deployer sees against the field: an unknown param
 type, a default that is not one of the enum's choices, a `$new` in a
 document with no room, a placeholder no param declares, a param nothing
-uses.
+uses, an agent whose provider, location or directory the document never
+says.
+
+Completeness is warned about on save and enforced on run. A registry keeps
+documents written for other versions of the format, so saving never refuses
+one for what it leaves out; the form, which knows exactly what this Console
+needs, refuses to create from it and names what is missing.
 
 A param field this server does not know is a warning, not an error, since a
 registry holds documents written for newer versions of Switch than the one
