@@ -50,6 +50,8 @@ from switch_core.gateway.provider_verifications import worker_session
 # instead, which says so in the signature.
 _ROUTES_WITH_NO_TENANT_BOUND = {
     ("POST", "/auth/login"),
+    # Self sign-up has no caller either; it writes into tenant zero by name.
+    ("POST", "/auth/signup"),
     ("GET", "/auth/oidc/callback"),
     ("POST", "/tenants/{tenant_id}/switch"),
     # Locks the caller's `users` row, which has no tenant, while it creates a
@@ -81,6 +83,7 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     ("GET", "/auth/oidc/login"),
     ("GET", "/auth/oidc/callback"),
     ("POST", "/auth/login"),
+    ("POST", "/auth/signup"),
     ("POST", "/auth/logout"),
     # A deployment-wide constant — the agent types this build knows about.
     # Nothing tenant-specific to scope it to.

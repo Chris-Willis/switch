@@ -89,11 +89,27 @@ def coded_conflict(code: str, message: str) -> JSONResponse:
     return JSONResponse(status_code=409, content={"detail": message, "code": code})
 
 
+LAUNCH_DISABLED = "Cloud agent launch is not enabled on this server."
+
+
+def hosted_settings(request: Request) -> HostedControllerSettings | None:
+    return cast(
+        HostedControllerSettings | None, request.app.state.hosted_controller_settings
+    )
+
+
 def controller_settings(request: Request) -> HostedControllerSettings:
-    settings = request.app.state.hosted_controller_settings
+    settings = hosted_settings(request)
     if settings is None:
-        raise HTTPException(503, "Cloud agent launch is not enabled on this server.")
-    return cast(HostedControllerSettings, settings)
+        raise HTTPException(503, LAUNCH_DISABLED)
+    return settings
+
+
+def launch_enabled(config: SwitchConfig, settings: HostedControllerSettings) -> bool:
+    """Whether the bound tenant may claim cloud machines on this server."""
+    return (
+        config.hosted_launch_capacity > 0 and settings.tenant_id == require_tenant_id()
+    )
 
 
 class LaunchRequest(BaseModel):
@@ -749,8 +765,8 @@ async def create(
     github: Annotated[GitHubConnections, Depends(get_github)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
 ) -> dict:
-    if config.hosted_launch_capacity == 0 or settings.tenant_id != require_tenant_id():
-        raise HTTPException(503, "Cloud agent launch is not enabled on this server.")
+    if not launch_enabled(config, settings):
+        raise HTTPException(503, LAUNCH_DISABLED)
     try:
         body.icon_url = normalise_icon_url(body.icon_url)
         body.display_name = normalise_display_name(body.display_name)

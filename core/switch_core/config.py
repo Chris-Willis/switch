@@ -127,6 +127,10 @@ class SwitchConfig(BaseSettings):
     gateway_oidc_require_email_verified: bool = True
     # Lets the password login path be disabled (OIDC-only) without code changes.
     gateway_password_login_enabled: bool = True
+    # Open self sign-up with email and password: anyone who can reach the
+    # gateway can create an account in tenant zero. Only takes effect while
+    # password login is enabled.
+    gateway_signup_enabled: bool = False
     hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
     hosted_sessions_per_agent: int = Field(default=8, ge=1, le=100)
     hosted_agents_per_owner: int = Field(default=3, ge=1, le=100)
@@ -799,6 +803,10 @@ class SwitchConfig(BaseSettings):
             and self.gateway_oidc_client_id
             and self.gateway_oidc_client_secret
         )
+
+    @property
+    def gateway_signup_open(self) -> bool:
+        return self.gateway_signup_enabled and self.gateway_password_login_enabled
 
     @property
     def gateway_oidc_metadata_url(self) -> str:

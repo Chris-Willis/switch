@@ -4,12 +4,14 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.config import SwitchConfig
-from switch_core.db.models import User
+from switch_core.db.models import TENANT_ZERO_ID, User
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.hosted_machine_store import HostedMachineConflict
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     get_current_user,
@@ -26,6 +28,8 @@ from switch_core.gateway.dependencies import (
     get_system_session,
     get_user_store,
 )
+from switch_core.gateway.hosted_launches import hosted_settings
+from switch_core.gateway.hosted_machines import MachineUnavailable, ensure_machine
 from switch_core.gateway.schemas import (
     AuthConfigResponse,
     ChangePasswordRequest,
@@ -34,8 +38,13 @@ from switch_core.gateway.schemas import (
     LoginRequest,
     ServerDeclaration,
     SessionUserResponse,
+    SignupMachine,
+    SignupRequest,
+    SignupResponse,
     UserResponse,
 )
+from switch_core.providers.hosted import HostedControllerSettings
+from switch_core.tenant_context import tenant_scope
 from switch_core.version import server_declaration
 
 logger = logging.getLogger(__name__)
@@ -106,6 +115,72 @@ async def login(
     return _session_response(user)
 
 
+async def _prewarm(
+    session: AsyncSession,
+    user_id: str,
+    config: SwitchConfig,
+    settings: HostedControllerSettings | None,
+) -> SignupMachine:
+    try:
+        await ensure_machine(session, user_id, config, settings)
+    except (MachineUnavailable, HostedMachineConflict) as error:
+        await session.rollback()
+        logger.warning(
+            "Signed-up user %s has no cloud machine warming: %s", user_id, error
+        )
+        return SignupMachine(status="unavailable", reason=str(error))
+    await session.commit()
+    return SignupMachine(status="starting", reason=None)
+
+
+@router.post("/auth/signup", status_code=201)
+async def signup(
+    req: SignupRequest,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_system_session)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+    settings: Annotated[HostedControllerSettings | None, Depends(hosted_settings)],
+) -> SignupResponse:
+    """Open self sign-up: a new member of tenant zero, signed in, machine warming.
+
+    No caller exists yet to take a tenant from, so the account lands in tenant
+    zero by name, exactly as an OIDC first sign-in does. The cloud machine is
+    claimed after the account is committed and failing to claim one never
+    fails the sign-up: the response says why instead.
+    """
+    if not config.gateway_signup_open:
+        raise HTTPException(
+            status_code=403, detail="Sign-up is disabled on this server"
+        )
+
+    with tenant_scope(TENANT_ZERO_ID):
+        if await user_store.get_by_email(session, req.email) is not None:
+            raise HTTPException(status_code=409, detail="Email already registered")
+        user = User(
+            name=req.display_name or req.email.split("@")[0],
+            email=req.email,
+            role="user",
+            password_hash=hash_password(req.password),
+        )
+        try:
+            async with session.begin_nested():
+                await user_store.create(session, user)
+        except IntegrityError:
+            raise HTTPException(
+                status_code=409, detail="Email already registered"
+            ) from None
+        await session.commit()
+        logger.info("Signed up user: %s (%s)", user.email, user.id)
+
+        set_session_cookie(
+            response, user, config.jwt_secret_key, config.gateway_cookie_secure, None
+        )
+        signed_in = _session_response(user)
+        machine = await _prewarm(session, user.id, config, settings)
+    return SignupResponse(**signed_in.model_dump(), machine=machine)
+
+
 @router.post("/auth/refresh")
 async def refresh(
     request: Request,
@@ -147,6 +222,7 @@ async def auth_config(
     # exists to decide which login methods to offer.
     return AuthConfigResponse(
         password_login_enabled=config.gateway_password_login_enabled,
+        signup_enabled=config.gateway_signup_open,
         oidc_enabled=config.gateway_oidc_enabled,
         oidc_provider_label=config.gateway_oidc_provider_label,
     )

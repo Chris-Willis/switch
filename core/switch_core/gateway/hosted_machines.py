@@ -8,13 +8,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.api.hosted_worker_routes import post_mailbox_notices
 from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.config import SwitchConfig
 from switch_core.db.models import HostedMachine, User, require_tenant_id
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
-from switch_core.db.stores.hosted_machine_store import HostedMachineStore, idle_sleeping
+from switch_core.db.stores.hosted_machine_store import (
+    HostedMachineConflict,
+    HostedMachineStore,
+    idle_sleeping,
+    lock_launches,
+    owner_stopped,
+)
 from switch_core.db.stores.hosted_mailbox_store import HostedMailboxStore, MailboxNotice
 from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_protocol, get_session
-from switch_core.gateway.hosted_launches import ring_mailbox_cancel
+from switch_core.gateway.dependencies import get_config, get_protocol, get_session
+from switch_core.gateway.hosted_launches import (
+    LAUNCH_DISABLED,
+    hosted_settings,
+    launch_enabled,
+    ring_mailbox_cancel,
+)
+from switch_core.providers.hosted import HostedControllerSettings
 
 router = APIRouter(prefix="/hosted-machines")
 
@@ -55,6 +68,41 @@ async def machine_summary(session: AsyncSession, machine: HostedMachine) -> dict
     }
 
 
+class MachineUnavailable(Exception):
+    """This server offers the bound tenant no cloud machines; the message is the 503 detail."""
+
+
+async def ensure_machine(
+    session: AsyncSession,
+    owner_id: str,
+    config: SwitchConfig,
+    settings: HostedControllerSettings | None,
+) -> HostedMachine:
+    """The owner's machine, claimed and started so it warms before an agent needs it.
+
+    A machine its owner stopped stays stopped and is returned as it is.
+    Raises `MachineUnavailable` when the server offers the tenant no cloud
+    machines and `HostedMachineConflict` when none can be had. The caller
+    commits.
+    """
+    if settings is None or not launch_enabled(config, settings):
+        raise MachineUnavailable(LAUNCH_DISABLED)
+    machines = HostedMachineStore()
+    await lock_launches(session)
+    existing = await machines.live_for_owner(session, owner_id)
+    if existing is not None:
+        existing = await machines.locked(session, existing.id)
+        if existing is not None and owner_stopped(existing):
+            return existing
+    return await machines.claim(
+        session,
+        owner_id=owner_id,
+        slots=list(settings.machine_slots),
+        capacity=config.hosted_launch_capacity,
+        now=datetime.now(UTC),
+    )
+
+
 async def _owned(
     session: AsyncSession, machine_id: str, owner_id: str
 ) -> HostedMachine:
@@ -79,6 +127,23 @@ async def owned_machines(
         .order_by(HostedMachine.created_at)
     )
     return {"machines": [await machine_summary(session, row) for row in machines]}
+
+
+@router.post("/ensure")
+async def ensure(
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+    settings: Annotated[HostedControllerSettings | None, Depends(hosted_settings)],
+) -> dict:
+    try:
+        machine = await ensure_machine(session, user.id, config, settings)
+    except MachineUnavailable as error:
+        raise HTTPException(503, str(error)) from None
+    except HostedMachineConflict as error:
+        raise HTTPException(409, str(error)) from None
+    await session.commit()
+    return await machine_summary(session, machine)
 
 
 @router.get("/{machine_id}")
