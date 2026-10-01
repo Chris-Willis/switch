@@ -617,22 +617,20 @@ class AgentClient(ClientBase[ClientConfig]):
                 if self._waking_notice_revisions.get(meta.room_id) != machine.revision:
                     self._waking_notice_revisions[meta.room_id] = machine.revision
                     unavailable = _WAKING_MESSAGE
-            elif unavailable is not None and launch is not None:
-                stated = _hosted_unavailable(launch, machine)
-                if stated is not None:
-                    unavailable = stated
-                elif attached_worker_for(self._connections, launch) is None:
-                    # Once per room per revision, like the waking notice: the
-                    # mailbox holds every message until the worker attaches.
-                    unavailable = None
-                    if (
-                        self._unreachable_notice_revisions.get(meta.room_id)
-                        != launch.revision
-                    ):
-                        self._unreachable_notice_revisions[meta.room_id] = (
-                            launch.revision
-                        )
-                        unavailable = NOTICE_MESSAGES["unreachable"]
+            elif (
+                unavailable is not None
+                and launch is not None
+                and attached_worker_for(self._connections, launch) is None
+            ):
+                # Once per room per revision, like the waking notice: the
+                # mailbox holds every message until the worker attaches.
+                unavailable = None
+                if (
+                    self._unreachable_notice_revisions.get(meta.room_id)
+                    != launch.revision
+                ):
+                    self._unreachable_notice_revisions[meta.room_id] = launch.revision
+                    unavailable = NOTICE_MESSAGES["unreachable"]
 
         if refusal is not None:
             await self._post_auto_reply(room.room_id, event, refusal, reply_thread_root)
@@ -1070,8 +1068,11 @@ class AgentClient(ClientBase[ClientConfig]):
                 if (
                     launch is not None
                     and entry is not None
-                    and _takes_mail(launch, machine)
+                    and not _takes_mail(launch, machine)
                 ):
+                    refusal = _hosted_unavailable(launch, machine)
+                    written = False
+                elif launch is not None and entry is not None:
                     worker = attached_worker_for(self._connections, launch)
                     try:
                         written = await HostedMailboxStore().write(

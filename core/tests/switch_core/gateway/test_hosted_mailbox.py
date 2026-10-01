@@ -23,9 +23,13 @@ from switch_core.bridges.agent.protocol.types import (
     TaskDelegatePayload,
 )
 from switch_core.clients.agent_client import (
+    _HOSTED_ERROR_MESSAGE,
     _HOSTED_MACHINE_ERROR_MESSAGE,
     _HOSTED_MACHINE_STOPPED_MESSAGE,
+    _HOSTED_REMOVED_MESSAGE,
+    _HOSTED_STOPPED_MESSAGE,
     AgentClient,
+    _GateOutcome,
     _hosted_unavailable,
 )
 from switch_core.db.models import (
@@ -42,6 +46,8 @@ from switch_core.db.models import (
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.hosted_mailbox_store import MAILBOX_LIMIT, HostedMailboxStore
+from switch_core.events import TaskDelegate
+from switch_core.transport import InboundMedia, InboundMessage, RoomRef
 from tests.switch_core.gateway.test_hosted_workers import (  # noqa: F401
     _agent,
     _first_frames,
@@ -387,18 +393,18 @@ async def test_commands_are_never_written(mailbox_app):
 
 
 @pytest.mark.parametrize(
-    "state",
+    ("state", "refusal"),
     [
-        {"desired_state": "stopped", "state": "stopped"},
-        {"desired_state": "deleted", "state": "deleting"},
-        {"state": "error"},
+        ({"desired_state": "stopped", "state": "stopped"}, _HOSTED_STOPPED_MESSAGE),
+        ({"desired_state": "deleted", "state": "deleting"}, _HOSTED_REMOVED_MESSAGE),
+        ({"state": "error"}, _HOSTED_ERROR_MESSAGE),
     ],
 )
-async def test_not_written_when_stopped_deleted_or_failed(mailbox_app, state):
+async def test_not_written_when_stopped_deleted_or_failed(mailbox_app, state, refusal):
     app = mailbox_app
     await set_launch(app, **state)
     noted = await address(app, addressed(app.rooms[0], "$m1"))
-    assert noted.refusal is None
+    assert (noted.refusal, noted.deliver) == (refusal, False)
     assert await rows(app) == {}
 
 
@@ -784,6 +790,148 @@ async def test_mention_to_an_errored_running_machine_is_refused_not_queued(
         "running",
         2,
     )
+
+
+async def agent_client(app) -> SimpleNamespace:
+    """An `AgentClient` addressed by everything, with no live session, that
+    records what it posts and what it hands the live buffer."""
+    agent = await _agent(app.factory, app.agent_id)
+    meta = SimpleNamespace(
+        room_id=app.rooms[0], name="r0", bridge_id=None, channel_type=None
+    )
+    posted: list[str] = []
+    enqueued: list[AgentEvent] = []
+
+    async def send_message(_room_id: str, body: str, **_kwargs: Any) -> str:
+        posted.append(body)
+        return "$sent"
+
+    async def resolve_room_meta(_matrix_room_id: str) -> Any:
+        return meta
+
+    async def yes(*_args: Any) -> bool:
+        return True
+
+    async def no(*_args: Any) -> bool:
+        return False
+
+    async def fresh_agent(_session: Any) -> Any:
+        return agent
+
+    async def gate_addressed(*_args: Any) -> _GateOutcome:
+        return _GateOutcome(addressed=True, refusal=None)
+
+    async def reply_when_unavailable_here(*_args: Any) -> str:
+        return "I don't have a session connected to this room."
+
+    client = SimpleNamespace(
+        agent=agent,
+        _hosted_launch_store=HostedLaunchStore(),
+        session_factory=app.factory,
+        tenant_id=require_tenant_id(),
+        _connections=app.service.connections,
+        _event_buffer=SimpleNamespace(
+            boot=app.service.event_buffer.boot,
+            enqueue=lambda _agent_id, _room_id, event: enqueued.append(event),
+        ),
+        _resolve_room_meta=resolve_room_meta,
+        _addressed=yes,
+        _addressed_without_lookup=lambda _event, _meta: True,
+        _compute_addressed=yes,
+        _fresh_agent=fresh_agent,
+        _gate_addressed=gate_addressed,
+        _is_available=no,
+        _reply_when_unavailable_here=reply_when_unavailable_here,
+        _triggered_by_auto_reply=AgentClient._triggered_by_auto_reply,
+        _waking_notice_revisions={},
+        _unreachable_notice_revisions={},
+        send_message=send_message,
+        posted=posted,
+        enqueued=enqueued,
+    )
+    for name in (
+        "_note_hosted_addressed",
+        "_emit_media",
+        "_post_auto_reply",
+        "_sender_handle",
+    ):
+        setattr(client, name, getattr(AgentClient, name).__get__(client))
+    return client
+
+
+async def error_the_running_machine(app) -> None:
+    await set_machine(
+        app.factory,
+        app.machine_id,
+        desired_state="running",
+        state="error",
+        revision=2,
+    )
+
+
+async def test_media_to_an_errored_running_machine_is_refused_not_queued(
+    mailbox_app,
+):
+    app = mailbox_app
+    await error_the_running_machine(app)
+    client = await agent_client(app)
+    media = InboundMedia(
+        room_id="!room:example.com",
+        event_id="$m1",
+        sender="@someone:example.com",
+        timestamp=1700000000000,
+        content={"msgtype": "m.file", "body": "notes.md", "sender_name": "someone"},
+        body="notes.md",
+        sender_name="someone",
+        msgtype="m.file",
+        uri="mxc://example.com/abc",
+        mimetype="text/markdown",
+        size=5,
+    )
+    await AgentClient.on_media(client, RoomRef(room_id="!room:example.com"), media)  # type: ignore[arg-type]
+    assert await rows(app) == {}
+    assert client.posted == [f"@someone {_HOSTED_MACHINE_ERROR_MESSAGE}"]
+    assert client.enqueued == []
+
+
+async def test_task_delegate_to_an_errored_running_machine_is_refused(mailbox_app):
+    app = mailbox_app
+    await error_the_running_machine(app)
+    client = await agent_client(app)
+    delegate = TaskDelegate(
+        task_id="task-1",
+        requester_agent_id="agent-a",
+        performer_agent_id=app.agent_id,
+        summary="Do it",
+        description="",
+    )
+    await AgentClient.on_task_delegate(
+        client,  # type: ignore[arg-type]
+        RoomRef(room_id="!room:example.com"),
+        delegate,
+    )
+    assert await rows(app) == {}
+    assert client.posted == [_HOSTED_MACHINE_ERROR_MESSAGE]
+    assert client.enqueued == []
+
+
+async def test_mention_to_an_errored_running_machine_is_answered_once(mailbox_app):
+    app = mailbox_app
+    await error_the_running_machine(app)
+    client = await agent_client(app)
+    message = InboundMessage(
+        room_id="!room:example.com",
+        event_id="$m1",
+        sender="@someone:example.com",
+        timestamp=1700000000000,
+        content={"sender_name": "someone"},
+        body="@agent hello",
+        sender_name="someone",
+    )
+    await AgentClient.on_message(client, RoomRef(room_id="!room:example.com"), message)  # type: ignore[arg-type]
+    assert await rows(app) == {}
+    assert client.posted == [f"@someone {_HOSTED_MACHINE_ERROR_MESSAGE}"]
+    assert client.enqueued == []
 
 
 def fail_first_send(app) -> None:

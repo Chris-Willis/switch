@@ -20,6 +20,8 @@ from switch_core.clients.agent_client import (
     AgentClient,
     HostedNote,
     _GateOutcome,
+    _hosted_unavailable,
+    _takes_mail,
 )
 from switch_core.transport import InboundMessage, RoomRef
 
@@ -305,14 +307,21 @@ def _hosted(
     fake = _fake_self(
         send_message, unavailable_reply="cd /data/workspace && claude ..."
     )
+    hosted_launch = SimpleNamespace(
+        id="launch-1", agent_id="agent-1", revision=8, **launch
+    )
+    hosted_machine = SimpleNamespace(revision=3, **machine)
+    refusal = (
+        None
+        if _takes_mail(hosted_launch, hosted_machine)  # type: ignore[arg-type]
+        else _hosted_unavailable(hosted_launch, hosted_machine)  # type: ignore[arg-type]
+    )
     fake._note_hosted_addressed = AsyncMock(
         return_value=HostedNote(
-            launch=SimpleNamespace(  # type: ignore[arg-type]
-                id="launch-1", agent_id="agent-1", revision=8, **launch
-            ),
-            machine=SimpleNamespace(revision=3, **machine),  # type: ignore[arg-type]
-            refusal=None,
-            deliver=True,
+            launch=hosted_launch,  # type: ignore[arg-type]
+            machine=hosted_machine,  # type: ignore[arg-type]
+            refusal=refusal,
+            deliver=refusal is None,
         )
     )
     fake._waking_notice_revisions = {}
