@@ -28,6 +28,7 @@ from switch_core.clients.agent_client import (
     _HOSTED_MACHINE_STOPPED_MESSAGE,
     _HOSTED_REMOVED_MESSAGE,
     _HOSTED_STOPPED_MESSAGE,
+    AUTO_REPLY_FLAG,
     AgentClient,
     _GateOutcome,
     _hosted_unavailable,
@@ -931,6 +932,41 @@ async def test_mention_to_an_errored_running_machine_is_answered_once(mailbox_ap
     await AgentClient.on_message(client, RoomRef(room_id="!room:example.com"), message)  # type: ignore[arg-type]
     assert await rows(app) == {}
     assert client.posted == [f"@someone {_HOSTED_MACHINE_ERROR_MESSAGE}"]
+    assert client.enqueued == []
+
+
+@pytest.mark.parametrize(
+    ("content", "posted"),
+    [
+        ({"sender_name": "other"}, [f"@other {_HOSTED_MACHINE_STOPPED_MESSAGE}"]),
+        ({"sender_name": "other", AUTO_REPLY_FLAG: True}, []),
+    ],
+)
+async def test_auto_reply_to_an_owner_stopped_machine_is_not_answered(
+    mailbox_app, content, posted
+):
+    app = mailbox_app
+    await set_machine(
+        app.factory,
+        app.machine_id,
+        desired_state="stopped",
+        stop_reason="owner",
+        state="stopped",
+        revision=2,
+    )
+    client = await agent_client(app)
+    message = InboundMessage(
+        room_id="!room:example.com",
+        event_id="$m1",
+        sender="@other:example.com",
+        timestamp=1700000000000,
+        content=content,
+        body=f"@agent {_HOSTED_MACHINE_STOPPED_MESSAGE}",
+        sender_name="other",
+    )
+    await AgentClient.on_message(client, RoomRef(room_id="!room:example.com"), message)  # type: ignore[arg-type]
+    assert await rows(app) == {}
+    assert client.posted == posted
     assert client.enqueued == []
 
 

@@ -606,7 +606,9 @@ class AgentClient(ClientBase[ClientConfig]):
             launch = None if hosted is None else hosted.launch
             machine = None if hosted is None else hosted.machine
             if hosted is not None and hosted.refusal is not None:
-                unavailable = hosted.refusal
+                unavailable = (
+                    None if self._triggered_by_auto_reply(event) else hosted.refusal
+                )
             elif (
                 unavailable is not None
                 and launch is not None
