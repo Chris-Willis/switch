@@ -113,6 +113,7 @@ async def test_with_the_sse_accept_header_it_opens_a_connection() -> None:
     assert resp.media_type == "text/event-stream"
     # Buffering proxies would defeat the point of a push channel.
     assert resp.headers["x-accel-buffering"] == "no"
+    assert resp.headers["connection"] == "keep-alive"
     assert not protocol.polled
 
     conn = protocol.connections.get("c1")

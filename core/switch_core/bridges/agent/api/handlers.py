@@ -596,7 +596,7 @@ async def renew_role_lease(
     and auto-releases shortly after it stops renewing. `held` is False when
     the caller holds no lease, and it may then stop renewing.
 
-    `X-Switch-AgentConnection-Id` says which of the agent's holders is beating.
+    `X-Switch-Connection-Id` says which of the agent's holders is beating.
     Only a self-renewing holder beats at all — a seat held by an SDK session
     is kept alive by that session's own host lease — so the connection is the
     whole of the identity needed here, and no session selector is read.
@@ -921,7 +921,7 @@ async def _open_event_stream(
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            "AgentConnection": "keep-alive",
+            "Connection": "keep-alive",
             # Proxies that buffer would defeat the point of a push channel.
             "X-Accel-Buffering": "no",
         },

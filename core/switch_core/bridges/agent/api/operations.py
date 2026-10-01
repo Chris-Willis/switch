@@ -184,7 +184,7 @@ async def resolve_caller(
                 status_code=400,
                 detail=(
                     "a session selector names the connection it calls over; "
-                    "send X-Switch-AgentConnection-Id with X-Switch-Session-Id"
+                    "send X-Switch-Connection-Id with X-Switch-Session-Id"
                 ),
             )
         caller = CallerSession(
@@ -236,7 +236,7 @@ async def post_operation(
 
     The caller says what it is bound to, and that is what an operation
     depending on the caller's room binding resolves it from. Either
-    `X-Switch-AgentConnection-Id`, naming an open connection, or the session
+    `X-Switch-Connection-Id`, naming an open connection, or the session
     selector — `X-Switch-Session-Id` with `X-Switch-Session-Host-Id` and
     `X-Switch-Session-Epoch` — naming the session that bound one. Both are
     read from headers rather than the body, and both are checked against the
