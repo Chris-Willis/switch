@@ -245,7 +245,6 @@ it('reads a sleeping machine before the launch and offers no session on it', asy
 
   expect(el.textContent).toMatch(/Cloud · Sleeping/);
   expect(button(el, /new session/i)).toBeUndefined();
-  expect(button(el, /add to rooms/i)).toBeUndefined();
   expect(button(el, /^remove$/i)).toBeDefined();
 });
 
@@ -301,6 +300,44 @@ it('stops a running agent from its menu, not from the card', async () => {
     'stop',
     4
   );
+});
+
+it.each([
+  ['asleep', sleepingMachine(), false],
+  [
+    'stopped by its owner',
+    { ...sleepingMachine(), stop_reason: 'owner', sleeping: false } satisfies CloudMachine,
+    false,
+  ],
+  [
+    'ready',
+    {
+      ...sleepingMachine(),
+      state: 'ready',
+      desired_state: 'running',
+      stop_reason: null,
+      sleeping: false,
+    } satisfies CloudMachine,
+    true,
+  ],
+])('offers Stop agent only while its machine is awake: %s', async (_, machine, offered) => {
+  const base = agent();
+  sdkHost.cloudAgents.mockResolvedValue([
+    { ...base, launch: { ...base.launch, machine_id: machine.machine_id }, machine },
+  ]);
+  sdkHost.cloudMachines.mockResolvedValue([machine]);
+  const el = await render();
+
+  await openMenu(el);
+  expect(menuItem('Stop agent') !== undefined).toBe(offered);
+});
+
+it('offers no Add to rooms on a usable agent', async () => {
+  sdkHost.cloudAgents.mockResolvedValue([agent()]);
+  const el = await render();
+
+  expect(button(el, /new session/i)).toBeDefined();
+  expect(button(el, /add to rooms/i)).toBeUndefined();
 });
 
 function actions(el: HTMLElement): string[] {

@@ -225,9 +225,7 @@ const CloudAgentCard = observer(function CloudAgentCard({
       setPending(false);
     }
   };
-  const addToRooms = useShowModal('addAgentToRoomModal');
   const editAgent = useShowModal('editCloudAgentModal');
-  const { toastPromise } = useToast();
   const iconUrl = useAgentIconUrl(serverId, launch.agent_id);
   const phase = launch.desired_state === 'deleted' ? null : cloudAgentPhase(launch, listed.machine);
   const stateLabel =
@@ -256,26 +254,15 @@ const CloudAgentCard = observer(function CloudAgentCard({
                   deleted: 'Removed',
                 }[launch.state];
   const usable = launch.agent_id !== null && launch.state === 'ready' && phase === null;
+  const machineDown = listed.machine
+    ? listed.machine.sleeping || listed.machine.desired_state === 'stopped'
+    : launch.sleeping;
   const stoppable =
+    !machineDown &&
     launch.desired_state === 'running' &&
     launch.agent_id !== null &&
     ['ready', 'provisioning', 'queued', 'error'].includes(launch.state);
   const crashed = launch.process_state === 'crashed' || launch.error_code === 'agent_crashed';
-  const add = () => {
-    if (!launch.agent_id) return;
-    const agentId = launch.agent_id;
-    void toastPromise(
-      switchRoomsStore.fetchAgentRooms(serverId, agentId).then((rooms) => {
-        if (rooms === null) throw new Error('Could not load the agent’s rooms.');
-        addToRooms({ serverId, switchAgentId: agentId, agentName: launch.name });
-      }),
-      {
-        loading: 'Loading rooms…',
-        success: 'Choose rooms for the agent',
-        error: (error) => failureText(error, 'Could not load the agent’s rooms.'),
-      }
-    );
-  };
   return (
     <div className="group relative flex min-h-[184px] flex-col rounded-[11px] bg-[var(--surface-2)] p-[14px]">
       <div className="absolute top-2 right-2 flex items-center opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
@@ -394,12 +381,6 @@ const CloudAgentCard = observer(function CloudAgentCard({
             Cancel
           </Button>
         </div>
-      )}
-      {usable && (
-        <Button variant="ghost" size="sm" className="mt-2" onClick={add}>
-          <Plus className="size-3" />
-          Add to rooms
-        </Button>
       )}
     </div>
   );
