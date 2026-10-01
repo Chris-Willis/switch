@@ -11,7 +11,7 @@ stood when this migration was written, copied rather than imported so a later
 edit to it cannot change what this revision means.
 
 Revision ID: e4a7c1d93b25
-Revises: 7d3f5a19e2c8
+Revises: a9e1c3f75b20
 Create Date: 2026-10-01 00:00:00.000000
 
 """
@@ -23,7 +23,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "e4a7c1d93b25"
-down_revision: str | None = "7d3f5a19e2c8"
+down_revision: str | None = "a9e1c3f75b20"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
