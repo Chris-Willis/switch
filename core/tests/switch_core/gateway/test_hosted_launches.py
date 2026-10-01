@@ -817,7 +817,7 @@ async def test_session_operation_is_queued_on_a_ready_machine_and_replayed(
 async def _restartable(app, action: str, stop_reason: str) -> dict:
     """A launch that `action` accepts, on a machine stopped for `stop_reason`."""
     created = (await app.client.post("/hosted-launches", json=body())).json()
-    launch_state = {"restart": "ready", "retry": "error"}[action]
+    launch_state = {"start": "stopped", "restart": "ready", "retry": "error"}[action]
     await _update(app.factory, HostedLaunch, created["request_id"], state=launch_state)
     await _update(
         app.factory,
@@ -852,7 +852,7 @@ async def test_restart_and_retry_do_not_start_an_owner_stopped_machine(
     assert (await _launch(app.factory, created["request_id"])).revision == 1
 
 
-@pytest.mark.parametrize("action", ["restart", "retry"])
+@pytest.mark.parametrize("action", ["start", "restart", "retry"])
 @pytest.mark.parametrize(
     "error_code,message",
     [

@@ -352,6 +352,7 @@ class HostedLaunchStore:
         now = datetime.now(UTC)
         if (
             idle_sleeping(machine)
+            and machine.state != "error"
             and launch.desired_state == "running"
             and launch.state != "error"
         ):

@@ -466,7 +466,7 @@ async def lifecycle(
         raise HTTPException(409, "Only a ready worker can be restarted.")
     if body.action == "retry" and launch.state != "error":
         raise HTTPException(409, "Only a worker in error can be retried.")
-    if body.action in ("restart", "retry") and machine.state == "error":
+    if body.action in ("start", "restart", "retry") and machine.state == "error":
         return coded_conflict("machine_error", machine_error_detail(machine))
     if body.action in ("restart", "retry") and owner_stopped(machine):
         return coded_conflict("machine_stopped", MACHINE_STOPPED)

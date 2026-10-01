@@ -240,12 +240,13 @@ def _takes_mail(launch: HostedLaunch, machine: HostedMachine | None) -> bool:
     """Whether an addressed event goes into the launch's wake mailbox.
 
     Not after an explicit Stop of the agent or its machine, a delete, or an
-    error: the unavailable reply tells the room instead. An idle-sleeping
-    machine takes mail; addressing it wakes it.
+    error of the launch or its machine: the unavailable reply tells the room
+    instead. An idle-sleeping machine takes mail; addressing it wakes it.
     """
     return (
         launch.desired_state == "running"
         and launch.state != "error"
+        and not (machine is not None and machine.state == "error")
         and not (machine is not None and owner_stopped(machine))
     )
 

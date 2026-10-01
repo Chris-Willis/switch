@@ -250,6 +250,25 @@ async def test_addressing_never_wakes_a_machine_its_owner_stopped(launches):
     assert datetime.now(UTC) - launch.active_at > timedelta(minutes=59)
 
 
+async def test_addressing_never_wakes_an_errored_idle_sleeping_machine(launches):
+    store, factory = launches
+    await reserve(store, factory, "request-1", "helper")
+    launch, machine = await address(
+        store,
+        factory,
+        "request-1",
+        machine_state={**IDLE_SLEEPING, "state": "error"},
+        state="ready",
+    )
+    assert (
+        machine.state,
+        machine.desired_state,
+        machine.stop_reason,
+        machine.revision,
+    ) == ("error", "stopped", "idle", 2)
+    assert not is_waking(launch, machine)
+
+
 @pytest.mark.parametrize("desired", ["stopped", "deleted"])
 async def test_addressing_never_wakes_for_a_launch_its_owner_stopped(launches, desired):
     store, factory = launches

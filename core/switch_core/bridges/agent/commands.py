@@ -410,6 +410,7 @@ async def _reply_hosted_asleep(
     A sleeping worker holds no placement, so this is decided from the launch,
     not from whether a session was placed. `!reset` wakes the worker but is
     not queued: a destructive command is never run later than it was asked.
+    A machine in error is never woken; the room is told of the error instead.
     Returns False when the worker is awake, so the ordinary reply applies.
     """
     async with tenant_session(client.session_factory, client.tenant_id) as session:
@@ -419,12 +420,17 @@ async def _reply_hosted_asleep(
             if launch is None or launch.machine_id is None
             else await session.get(HostedMachine, (agent.tenant_id, launch.machine_id))
         )
-    if (
-        launch is None
-        or machine is None
-        or not idle_sleeping(machine)
-        or launch.desired_state != "running"
-    ):
+    if launch is None or machine is None or launch.desired_state != "running":
+        return False
+    if machine.state == "error":
+        await _reply(
+            client,
+            room,
+            event,
+            f"@{agent.name}'s cloud machine has a problem, so the {command} was not sent. Its owner can check it in Switch Console.",
+        )
+        return True
+    if not idle_sleeping(machine):
         return False
     if command == "reset":
         hosted = await client._note_hosted_addressed(agent, None)

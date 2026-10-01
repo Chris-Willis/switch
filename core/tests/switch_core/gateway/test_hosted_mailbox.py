@@ -762,6 +762,30 @@ async def test_mention_to_an_errored_owner_stopped_machine_reports_machine_error
     assert machine.state == "error"
 
 
+async def test_mention_to_an_errored_running_machine_is_refused_not_queued(
+    mailbox_app,
+):
+    app = mailbox_app
+    await set_machine(
+        app.factory,
+        app.machine_id,
+        desired_state="running",
+        state="error",
+        revision=2,
+    )
+    noted = await address(app, addressed(app.rooms[0], "$m1"))
+    assert await rows(app) == {}
+    assert _hosted_unavailable(noted.launch, noted.machine) == (
+        _HOSTED_MACHINE_ERROR_MESSAGE
+    )
+    machine = await _machine(app.factory, app.machine_id)
+    assert (machine.state, machine.desired_state, machine.revision) == (
+        "error",
+        "running",
+        2,
+    )
+
+
 def fail_first_send(app) -> None:
     """The homeserver refuses the next notice once, then takes them again."""
     send = app.service.send_message

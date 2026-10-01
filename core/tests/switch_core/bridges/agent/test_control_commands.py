@@ -385,9 +385,12 @@ def test_an_interrupt_names_the_current_turn() -> None:
     assert frame["body"] == {"type": "turn.interrupt", "turnId": "current"}
 
 
-def _patch_launch(monkeypatch: pytest.MonkeyPatch, sleeping: bool) -> None:
+def _patch_launch(
+    monkeypatch: pytest.MonkeyPatch, sleeping: bool, errored: bool = False
+) -> None:
     launch = SimpleNamespace(desired_state="running", machine_id="machine-1")
     machine = SimpleNamespace(
+        state="error" if errored else "stopped" if sleeping else "ready",
         desired_state="stopped" if sleeping else "running",
         stop_reason="idle" if sleeping else None,
     )
@@ -471,6 +474,38 @@ async def test_reset_whose_worker_went_away_after_placement_still_wakes(
 
     assert woke == ["agent-1"]
     assert "waking up" in reply.bodies[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sleeping", [True, False])
+async def test_reset_of_a_hosted_agent_whose_machine_is_in_error_does_not_wake_it(
+    monkeypatch: pytest.MonkeyPatch, sleeping: bool
+) -> None:
+    reply = _Reply()
+    woke: list[Any] = []
+    enqueue: list[Any] = []
+    monkeypatch.setattr(commands, "_reply", reply)
+    _patch_launch(monkeypatch, sleeping=sleeping, errored=True)
+
+    await _cmd_reset(
+        _client(
+            reply,
+            command_level="session_dependent",
+            enqueue=enqueue,
+            hosted=True,
+            woke=woke,
+        ),
+        SimpleNamespace(room_id="!m:server"),
+        _event(),
+        False,
+    )
+
+    assert woke == []
+    assert enqueue == []
+    assert reply.bodies == [
+        "@cc's cloud machine has a problem, so the reset was not sent. Its owner "
+        "can check it in Switch Console."
+    ]
 
 
 @pytest.mark.asyncio
