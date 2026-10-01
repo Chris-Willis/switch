@@ -14,8 +14,8 @@ export function ServerPage({
 }: {
   title: string;
   description: string;
-  /** Header-level action, where the page has one. Agents has none: its add
-   * affordance is the first tile of its grid. */
+  /** Header-level action, where the page has one. Agents' add affordance is
+   * not one: it is the first tile of its grid. */
   action?: ReactNode;
   children: ReactNode;
 }) {

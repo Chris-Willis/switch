@@ -5,6 +5,7 @@ import {
   ExternalLink,
   MoreVertical,
   Pencil,
+  Plug,
   Plus,
   RotateCcw,
   Trash2,
@@ -70,6 +71,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
   const serverId = useServerId();
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   const showAddAgentModal = useShowModal('addAgentModal');
+  const showConnectionsModal = useShowModal('connectionsModal');
 
   // The sidebar reads the same two things, but this page must not be right only
   // when the sidebar happened to be open first.
@@ -85,6 +87,14 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
     <ServerPage
       title="Your Agents"
       description={`Agents on ${server?.name ?? 'this server'}. Add one, set how it is addressed, and start sessions.`}
+      action={
+        cloud.data && (
+          <Button variant="outline" size="sm" onClick={() => showConnectionsModal({ serverId })}>
+            <Plug className="size-4" />
+            Connections
+          </Button>
+        )
+      }
     >
       {machines.data
         ?.filter((machine) => machine.state !== 'deleted')

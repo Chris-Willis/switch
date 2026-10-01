@@ -39,7 +39,12 @@ import { LogTail } from './log-tail';
 import { ManagedProviderConnectionSequence } from './managed-provider-connection-step';
 import { ManagedProvidersStep } from './managed-providers-step';
 import { remoteServerStore } from './remote-server-store';
-import { ServerSignInFields, useServerSignIn } from './server-sign-in';
+import {
+  machineUnavailableReason,
+  type SignedIn,
+  ServerSignInFields,
+  useServerSignIn,
+} from './server-sign-in';
 import { switchServersStore } from './switch-servers-store';
 
 /**
@@ -204,6 +209,12 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   // it. Null in edit mode and on the two managed paths, which is what
   // distinguishes the standalone edit form from step 2 of the wizard.
   const [connected, setConnected] = useState<SwitchServer | null>(null);
+  // Why the account just created has no cloud machine warming, carried into
+  // the managed steps so it is not lost with the sign-in form.
+  const [machineUnavailable, setMachineUnavailable] = useState<string | null>(null);
+  const machineNotice = machineUnavailable && (
+    <MachineUnavailableNotice reason={machineUnavailable} />
+  );
   const { navigate } = useNavigate();
 
   /**
@@ -264,49 +275,61 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   }
   if (step === 'managedClaude' && connected) {
     return (
-      <ManagedProviderConnectionSequence
-        serverId={connected.id}
-        providers={selectedProviders}
-        index={providerIndex}
-        onIndexChange={setProviderIndex}
-        onBack={() => goToStep('managedReady')}
-        onDone={() => goToStep('managedGitHub')}
-        doneStepName="GitHub"
-      />
+      <>
+        {machineNotice}
+        <ManagedProviderConnectionSequence
+          serverId={connected.id}
+          providers={selectedProviders}
+          index={providerIndex}
+          onIndexChange={setProviderIndex}
+          onBack={() => goToStep('managedReady')}
+          onDone={() => goToStep('managedGitHub')}
+          doneStepName="GitHub"
+        />
+      </>
     );
   }
   if (step === 'managedAgent' && connected) {
     return (
-      <NewAgentForm
-        entryPoint="onboarding"
-        initialRunLocation="cloud"
-        serverId={connected.id}
-        onBack={() => goToStep('managedGitHub')}
-        onClose={() => finish(connected.id)}
-      />
+      <>
+        {machineNotice}
+        <NewAgentForm
+          entryPoint="onboarding"
+          initialRunLocation="cloud"
+          serverId={connected.id}
+          onBack={() => goToStep('managedGitHub')}
+          onClose={() => finish(connected.id)}
+        />
+      </>
     );
   }
   if (step === 'managedGitHub' && connected) {
     return (
-      <ConnectionsStep
-        onContinue={() => goToStep('managedAgent')}
-        serverId={connected.id}
-        onBack={() => goToStep('managedClaude')}
-        onSkip={() => finish(connected.id)}
-      />
+      <>
+        {machineNotice}
+        <ConnectionsStep
+          onContinue={() => goToStep('managedAgent')}
+          serverId={connected.id}
+          onBack={() => goToStep('managedClaude')}
+          onSkip={() => finish(connected.id)}
+        />
+      </>
     );
   }
   if (step === 'managedReady' && connected) {
     return (
-      <ManagedProvidersStep
-        selected={selectedProviders}
-        onSelectionChange={setSelectedProviders}
-        onContinue={() => {
-          setProviderIndex(0);
-          goToStep('managedClaude');
-        }}
-        onSkip={() => finish(connected.id)}
-      />
+      <>
+        {machineNotice}
+        <ManagedProvidersStep
+          selected={selectedProviders}
+          onSelectionChange={setSelectedProviders}
+          onContinue={() => {
+            setProviderIndex(0);
+            goToStep('managedClaude');
+          }}
+          onSkip={() => finish(connected.id)}
+        />
+      </>
     );
   }
   if (step === 'signIn' && connected) {
@@ -316,7 +339,10 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
         managed={choice === 'managed'}
         onBack={() => goToStep(choice === 'managed' ? 'managed' : 'external')}
         onClose={props.onClose}
-        onSignedIn={() => goToStep(choice === 'managed' ? 'managedReady' : 'linkAccounts')}
+        onSignedIn={(signedIn) => {
+          setMachineUnavailable(machineUnavailableReason(signedIn));
+          goToStep(choice === 'managed' ? 'managedReady' : 'linkAccounts');
+        }}
       />
     );
   }
@@ -472,7 +498,8 @@ function ManagedServerStep({
           ))}
         </ol>
         <p className="text-xs text-foreground-muted">
-          Signing in does not start an agent or allocate a worker. Agent setup comes next.
+          Signing in starts warming your cloud machine but does not start an agent. Agent setup
+          comes next.
         </p>
         {error && (
           <p role="alert" className="text-sm text-destructive">
@@ -1060,24 +1087,32 @@ const SignInStep = observer(function SignInStep({
   server: SwitchServer;
   onBack: () => void;
   onClose: () => void;
-  onSignedIn: () => void;
+  onSignedIn: (signedIn: SignedIn) => void;
 }) {
   const signIn = useServerSignIn(server.id);
-  const canUsePassword = signIn.config?.passwordLoginEnabled ?? false;
+  const signingUp = signIn.mode === 'signUp';
+  const canUsePassword = signingUp || (signIn.config?.passwordLoginEnabled ?? false);
   const canUseOidc = signIn.config?.oidcEnabled ?? false;
 
   const submit = async () => {
-    if (await signIn.signInWithPassword()) onSignedIn();
+    const signedIn = await signIn.submitForm();
+    if (signedIn) onSignedIn(signedIn);
   };
 
   return (
     <>
       {managed ? (
         <DialogHeader>
-          <DialogTitle>Sign in to Switch</DialogTitle>
+          <DialogTitle>
+            {signingUp ? 'Create your Switch account' : 'Sign in to Switch'}
+          </DialogTitle>
         </DialogHeader>
       ) : (
-        <WizardStepHeader title={`Sign in to ${server.name}`} step={3} of={CONNECT_STEPS} />
+        <WizardStepHeader
+          title={signingUp ? `Create an account on ${server.name}` : `Sign in to ${server.name}`}
+          step={3}
+          of={CONNECT_STEPS}
+        />
       )}
       <DialogContentArea className="pt-0">
         {signIn.configCheckFailed && !signIn.configChecking && (
@@ -1100,11 +1135,8 @@ const SignInStep = observer(function SignInStep({
           Back
         </Button>
         {canUsePassword ? (
-          <ConfirmButton
-            onClick={() => void submit()}
-            disabled={!signIn.canSubmitPassword || signIn.submitting}
-          >
-            {signIn.submitting ? 'Signing in…' : 'Sign in'}
+          <ConfirmButton onClick={() => void submit()} disabled={!signIn.canSubmitForm}>
+            {signIn.submitLabel}
           </ConfirmButton>
         ) : (
           // Nothing for a primary button to do: either the only method is the
@@ -1121,3 +1153,16 @@ const SignInStep = observer(function SignInStep({
     </>
   );
 });
+
+/** A just-created account whose cloud machine the server could not start. */
+function MachineUnavailableNotice({ reason }: { reason: string }) {
+  return (
+    <div className="shrink-0 px-6 pt-6">
+      <Alert>
+        <TriangleAlert className="size-4" />
+        <AlertTitle>Your cloud machine is not starting</AlertTitle>
+        <AlertDescription>{reason}</AlertDescription>
+      </Alert>
+    </div>
+  );
+}

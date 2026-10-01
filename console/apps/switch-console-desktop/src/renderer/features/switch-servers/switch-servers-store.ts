@@ -5,6 +5,8 @@ import { rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
 import type {
   ServerConnectionStatus,
+  SignupMachine,
+  SignupParams,
   SwitchAuthConfig,
   SwitchServer,
   UpdateServerResult,
@@ -460,6 +462,28 @@ export class SwitchServersStore {
     }
     await this.refreshStatus(serverId);
     return true;
+  }
+
+  /** Resolves the new account's machine status once signed in, or null when
+   * the account was not created (the reason is in `error`). */
+  async signup(params: SignupParams): Promise<SignupMachine | null> {
+    this.clearError();
+    let result: Awaited<ReturnType<typeof rpc.switchServers.signup>>;
+    try {
+      result = await rpc.switchServers.signup(params);
+    } catch (cause) {
+      this.setError(cause, 'Could not create the account.');
+      return null;
+    }
+    if (!result.success) {
+      runInAction(() => {
+        this.error = result.error.message;
+        this.errorDetail = null;
+      });
+      return null;
+    }
+    await this.refreshStatus(params.serverId);
+    return result.data.machine;
   }
 
   async oidcLogin(serverId: string): Promise<boolean> {

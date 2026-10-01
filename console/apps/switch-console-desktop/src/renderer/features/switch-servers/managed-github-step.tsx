@@ -21,8 +21,10 @@ export function ManagedGitHubStep({
 }: {
   serverId: string;
   onBack: () => void;
-  onSkip: () => void;
-  onContinue: () => void;
+  /** Offers Set up later. */
+  onSkip?: () => void;
+  /** Offers Continue to agent once repositories are accessible. */
+  onContinue?: () => void;
 }) {
   const [connection, setConnection] = useState<GitHubConnection | null>(null);
   const [flowId, setFlowId] = useState<string | null>(null);
@@ -325,10 +327,12 @@ export function ManagedGitHubStep({
                 Disconnect
               </Button>
             )}
-            <Button variant="ghost" onClick={onSkip} disabled={busy}>
-              Set up later
-            </Button>
-            {connected && !error && (
+            {onSkip && (
+              <Button variant="ghost" onClick={onSkip} disabled={busy}>
+                Set up later
+              </Button>
+            )}
+            {onContinue && connected && !error && (
               <Button
                 onClick={onContinue}
                 disabled={

@@ -341,7 +341,10 @@ it('offers no Add to rooms on a usable agent', async () => {
 });
 
 function actions(el: HTMLElement): string[] {
-  return [...el.querySelectorAll('button')].map((b) => b.textContent ?? '').filter(Boolean);
+  return [...el.querySelectorAll('button')]
+    .filter((b) => !b.closest('header'))
+    .map((b) => b.textContent ?? '')
+    .filter(Boolean);
 }
 
 it('offers only Retry and Remove for an agent Switch could not register', async () => {

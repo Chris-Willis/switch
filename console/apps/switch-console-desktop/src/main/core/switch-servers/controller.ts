@@ -60,6 +60,8 @@ import type {
   RemoteRoomSummary,
   RenameServerParams,
   ServerConnectionStatus,
+  SignupParams,
+  SignupResult,
   SwitchAuthConfig,
   SwitchServer,
   UpdateBridgeParams,
@@ -69,7 +71,7 @@ import type {
   UpdateServerResult,
 } from '@shared/core/switch-servers/switch-servers';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import { type LoginError, oidcLogin, passwordLogin } from './auth';
+import { type LoginError, oidcLogin, passwordLogin, type SignupError, signup } from './auth';
 import { backfillAgentIcons } from './backfill-agent-icons';
 import { withResolvedHomeUrls } from './bridge-home-url';
 import { bundledChatSignInFor } from './bundled-chat-sign-in';
@@ -83,6 +85,7 @@ import {
   getCloudLaunchConfiguration,
   updateCloudLaunchConfiguration,
   cloudMachineLifecycle,
+  ensureCloudMachine,
   getCloudProviderConnection,
   connectCloudProvider,
   disconnectCloudProvider,
@@ -491,6 +494,16 @@ export const switchServersController = createRPCController({
     reportSignIn('oidc', server, signInFailureReason(result));
     return result;
   },
+
+  signup: async (params: SignupParams): Promise<Result<SignupResult, SignupError>> =>
+    signup(await requireReachableServer(params.serverId), {
+      email: params.email,
+      password: params.password,
+      displayName: params.displayName,
+    }),
+
+  ensureCloudMachine: async (serverId: string) =>
+    ensureCloudMachine(await requireReachableServer(serverId)),
 
   logout: async (serverId: string): Promise<void> => {
     // Read before the cookie goes, so the kind of server is still knowable — and

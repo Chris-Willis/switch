@@ -22,22 +22,16 @@ const STATUS_LABEL: Record<ConnectionCatalogEntry['status'], string> = {
   coming_soon: 'Coming soon',
 };
 
-export function ConnectionsStep({
-  serverId,
-  onBack,
-  onSkip,
-  onContinue,
-}: {
-  serverId: string;
-  onBack: () => void;
-  onSkip: () => void;
-  onContinue: () => void;
-}) {
+export type ConnectionCatalog = {
+  connections: ConnectionCatalogEntry[] | null;
+  error: string | null;
+  reload: () => Promise<void>;
+};
+
+export function useConnectionCatalog(serverId: string): ConnectionCatalog {
   const [connections, setConnections] = useState<ConnectionCatalogEntry[] | null>(null);
-  const [query, setQuery] = useState('');
-  const [open, setOpen] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const load = useCallback(async () => {
+  const reload = useCallback(async () => {
     setError(null);
     try {
       setConnections(await rpc.switchServers.getConnectionCatalog(serverId));
@@ -46,26 +40,24 @@ export function ConnectionsStep({
     }
   }, [serverId]);
   useEffect(() => {
-    void load();
-  }, [load]);
+    void reload();
+  }, [reload]);
+  return { connections, error, reload };
+}
 
-  if (open === 'github')
-    return (
-      <ManagedGitHubStep
-        serverId={serverId}
-        onBack={() => {
-          setOpen(null);
-          void load();
-        }}
-        onSkip={onSkip}
-        onContinue={onContinue}
-      />
-    );
-
+export function ConnectionsGrid({
+  catalog,
+  query,
+  onQueryChange,
+  onOpen,
+}: {
+  catalog: ConnectionCatalog;
+  query: string;
+  onQueryChange: (query: string) => void;
+  onOpen: (slug: string) => void;
+}) {
+  const { connections, error, reload } = catalog;
   const visible = connections ? filterConnections(connections, query) : [];
-  const githubConnected = connections?.some(
-    (connection) => connection.slug === 'github' && connection.status === 'connected'
-  );
   return (
     <>
       <DialogHeader>
@@ -79,7 +71,7 @@ export function ConnectionsStep({
           aria-label="Search connections"
           placeholder="Search by name or category"
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={(event) => onQueryChange(event.target.value)}
         />
         {connections === null && !error && (
           <p className="flex items-center gap-2 text-sm">
@@ -91,7 +83,7 @@ export function ConnectionsStep({
             <p role="alert" className="text-sm text-destructive">
               {error}
             </p>
-            <Button variant="outline" onClick={() => void load()}>
+            <Button variant="outline" onClick={() => void reload()}>
               Retry
             </Button>
           </div>
@@ -110,7 +102,7 @@ export function ConnectionsStep({
                   type="button"
                   disabled={!available}
                   title={connection.description}
-                  onClick={() => setOpen(connection.slug)}
+                  onClick={() => onOpen(connection.slug)}
                   className="group flex items-start gap-3 rounded-lg border border-border p-3 text-left enabled:cursor-pointer enabled:hover:bg-background-tertiary-2 disabled:cursor-not-allowed"
                 >
                   <ConnectionIcon slug={connection.slug} name={connection.name} />
@@ -137,6 +129,44 @@ export function ConnectionsStep({
           </div>
         )}
       </DialogContentArea>
+    </>
+  );
+}
+
+export function ConnectionsStep({
+  serverId,
+  onBack,
+  onSkip,
+  onContinue,
+}: {
+  serverId: string;
+  onBack: () => void;
+  onSkip: () => void;
+  onContinue: () => void;
+}) {
+  const catalog = useConnectionCatalog(serverId);
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState<string | null>(null);
+
+  if (open === 'github')
+    return (
+      <ManagedGitHubStep
+        serverId={serverId}
+        onBack={() => {
+          setOpen(null);
+          void catalog.reload();
+        }}
+        onSkip={onSkip}
+        onContinue={onContinue}
+      />
+    );
+
+  const githubConnected = catalog.connections?.some(
+    (connection) => connection.slug === 'github' && connection.status === 'connected'
+  );
+  return (
+    <>
+      <ConnectionsGrid catalog={catalog} query={query} onQueryChange={setQuery} onOpen={setOpen} />
       <DialogFooter>
         <Button variant="outline" onClick={onBack}>
           Back

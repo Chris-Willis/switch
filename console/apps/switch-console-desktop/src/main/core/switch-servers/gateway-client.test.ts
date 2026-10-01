@@ -40,6 +40,8 @@ const {
   disconnectClaude,
   createRoom,
   deleteBridge,
+  ensureCloudMachine,
+  fetchAuthConfig,
   fetchBridges,
   fetchMe,
   ownsOwnerAddressedAgent,
@@ -1044,5 +1046,69 @@ describe('GitHub connection transport', () => {
       new Response(JSON.stringify({ connections: [{ ...github, status: 'pending' }] }))
     );
     await expect(getConnectionCatalog(SERVER)).rejects.toThrow();
+  });
+});
+
+describe('sign-up support', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(7200));
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  const config = {
+    password_login_enabled: true,
+    oidc_enabled: false,
+    oidc_provider_label: null,
+  };
+
+  it('reads whether the server allows sign-up', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ...config, signup_enabled: true }));
+    await expect(fetchAuthConfig(SERVER)).resolves.toEqual({
+      passwordLoginEnabled: true,
+      oidcEnabled: false,
+      oidcProviderLabel: null,
+      signupEnabled: true,
+    });
+  });
+
+  it('treats a server predating sign-up as not offering it', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(config));
+    expect((await fetchAuthConfig(SERVER)).signupEnabled).toBe(false);
+  });
+
+  it('warms the cloud machine with an authenticated POST', async () => {
+    const machine = {
+      machine_id: 'm-1',
+      state: 'provisioning',
+      desired_state: 'running',
+      stop_reason: null,
+      sleeping: false,
+      revision: 1,
+      instance_type: null,
+      error: null,
+      error_code: null,
+      retain_until: null,
+      heartbeat_at: null,
+      disk: null,
+      memory: null,
+      agents: [],
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse(machine));
+    await expect(ensureCloudMachine(SERVER)).resolves.toEqual(machine);
+    const [url, options] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/hosted-machines/ensure');
+    expect(options.method).toBe('POST');
+    expect(cookieHeaderOf(fetchMock.mock.calls[0])).toContain('switch_auth=');
+  });
+
+  it('raises the server’s explanation when no machine can be had', async () => {
+    fetchMock.mockResolvedValueOnce(
+      errorResponse(503, JSON.stringify({ detail: 'Cloud machines are not offered here.' }))
+    );
+    await expect(ensureCloudMachine(SERVER)).rejects.toThrow(
+      new Error('Cloud machines are not offered here.')
+    );
   });
 });

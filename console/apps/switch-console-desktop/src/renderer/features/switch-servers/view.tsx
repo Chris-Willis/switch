@@ -16,6 +16,7 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { HostUnreachablePanel } from '@renderer/features/remote-hosts/host-unreachable-panel';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
+import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -48,7 +49,12 @@ import {
 } from './server-presentation';
 import { ServerResetSection } from './server-reset-section';
 import { ServerSectionTitlebar } from './server-section-titlebar';
-import { ServerSignInFields, useServerSignIn } from './server-sign-in';
+import {
+  machineUnavailableReason,
+  type SignedIn,
+  ServerSignInFields,
+  useServerSignIn,
+} from './server-sign-in';
 import { ServerStatTiles } from './server-stat-tiles';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
@@ -492,6 +498,10 @@ function StatusDot({ connected }: { connected: boolean }) {
 
 const LoginPanel = observer(function LoginPanel({ serverId }: { serverId: string }) {
   const signIn = useServerSignIn(serverId);
+  const onSignedIn = (signedIn: SignedIn) => {
+    const reason = machineUnavailableReason(signedIn);
+    if (reason) toast({ title: 'Your cloud machine is not starting', description: reason });
+  };
 
   return (
     <div className={`${card} space-y-4`}>
@@ -499,15 +509,17 @@ const LoginPanel = observer(function LoginPanel({ serverId }: { serverId: string
       <ServerSignInFields
         signIn={signIn}
         idPrefix="switch-login"
-        onSignedIn={() => {}}
+        onSignedIn={onSignedIn}
         passwordSubmit={
           <Button
             size="sm"
             className="self-start"
-            disabled={signIn.submitting || !signIn.canSubmitPassword}
-            onClick={() => void signIn.signInWithPassword()}
+            disabled={!signIn.canSubmitForm}
+            onClick={() =>
+              void signIn.submitForm().then((signedIn) => signedIn && onSignedIn(signedIn))
+            }
           >
-            {signIn.submitting ? 'Signing in…' : 'Sign in'}
+            {signIn.submitLabel}
           </Button>
         }
       />

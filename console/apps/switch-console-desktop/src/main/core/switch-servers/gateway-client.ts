@@ -276,11 +276,13 @@ export async function fetchAuthConfig(server: SwitchServer): Promise<SwitchAuthC
     password_login_enabled: boolean;
     oidc_enabled: boolean;
     oidc_provider_label: string | null;
+    signup_enabled?: boolean;
   };
   return {
     passwordLoginEnabled: json.password_login_enabled,
     oidcEnabled: json.oidc_enabled,
     oidcProviderLabel: json.oidc_provider_label,
+    signupEnabled: json.signup_enabled === true,
   };
 }
 
@@ -1707,6 +1709,25 @@ export async function cloudMachineLifecycle(
       })
     ).json()
   ).machine;
+}
+
+/**
+ * Claim and start the signed-in user's cloud machine so it is warm before an
+ * agent needs it. Idempotent on the server. A refusal (409 none free, 503 not
+ * offered) is raised with the server's own explanation.
+ */
+export async function ensureCloudMachine(server: SwitchServer) {
+  let response: Response;
+  try {
+    response = await gatewayFetch(server, '/hosted-machines/ensure', {
+      authenticated: true,
+      method: 'POST',
+    });
+  } catch (error) {
+    if (error instanceof GatewayError && error.detail) throw new Error(error.detail);
+    throw error;
+  }
+  return cloudMachineSchema.parse(await response.json());
 }
 
 export async function connectClaude(
