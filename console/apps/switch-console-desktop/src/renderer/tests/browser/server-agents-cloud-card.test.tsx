@@ -270,7 +270,37 @@ it('shows a crashed agent with its out-of-memory restarts and offers Retry', asy
   expect(el.textContent).toMatch(/Crashed/);
   expect(el.querySelector('[role="alert"]')?.textContent).toMatch(/keeps crashing/);
   expect(button(el, /^retry$/i)).toBeDefined();
-  expect(button(el, /stop agent/i)).toBeDefined();
+  expect(button(el, /stop agent/i)).toBeUndefined();
+  await openMenu(el);
+  expect(menuItem('Stop agent')).toBeDefined();
+});
+
+async function openMenu(el: HTMLElement): Promise<void> {
+  await act(async () => el.querySelector<HTMLElement>('[aria-label="reviewer actions"]')!.click());
+}
+
+function menuItem(label: string): HTMLElement | undefined {
+  return [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((item) =>
+    item.textContent?.startsWith(label)
+  );
+}
+
+it('stops a running agent from its menu, not from the card', async () => {
+  switchServers.cloudLifecycle.mockResolvedValue({});
+  sdkHost.cloudAgents.mockResolvedValue([agent()]);
+  const el = await render();
+
+  expect(button(el, /stop agent/i)).toBeUndefined();
+  await openMenu(el);
+  const stop = menuItem('Stop agent');
+  expect(stop?.textContent).toMatch(/Stops replies and frees the machine/);
+  await act(async () => stop!.click());
+  expect(switchServers.cloudLifecycle).toHaveBeenCalledWith(
+    'server',
+    agent().launch.request_id,
+    'stop',
+    4
+  );
 });
 
 function actions(el: HTMLElement): string[] {
@@ -400,6 +430,8 @@ it('shows a stopped agent on a sleeping machine as stopped', async () => {
 
   expect(el.textContent).toMatch(/Cloud · Stopped/);
   expect(button(el, /start agent/i)).toBeDefined();
+  await openMenu(el);
+  expect(menuItem('Stop agent')).toBeUndefined();
 });
 
 it('removes a running agent once confirmed', async () => {

@@ -1,5 +1,14 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { Bot, ExternalLink, MoreVertical, Pencil, Plus, RotateCcw, Trash2 } from 'lucide-react';
+import {
+  Bot,
+  CircleStop,
+  ExternalLink,
+  MoreVertical,
+  Pencil,
+  Plus,
+  RotateCcw,
+  Trash2,
+} from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -247,6 +256,10 @@ const CloudAgentCard = observer(function CloudAgentCard({
                   deleted: 'Removed',
                 }[launch.state];
   const usable = launch.agent_id !== null && launch.state === 'ready' && phase === null;
+  const stoppable =
+    launch.desired_state === 'running' &&
+    launch.agent_id !== null &&
+    ['ready', 'provisioning', 'queued', 'error'].includes(launch.state);
   const crashed = launch.process_state === 'crashed' || launch.error_code === 'agent_crashed';
   const add = () => {
     if (!launch.agent_id) return;
@@ -282,6 +295,17 @@ const CloudAgentCard = observer(function CloudAgentCard({
               <Pencil className="size-4" />
               Edit agent…
             </DropdownMenuItem>
+            {stoppable && (
+              <DropdownMenuItem disabled={pending} onClick={() => void run('stop')}>
+                <CircleStop className="size-4" />
+                <span className="flex flex-col">
+                  <span>Stop agent</span>
+                  <span className="text-xs text-foreground-muted">
+                    Stops replies and frees the machine
+                  </span>
+                </span>
+              </DropdownMenuItem>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
@@ -341,13 +365,6 @@ const CloudAgentCard = observer(function CloudAgentCard({
             </Button>
           </>
         )}
-        {launch.desired_state === 'running' &&
-          launch.agent_id !== null &&
-          ['ready', 'provisioning', 'queued', 'error'].includes(launch.state) && (
-            <Button variant="ghost" size="sm" disabled={pending} onClick={() => void run('stop')}>
-              Stop agent
-            </Button>
-          )}
         {launch.state === 'error' && !NOT_RETRYABLE.has(launch.error_code ?? '') && (
           <Button variant="outline" size="sm" disabled={pending} onClick={() => void run('retry')}>
             Retry
