@@ -24,6 +24,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import type { Agent } from '@shared/core/agents/agents';
+import { AgentStatusSlot } from './agent-status-slot';
 import { DiscoveryFailureIndicator } from './discovery-failure-indicator';
 import { SidebarItemMiniButton, SidebarMenuAction, SidebarMenuRow } from './sidebar-primitives';
 import { depthIndent, roomAgentGroupKey } from './sidebar-store';
@@ -136,27 +137,34 @@ export const RoomAgentRow = observer(function RoomAgentRow({
                   ) : (
                     <Bot className="h-3 w-3 shrink-0 text-foreground-muted" />
                   ))}
-                {/* Same agent, same host problem — this row used to show
-                    nothing, so whether you saw it depended on which grouping
-                    the sidebar happened to be in. */}
-                <HostTroubleIndicator
-                  sshHost={location.data?.sshHost ?? null}
-                  agentId={agent.providerId ?? null}
-                />
-                <DiscoveryFailureIndicator agentId={agent.id} label={label} />
-                {agent.providerId && (
-                  <ProviderIssueIndicator
-                    providerId={agent.providerId}
+                <AgentStatusSlot>
+                  {/* Same agent, same host problem — this row used to show
+                      nothing, so whether you saw it depended on which grouping
+                      the sidebar happened to be in. */}
+                  <HostTroubleIndicator
                     sshHost={location.data?.sshHost ?? null}
-                    hostReachable={!hostReachabilityStore.isBlocked(location.data?.sshHost ?? null)}
-                    onOpen={() =>
-                      navigate('location', { locationId: agent.locationId, agentName: agent.name })
-                    }
+                    agentId={agent.providerId ?? null}
                   />
-                )}
+                  <AgentConnectionIndicator agent={agent} />
+                  <DiscoveryFailureIndicator agentId={agent.id} label={label} />
+                  {agent.providerId && (
+                    <ProviderIssueIndicator
+                      providerId={agent.providerId}
+                      sshHost={location.data?.sshHost ?? null}
+                      hostReachable={
+                        !hostReachabilityStore.isBlocked(location.data?.sshHost ?? null)
+                      }
+                      onOpen={() =>
+                        navigate('location', {
+                          locationId: agent.locationId,
+                          agentName: agent.name,
+                        })
+                      }
+                    />
+                  )}
+                </AgentStatusSlot>
               </span>
             </SidebarMenuAction>
-            <AgentConnectionIndicator agent={agent} />
           </div>
           <Tooltip>
             <TooltipTrigger
