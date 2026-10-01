@@ -1357,6 +1357,14 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.38.1] - 2026-10-01
+
+#### Fixed
+- **Clean recovery after the machine sleeps.** On wake, a watcher no longer
+  takes itself over, a silently-dropped SSH connection is detected rather than
+  trusted until it says it closed, and an agent shows a single status row
+  instead of duplicates (#621).
+
 ### [0.38.0] - 2026-09-30
 
 #### Changed
@@ -3001,6 +3009,12 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
+### [0.7.2] - 2026-10-01
+
+#### Fixed
+- Event-stream handling hardened against a self-takeover and a silently
+  dropped stream when a connection resumes after the machine sleeps (#621).
+
 ### [0.7.1] - 2026-09-30
 
 #### Fixed
@@ -3179,6 +3193,11 @@ The remote runtime Switch Console deploys to an agent host. Versioned in
 published on its own.
 
 ### [Unreleased]
+
+### [1.9.12] - 2026-10-01
+
+#### Changed
+- Picks up the agent-runtime 0.7.2 event-stream fix it bundles (#621).
 
 ### [1.9.11] - 2026-09-30
 
