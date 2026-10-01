@@ -209,7 +209,24 @@ def create_messaging_install_router(
     ) -> HTMLResponse:
         try:
             if decision == "cancel":
-                grant = await service.cancel(platform=platform, ticket=ticket)
+                try:
+                    grant = await service.cancel(platform=platform, ticket=ticket)
+                except MessagingInstallError as failure:
+                    logger.error(
+                        "Could not revoke the %s token of a cancelled install: %s",
+                        platform,
+                        failure,
+                    )
+                    return _page(
+                        title="Cancel did not finish",
+                        detail=(
+                            f"Switch could not give the app's access back to "
+                            f"{platform}. Nothing was connected to Switch. Go "
+                            "back and press Cancel again; if it keeps failing, "
+                            f"remove the app from the {platform} workspace."
+                        ),
+                        status=502,
+                    )
                 return _page(
                     title="Install cancelled",
                     detail=(

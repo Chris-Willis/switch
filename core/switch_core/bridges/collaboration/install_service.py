@@ -363,12 +363,18 @@ class MessagingInstallService:
             return attached
 
     async def cancel(self, *, platform: str, ticket: str) -> InstallGrant:
-        """The approver chose Cancel: record it and give the credential back.
+        """The approver chose Cancel: give the credential back, then record it.
 
         The token is revoked only when no active install holds the workspace.
         A platform hands the same bot token to every install of one app into
         one workspace, so revoking it while another install holds that
         workspace would cut that install off.
+
+        The decision commits only once the revocation has succeeded. The token
+        is stored nowhere else, so a cancel recorded ahead of a failed
+        revocation would leave a live credential nothing could reach again.
+        Until the commit the state row stays locked, so a Connect submitted
+        meanwhile waits for this outcome rather than racing it.
         """
         opened = self._open(platform, ticket)
         grant = opened.grant
@@ -383,18 +389,18 @@ class MessagingInstallService:
                     platform=platform,
                     window=CONFIRM_TTL,
                 )
+                if grant.bot_token is not None:
+                    with no_tenant():
+                        holder = await tenant_of_messaging_install(
+                            self._session_factory,
+                            platform,
+                            grant.external_workspace_id,
+                        )
+                    if holder is None:
+                        await self._installers.get(platform).revoke(
+                            bot_token=grant.bot_token
+                        )
                 await session.commit()
-
-        if grant.bot_token is not None:
-            with no_tenant():
-                holder = await tenant_of_messaging_install(
-                    self._session_factory, platform, grant.external_workspace_id
-                )
-            if holder is None:
-                with tenant_scope(opened.tenant_id):
-                    await self._installers.get(platform).revoke(
-                        bot_token=grant.bot_token
-                    )
 
         logger.info(
             "Install of %s workspace %s for tenant %s was cancelled by its approver",

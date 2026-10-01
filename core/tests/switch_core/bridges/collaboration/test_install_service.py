@@ -573,6 +573,29 @@ class TestTheConfirmation:
 
         assert fixture.installer.revoked_tokens == []
 
+    async def test_a_cancel_whose_revocation_fails_can_be_retried(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """The ticket is the only copy of the token, so a cancel recorded
+        ahead of a failed revocation would strand a live credential."""
+        fixture = await _fixture(rls_harness)
+        state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
+        pending = await fixture.service.complete(
+            platform="slack", code="the-code", state_token=state
+        )
+        fixture.installer.revoke_error = MessagingInstallError("Slack is down")
+
+        with pytest.raises(MessagingInstallError):
+            await fixture.service.cancel(platform="slack", ticket=pending.ticket)
+
+        fixture.installer.revoke_error = None
+        await fixture.service.cancel(platform="slack", ticket=pending.ticket)
+
+        assert fixture.installer.revoked_tokens == ["xoxb-granted"]
+        assert fixture.lifecycle.registered == []
+        with pytest.raises(MessagingInstallStateError):
+            await fixture.service.cancel(platform="slack", ticket=pending.ticket)
+
 
 class TestDisconnecting:
     """An install an operator ended, and what has to be true afterwards."""

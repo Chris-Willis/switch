@@ -14,6 +14,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from switch_core.bridges.collaboration.install import MessagingInstallError
 from switch_core.bridges.collaboration.install_routes import (
     create_messaging_install_router,
 )
@@ -102,6 +103,36 @@ async def test_cancel_on_the_page_connects_nothing(rls_harness: RLSHarness) -> N
     assert cancelled.status_code == 200
     assert "Install cancelled" in cancelled.text
     assert fixture.lifecycle.registered == []
+    assert fixture.installer.revoked_tokens == ["xoxb-granted"]
+
+
+async def test_a_cancel_that_could_not_revoke_says_so_and_can_be_retried(
+    rls_harness: RLSHarness,
+) -> None:
+    fixture = await _fixture(rls_harness)
+    state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
+    fixture.installer.revoke_error = MessagingInstallError("Slack is down")
+
+    async with _client(fixture.service) as client:
+        page = await client.get(
+            "/messaging/slack/oauth/callback",
+            params={"code": "the-code", "state": state},
+        )
+        ticket = _ticket(page.text)
+        failed = await client.post(
+            "/messaging/slack/oauth/confirm",
+            data={"ticket": ticket, "decision": "cancel"},
+        )
+        fixture.installer.revoke_error = None
+        retried = await client.post(
+            "/messaging/slack/oauth/confirm",
+            data={"ticket": ticket, "decision": "cancel"},
+        )
+
+    assert failed.status_code == 502
+    assert "Cancel did not finish" in failed.text
+    assert retried.status_code == 200
+    assert "Install cancelled" in retried.text
     assert fixture.installer.revoked_tokens == ["xoxb-granted"]
 
 
