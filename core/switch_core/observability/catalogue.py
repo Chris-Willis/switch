@@ -275,7 +275,8 @@ CONSUMERS_RUNNING = _spec(
     "gauge",
     "{consumer}",
     "Room consumers with a live read loop. Actors that only write (a person on "
-    "another platform) run no loop and are not counted.",
+    "another platform) run no loop and are not counted. A collaboration "
+    "bridge's workspace consumer counts under switch.bridges.running.",
 )
 CONNECTORS_RUNNING = _spec(
     "switch.connectors.running",

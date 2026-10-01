@@ -249,10 +249,9 @@ class PostgresTransport:
             if not rooms:
                 logger.error(
                     "Client %s is receiving but is a member of no room: it will "
-                    "hear nothing until something adds it to one. Under Matrix "
-                    "membership lived on the homeserver; here it is the "
-                    "client_rooms table, so a client whose rows were never "
-                    "written is silent rather than broken",
+                    "hear nothing until something adds it to one. Membership "
+                    "is the client_rooms table, so a client whose rows were "
+                    "never written is silent rather than broken",
                     self.user_id,
                 )
             delivery = asyncio.create_task(self._deliver_forever())
