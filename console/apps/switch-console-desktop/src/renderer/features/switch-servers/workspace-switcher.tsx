@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { ChevronsUpDown, Plus, Server, UserPlus } from 'lucide-react';
+import { Check, ChevronsUpDown, Plus, Search, Server, UserPlus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import {
   InvitedBadge,
   invitationSummary,
@@ -133,7 +133,11 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher() {
   return showsServers(cloud.kind) ? (
     <ServerMenu activeServer={activeServer} />
   ) : (
-    <WorkspaceMenu active={active} activeServer={activeServer} />
+    <WorkspaceMenu
+      active={active}
+      activeServer={activeServer}
+      cloudOrigin={cloud.kind === 'open' ? cloud.url : null}
+    />
   );
 });
 
@@ -294,26 +298,39 @@ const ServerMenuItem = observer(function ServerMenuItem({
  * list. A workspace only means anything on its server — two servers can each
  * have a "Default" — and the server is also what carries reachability, so the
  * group heading is where it is said once instead of on every row.
+ *
+ * A search box at the top narrows the list by workspace or server name, for an
+ * account in enough workspaces that scanning them stops being quick.
  */
 const WorkspaceMenu = observer(function WorkspaceMenu({
   active,
   activeServer,
+  cloudOrigin,
 }: {
   active: Workspace;
   activeServer: SwitchServer;
+  /** Switch Cloud's origin when this build knows it, to mark its server as the official one. */
+  cloudOrigin: string | null;
 }) {
   const store = switchServersStore;
   const { navigate } = useNavigate();
   const showAddServerModal = useShowModal('addServerModal');
   const showCreateWorkspaceModal = useShowModal('createWorkspaceModal');
   const showInvitePeopleModal = useShowModal('invitePeopleModal');
+  const [query, setQuery] = useState('');
 
-  const ActiveIcon = serverIcon(activeServer);
   const drift = serverDrift(activeServer);
+  const anyMatch =
+    query.trim() === '' ||
+    store.servers.some(
+      (server) =>
+        matchesQuery(server.name, query) ||
+        workspacesStore.onServer(server.id).some((w) => matchesQuery(w.name, query))
+    );
 
   return (
     <div className="px-2">
-      <DropdownMenu>
+      <DropdownMenu onOpenChange={(open) => !open && setQuery('')}>
         <DropdownMenuTrigger
           render={
             <button
@@ -321,13 +338,12 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
               aria-label="Switch workspace"
               className="flex w-full items-center gap-[10px] rounded-lg px-2 py-1.5 text-left hover:bg-[var(--sel-soft)]"
             >
-              <ServerAvatar server={activeServer} size="md" />
+              <WorkspaceAvatar name={active.name} size="md" active />
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-medium text-foreground">
                   {active.name}
                 </span>
                 <span className="flex items-center gap-1.5 text-xs text-foreground-muted">
-                  <ActiveIcon className="size-3 shrink-0" />
                   <span className="truncate">{switcherSubtitle(active, activeServer)}</span>
                   <ServerStatusDot server={activeServer} />
                   {drift && <ServerDriftIndicator drift={drift} />}
@@ -338,17 +354,28 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
             </button>
           }
         />
-        <DropdownMenuContent align="start" className="min-w-72">
+        <DropdownMenuContent align="start" className="w-80">
+          <WorkspaceSearch value={query} onChange={setQuery} />
           {store.servers.map((server) => (
-            <ServerWorkspaceGroup key={server.id} server={server} />
+            <ServerWorkspaceGroup
+              key={server.id}
+              server={server}
+              query={query}
+              official={cloudOrigin !== null && originOf(server.gatewayUrl) === cloudOrigin}
+            />
           ))}
+          {!anyMatch && (
+            <div className="px-2 py-3 text-center text-xs text-foreground-muted">
+              No workspace or server matches “{query.trim()}”.
+            </div>
+          )}
           <DropdownMenuSeparator />
           {/* Offered only where the gateway would take it: it refuses members,
               and a menu item that always ends in a 403 is a trap. */}
           {administersWorkspace(active) && (
             <DropdownMenuItem onClick={() => showInvitePeopleModal({ workspaceId: active.id })}>
               <UserPlus className="size-4" />
-              Invite people to {active.name}
+              Invite people to {active.name}…
             </DropdownMenuItem>
           )}
           {/* Above Add server because it is the commoner errand by far: you add
@@ -364,11 +391,11 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
             }
           >
             <Plus className="size-4" />
-            New workspace
+            New workspace…
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => showAddServerModal({})}>
             <Server className="size-4" />
-            Add server
+            Add server…
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           {/* The welcome screen is what the app opens with before any server
@@ -382,6 +409,84 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
     </div>
   );
 });
+
+export function matchesQuery(name: string, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  return q === '' || name.toLowerCase().includes(q);
+}
+
+function originOf(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
+/** Where a server is, as its heading says it: the host and port it answers on. */
+function serverAddress(server: SwitchServer): string {
+  try {
+    return new URL(server.gatewayUrl).host;
+  } catch {
+    return server.gatewayUrl;
+  }
+}
+
+/**
+ * The search box at the top of the menu.
+ *
+ * The menu reads typed letters as a jump to the item starting with them, so
+ * keys typed here are kept from reaching it — all but the ones that move
+ * through or leave the menu.
+ */
+function WorkspaceSearch({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="relative px-1 pt-1 pb-1.5">
+      <Search className="pointer-events-none absolute top-1/2 left-3.5 size-3.5 -translate-y-1/2 text-foreground-muted" />
+      <input
+        autoFocus
+        type="text"
+        aria-label="Find a workspace"
+        placeholder="Find a workspace…"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key !== 'Escape' && event.key !== 'ArrowDown' && event.key !== 'Tab') {
+            event.stopPropagation();
+          }
+        }}
+        className="h-8 w-full rounded-md border border-border bg-background-tertiary pr-2 pl-8 text-sm text-foreground outline-none placeholder:text-foreground-muted focus:border-foreground-muted"
+      />
+    </div>
+  );
+}
+
+/** A workspace's initial in a square, the way a server's avatar shows a server. */
+function WorkspaceAvatar({
+  name,
+  size,
+  active = false,
+}: {
+  name: string;
+  size: 'sm' | 'md';
+  active?: boolean;
+}) {
+  // Drawn from an attribute rather than as text, so the letter is not read out
+  // or counted as part of the row's name.
+  return (
+    <span
+      aria-hidden
+      data-initial={name.trim().charAt(0).toUpperCase() || '?'}
+      className={cn(
+        'flex shrink-0 items-center justify-center rounded-md font-semibold before:content-[attr(data-initial)]',
+        size === 'sm' ? 'size-5 text-[10px]' : 'size-[26px] text-xs',
+        active
+          ? 'bg-[var(--accent-solid)] text-white'
+          : 'bg-background-tertiary text-foreground-muted'
+      )}
+    />
+  );
+}
 
 /**
  * A managed local stack that is starting has no server record yet, so it would
@@ -415,40 +520,124 @@ const LocalServerPendingButton = observer(function LocalServerPendingButton() {
 /** One server, as a heading over the workspaces the account has on it. */
 const ServerWorkspaceGroup = observer(function ServerWorkspaceGroup({
   server,
+  query,
+  official,
 }: {
   server: SwitchServer;
+  query: string;
+  official: boolean;
+}) {
+  // A server you are not signed in to cannot be asked about invitations, so
+  // the hooks that ask only mount where it can.
+  return serverAvailability(server.id) === 'available' ? (
+    <AvailableServerWorkspaceGroup server={server} query={query} official={official} />
+  ) : (
+    <ServerWorkspaceGroupBody
+      server={server}
+      query={query}
+      official={official}
+      invitations={NO_OFFERS.invitations}
+      joinable={NO_OFFERS.joinable}
+      invitationsFailed={false}
+      joinableFailed={false}
+    />
+  );
+});
+
+const NO_OFFERS: { invitations: PendingInvitation[]; joinable: JoinableWorkspace[] } = {
+  invitations: [],
+  joinable: [],
+};
+
+function AvailableServerWorkspaceGroup({
+  server,
+  query,
+  official,
+}: {
+  server: SwitchServer;
+  query: string;
+  official: boolean;
+}) {
+  const invitations = usePendingInvitations(server.id);
+  const joinable = useJoinableWorkspaces(server.id);
+  return (
+    <ServerWorkspaceGroupBody
+      server={server}
+      query={query}
+      official={official}
+      invitations={listedInvitations(invitations.data)}
+      joinable={listedJoinable(joinable.data)}
+      invitationsFailed={invitations.isError}
+      joinableFailed={joinable.isError}
+    />
+  );
+}
+
+const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
+  server,
+  query,
+  official,
+  invitations,
+  joinable,
+  invitationsFailed,
+  joinableFailed,
+}: {
+  server: SwitchServer;
+  query: string;
+  official: boolean;
+  invitations: PendingInvitation[];
+  joinable: JoinableWorkspace[];
+  invitationsFailed: boolean;
+  joinableFailed: boolean;
 }) {
   const Icon = serverIcon(server);
-  const placement = serverPlacementLabel(server);
   const drift = serverDrift(server);
-  const workspaces = workspacesStore.onServer(server.id);
+  const searching = query.trim() !== '';
+  // A search for the server's own name keeps all of its rows, since that is
+  // the quickest way to say "the ones on that server".
+  const whole = !searching || matchesQuery(server.name, query);
+  const all = workspacesStore.onServer(server.id);
+  const workspaces = whole ? all : all.filter((w) => matchesQuery(w.name, query));
+  const shownInvitations = whole
+    ? invitations
+    : invitations.filter((i) => matchesQuery(i.workspaceName, query));
+  const shownJoinable = whole
+    ? joinable
+    : joinable.filter((j) => matchesQuery(j.workspaceName, query));
+  if (searching && workspaces.length + shownInvitations.length + shownJoinable.length === 0) {
+    return null;
+  }
+  const available = serverAvailability(server.id) === 'available';
 
   return (
     <DropdownMenuGroup>
-      <DropdownMenuLabel className="flex items-center gap-2 py-1.5">
-        <ServerAvatar server={server} size="sm" />
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-xs font-medium text-foreground">{server.name}</span>
-          <span className="flex min-w-0 items-center gap-1.5 text-xs font-normal text-foreground-muted">
-            <Icon className="size-3 shrink-0" />
-            <span className="truncate">{serverStatusLabel(server)}</span>
-            {/* Beside the words it qualifies rather than at the row's right edge,
-                where it read as a property of the row instead of of the status. */}
+      <DropdownMenuLabel className="flex items-center gap-1.5 px-2 pt-2.5 pb-1 text-[11px] font-semibold tracking-wide text-foreground-muted uppercase">
+        <Icon className="size-3 shrink-0" />
+        <span className="min-w-0 truncate">{server.name}</span>
+        {/* Said only when something is wrong: a heading for every server that
+            is fine would be noise on each of them. */}
+        {!available && (
+          <>
             <ServerStatusDot server={server} />
-            {placement && (
-              <span className="shrink-0 rounded bg-background-tertiary px-1 py-px text-[10px] font-medium tracking-wide text-foreground-muted uppercase">
-                {placement}
-              </span>
-            )}
-          </span>
-        </span>
+            <span className="shrink-0 font-normal tracking-normal normal-case">
+              {serverStatusLabel(server)}
+            </span>
+          </>
+        )}
         {drift && <ServerDriftIndicator drift={drift} />}
+        <span className="ml-auto shrink-0 pl-2 font-normal tracking-normal normal-case">
+          {official ? (
+            <span className="text-green-600 dark:text-green-500">Official</span>
+          ) : (
+            <span className="text-foreground-passive">{serverAddress(server)}</span>
+          )}
+        </span>
       </DropdownMenuLabel>
-      {workspaces.length === 0 ? (
+      {all.length === 0 ? (
         // Registering a server is what creates its first workspace, so a server
         // with none did not finish being registered. Saying so beats an empty
         // heading, which reads as a rendering fault.
-        <div className="px-2 py-1.5 pl-9 text-xs text-foreground-muted">
+        <div className="px-2 py-1.5 text-xs text-foreground-muted">
           No workspace yet — this server has not finished being set up.
         </div>
       ) : (
@@ -457,14 +646,32 @@ const ServerWorkspaceGroup = observer(function ServerWorkspaceGroup({
             key={workspace.id}
             workspace={workspace}
             server={server}
-            onServerCount={workspaces.length}
+            onServerCount={all.length}
           />
         ))
       )}
-      {serverAvailability(server.id) === 'available' && (
+      {available && (
         <>
-          <PendingInvitationItems server={server} />
-          <JoinableWorkspaceItems server={server} />
+          {invitationsFailed && (
+            <div className="px-2 py-1.5 text-xs text-foreground-muted">
+              Could not check for invitations to your address.
+            </div>
+          )}
+          {shownInvitations.map((invitation) => (
+            <PendingInvitationMenuItem
+              key={invitation.id}
+              invitation={invitation}
+              server={server}
+            />
+          ))}
+          {joinableFailed && (
+            <div className="px-2 py-1.5 text-xs text-foreground-muted">
+              Could not check for workspaces open to your e-mail domain.
+            </div>
+          )}
+          {shownJoinable.map((offer) => (
+            <JoinableWorkspaceMenuItem key={offer.tenantId} offer={offer} server={server} />
+          ))}
         </>
       )}
     </DropdownMenuGroup>
@@ -512,12 +719,11 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
 
   return (
     <DropdownMenuItem
-      // The active workspace is shown by filling its row rather than by a tick
-      // in the right margin, so the row you are on reads at a glance instead of
-      // needing the eye to travel to the end of it. `aria-current` carries the
-      // same fact for anything that cannot see the fill.
+      // The active workspace is filled and ticked, so the row you are on reads
+      // at a glance. `aria-current` carries the same fact for anything that
+      // cannot see either.
       aria-current={isActive ? 'true' : undefined}
-      className={cn('pl-9', isActive && 'bg-[var(--sel)]')}
+      className={cn(isActive && 'bg-[var(--sel)]')}
       disabled={unavailable !== null}
       title={unavailable ? UNAVAILABLE_REASON[unavailable](workspace.name) : undefined}
       onClick={() => {
@@ -536,12 +742,16 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
           });
       }}
     >
-      <span className="min-w-0 flex-1 truncate text-sm text-foreground">{workspace.name}</span>
-      {(unavailable || workspace.role) && (
+      <WorkspaceAvatar name={workspace.name} size="sm" active={isActive} />
+      <span data-row-name className="min-w-0 flex-1 truncate text-sm text-foreground">
+        {workspace.name}
+      </span>
+      {unavailable && (
         <span className="shrink-0 rounded bg-background-tertiary px-1 py-px text-[10px] font-medium tracking-wide text-foreground-muted uppercase">
-          {unavailable ? UNAVAILABLE_BADGE[unavailable] : workspace.role}
+          {UNAVAILABLE_BADGE[unavailable]}
         </span>
       )}
+      {isActive && <Check className="size-4 shrink-0 text-foreground" />}
     </DropdownMenuItem>
   );
 });
@@ -573,28 +783,6 @@ function PendingInvitationCountBadge({ serverId }: { serverId: string }) {
   );
 }
 
-/**
- * Invitations addressed to you on one server, under its workspaces. Choosing
- * one accepts it and opens the workspace it joins.
- *
- * A server too old to list them shows nothing, since it cannot say whether
- * there are any; a server that failed to answer says so, since then there may
- * be.
- */
-function PendingInvitationItems({ server }: { server: SwitchServer }) {
-  const query = usePendingInvitations(server.id);
-  if (query.isError) {
-    return (
-      <div className="px-2 py-1.5 pl-9 text-xs text-foreground-muted">
-        Could not check for invitations to your address.
-      </div>
-    );
-  }
-  return listedInvitations(query.data).map((invitation) => (
-    <PendingInvitationMenuItem key={invitation.id} invitation={invitation} server={server} />
-  ));
-}
-
 function PendingInvitationMenuItem({
   invitation,
   server,
@@ -608,7 +796,6 @@ function PendingInvitationMenuItem({
 
   return (
     <DropdownMenuItem
-      className="pl-9"
       title={invitationSummary(invitation)}
       data-testid="pending-invitation-item"
       onClick={() => {
@@ -628,30 +815,13 @@ function PendingInvitationMenuItem({
           );
       }}
     >
-      <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+      <WorkspaceAvatar name={invitation.workspaceName} size="sm" />
+      <span data-row-name className="min-w-0 flex-1 truncate text-sm text-foreground">
         {invitation.workspaceName}
       </span>
       <InvitedBadge />
     </DropdownMenuItem>
   );
-}
-
-/**
- * Workspaces open to the domain of your address on one server, after its
- * invitations, on the same terms. Choosing one joins it as a member.
- */
-function JoinableWorkspaceItems({ server }: { server: SwitchServer }) {
-  const query = useJoinableWorkspaces(server.id);
-  if (query.isError) {
-    return (
-      <div className="px-2 py-1.5 pl-9 text-xs text-foreground-muted">
-        Could not check for workspaces open to your e-mail domain.
-      </div>
-    );
-  }
-  return listedJoinable(query.data).map((offer) => (
-    <JoinableWorkspaceMenuItem key={offer.tenantId} offer={offer} server={server} />
-  ));
 }
 
 function JoinableWorkspaceMenuItem({
@@ -667,7 +837,6 @@ function JoinableWorkspaceMenuItem({
 
   return (
     <DropdownMenuItem
-      className="pl-9"
       title={joinableSummary(offer)}
       data-testid="joinable-workspace-item"
       onClick={() => {
@@ -687,7 +856,10 @@ function JoinableWorkspaceMenuItem({
           );
       }}
     >
-      <span className="min-w-0 flex-1 truncate text-sm text-foreground">{offer.workspaceName}</span>
+      <WorkspaceAvatar name={offer.workspaceName} size="sm" />
+      <span data-row-name className="min-w-0 flex-1 truncate text-sm text-foreground">
+        {offer.workspaceName}
+      </span>
       <span className="shrink-0 text-xs font-medium text-foreground-muted">Join</span>
     </DropdownMenuItem>
   );

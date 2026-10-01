@@ -198,7 +198,7 @@ async function settle(): Promise<void> {
 /** The menu row offering a workspace, by the name shown on it. */
 function row(name: string): HTMLElement {
   const found = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((item) =>
-    item.textContent?.startsWith(name)
+    item.querySelector('[data-row-name]')?.textContent?.startsWith(name)
   );
   expect(found, `no row for ${name}`).toBeDefined();
   return found!;
@@ -239,7 +239,7 @@ describe('the workspaces the switcher offers', () => {
       // The first span on a row is its name; a second one, where there is one,
       // is the role or the reason it cannot be opened.
       [...group.querySelectorAll('[role="menuitem"]')].map(
-        (item) => item.querySelector('span')?.textContent
+        (item) => item.querySelector('[data-row-name]')?.textContent
       ),
     ]);
 
@@ -366,7 +366,7 @@ describe('inviting people from the switcher', () => {
       'ws-a'
     );
 
-    expect(inviteItem()?.textContent).toBe('Invite people to ws-a');
+    expect(inviteItem()?.textContent).toBe('Invite people to ws-a…');
   });
 
   it('is not offered to a member, whom the server would refuse', async () => {
@@ -626,5 +626,74 @@ describe('the server switcher on a build without Switch Cloud', () => {
     expect(document.body.textContent).not.toContain('ws-b');
     await act(async () => serverRow('Acme').click());
     expect(state.setActive).toHaveBeenCalledWith('ws-a');
+  });
+});
+
+describe('finding a workspace in the menu', () => {
+  async function type(text: string): Promise<void> {
+    const input = document.querySelector<HTMLInputElement>('input[aria-label="Find a workspace"]');
+    expect(input, 'no search box').not.toBeNull();
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setValue.call(input, text);
+      input!.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+
+  function names(): (string | null | undefined)[] {
+    return [...document.querySelectorAll('[role="menuitem"] [data-row-name]')].map(
+      (el) => el.textContent
+    );
+  }
+
+  it('narrows the list to the workspaces whose name matches', async () => {
+    await openSwitcher(
+      [server('srv-1', 'Acme'), server('srv-2', 'Local dev')],
+      [workspace('platform', 'srv-1'), workspace('docs', 'srv-1'), workspace('scratch', 'srv-2')],
+      'platform'
+    );
+
+    await type('doc');
+
+    expect(names()).toEqual(['docs']);
+    expect(document.body.textContent).not.toContain('Local dev');
+  });
+
+  it("keeps all of a server's workspaces when the server's name matches", async () => {
+    await openSwitcher(
+      [server('srv-1', 'Acme'), server('srv-2', 'Local dev')],
+      [workspace('platform', 'srv-1'), workspace('docs', 'srv-1'), workspace('scratch', 'srv-2')],
+      'platform'
+    );
+
+    await type('acme');
+
+    expect(names()).toEqual(['platform', 'docs']);
+  });
+
+  it('says so when nothing matches', async () => {
+    await openSwitcher([server('srv-1', 'Acme')], [workspace('platform', 'srv-1')], 'platform');
+
+    await type('zzz');
+
+    expect(names()).toEqual([]);
+    expect(document.body.textContent).toContain('No workspace or server matches');
+  });
+});
+
+describe('the server headings', () => {
+  it('marks the Switch Cloud server as official and names where the others are', async () => {
+    await openSwitcher(
+      [server('cloud', 'Switch Cloud'), server('srv-2', 'Local dev')],
+      [workspace('ws-a', 'cloud'), workspace('ws-b', 'srv-2')],
+      'ws-a'
+    );
+
+    const labels = [...document.querySelectorAll('[data-slot="dropdown-menu-label"]')].map(
+      (el) => el.textContent
+    );
+    expect(labels[0]).toContain('Official');
+    expect(labels[1]).toContain('srv-2.example.invalid');
+    expect(labels[1]).not.toContain('Official');
   });
 });
