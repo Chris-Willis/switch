@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -137,7 +138,7 @@ async def _prewarm(
         )
         return SignupMachine(status="unavailable", reason=str(error))
     await session.commit()
-    if (conflict := claim_conflict(machine)) is not None:
+    if (conflict := claim_conflict(machine, datetime.now(UTC))) is not None:
         return SignupMachine(status="unavailable", reason=conflict)
     if owner_stopped(machine):
         return SignupMachine(status="unavailable", reason=MACHINE_OWNER_STOPPED)

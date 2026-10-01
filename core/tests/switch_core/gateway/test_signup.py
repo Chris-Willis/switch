@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import httpx
@@ -320,6 +321,14 @@ async def _set_machine(app, machine_id: str, **values) -> None:
         ({"state": "error", "desired_state": "deleted"}, MACHINE_BEING_REMOVED),
         ({"state": "deleting", "desired_state": "deleted"}, MACHINE_BEING_REMOVED),
         (
+            {
+                "state": "error",
+                "desired_state": "retained",
+                "retain_until": datetime.now(UTC) - timedelta(minutes=1),
+            },
+            MACHINE_BEING_REMOVED,
+        ),
+        (
             {"state": "stopped", "desired_state": "stopped", "stop_reason": "owner"},
             MACHINE_OWNER_STOPPED,
         ),
@@ -330,6 +339,7 @@ async def _set_machine(app, machine_id: str, **values) -> None:
         "retained-deleting",
         "error-deleting",
         "deleting",
+        "error-released",
         "owner-stopped",
     ],
 )

@@ -175,19 +175,32 @@ async def test_a_stopped_machine_is_started(factory):
 
 
 @pytest.mark.parametrize(
-    ("state", "desired_state", "error_code", "detail"),
+    ("state", "desired_state", "error_code", "retain_for", "detail"),
     [
-        ("error", "running", None, MACHINE_NEEDS_ATTENTION),
-        ("error", "running", "machine_connect_timeout", MACHINE_NEEDS_ATTENTION),
-        ("error", "running", "machine_needs_attention", MACHINE_NEEDS_ADMIN),
-        ("error", "deleted", "machine_needs_attention", MACHINE_BEING_REMOVED),
-        ("error", "deleted", None, MACHINE_BEING_REMOVED),
-        ("deleting", "deleted", None, MACHINE_BEING_REMOVED),
-        ("retained", "deleted", None, MACHINE_BEING_REMOVED),
+        ("error", "running", None, None, MACHINE_NEEDS_ATTENTION),
+        (
+            "error",
+            "running",
+            "machine_connect_timeout",
+            None,
+            MACHINE_NEEDS_ATTENTION,
+        ),
+        ("error", "running", "machine_needs_attention", None, MACHINE_NEEDS_ADMIN),
+        ("error", "deleted", "machine_needs_attention", None, MACHINE_BEING_REMOVED),
+        ("error", "deleted", None, None, MACHINE_BEING_REMOVED),
+        ("deleting", "deleted", None, None, MACHINE_BEING_REMOVED),
+        ("retained", "deleted", None, None, MACHINE_BEING_REMOVED),
+        (
+            "error",
+            "retained",
+            "machine_connect_timeout",
+            timedelta(0),
+            MACHINE_BEING_REMOVED,
+        ),
     ],
 )
 async def test_a_machine_that_cannot_take_agents_refuses_the_claim(
-    factory, state, desired_state, error_code, detail
+    factory, state, desired_state, error_code, retain_for, detail
 ):
     seeded = await seed(
         factory,
@@ -203,10 +216,35 @@ async def test_a_machine_that_cannot_take_agents_refuses_the_claim(
         row = await HostedMachineStore().get(session, seeded.id)
         assert row is not None
         row.error_code = error_code
+        if retain_for is not None:
+            row.retain_until = datetime.now(UTC) + retain_for
         await session.commit()
     with pytest.raises(HostedMachineConflict) as raised:
         await claim(factory, "owner-a")
     assert str(raised.value) == detail
+
+
+async def test_a_retained_machine_in_error_still_retaining_refuses_as_in_error(
+    factory,
+):
+    seeded = await seed(
+        factory,
+        owner_id="owner-a",
+        slot_id="slot-a",
+        state="error",
+        desired_state="retained",
+        stop_reason=None,
+        revision=2,
+        generation=1,
+    )
+    async with factory() as session:
+        row = await HostedMachineStore().get(session, seeded.id)
+        assert row is not None
+        row.retain_until = datetime.now(UTC) + timedelta(days=3)
+        await session.commit()
+    with pytest.raises(HostedMachineConflict) as raised:
+        await claim(factory, "owner-a")
+    assert str(raised.value) == MACHINE_NEEDS_ATTENTION
 
 
 async def test_no_free_slot_refuses_the_claim(factory):
@@ -281,31 +319,6 @@ async def test_start_stop_and_retry(factory):
         machine.revision,
         machine.running_observed_at,
     ) == ("queued", None, None, 4, None)
-
-
-async def test_retrying_a_released_machine_brings_it_back_to_running(factory):
-    now = datetime.now(UTC)
-    machine = await seed(
-        factory,
-        owner_id="owner-a",
-        slot_id="slot-a",
-        state="error",
-        desired_state="retained",
-        stop_reason=None,
-        revision=3,
-        generation=1,
-    )
-    machine.retain_until = now
-    machine.error_code = "machine_connect_timeout"
-    HostedMachineStore().retry(machine, now)
-    assert (
-        machine.state,
-        machine.desired_state,
-        machine.retain_until,
-        machine.error_code,
-        machine.revision,
-        machine.active_at,
-    ) == ("queued", "running", None, None, 4, now)
 
 
 async def test_starting_a_ready_machine_again_waits_for_it_to_reconnect(factory):

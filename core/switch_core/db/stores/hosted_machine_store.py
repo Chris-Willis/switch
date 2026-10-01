@@ -72,9 +72,21 @@ def machine_starting(machine: HostedMachine) -> bool:
     }
 
 
-def claim_conflict(machine: HostedMachine) -> str | None:
+def retention_expired(machine: HostedMachine, now: datetime) -> bool:
+    return (
+        machine.desired_state == "retained"
+        and machine.retain_until is not None
+        and machine.retain_until <= now
+    )
+
+
+def claim_conflict(machine: HostedMachine, now: datetime) -> str | None:
     """The reason a live machine cannot be claimed, or None when it can."""
-    if machine.desired_state == "deleted" or machine.state == "deleting":
+    if (
+        machine.desired_state == "deleted"
+        or machine.state == "deleting"
+        or (machine.state == "error" and retention_expired(machine, now))
+    ):
         return MACHINE_BEING_REMOVED
     if machine.state == "error":
         if machine.error_code == "machine_needs_attention":
@@ -176,7 +188,7 @@ class HostedMachineStore:
         if machine is not None:
             machine = await self.locked(session, machine.id)
         if machine is not None and machine.state != "deleted":
-            if (conflict := claim_conflict(machine)) is not None:
+            if (conflict := claim_conflict(machine, now)) is not None:
                 raise HostedMachineConflict(conflict)
             if machine.desired_state == "retained":
                 machine.desired_state = "running"
@@ -245,11 +257,6 @@ class HostedMachineStore:
         bump_revision(machine, now)
 
     def retry(self, machine: HostedMachine, now: datetime) -> None:
-        if machine.desired_state == "retained":
-            machine.desired_state = "running"
-            machine.retain_until = None
-            machine.stop_reason = None
-            machine.active_at = now
         machine.state = "queued"
         machine.error = None
         machine.error_code = None

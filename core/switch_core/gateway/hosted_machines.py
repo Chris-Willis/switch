@@ -95,7 +95,8 @@ async def ensure_machine(
     if existing is not None:
         existing = await machines.locked(session, existing.id)
         if existing is not None and (
-            owner_stopped(existing) or claim_conflict(existing) is not None
+            owner_stopped(existing)
+            or claim_conflict(existing, datetime.now(UTC)) is not None
         ):
             return existing
     return await machines.claim(

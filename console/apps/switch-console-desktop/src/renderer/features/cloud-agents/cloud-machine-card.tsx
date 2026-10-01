@@ -19,7 +19,7 @@ export function CloudMachineCard({
   machine: CloudMachine;
   serverId: string;
 }) {
-  const shown = machinePresentation(machine);
+  const shown = machinePresentation(machine, Date.now());
   const [pending, setPending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   useEffect(() => setActionError(null), [machine.revision, machine.state]);

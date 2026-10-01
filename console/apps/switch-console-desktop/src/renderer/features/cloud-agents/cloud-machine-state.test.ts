@@ -23,6 +23,19 @@ function machine(patch: Partial<CloudMachine>): CloudMachine {
   return { ...sleepingMachine, ...patch };
 }
 
+const NOW = Date.parse('2026-01-15T00:00:00Z');
+
+function present(input: CloudMachine) {
+  return machinePresentation(input, NOW);
+}
+
+const expiredRetained = {
+  state: 'retained',
+  desired_state: 'retained',
+  sleeping: false,
+  retain_until: '2026-01-01T00:00:00Z',
+} as const;
+
 const running = { desired_state: 'running', stop_reason: null, sleeping: false } as const;
 const ownerStopped = { desired_state: 'stopped', stop_reason: 'owner', sleeping: false } as const;
 
@@ -48,50 +61,52 @@ describe('machinePresentation label', () => {
       machine({ state: 'error', desired_state: 'deleted', error_code: 'x' }),
       'Deleting disk…',
     ],
+    ['retention expired', machine(expiredRetained), 'Deleting disk…'],
+    [
+      'error after retention expired',
+      machine({ ...expiredRetained, state: 'error', error_code: 'other' }),
+      'Deleting disk…',
+    ],
   ])('%s', (_name, input, label) => {
-    expect(machinePresentation(input).label).toBe(label);
+    expect(present(input).label).toBe(label);
   });
 });
 
 describe('machinePresentation problem', () => {
   it('is null for a healthy machine', () => {
-    expect(machinePresentation(machine({})).problem).toBeNull();
+    expect(present(machine({})).problem).toBeNull();
   });
 
   it('names the machine that needs attention', () => {
-    const shown = machinePresentation(
+    const shown = present(
       machine({ state: 'error', error_code: 'machine_needs_attention', error: 'raw' })
     );
     expect(shown.problem).toBe('The machine needs attention. Contact your server administrator.');
   });
 
   it('names a connect timeout', () => {
-    const shown = machinePresentation(
-      machine({ state: 'error', error_code: 'machine_connect_timeout' })
-    );
+    const shown = present(machine({ state: 'error', error_code: 'machine_connect_timeout' }));
     expect(shown.problem).toMatch(/did not connect in time/);
   });
 
   it('falls back to the server error, then a generic one', () => {
-    expect(
-      machinePresentation(machine({ state: 'error', error_code: 'other', error: 'boom' })).problem
-    ).toBe('boom');
-    expect(machinePresentation(machine({ state: 'error', error_code: 'other' })).problem).toBe(
+    expect(present(machine({ state: 'error', error_code: 'other', error: 'boom' })).problem).toBe(
+      'boom'
+    );
+    expect(present(machine({ state: 'error', error_code: 'other' })).problem).toBe(
       'The machine could not start.'
     );
   });
 
   it('shows a full disk on a ready machine', () => {
-    const shown = machinePresentation(
-      machine({ ...running, state: 'ready', error_code: 'disk_full' })
-    );
+    const shown = present(machine({ ...running, state: 'ready', error_code: 'disk_full' }));
     expect(shown.problem).toBe('The machine’s disk is full.');
     expect(shown.label).toBe('Ready');
   });
 
   it('is null for a machine that errored while being deleted', () => {
     expect(
-      machinePresentation(
+      present(
         machine({
           state: 'error',
           desired_state: 'deleted',
@@ -102,18 +117,24 @@ describe('machinePresentation problem', () => {
     ).toBeNull();
   });
 
+  it('is null for a machine in error whose retention expired', () => {
+    expect(
+      present(machine({ ...expiredRetained, state: 'error', error_code: 'other', error: 'boom' }))
+        .problem
+    ).toBeNull();
+  });
+
   it('ignores an error code on a machine that is not in error', () => {
     expect(
-      machinePresentation(
-        machine({ ...running, state: 'ready', error_code: 'machine_needs_attention' })
-      ).problem
+      present(machine({ ...running, state: 'ready', error_code: 'machine_needs_attention' }))
+        .problem
     ).toBeNull();
   });
 });
 
 describe('machinePresentation retainUntil', () => {
   it('is the date a retained machine’s disk is deleted', () => {
-    const shown = machinePresentation(
+    const shown = present(
       machine({
         state: 'retained',
         desired_state: 'retained',
@@ -123,23 +144,24 @@ describe('machinePresentation retainUntil', () => {
     expect(shown.retainUntil).toBe('2026-02-01T00:00:00Z');
   });
 
+  it('is null once the retention has expired', () => {
+    expect(present(machine(expiredRetained)).retainUntil).toBeNull();
+  });
+
   it('is null otherwise', () => {
-    expect(
-      machinePresentation(machine({ retain_until: '2026-02-01T00:00:00Z' })).retainUntil
-    ).toBeNull();
+    expect(present(machine({ retain_until: '2026-02-01T00:00:00Z' })).retainUntil).toBeNull();
   });
 
   it('is null for a retained machine being reused', () => {
     expect(
-      machinePresentation(machine({ ...running, state: 'retained', retain_until: null }))
-        .retainUntil
+      present(machine({ ...running, state: 'retained', retain_until: null })).retainUntil
     ).toBeNull();
   });
 });
 
 describe('machinePresentation disk', () => {
   it('reads the heartbeat', () => {
-    expect(machinePresentation(machine({})).disk).toEqual({
+    expect(present(machine({})).disk).toEqual({
       usedPercent: 5,
       availableBytes: 204010946560,
       totalBytes: 214748364800,
@@ -148,16 +170,13 @@ describe('machinePresentation disk', () => {
   });
 
   it('is null without a heartbeat or with an empty total', () => {
-    expect(machinePresentation(machine({ disk: null })).disk).toBeNull();
-    expect(
-      machinePresentation(machine({ disk: { total_bytes: 0, available_bytes: 0 } })).disk
-    ).toBeNull();
+    expect(present(machine({ disk: null })).disk).toBeNull();
+    expect(present(machine({ disk: { total_bytes: 0, available_bytes: 0 } })).disk).toBeNull();
   });
 
   it('is low below a tenth free', () => {
     const at = (available: number) =>
-      machinePresentation(machine({ disk: { total_bytes: 1000, available_bytes: available } })).disk
-        ?.low;
+      present(machine({ disk: { total_bytes: 1000, available_bytes: available } })).disk?.low;
     expect(at(100)).toBe(false);
     expect(at(99)).toBe(true);
   });
@@ -192,7 +211,12 @@ describe('machinePresentation actions', () => {
       machine({ state: 'error', desired_state: 'deleted', error_code: 'other' }),
       [],
     ],
+    [
+      'error after retention expired',
+      machine({ ...expiredRetained, state: 'error', error_code: 'other' }),
+      [],
+    ],
   ])('%s', (_name, input, actions) => {
-    expect(machinePresentation(input).actions).toEqual(actions);
+    expect(present(input).actions).toEqual(actions);
   });
 });

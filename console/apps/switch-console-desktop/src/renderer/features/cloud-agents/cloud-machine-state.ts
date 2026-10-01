@@ -27,8 +27,18 @@ function isRetained(machine: CloudMachine): boolean {
   );
 }
 
-function machineLabel(machine: CloudMachine): string {
-  if (machine.state === 'deleting' || machine.desired_state === 'deleted') return 'Deleting disk…';
+function isBeingDeleted(machine: CloudMachine, now: number): boolean {
+  return (
+    machine.state === 'deleting' ||
+    machine.desired_state === 'deleted' ||
+    (isRetained(machine) &&
+      machine.retain_until !== null &&
+      Date.parse(machine.retain_until) <= now)
+  );
+}
+
+function machineLabel(machine: CloudMachine, now: number): string {
+  if (isBeingDeleted(machine, now)) return 'Deleting disk…';
   if (machine.state === 'error') return 'Error';
   if (isRetained(machine)) return 'Retained';
   if (machine.sleeping) return 'Sleeping';
@@ -38,8 +48,8 @@ function machineLabel(machine: CloudMachine): string {
   return 'Provisioning';
 }
 
-function machineProblem(machine: CloudMachine): string | null {
-  if (machine.desired_state === 'deleted') return null;
+function machineProblem(machine: CloudMachine, now: number): string | null {
+  if (isBeingDeleted(machine, now)) return null;
   if (machine.error_code === 'disk_full') return 'The machine’s disk is full.';
   if (machine.state !== 'error') return null;
   if (machine.error_code === 'machine_needs_attention')
@@ -60,7 +70,8 @@ function machineDisk(machine: CloudMachine): MachineDisk | null {
   };
 }
 
-function machineActions(machine: CloudMachine): MachineAction[] {
+function machineActions(machine: CloudMachine, now: number): MachineAction[] {
+  if (isBeingDeleted(machine, now)) return [];
   if (
     machine.state === 'error' &&
     machine.error_code !== 'machine_needs_attention' &&
@@ -85,12 +96,12 @@ function machineActions(machine: CloudMachine): MachineAction[] {
 }
 
 /** What the machine card shows for a machine: its state, trouble, disk and actions. */
-export function machinePresentation(machine: CloudMachine): MachinePresentation {
+export function machinePresentation(machine: CloudMachine, now: number): MachinePresentation {
   return {
-    label: machineLabel(machine),
-    problem: machineProblem(machine),
-    retainUntil: isRetained(machine) ? machine.retain_until : null,
+    label: machineLabel(machine, now),
+    problem: machineProblem(machine, now),
+    retainUntil: isRetained(machine) && !isBeingDeleted(machine, now) ? machine.retain_until : null,
     disk: machineDisk(machine),
-    actions: machineActions(machine),
+    actions: machineActions(machine, now),
   };
 }
