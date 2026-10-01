@@ -176,8 +176,8 @@ async def test_the_dispatch_style_cannot_change_the_tenant() -> None:
     assert seen == [ROOM_TENANT, ROOM_TENANT]
 
 
-class TestAPuppetIsMintedInTheBridgesTenant:
-    """A puppet is per-bridge and reused for every room the person it stands
+class TestAHumanActorIsMintedInTheBridgesTenant:
+    """A human actor is per-bridge and reused for every room the person it stands
     for ever speaks in, so it cannot be stamped with the tenant of whichever
     room happened to trigger it first. The rooms a bridge carries are all in
     its tenant (`rooms` keys to `collaboration_bridges` on `tenant_id`), so
@@ -189,8 +189,8 @@ class TestAPuppetIsMintedInTheBridgesTenant:
         bridge._bridge_id = "bridge-1"
         bridge._bridge_tenant_id = BRIDGE_TENANT
         bridge._bridge_type = "mattermost"
-        bridge._puppet_locks = {}
-        bridge._user_puppets = {}
+        bridge._human_actor_locks = {}
+        bridge._human_actors = {}
         bridge._human_user_ids = set()
         seen: list[str | None] = []
 
@@ -198,28 +198,28 @@ class TestAPuppetIsMintedInTheBridgesTenant:
             seen.append(current_tenant_id())
             return "client-1"
 
-        bridge._create_puppet_locked = _locked  # type: ignore[assignment]
+        bridge._create_human_actor_locked = _locked  # type: ignore[assignment]
 
         # Reached from inside an inbound event for a room — the binding the
-        # puppet must *not* adopt, were the two ever to differ.
+        # human actor must *not* adopt, were the two ever to differ.
         with tenant_scope(ROOM_TENANT):
-            assert await bridge._create_puppet("U1", "alice") == "client-1"
+            assert await bridge._create_human_actor("U1", "alice") == "client-1"
 
         assert seen == [BRIDGE_TENANT]
 
-    async def test_a_cached_puppet_is_returned_without_reminting(self) -> None:
+    async def test_a_cached_human_actor_is_returned_without_reminting(self) -> None:
         bridge = CollaborationCore.__new__(CollaborationCore)
         bridge._bridge_tenant_id = BRIDGE_TENANT
-        bridge._puppet_locks = {}
-        bridge._user_puppets = {"U1": "client-1"}
+        bridge._human_actor_locks = {}
+        bridge._human_actors = {"U1": "client-1"}
 
         # The cache check lives inside the locked half, so this proves the
         # split did not move it out from under the lock.
-        bridge._create_puppet_locked = CollaborationCore._create_puppet_locked.__get__(
-            bridge
+        bridge._create_human_actor_locked = (
+            CollaborationCore._create_human_actor_locked.__get__(bridge)
         )  # type: ignore[assignment]
 
-        assert await bridge._create_puppet("U1", "alice") == "client-1"
+        assert await bridge._create_human_actor("U1", "alice") == "client-1"
 
 
 @pytest.mark.parametrize("tenant", [BRIDGE_TENANT, ROOM_TENANT])

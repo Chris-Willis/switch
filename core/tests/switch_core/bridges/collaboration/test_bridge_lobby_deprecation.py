@@ -86,7 +86,7 @@ async def test_inbound_lobby_message_short_circuits_routing() -> None:
 
     await CollaborationCore._handle_inbound_message(bridge, _msg("lobby"))
 
-    # Routed to the deprecation handler; never created a room / puppet.
+    # Routed to the deprecation handler; never created a room / human actor.
     assert len(handled) == 1
     assert ensure_calls == []
 

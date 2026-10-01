@@ -93,7 +93,7 @@ def _run(coro: Any) -> Any:
 def _bridge(approval_answers: Any) -> tuple[Any, list[dict[str, str]]]:
     """A bridge core, and the list of messages that got past the answer path.
 
-    The channel maps to a room and the puppet step records what it was asked
+    The channel maps to a room and the human actor step records what it was asked
     for and then hands back nothing, which is where the relay stops. So a
     message in that list is one the answer path let through on its way to the
     room, and an empty list after a message is a message the room lost.

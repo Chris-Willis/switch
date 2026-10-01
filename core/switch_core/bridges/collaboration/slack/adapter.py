@@ -2767,7 +2767,7 @@ class SlackAdapter(PlatformAdapter):
         self._last_user_message_ts[channel_id] = message_ts
 
         # App/bot posts (e.g. Datadog) carry no `user`; their identity lives in
-        # bot_id + bot_profile/username. Key the puppet on the stable bot_id and
+        # bot_id + bot_profile/username. Key the human actor on the stable bot_id and
         # name it from the app's profile.
         bot_id = str(event.get("bot_id", ""))
         if not user_id and bot_id:

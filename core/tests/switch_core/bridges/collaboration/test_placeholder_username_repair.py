@@ -53,7 +53,7 @@ class _Store:
         self._user.external_username = external_username
 
 
-class _Puppet:
+class _HumanActorStub:
     def __init__(self) -> None:
         self.names: list[str] = []
 
@@ -62,11 +62,11 @@ class _Puppet:
 
 
 class _Lifecycle:
-    def __init__(self, puppet: Any) -> None:
-        self._puppet = puppet
+    def __init__(self, human_actor: Any) -> None:
+        self._human_actor = human_actor
 
     def get(self, client_id: str) -> Any:
-        return self._puppet
+        return self._human_actor
 
 
 def _teams_adapter() -> TeamsAdapter:
@@ -82,7 +82,7 @@ def _teams_adapter() -> TeamsAdapter:
     )
 
 
-def _core(stored_name: str, *, adapter: Any = None, puppet: Any = None) -> Any:
+def _core(stored_name: str, *, adapter: Any = None, human_actor: Any = None) -> Any:
     user = SimpleNamespace(
         id="eu-1", external_username=stored_name, client_id="client-1"
     )
@@ -92,7 +92,7 @@ def _core(stored_name: str, *, adapter: Any = None, puppet: Any = None) -> Any:
     core._bridge_type = "teams"  # type: ignore[attr-defined]
     core._adapter = adapter or _teams_adapter()  # type: ignore[attr-defined]
     core._external_user_store = _Store(user)  # type: ignore[attr-defined]
-    core._client_lifecycle = _Lifecycle(puppet or _Puppet())  # type: ignore[attr-defined]
+    core._client_lifecycle = _Lifecycle(human_actor or _HumanActorStub())  # type: ignore[attr-defined]
     core._names_known_good = set()  # type: ignore[attr-defined]
     return core
 
@@ -126,13 +126,13 @@ def test_a_platform_whose_handles_are_handles_recognises_nothing() -> None:
 
 
 async def test_an_id_is_replaced_by_the_name_and_the_account_renamed() -> None:
-    puppet = _Puppet()
-    core = _core(_TEAMS_ID, puppet=puppet)
+    human_actor = _HumanActorStub()
+    core = _core(_TEAMS_ID, human_actor=human_actor)
 
     await core._repair_placeholder_username("aad-1", "ada.lovelace")
 
     assert core._external_user_store.renames == [("eu-1", "ada.lovelace")]
-    assert puppet.names == ["ada.lovelace"]
+    assert human_actor.names == ["ada.lovelace"]
 
 
 async def test_a_real_name_already_stored_is_left_alone() -> None:
@@ -183,11 +183,11 @@ async def test_an_empty_resolution_is_ignored() -> None:
 async def test_the_rename_stands_even_if_the_account_cannot_be_relabelled() -> None:
     # The stored name is what agents address; the Matrix label is cosmetic.
     # Losing the second is no reason to abandon the first.
-    class _Failing(_Puppet):
+    class _Failing(_HumanActorStub):
         async def set_display_name(self, name: str) -> None:
             raise RuntimeError("homeserver said no")
 
-    core = _core(_TEAMS_ID, puppet=_Failing())
+    core = _core(_TEAMS_ID, human_actor=_Failing())
 
     await core._repair_placeholder_username("aad-1", "ada.lovelace")
 

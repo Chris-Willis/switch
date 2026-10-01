@@ -137,7 +137,7 @@ def _fake_bridge(
     ns = SimpleNamespace(
         _bridge_type="slack",
         _adapter=adapter,
-        _human_user_ids={"@puppet:s"},
+        _human_user_ids={"@human actor:s"},
         _workspace_consumer_transport_user_id="@bridge:s",
         _max_attachment_bytes=max_bytes,
         _external_post_for_event=_external_post_for_event,
@@ -235,13 +235,13 @@ async def test_threaded_media_resolves_external_root() -> None:
     assert bridge._adapter.attachments[0]["thread_root_id"] == "ext-root"
 
 
-async def test_puppet_media_is_skipped() -> None:
-    # Media a puppet posted originated on the platform — relaying it back
+async def test_human_actor_media_is_skipped() -> None:
+    # Media a human actor posted originated on the platform — relaying it back
     # would echo it.
     bridge = _fake_bridge()
 
     await CollaborationCore.handle_outbound_media(
-        bridge, _room(), _media_event(sender="@puppet:s"), bridge.client
+        bridge, _room(), _media_event(sender="@human actor:s"), bridge.client
     )
 
     assert bridge._adapter.attachments == []

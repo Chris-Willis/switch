@@ -20,34 +20,34 @@ sequenceDiagram
   participant AG as Agent
   P->>SA: message event, over the connection Switch dialed out
   SA->>BC: normalized into the inbound model
-  BC->>RM: invite the puppet, wait for the join
+  BC->>RM: invite the human actor, wait for the join
   Note over BC,RM: a client ignores events that predate its own join
-  BC->>RM: puppet posts the message
+  BC->>RM: human actor posts the message
   RM->>AC: event reaches the client
   AC->>AC: addressed? name, alias, role, policy
   AC->>AG: sequenced in the buffer, pushed over SSE
   Note over AC,AG: delivery is not acting
   AG->>RM: reply, through the agent bridge over HTTP
   RM->>BC: workspace consumer sees the reply
-  BC->>SA: puppet senders skipped, correlation resolved
+  BC->>SA: human actor senders skipped, correlation resolved
   SA->>P: reply in the channel thread
 ```
 
 1. **Slack pushes the message.** It arrives on the connection the adapter dialed out when the bridge started. No inbound port is involved.
 2. **The adapter normalizes it.** Platform formatting becomes the neutral inbound model: channel and channel type, sender id and name, content, message reference, optional thread root, attachments. Everything past this point is written against that model. See [the collaboration bridge](collaboration-bridge.md).
-3. **The collaboration core prepares the puppet.** It maps the channel to its Switch room, looks up or creates the sender's puppet client, invites it, and waits for the join to land.
-4. **The puppet posts the message.** It is now an ordinary event from an ordinary room member.
+3. **The collaboration core prepares the human actor.** It maps the channel to its Switch room, looks up or creates the sender's human actor, invites it, and waits for the join to land.
+4. **The human actor posts the message.** It is now an ordinary event from an ordinary room member.
 5. **The agent's client picks it up.** Each client is delivered the events written to the rooms it belongs to.
 6. **Addressing is decided.** By name, by an alias the agent holds in this room, or by a role it holds. The [addressing policy](identity-and-access.md) decides whether this sender may make this agent respond.
 7. **The event is buffered and streamed.** It is appended to the agent's sequenced buffer and pushed down the open SSE stream. Each frame carries its sequence number as the SSE id, so a reconnect resumes with `Last-Event-ID`. See [the agent protocol](agent-protocol.md).
 8. **The agent replies.** It posts into the same Switch room through the agent bridge over HTTP. A session started by Switch Console calls the Switch tool its host serves, and Console or the sidecar makes that request.
 9. **The workspace consumer sees the reply.** The bridge is a member of the room, so the reply reaches it like any other event.
-10. **The collaboration core routes it out.** Known puppet senders are skipped, and the correlation table resolves the external post to reply under.
+10. **The collaboration core routes it out.** Known human actor senders are skipped, and the correlation table resolves the external post to reply under.
 11. **The adapter posts it in the channel.** In the agent's name, in the right thread.
 
 ## The join wait
 
-A client ignores events that predate its own join. This is Switch's own rule, applied by the client as events reach it, not something PostgreSQL enforces. The collaboration core invites the puppet and waits for the join to land before sending, because a message sent in the gap is filtered out at the far end without raising anything.
+A client ignores events that predate its own join. This is Switch's own rule, applied by the client as events reach it, not something PostgreSQL enforces. The collaboration core invites the human actor and waits for the join to land before sending, because a message sent in the gap is filtered out at the far end without raising anything.
 
 The same rule applies wherever Switch adds a participant that has to see what happens next. Room creation invites the bridge before any agent for this reason.
 
@@ -59,7 +59,7 @@ An agent that sets its filter to `addressed` narrows delivery as well, and stops
 
 ## Loop prevention
 
-The outbound path skips any event whose sender is a known puppet. Without it, a message relayed in from Slack is relayed straight back out to Slack.
+The outbound path skips any event whose sender is a known human actor. Without it, a message relayed in from Slack is relayed straight back out to Slack.
 
 ## Thread correlation
 

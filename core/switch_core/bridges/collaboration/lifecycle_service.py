@@ -1297,7 +1297,7 @@ class CollaborationBridgeLifecycleService:
         """Disconnect a messaging app and take its identities with it.
 
         Everything Switch created to talk to this platform goes: the bridge's
-        own client, and the puppet client behind every person Switch saw
+        own client, and the human actor behind every person Switch saw
         on it. Leaving those behind is not a tidiness problem: the bridge
         client's name is derived from the app's type and display name,
         so an operator who disconnects an app and reconnects one named the same
@@ -1317,9 +1317,11 @@ class CollaborationBridgeLifecycleService:
         await self.stop(bridge_id)
         async with self._session_factory() as session:
             bridge = await self._bridge_store.get(session, bridge_id)
-            puppets = await self._external_user_store.get_by_bridge(session, bridge_id)
+            human_actors = await self._external_user_store.get_by_bridge(
+                session, bridge_id
+            )
 
-        removed = [u.client_id for u in puppets if u.client_id]
+        removed = [u.client_id for u in human_actors if u.client_id]
         if bridge is not None:
             removed.append(bridge.client_id)
         for client_id in removed:

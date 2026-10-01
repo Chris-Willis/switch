@@ -54,8 +54,8 @@ def _fake_bridge(
             return send_result.event_id
 
         return SimpleNamespace(
-            transport_user_id="@puppet:switch.local",
-            client_id="puppet-1",
+            transport_user_id="@human actor:switch.local",
+            client_id="human-actor-1",
             send_event=_send_event,
         )
 
@@ -217,7 +217,7 @@ class TestCommandResultThreadingRace:
                 return "$cmd-event"
 
             return SimpleNamespace(
-                transport_user_id="@puppet:switch.local",
+                transport_user_id="@human actor:switch.local",
                 send_event=_send_event,
             )
 

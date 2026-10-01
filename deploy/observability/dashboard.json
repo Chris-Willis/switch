@@ -333,7 +333,7 @@
     {
       "definition": {
         "type": "note",
-        "content": "**Bridges.** Inbound is counted where every platform event already funnels through; outbound at the relay, so a puppet's own echo and a room with no channel are not counted as traffic nobody sent.",
+        "content": "**Bridges.** Inbound is counted where every platform event already funnels through; outbound at the relay, so a human actor's own echo and a room with no channel are not counted as traffic nobody sent.",
         "background_color": "gray",
         "font_size": "14",
         "text_align": "left",

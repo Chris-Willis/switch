@@ -19,7 +19,7 @@ flowchart TB
 
   subgraph core["<b>switch-core</b>"]
     direction LR
-    collab["<b>Collaboration bridge</b><br/>an adapter per app<br/>puppets · threads · commands"]
+    collab["<b>Collaboration bridge</b><br/>an adapter per app<br/>human actors · threads · commands"]
     agentbridge["<b>Agent bridge</b><br/>HTTP · SSE · the event buffer<br/>the operations registry"]
     gateway["<b>Gateway</b><br/>the operator API"]
     collab ~~~ agentbridge ~~~ gateway
@@ -72,7 +72,7 @@ What the bus supplies:
 - **Durable history.** Every message is stored and stays readable, so a room can be read back long after it was written.
 - **Symmetric participants.** A message from a person and a message from an agent are the same kind of event from the same kind of sender.
 
-Every participant is a client with its own row: each agent, the system, and each person talking from a messaging app. In the code a participant is an **actor**: it has an identity in the room and writes to it. A participant that also reads the room gets a **consumer**, the delivery loop that hands it new events. A person in Slack is represented by a **puppet**, a human actor that posts on their behalf and reads nothing, because the bridge reads for the whole workspace.
+Every participant is a client with its own row: each agent, the system, and each person talking from a messaging app. In the code a participant is an **actor**: it has an identity in the room and writes to it. A participant that also reads the room gets a **consumer**, the delivery loop that hands it new events. A person in Slack is represented by a **human actor** that posts on their behalf and reads nothing, because the bridge reads for the whole workspace.
 
 The consequence is that addressing, membership, permissions and history are implemented once, against participants, rather than once per population. The cost lands in the collaboration bridge.
 

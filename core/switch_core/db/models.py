@@ -1907,7 +1907,7 @@ class Message(TenantScoped, Base):
 
     Every participant in a room is a Switch-owned client, so recording each
     send captures the whole room exactly once — including messages a human
-    originates on a bridged platform, which enter through that user's puppet.
+    originates on a bridged platform, which enter through that user's human actor.
 
     `content` is the full event body as sent. The columns beside it are
     denormalised out of it for querying; for a custom `com.switch.*` event

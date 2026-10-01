@@ -48,7 +48,7 @@ def _core(provision: Any) -> tuple[CollaborationCore, _FakeAdapter]:
         return None
 
     core._load_channel_map = _noop  # type: ignore[assignment]
-    core._load_existing_puppets = _noop  # type: ignore[assignment]
+    core._load_existing_human_actors = _noop  # type: ignore[assignment]
     core._ensure_channel_captures = _noop  # type: ignore[assignment]
     core._handle_channel_migrated = None  # type: ignore[attr-defined]
     core._agent_presentation = None  # type: ignore[attr-defined]

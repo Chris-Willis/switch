@@ -1502,7 +1502,7 @@ class RoomService:
     async def ensure_client_in_room(self, room_id: str, client_id: str) -> None:
         """Invite a single running client to the room (it auto-joins) and record
         its membership. Idempotent — safe to call repeatedly, e.g. on every
-        bridged message from an external user's puppet."""
+        bridged message from an external user's human actor."""
         room = await self._load_room(room_id)
         async with tenant_session(self._session_factory, room.tenant_id) as session:
             already_member = client_id in await self._room_store.get_client_ids(

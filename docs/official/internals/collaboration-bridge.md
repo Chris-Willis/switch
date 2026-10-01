@@ -147,11 +147,11 @@ Supporting models: `Attachment`, `OutboundAttachment`, `AttachmentFailure`, `Dir
 
 **There is no outbound message model.** Outbound is a room event handed to the collaboration core, which passes primitives to `send_message`.
 
-## Puppeting
+## Human actors
 
-A **puppet** is a human actor that stands in for one external person. It writes into the room and reads nothing: the bridge's workspace consumer reads every room it mirrors. The collaboration core keeps a map from external user id to puppet client id.
+A **human actor** stands in for one external person. It writes into the room and reads nothing: the bridge's workspace consumer reads every room it mirrors. The collaboration core keeps a map from external user id to the human actor's client id.
 
-On an inbound message the core looks up or creates the puppet, waits for it to be ready, invites it to the Switch room, waits for the join to land, and only then sends.
+On an inbound message the core looks up or creates the human actor, waits for it to be ready, invites it to the Switch room, waits for the join to land, and only then sends.
 
 ```mermaid
 %%{init: {'themeVariables': {'fontSize': '13px'}}}%%
@@ -160,28 +160,28 @@ sequenceDiagram
   participant U as Person in Slack
   participant A as Adapter
   participant B as Collaboration core
-  participant P as Puppet (human actor)
+  participant P as Human actor
   participant R as Switch room
   U->>A: platform message event
   A->>A: normalize into InboundMessage
   A->>B: on_message
   B->>B: resolve channel to room
-  B->>P: look up or create puppet
-  B->>R: invite puppet
+  B->>P: look up or create human actor
+  B->>R: invite human actor
   R-->>B: join lands
   Note over B,R: a client ignores events predating its own join — an early send is dropped silently
   P->>R: post message
 ```
 
-Puppet creation is guarded by a per-user lock with a double-check inside it, because two messages from the same new person can arrive close together.
+Human actor creation is guarded by a per-user lock with a double-check inside it, because two messages from the same new person can arrive close together.
 
-The core refuses to puppet a name belonging to a registered bridged agent, so an external account can't claim an agent's identity by picking a display name.
+The core refuses to create a human actor for a name belonging to a registered bridged agent, so an external account can't claim an agent's identity by picking a display name.
 
 ## Loop prevention
 
-The outbound path skips any event whose sender is a known puppet.
+The outbound path skips any event whose sender is a known human actor.
 
-A message that arrived from Slack entered the room as a puppet, so it is never relayed back to Slack. Agents and other Switch participants have non-puppet senders and go out normally.
+A message that arrived from Slack entered the room as a human actor, so it is never relayed back to Slack. Agents and other Switch participants are not human actors, so their messages go out normally.
 
 ## Threads, edits and deletes
 
@@ -202,7 +202,7 @@ sequenceDiagram
   G->>R: post message
   R->>C: room event
   C->>B: hand off event
-  B->>B: sender is not a known puppet
+  B->>B: sender is not a known human actor
   B->>B: look up external post id in the message map
   B->>A: send_message with thread root
   A-->>B: external post id

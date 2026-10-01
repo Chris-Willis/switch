@@ -1164,7 +1164,7 @@ class TestATransportActsInItsClientsTenant:
     Its task binds nothing: `ClientLifecycleService` unbinds before running a
     client, so anything the transport did under an *inherited* tenant would be
     doing it under the tenant of whoever happened to create the task — boot, a
-    gateway request, or the inbound bridge message that minted a puppet
+    gateway request, or the inbound bridge message that minted a human actor
     mid-conversation. That is still the failure this class exists to prevent.
     What changed with the restricted runtime role is where the right answer
     comes from.
@@ -1257,7 +1257,7 @@ class TestATransportActsInItsClientsTenant:
             tenant_id=tenant_id,
         )
         # Stands in for a task that inherited a tenant it has no business
-        # acting under — a bridge restart, a puppet minted mid-conversation.
+        # acting under — a bridge restart, a human actor minted mid-conversation.
         with tenant_scope("some-other-tenant"):
             rooms = await transport.joined_rooms()
 
@@ -1324,7 +1324,7 @@ class TestATransportActsInItsClientsTenant:
         client's tenant — with nothing bound around the loop that drives them.
 
         This test used to arrange the two rooms in *different* tenants, on the
-        reading that a reused puppet could speak in both and that the
+        reading that a reused human actor could speak in both and that the
         transport's own tenant must therefore never decide how a room is read.
         That shape is not reachable: `client_rooms` and `messages` both key to
         `rooms` and to `clients` through `tenant_id`, so a client can be
@@ -1339,13 +1339,13 @@ class TestATransportActsInItsClientsTenant:
         async with session_factory() as session:
             session.add(Tenant(id=tenant_id, slug=tenant_id, name=tenant_id))
             await session.flush()
-            puppet = Client(
+            human_actor = Client(
                 tenant_id=tenant_id,
-                transport_user_id=f"@puppet-{suffix}:test",
-                display_name="puppet",
+                transport_user_id=f"@human-actor-{suffix}:test",
+                display_name="human actor",
                 type="user",
             )
-            session.add(puppet)
+            session.add(human_actor)
             first = Room(
                 tenant_id=tenant_id,
                 transport_room_id=f"!a-{suffix}:test",
@@ -1362,7 +1362,7 @@ class TestATransportActsInItsClientsTenant:
             await session.commit()
             room_ids = {first.id: tenant_id, second.id: tenant_id}
             mxid_a, mxid_b = first.transport_room_id, second.transport_room_id
-            client_id, user_id = puppet.id, puppet.transport_user_id
+            client_id, user_id = human_actor.id, human_actor.transport_user_id
 
         seen: dict[str, list[str | None]] = {}
         original = MessageStore.list_for_room
@@ -1388,8 +1388,12 @@ class TestATransportActsInItsClientsTenant:
         self._tasks.append(asyncio.create_task(transport.receive_forever()))
         await _watched_room(transport)
 
-        await transport.send_message(mxid_a, "in a", sender_name="puppet", metered=True)
-        await transport.send_message(mxid_b, "in b", sender_name="puppet", metered=True)
+        await transport.send_message(
+            mxid_a, "in a", sender_name="human actor", metered=True
+        )
+        await transport.send_message(
+            mxid_b, "in b", sender_name="human actor", metered=True
+        )
 
         for room_id in room_ids:
             await listener.announce(room_id)

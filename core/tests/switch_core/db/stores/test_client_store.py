@@ -39,7 +39,7 @@ class TestDeleteClearsMemberships:
 
     `client_rooms` references `clients` with no `ON DELETE` rule, so the
     membership rows would otherwise hold the client row hostage — and every
-    client worth deleting has them: a bridge puppet has been in every room the
+    client worth deleting has them: a bridge human actor has been in every room the
     person it stands for spoke in.
     """
 
@@ -172,7 +172,7 @@ class TestDeleteDoesNotReachAcrossTenants:
 class TestGetByTransportUserIdMultiTenant:
     """`Client.matrix_user_id` is unique per tenant
     (`uq_clients_tenant_matrix_user_id`), not globally — two tenants may each
-    puppet the same Matrix user id. Before scoping the read, an unfiltered
+    human actor the same Matrix user id. Before scoping the read, an unfiltered
     `get_by_matrix_user_id` matched both rows and raised
     `MultipleResultsFound` out of message routing and provisioning, which
     resolve the sending client from an inbound event this way.

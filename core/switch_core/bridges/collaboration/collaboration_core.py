@@ -103,9 +103,9 @@ _InboundEventT = TypeVar(
     InboundAppJoin,
 )
 
-# How long to wait for a freshly-invited external-user puppet to actually join a
+# How long to wait for a freshly-invited external-user human actor to actually join a
 # room before giving up on relaying its message.
-PUPPET_JOIN_TIMEOUT = 30.0
+HUMAN_JOIN_TIMEOUT = 30.0
 
 # How long to hold an incomplete outbound attachment group before relaying the
 # parts that arrived, flagged as incomplete (see _schedule_outbound_group_flush).
@@ -217,7 +217,7 @@ class CollaborationCore:
         # has a channel mapping always has a tenant here — including rooms
         # created long after this bridge started. See `_room_tenant`.
         self._room_tenants: dict[str, str] = {}
-        self._user_puppets: dict[str, str] = {}
+        self._human_actors: dict[str, str] = {}
         # External user ids whose stored name is known not to be a platform id,
         # so the placeholder repair does not re-ask the database once per
         # message. One-way, so a cached answer cannot go stale — see
@@ -225,7 +225,7 @@ class CollaborationCore:
         self._names_known_good: set[str] = set()
         self._human_user_ids: set[str] = set()
         self._channel_locks: dict[str, asyncio.Lock] = {}
-        self._puppet_locks: dict[str, asyncio.Lock] = {}
+        self._human_actor_locks: dict[str, asyncio.Lock] = {}
         # Channels Switch is itself provisioning right now (outbound room
         # creation / bridge change). The bot auto-joins a channel the instant
         # it is created, which fires an inbound join before the room↔channel
@@ -294,7 +294,7 @@ class CollaborationCore:
         """Count one relay out to the platform, time it, and count its failure.
 
         Placed around the relay call rather than at the top of the handler: a
-        handler returns early for a puppet's own echo and for a room with no
+        handler returns early for a human actor's own echo and for a room with no
         channel mapping, and neither of those is a message anybody sent
         outwards.
 
@@ -408,7 +408,7 @@ class CollaborationCore:
 
     async def start(self) -> None:
         await self._load_channel_map()
-        await self._load_existing_puppets()
+        await self._load_existing_human_actors()
         self._adapter.set_channel_migration_handler(self._handle_channel_migrated)
         self._adapter.set_agent_presentation_resolver(self._agent_presentation)
         # A bridge on a shared connection that started before the connection
@@ -501,7 +501,7 @@ class CollaborationCore:
         self._room_tenants[room_id] = tenant_id
         return tenant_id
 
-    async def _load_existing_puppets(self) -> None:
+    async def _load_existing_human_actors(self) -> None:
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
@@ -518,7 +518,7 @@ class CollaborationCore:
         )
 
         for user in users:
-            self._user_puppets[user.external_user_id] = user.client_id
+            self._human_actors[user.external_user_id] = user.client_id
 
             client = self._client_lifecycle.get(user.client_id)
             if client is None:
@@ -813,13 +813,13 @@ class CollaborationCore:
                 await self._maybe_guide_self_mention(msg, room_id)
 
         await self._repair_placeholder_username(msg.sender_id, msg.sender_name)
-        puppet = await self._ensure_human_in_room(
+        human_actor = await self._ensure_human_in_room(
             external_user_id=msg.sender_id,
             external_username=msg.sender_name,
             room_id=room_id,
             transport_room_id=transport_room_id,
         )
-        if puppet is None:
+        if human_actor is None:
             return
 
         content = self._adapter.translate_inbound(msg.content)
@@ -830,7 +830,7 @@ class CollaborationCore:
         logger.debug(
             "[BRIDGE-IN] writing to room=%s as human=%s attachments=%d",
             transport_room_id,
-            puppet.transport_user_id,
+            human_actor.transport_user_id,
             len(msg.attachments),
         )
 
@@ -858,7 +858,7 @@ class CollaborationCore:
             content = f"{content}\n{notes}" if content.strip() else notes
 
         if not msg.attachments:
-            event_id = await puppet.send_message(
+            event_id = await human_actor.send_message(
                 transport_room_id,
                 content,
                 format="markdown",
@@ -893,13 +893,13 @@ class CollaborationCore:
         # expect. The room carries them as `total` events sharing this id.
         group_id = str(uuid.uuid4()) if total > 1 else None
         for index, attachment in enumerate(msg.attachments):
-            media_uri = await puppet.upload_media(
+            media_uri = await human_actor.upload_media(
                 attachment.data, attachment.mimetype, attachment.filename
             )
             msgtype = (
                 "m.image" if attachment.mimetype.startswith("image/") else "m.file"
             )
-            event_id = await puppet.send_media(
+            event_id = await human_actor.send_media(
                 transport_room_id,
                 media_uri,
                 attachment.filename,
@@ -950,13 +950,13 @@ class CollaborationCore:
                 return
         room_id, transport_room_id = room_ids
 
-        puppet = await self._ensure_human_in_room(
+        human_actor = await self._ensure_human_in_room(
             external_user_id=cmd.sender_id,
             external_username=cmd.sender_name,
             room_id=room_id,
             transport_room_id=transport_room_id,
         )
-        if puppet is None:
+        if human_actor is None:
             return
 
         # Where the command's result should thread. A command typed inside an
@@ -972,7 +972,7 @@ class CollaborationCore:
         content: dict[str, object] = {
             "command": cmd.command,
             "args": self._adapter.translate_inbound(cmd.args),
-            "user_id": puppet.transport_user_id,
+            "user_id": human_actor.transport_user_id,
             "user_name": cmd.sender_name,
         }
         # If the thread root is already bridged, relate the command event to it
@@ -986,7 +986,7 @@ class CollaborationCore:
             }
 
         try:
-            event_id = await puppet.send_event(
+            event_id = await human_actor.send_event(
                 transport_room_id, "com.switch.command", content
             )
         except TransportError as exc:
@@ -1286,7 +1286,7 @@ class CollaborationCore:
         When the DB lookup misses, falls back to an exact match in the
         platform directory, so a person who has never messaged through Switch
         still resolves. A hit is persisted (an ``ExternalUser`` row and its
-        puppet), so room membership, addressing and export all see the same
+        human actor), so room membership, addressing and export all see the same
         person this resolution found.
         """
         async with self._session_factory() as session:
@@ -1340,7 +1340,7 @@ class CollaborationCore:
         transport_room_id: str,
         user_names: list[str],
     ) -> None:
-        """For each resolvable name in `user_names`, ensure a running puppet
+        """For each resolvable name in `user_names`, ensure a running human actor
         client exists and is joined to the room.
 
         Resolution goes through `resolve_external_user_id_map`, the same
@@ -1376,44 +1376,47 @@ class CollaborationCore:
         room_id: str,
         transport_room_id: str,
     ) -> Actor[ClientConfig] | None:
-        """Get-or-create the puppet for this external user and ensure it has
-        actually joined the room. Returns the running puppet, or None if it
+        """Get-or-create the human actor for this external user and ensure it has
+        actually joined the room. Returns the running human actor, or None if it
         couldn't be brought up or didn't join in time. Idempotent."""
-        client_id = self._user_puppets.get(external_user_id)
+        client_id = self._human_actors.get(external_user_id)
         if client_id is None:
-            client_id = await self._create_puppet(external_user_id, external_username)
-        puppet = self._client_lifecycle.get(client_id)
-        if puppet is None:
+            client_id = await self._create_human_actor(
+                external_user_id, external_username
+            )
+        human_actor = self._client_lifecycle.get(client_id)
+        if human_actor is None:
             logger.error(
-                "Puppet client %s not running for external user %s",
+                "Human actor %s not running for external user %s",
                 client_id,
                 external_user_id,
             )
             return None
-        await puppet.wait_ready()
+        await human_actor.wait_ready()
         try:
             await self._room_service.ensure_client_in_room(room_id, client_id)
         except Exception:
             logger.exception(
-                "Failed to add puppet client %s to room %s", client_id, room_id
+                "Failed to add human actor %s to room %s", client_id, room_id
             )
             return None
 
-        # ensure_client_in_room only *invites*; the puppet joins asynchronously,
-        # when its own client handles the invitation. A message sent before that
-        # join lands predates the join, so the message that triggered the
-        # provisioning would be lost. Block until the join is observed.
-        if not await puppet.wait_joined(transport_room_id, PUPPET_JOIN_TIMEOUT):
+        # A human actor runs no consumer, so nothing of its own accepts the
+        # invitation: provisioning records the membership itself. A message
+        # written before that row lands predates the join and is filtered by
+        # the room's readers, so the message that triggered the provisioning
+        # would be lost. Block until the membership is observed.
+        if not await human_actor.wait_joined(transport_room_id, HUMAN_JOIN_TIMEOUT):
             logger.error(
-                "Puppet %s (external user %s) did not join room %s within %ss — "
+                "Human actor %s (external user %s) did not join room %s within %ss — "
                 "cannot relay its message",
-                puppet.transport_user_id,
+                human_actor.transport_user_id,
                 external_user_id,
                 transport_room_id,
-                PUPPET_JOIN_TIMEOUT,
+                HUMAN_JOIN_TIMEOUT,
             )
             return None
-        return puppet
+        return human_actor
 
     async def _handle_inbound_interaction(
         self, interaction: InboundInteraction
@@ -1558,7 +1561,7 @@ class CollaborationCore:
     async def _identify_actor(self, actor: InboundActor) -> str | None:
         """The Switch identity behind the platform account that acted.
 
-        None where the channel maps to no room, or the puppet cannot be brought
+        None where the channel maps to no room, or the human actor cannot be brought
         into it. Both are refusals: an answer carries who gave it, and there is
         no default actor to fall back on.
         """
@@ -1570,20 +1573,20 @@ class CollaborationCore:
             )
             return None
         room_id, transport_room_id = room_ids
-        puppet = await self._ensure_human_in_room(
+        human_actor = await self._ensure_human_in_room(
             external_user_id=actor.sender_id,
             external_username=actor.sender_name,
             room_id=room_id,
             transport_room_id=transport_room_id,
         )
-        return puppet.transport_user_id if puppet is not None else None
+        return human_actor.transport_user_id if human_actor is not None else None
 
     async def _handle_user_joined_channel(self, join: InboundUserJoin) -> None:
         """Called by the adapter when an external user joins a bridged
         channel (e.g. someone adds louisa to a Mattermost channel via the
         Mattermost UI). Auto-creates the Switch room if the channel isn't
         mapped yet (same as the lazy inbound-message path), then ensures
-        the puppet exists and is joined to the room."""
+        the human actor exists and is joined to the room."""
         if await self._is_registered_agent(join.external_username):
             # The account that joined is actually a bridged Switch agent (its
             # bot account), not an external user. Route it through the agent-join
@@ -1620,7 +1623,7 @@ class CollaborationCore:
             transport_room_id=transport_room_id,
         )
 
-    # ── Puppet lifecycle ─────────────────────────────────────────────────────
+    # ── Human actor lifecycle ─────────────────────────────────────────────────────
 
     async def _repair_placeholder_username(
         self, external_user_id: str, resolved_username: str
@@ -1678,10 +1681,10 @@ class CollaborationCore:
         # The client keeps its localpart, since that is an address and
         # changing it would orphan the history, but its display name is what
         # people read.
-        puppet = self._client_lifecycle.get(client_id)
-        if puppet is not None:
+        human_actor = self._client_lifecycle.get(client_id)
+        if human_actor is not None:
             try:
-                await puppet.set_display_name(resolved_username)
+                await human_actor.set_display_name(resolved_username)
             except Exception:
                 logger.warning(
                     "Renamed external user %s but could not update the display "
@@ -1699,7 +1702,7 @@ class CollaborationCore:
         The inbound path creates these lazily on first message, which leaves
         nobody to claim for a workspace that has only just been connected.
         Claiming an identity (CHOO-2137) needs the record to exist up front, so
-        this provisions the same puppet the inbound path would have.
+        this provisions the same human actor the inbound path would have.
         """
         async with self._session_factory() as session:
             existing = await self._external_user_store.get_by_external_id(
@@ -1708,9 +1711,11 @@ class CollaborationCore:
         if existing is not None:
             return existing
 
-        client_id = self._user_puppets.get(external_user_id)
+        client_id = self._human_actors.get(external_user_id)
         if client_id is None:
-            client_id = await self._create_puppet(external_user_id, external_username)
+            client_id = await self._create_human_actor(
+                external_user_id, external_username
+            )
 
         async with self._session_factory() as session:
             created = await self._external_user_store.get_by_client_id(
@@ -1718,47 +1723,47 @@ class CollaborationCore:
             )
         if created is None:
             raise RuntimeError(
-                f"Puppet for external user {external_user_id} on bridge "
+                f"Human actor for external user {external_user_id} on bridge "
                 f"{self._bridge_id} was created without an ExternalUser record"
             )
         return created
 
-    async def _create_puppet(
+    async def _create_human_actor(
         self, external_user_id: str, external_username: str
     ) -> str:
         """Mint the client identity that stands in for a person on the platform.
 
         Bound to the **bridge's** tenant, not to whatever room the message
-        that triggered it arrived in. A puppet is per-bridge and outlives that
+        that triggered it arrived in. A human actor is per-bridge and outlives that
         message: the same client is reused for every room this person speaks
         in, so a client row stamped with the first room's tenant would be
         wrong for the second — and the client task it starts must not carry
         that tenant either, which is why `ClientLifecycleService` unbinds
         before running one.
         """
-        lock = self._puppet_locks.setdefault(external_user_id, asyncio.Lock())
+        lock = self._human_actor_locks.setdefault(external_user_id, asyncio.Lock())
         async with lock:
             with tenant_scope(self._bridge_tenant_id):
-                return await self._create_puppet_locked(
+                return await self._create_human_actor_locked(
                     external_user_id, external_username
                 )
 
-    async def _create_puppet_locked(
+    async def _create_human_actor_locked(
         self, external_user_id: str, external_username: str
     ) -> str:
-        existing = self._user_puppets.get(external_user_id)
+        existing = self._human_actors.get(external_user_id)
         if existing is not None:
             return existing
 
-        # Defence in depth against agent/user misdetection: a
-        # bridged agent must never be puppeted as an external user. If the
+        # Defence in depth against agent/user misdetection: a bridged agent
+        # must never get a human actor as if it were an external user. If the
         # name collides with a registered Switch agent, refuse loudly rather
         # than create a duplicate "user" identity for it.
         async with self._session_factory() as session:
             agent = await self._agent_store.get_by_name(session, external_username)
         if agent is not None:
             raise ValueError(
-                f"Refusing to create external-user puppet for '{external_username}'"
+                f"Refusing to create external-user human actor for '{external_username}'"
                 " on bridge "
                 f"{self._bridge_id}: name collides with a registered Switch agent"
                 " (likely a bridged agent bot misclassified as a user)"
@@ -1786,12 +1791,12 @@ class CollaborationCore:
             await self._external_user_store.create(session, ext_user)
             await session.commit()
 
-        self._user_puppets[external_user_id] = client.client_id
+        self._human_actors[external_user_id] = client.client_id
         self._human_user_ids.add(client.transport_user_id)
         self._adapter.prime_mention_targets({external_username: external_user_id})
 
         logger.info(
-            "Created puppet %s for external user %s on bridge %s",
+            "Created human actor %s for external user %s on bridge %s",
             client.transport_user_id,
             external_user_id,
             self._bridge_id,
@@ -1820,7 +1825,9 @@ class CollaborationCore:
             event.body[:80] if event.body else "",
         )
         if event.sender in self._human_user_ids:
-            logger.debug("[BRIDGE-OUT] skipping puppet message from %s", event.sender)
+            logger.debug(
+                "[BRIDGE-OUT] skipping human actor message from %s", event.sender
+            )
             return
         if event.sender == self._workspace_consumer_transport_user_id:
             logger.debug("[BRIDGE-OUT] skipping bridge client message")
@@ -1937,7 +1944,7 @@ class CollaborationCore:
         """Relay a room media event (an agent-sent image/file) out to the
         external channel.
 
-        Mirrors handle_outbound_message: puppet media is skipped (it originated
+        Mirrors handle_outbound_message: human actor media is skipped (it originated
         on the platform), the caption convention is unpacked (a `filename` key
         means the body is a caption), and the relayed post is recorded in the
         message map so replies thread both ways. Any file type relays natively

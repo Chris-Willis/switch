@@ -97,8 +97,8 @@ def _core(
     core._external_user_store = ExternalUserStore()
     core._agent_store = AgentStore()
     core._client_lifecycle = _FakeLifecycle(session_factory)
-    core._user_puppets = {}
-    core._puppet_locks = {}
+    core._human_actors = {}
+    core._human_actor_locks = {}
     core._human_user_ids = set()
     core._bridge_tenant_id = TENANT_ZERO_ID
     return core

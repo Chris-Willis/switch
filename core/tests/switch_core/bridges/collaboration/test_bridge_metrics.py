@@ -2,7 +2,7 @@
 
 Inbound at `_traced`, the choke point every platform event goes through;
 outbound at the relay rather than the top of the handler, which returns early
-for a puppet's own echo and for a room with no channel mapping.
+for a human actor's own echo and for a room with no channel mapping.
 
 The failure counters matter more than the volume ones: an inbound failure is a
 message a person sent that nobody received.

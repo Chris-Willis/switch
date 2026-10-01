@@ -540,7 +540,7 @@ async def _require_directory_account(
 
     This is an existence check, not an ownership one — anyone may claim any
     real account, deliberately. What it prevents is provisioning a
-    puppet for an id that came from nowhere: the claim body is user-supplied,
+    human actor for an id that came from nowhere: the claim body is user-supplied,
     and the row it creates is permanent.
 
     Only reached for an account Switch has never seen. One it has recorded is
@@ -626,7 +626,7 @@ async def claim_bridge_identity(
         # Nobody has seen this person speak yet, which is the normal case right
         # after connecting a workspace. Provision the identity now rather than
         # making them post something first — but only once the platform agrees
-        # the account exists. Provisioning mints a puppet client, so taking the
+        # the account exists. Provisioning mints a human actor, so taking the
         # request's word for it would let any signed-in user conjure accounts
         # for people who do not exist.
         await _require_directory_account(

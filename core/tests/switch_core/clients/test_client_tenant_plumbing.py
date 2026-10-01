@@ -17,7 +17,7 @@ Three things are pinned:
 
 - **the factory**, which is the one place the value is read off a row, for
   both the client and the transport it is handed;
-- **the write path**, because the freshest caller — a puppet minted
+- **the write path**, because the freshest caller — a human actor minted
   mid-conversation — passes a record that was flushed a moment ago rather than
   read back, and `record.tenant_id` has to be populated by then;
 - **every call site**, by scanning for one that names a `client_id` and not a
@@ -75,8 +75,8 @@ def _record(tenant_id: str) -> Client:
     return Client(
         id=f"client-{suffix}",
         tenant_id=tenant_id,
-        transport_user_id=f"@puppet-{suffix}:test",
-        display_name="a puppet",
+        transport_user_id=f"@human-actor-{suffix}:test",
+        display_name="a human actor",
         type="user",
     )
 
@@ -111,7 +111,7 @@ class TestTheFactoryReadsItOffTheRow:
     ) -> None:
         """Required rather than defaulted. A client that fell back to whatever
         was ambient would be silently correct in the common case — boot, one
-        tenant — and silently wrong for the puppet a bridge mints while
+        tenant — and silently wrong for the human actor a bridge mints while
         handling another tenant's message."""
         with pytest.raises(TypeError):
             Actor(  # type: ignore[call-arg]
@@ -128,7 +128,7 @@ class TestTheFactoryReadsItOffTheRow:
 class TestAFreshlyWrittenRowAlreadyCarriesIt:
     """`create_client` writes the row and hands it straight to the factory.
 
-    A puppet is created and started inside one inbound message, so the record
+    A human actor is created and started inside one inbound message, so the record
     the factory sees has been flushed rather than read back. `tenant_id` is a
     Python-side default (`db/models.py`'s `TenantScoped`) applied at flush, and
     the session factory does not expire on commit, so the value is there — but
@@ -155,7 +155,7 @@ class TestAFreshlyWrittenRowAlreadyCarriesIt:
 
         with tenant_scope(tenant_id):
             record = await service.create_client(
-                client_type="user", display_name="a puppet"
+                client_type="user", display_name="a human actor"
             )
 
         assert record.tenant_id == tenant_id
@@ -175,7 +175,7 @@ class TestAFreshlyWrittenRowAlreadyCarriesIt:
         )
 
         record = await service.create_client(
-            client_type="user", display_name="another puppet"
+            client_type="user", display_name="another human actor"
         )
 
         assert record.tenant_id == TENANT_ZERO_ID
@@ -213,5 +213,5 @@ def test_no_call_site_names_a_client_without_naming_its_tenant() -> None:
         f"name a client_id and no tenant_id: {offenders}. Take it off the "
         "`clients` row the client_id came from — every caller is holding one "
         "— rather than from whatever tenant happens to be bound, which for a "
-        "puppet minted mid-conversation is the wrong one."
+        "human actor minted mid-conversation is the wrong one."
     )

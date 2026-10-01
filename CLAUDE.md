@@ -88,7 +88,7 @@ just test -k "test_name"         # run specific test
 - Async throughout: all I/O is async (DB, external APIs)
 - Dependency injection: stores and services are injected, not global singletons
 - Session management: API endpoints use middleware-provided sessions; background work creates sessions explicitly
-- Every room participant is an actor writing to the `messages` table through the transport port; only a participant that reads the room has a consumer. Puppets (a `HumanActor` per platform user) read nothing, because the bridge's `WorkspaceConsumer` reads for the whole workspace
+- Every room participant is an actor writing to the `messages` table through the transport port; only a participant that reads the room has a consumer. Human actors (one `HumanActor` per platform user) read nothing, because the bridge's `WorkspaceConsumer` reads for the whole workspace
 
 **The message bus is PostgreSQL** (`transport/postgres.py`). Switch once ran on a
 Matrix homeserver; that is gone, and no Matrix server or client library is

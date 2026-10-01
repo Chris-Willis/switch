@@ -20,7 +20,7 @@ class ClientStore:
         Scoped explicitly rather than left to row-level security:
         `matrix_user_id` is unique per tenant
         (`uq_clients_tenant_matrix_user_id`), not globally, so the moment a
-        second tenant has a client with the same puppet id, an unfiltered read
+        second tenant has a client with the same human actor id, an unfiltered read
         here matches both rows and raises `MultipleResultsFound` out of
         message routing and provisioning, which resolve the sending client
         from an inbound event this way.

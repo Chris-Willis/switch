@@ -166,7 +166,7 @@ Switch's own state lives in PostgreSQL beside `switch-core`. The tables that car
 - `clients` and `client_rooms` — one client per participant, and the rooms it's in
 - `collaboration_bridges` — a configured external chat connection; at most one is the default
 - `bridge_message_map` — the Switch-to-external correlation, written in both directions
-- `external_users` and `external_user_claims` — platform identity to puppet, and the claims linking a platform account to a Switch user
+- `external_users` and `external_user_claims` — platform identity to human actor, and the claims linking a platform account to a Switch user
 - `agent_sessions` and `agent_runtime_states` — reachability and transport-to-room binding, and what a live session is doing
 
 Query logic lives in per-entity store modules. The model classes carry no queries. Schema changes are managed with Alembic.

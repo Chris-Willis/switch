@@ -521,7 +521,7 @@ class MattermostAdapter(PlatformAdapter):
         name = await self._username_for(press.user_id)
         if name is None:
             # Refused rather than attributed to the raw id: the id is what the
-            # answer is judged against, but the name is what a puppet is
+            # answer is judged against, but the name is what a human actor is
             # created under, and inventing one from an id makes a person who
             # cannot be looked up into a permanent participant named after a
             # lookup failure.
@@ -1956,7 +1956,7 @@ class MattermostAdapter(PlatformAdapter):
 
     async def get_external_user_id(self, username: str) -> str | None:
         """Resolve a platform username to its current user id, or None if the
-        user does not exist. Used to rebind a puppet's ``external_user_id`` when
+        user does not exist. Used to rebind a human actor's ``external_user_id`` when
         Mattermost has been rebuilt and ids changed."""
         if not self._admin_driver or not self._main_loop:
             raise RuntimeError("Mattermost client not connected")

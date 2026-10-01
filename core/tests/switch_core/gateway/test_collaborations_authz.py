@@ -161,7 +161,7 @@ class TestIdentityRoutesAreSelfOrAdmin:
 
 
 class TestProvisioningNeedsARealAccount:
-    """Claiming an account Switch has not seen mints a Matrix puppet, and the
+    """Claiming an account Switch has not seen mints a Matrix human actor, and the
     id comes from the request body. Anyone signed in may claim any *real*
     account — that is the point of non-exclusive claims — but conjuring rows
     for ids the platform has never heard of is a different thing."""
@@ -186,7 +186,7 @@ class TestProvisioningNeedsARealAccount:
 
     async def test_platform_without_a_directory_is_refused(self) -> None:
         # Nothing can be checked, so the person has to be seen speaking first
-        # rather than have a puppet minted on their behalf.
+        # rather than have a human actor minted on their behalf.
         with pytest.raises(HTTPException) as excinfo:
             await _require_directory_account(
                 _StubLifecycle(NotImplementedError("no searchable directory")),

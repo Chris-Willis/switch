@@ -33,7 +33,7 @@ def _client(transport: FakeTransport) -> Actor:
 
 
 async def test_wait_joined_accepts_membership_that_predates_this_process() -> None:
-    """A puppet joined in an earlier run replays no member event: the client
+    """A human actor joined in an earlier run replays no member event: the client
     resumes from a stored next_batch token, and re-inviting an existing member
     is a no-op. Waiting on sync alone times out and the message is dropped."""
     transport = _CountingTransport([TRANSPORT_ROOM_ID])

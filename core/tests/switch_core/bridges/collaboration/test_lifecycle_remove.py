@@ -195,7 +195,7 @@ async def test_remove_without_dependent_rooms_still_deletes(
 async def test_disconnecting_takes_every_identity_switch_made_for_it(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """The bridge's own Matrix client and the puppet behind each person it saw.
+    """The bridge's own Matrix client and the human actor behind each person it saw.
 
     These were left behind, and the bridge one is not merely untidy: its Matrix
     name is derived from the app's type and display name, so disconnecting an
@@ -205,7 +205,7 @@ async def test_disconnecting_takes_every_identity_switch_made_for_it(
     service = _service(session_factory, _ClientLifecycle())
     async with session_factory() as session:
         bridge_id, workspace_consumer_id = await _make_bridge(session)
-        _external_user_id, puppet_client_id = await _make_external_user(
+        _external_user_id, human_actor_client_id = await _make_external_user(
             session, bridge_id=bridge_id
         )
         await session.commit()
@@ -214,7 +214,7 @@ async def test_disconnecting_takes_every_identity_switch_made_for_it(
 
     async with session_factory() as session:
         assert await ClientStore().get(session, workspace_consumer_id) is None
-        assert await ClientStore().get(session, puppet_client_id) is None
+        assert await ClientStore().get(session, human_actor_client_id) is None
 
 
 @pytest.mark.asyncio
@@ -224,7 +224,7 @@ async def test_identities_that_were_in_rooms_go_too(
     """The case that actually happens: identities with room memberships.
 
     Both of these clients have been in a room — the bridge because it carries
-    the channel, the puppet because the person it stands for spoke there — and
+    the channel, the human actor because the person it stands for spoke there — and
     `client_rooms` references `clients` with no `ON DELETE` rule, so the
     memberships have to go before the client rows can.
     """
@@ -232,18 +232,18 @@ async def test_identities_that_were_in_rooms_go_too(
     async with session_factory() as session:
         bridge_id, workspace_consumer_id = await _make_bridge(session)
         room_id = await _make_bridged_room(session, bridge_id=bridge_id)
-        _external_user_id, puppet_client_id = await _make_external_user(
+        _external_user_id, human_actor_client_id = await _make_external_user(
             session, bridge_id=bridge_id
         )
         await RoomStore().add_client(session, workspace_consumer_id, room_id)
-        await RoomStore().add_client(session, puppet_client_id, room_id)
+        await RoomStore().add_client(session, human_actor_client_id, room_id)
         await session.commit()
 
     await service.remove(bridge_id)
 
     async with session_factory() as session:
         assert await ClientStore().get(session, workspace_consumer_id) is None
-        assert await ClientStore().get(session, puppet_client_id) is None
+        assert await ClientStore().get(session, human_actor_client_id) is None
         # The room outlives the connection as an internal-only room, with
         # nobody left claiming to be a member on the platform's behalf.
         assert await RoomStore().get(session, room_id) is not None
@@ -265,14 +265,14 @@ async def test_a_failed_client_delete_leaves_the_bridge_intact(
     async with session_factory() as session:
         bridge_id, workspace_consumer_id = await _make_bridge(session)
         room_id = await _make_bridged_room(session, bridge_id=bridge_id)
-        _first_id, first_puppet = await _make_external_user(
+        _first_id, first_human_actor = await _make_external_user(
             session, bridge_id=bridge_id
         )
-        _second_id, second_puppet = await _make_external_user(
+        _second_id, second_human_actor = await _make_external_user(
             session, bridge_id=bridge_id
         )
         await RoomStore().add_client(session, workspace_consumer_id, room_id)
-        await RoomStore().add_client(session, first_puppet, room_id)
+        await RoomStore().add_client(session, first_human_actor, room_id)
         await session.commit()
 
     with pytest.raises(RuntimeError):
@@ -286,10 +286,10 @@ async def test_a_failed_client_delete_leaves_the_bridge_intact(
         assert room is not None
         assert room.bridge_id == bridge_id
         assert await ExternalUserStore().get_by_bridge(session, bridge_id) != []
-        for client_id in (workspace_consumer_id, first_puppet, second_puppet):
+        for client_id in (workspace_consumer_id, first_human_actor, second_human_actor):
             assert await ClientStore().get(session, client_id) is not None
         assert sorted(await RoomStore().get_client_ids(session, room_id)) == sorted(
-            [workspace_consumer_id, first_puppet]
+            [workspace_consumer_id, first_human_actor]
         )
 
 

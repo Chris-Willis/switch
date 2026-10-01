@@ -7,7 +7,7 @@ globally unique client id — and then works one room at a time, binding that
 room's tenant per delivery.
 
 `_run_client` unbinds first, and the creator matters here more than anywhere
-else. A puppet client is minted mid-conversation, from inside an inbound
+else. A human actor is minted mid-conversation, from inside an inbound
 bridge event bound to *that* room's tenant, and then reused for every room the
 person it stands for ever speaks in. Whatever the first room was must not
 become the client's identity for the rest of its life.
@@ -63,7 +63,7 @@ def _service(
 async def test_a_client_task_runs_with_no_tenant_bound(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """The puppet case, in miniature: created from inside a room's tenant,
+    """The human actor case, in miniature: created from inside a room's tenant,
     and it must not keep it."""
     room_tenant = f"tenant-{uuid.uuid4().hex[:8]}"
     seen: list[str | None] = []
@@ -75,7 +75,7 @@ async def test_a_client_task_runs_with_no_tenant_bound(
         await asyncio.sleep(0)
 
     assert seen == [None], (
-        "the client's task kept the tenant of whatever created it; a puppet "
+        "the client's task kept the tenant of whatever created it; a human actor "
         "reused in a second room would act as the first room's tenant"
     )
 
@@ -84,7 +84,7 @@ async def test_a_client_task_does_not_keep_the_room_it_was_created_in(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """The bridge's inbound handler binds its room as log context, and a
-    puppet minted there must not log as that room for the rest of its life."""
+    human actor minted there must not log as that room for the rest of its life."""
     client = _RecordingClient([])
     service = _service(session_factory, MagicMock())
 

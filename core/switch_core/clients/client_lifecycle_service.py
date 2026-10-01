@@ -292,7 +292,7 @@ class ClientLifecycleService:
 
         The counterpart to `stop`, and separate from it on purpose. A client
         row is only ever deleted alongside whatever owned the client — a
-        bridge and the puppets it minted, an agent — and those rows have to go
+        bridge and the human actors it minted, an agent — and those rows have to go
         in one transaction or not at all: the owner's delete commits first
         otherwise, and a failure after it leaves clients nothing points at and
         nothing will retry.
@@ -378,8 +378,8 @@ class ClientLifecycleService:
 
         `no_tenant` because a task keeps the context of whoever created it,
         and the creators differ: boot, a gateway request that added an agent,
-        or an inbound bridge message that minted a puppet mid-conversation.
-        A puppet in particular is reused for every room the person it stands
+        or an inbound bridge message that minted a human actor mid-conversation.
+        A human actor in particular is reused for every room the person it stands
         for speaks in, so the first room's tenant is exactly the value that
         must not survive into the second. Everything the client does binds
         the tenant of the room it is acting on.
@@ -393,7 +393,7 @@ class ClientLifecycleService:
         already holding.
 
         The room goes with it for the same reason: the inbound handler that
-        mints a puppet has that room bound as log context, and the puppet's
+        mints a human actor has that room bound as log context, and the human actor's
         own log lines must not name it for the rest of its life. Each delivery
         binds its room.
         """
