@@ -28,11 +28,34 @@ function sessionLabel(session: Session): string {
 }
 
 /**
+ * Whether an agent's worker cannot be asked because of its machine rather than
+ * itself: every agent on that machine says the same, so it is said once.
+ */
+function isMachineProblem(agent: CloudAgent): boolean {
+  const code = agent.problem?.code;
+  if (code === 'worker_waking') return !cloudMachineReady(agent.machine);
+  return code === 'worker_sleeping' || code === 'machine_stopped' || code === 'machine_error';
+}
+
+/** The machines whose state keeps their agents' workers from being asked, one agent each. */
+function machineProblems(agents: CloudAgent[]): CloudAgent[] {
+  const byMachine = new Map<string, CloudAgent>();
+  for (const agent of agents.filter(isMachineProblem)) {
+    const machineId = agent.machine?.machine_id ?? agent.launch.machine_id ?? '';
+    const shown = byMachine.get(machineId);
+    if (!shown || (agent.problem!.wakeAvailable && !shown.problem!.wakeAvailable))
+      byMachine.set(machineId, agent);
+  }
+  return [...byMachine.values()];
+}
+
+/**
  * The active server's cloud agents under the local and SSH ones: each launch,
- * and beneath it the sessions its worker reports. A launch whose worker cannot
- * be asked says why, above the sessions last read from it. A worker is asked
- * for its sessions only while its row is expanded or one of its sessions is
- * open.
+ * and beneath it the sessions its worker reports. A machine whose state keeps
+ * its agents' workers from being asked says so once, above them; a launch
+ * whose worker cannot be asked for its own reason says why, above the sessions
+ * last read from it. A worker is asked for its sessions only while its row is
+ * expanded or one of its sessions is open.
  */
 export const CloudAgentList = observer(function CloudAgentList() {
   const serverId = switchServersStore.activeServerId;
@@ -53,12 +76,27 @@ export const CloudAgentList = observer(function CloudAgentList() {
   if (!agents.data?.length) return null;
   return (
     <div className="mt-2 flex flex-col gap-[2px]" aria-label="Cloud agents">
+      {machineProblems(agents.data).map((agent) => (
+        <CloudMachineProblem key={agent.key} agent={agent} />
+      ))}
       {agents.data.map((agent) => (
         <CloudAgentRow key={agent.key} listed={agent} />
       ))}
     </div>
   );
 });
+
+function CloudMachineProblem({ agent }: { agent: CloudAgent }) {
+  const action = useCloudProblemAction(agent, true);
+  return (
+    <CloudProblem
+      problem={agent.problem!}
+      machineReady={cloudMachineReady(agent.machine)}
+      compact
+      action={action}
+    />
+  );
+}
 
 const CloudAgentRow = observer(function CloudAgentRow({ listed }: { listed: CloudAgent }) {
   const { navigate } = useNavigate();
@@ -75,7 +113,6 @@ const CloudAgentRow = observer(function CloudAgentRow({ listed }: { listed: Clou
       attempt?.status === 'unknown'
   );
   const label = cloudAgentState(agent)?.label;
-  const problemAction = useCloudProblemAction(agent, true);
   const queryClient = useQueryClient();
   const [startError, setStartError] = useState<string | null>(null);
   const openSession = (sessionId: string) =>
@@ -139,12 +176,12 @@ const CloudAgentRow = observer(function CloudAgentRow({ listed }: { listed: Clou
       />
       {expanded && (
         <div className="flex flex-col gap-[2px] pl-5">
-          {agent.problem && (
+          {agent.problem && !isMachineProblem(agent) && (
             <CloudProblem
               problem={agent.problem}
               machineReady={cloudMachineReady(agent.machine)}
               compact
-              action={problemAction}
+              action={null}
             />
           )}
           {agent.sessions && sessions.length === 0 && (

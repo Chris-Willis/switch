@@ -231,14 +231,45 @@ function asleep(overrides: Partial<CloudAgent['launch']>, wakeAvailable: boolean
   };
 }
 
-it('wakes a sleeping agent’s machine from its row', async () => {
+it('wakes a sleeping agent’s machine from the list', async () => {
   sdkHost.cloudAgents.mockResolvedValue([asleep({}, true)]);
   sdkHost.cloudWake.mockResolvedValue(undefined);
-  expandedCloudGroups.add(`cloud:${agentKey}`);
   const el = await render();
   expect(el.textContent).not.toContain('Send a message to wake it.');
   await act(async () => button(el, /^wake$/i)!.click());
   expect(sdkHost.cloudWake).toHaveBeenCalledWith(agentKey);
+});
+
+it('says once that the machine its agents share is asleep, not under each agent', async () => {
+  const other = 'cloud:server:other';
+  sdkHost.cloudAgents.mockResolvedValue([
+    { ...asleep({ desired_state: 'stopped', state: 'stopped' }, false), key: other },
+    asleep({}, true),
+  ]);
+  sdkHost.cloudWake.mockResolvedValue(undefined);
+  expandedCloudGroups.add(`cloud:${agentKey}`);
+  expandedCloudGroups.add(`cloud:${other}`);
+  const el = await render();
+  expect(el.textContent?.match(/\(worker_sleeping\)/g)).toHaveLength(1);
+  expect(
+    [...el.querySelectorAll('button')].filter((b) => /^wake$/i.test(b.textContent ?? ''))
+  ).toHaveLength(1);
+  await act(async () => button(el, /^wake$/i)!.click());
+  expect(sdkHost.cloudWake).toHaveBeenCalledWith(agentKey);
+});
+
+it('still says under the agent why only that agent cannot be asked', async () => {
+  sdkHost.cloudAgents.mockResolvedValue([
+    {
+      ...onMachine({}, { process_state: 'crashed', error_code: 'agent_crashed' }),
+      problem: { code: 'agent_crashed', message: 'The agent crashed.', wakeAvailable: false },
+    },
+  ]);
+  const el = await render();
+  expect(el.textContent).not.toContain('(agent_crashed)');
+  expandedCloudGroups.add(`cloud:${agentKey}`);
+  await act(async () => await new Promise((resolve) => setTimeout(resolve, 20)));
+  expect(el.textContent).toContain('(agent_crashed)');
 });
 
 it('offers no wake for a stopped agent on a sleeping machine', async () => {
