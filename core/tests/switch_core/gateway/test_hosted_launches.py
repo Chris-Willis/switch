@@ -20,18 +20,35 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
+from switch_core.db.stores.agent_session_store import AgentSessionStore
+from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
+from switch_core.db.stores.room_role_store import RoomRoleStore
+from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.agents import (
+    update_addressing_policy,
+    update_agent_display_name,
+    update_agent_icon,
+)
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_config, get_protocol, get_session
 from switch_core.gateway.hosted_launches import router
+from switch_core.gateway.schemas import (
+    UpdateAddressingPolicyRequest,
+    UpdateAgentDisplayNameRequest,
+    UpdateAgentIconRequest,
+)
 from switch_core.providers.claude_verifier import ClaudeVerificationError
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
     make_service,
     register,
 )
 from tests.switch_core.hosted_machine_helpers import seed_machine
+
+ICON = "https://cdn.example.com/9.x/bottts/png?seed=helper"
 
 SUMMARY_KEYS = {
     "request_id",
@@ -842,3 +859,137 @@ async def test_restart_and_retry_wake_an_idle_sleeping_machine(launch_app, actio
         None,
         3,
     )
+
+
+def _configuration(
+    definition: str = "---\nname: helper\nmodel: opus\n---\nBe brief.\n",
+):
+    return {
+        "instructions": "Be brief.",
+        "definition": definition,
+        "definition_attributes": {"model": "opus"},
+    }
+
+
+async def test_owner_updates_the_configuration_the_next_start_runs(launch_app):
+    app = launch_app
+    created = (await app.client.post("/hosted-launches", json=body())).json()
+    url = f"/hosted-launches/{created['request_id']}/configuration"
+    assert (await app.client.get(url)).json() == {
+        "description": "Repository helper",
+        "instructions": "",
+        "definition_attributes": {"model": "sonnet"},
+    }
+    updated = await app.client.put(url, json=_configuration())
+    assert updated.status_code == 200, updated.text
+    assert updated.json() == {
+        "description": "Repository helper",
+        "instructions": "Be brief.",
+        "definition_attributes": {"model": "opus"},
+    }
+    assert (await app.client.get(url)).json() == updated.json()
+    launch = await _launch(app.factory, created["request_id"])
+    assert launch.revision == 1
+    assert launch.spec["definition"] == _configuration()["definition"].strip()
+    assert launch.spec["session_limit"] == 2
+    assert launch.spec["name"] == "helper"
+    await _lifecycle(app, created["request_id"], "stop", 1)
+    started = await _lifecycle(app, created["request_id"], "start", 2)
+    assert started.json()["revision"] == 3
+    launch = await _launch(app.factory, created["request_id"])
+    assert launch.spec["instructions"] == "Be brief."
+    assert launch.spec["definition_attributes"] == {"model": "opus"}
+
+
+async def test_configuration_is_owner_scoped(launch_app):
+    app = launch_app
+    created = (await app.client.post("/hosted-launches", json=body())).json()
+    url = f"/hosted-launches/{created['request_id']}/configuration"
+    app.identity["user"] = SimpleNamespace(id="someone-else")
+    assert (await app.client.get(url)).status_code == 404
+    assert (await app.client.put(url, json=_configuration())).status_code == 404
+    launch = await _launch(app.factory, created["request_id"])
+    assert launch.spec["instructions"] == ""
+
+
+async def test_configuration_of_a_removed_launch_is_refused(launch_app):
+    app = launch_app
+    created = (await app.client.post("/hosted-launches", json=body())).json()
+    await _lifecycle(app, created["request_id"], "remove", 1)
+    response = await app.client.put(
+        f"/hosted-launches/{created['request_id']}/configuration",
+        json=_configuration(),
+    )
+    assert response.status_code == 409
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"definition": ""},
+        {"instructions": "x" * 32769},
+        {"instructions": "x" * 20000, "definition": "y" * 20000},
+        {"definition_attributes": "opus"},
+        {"model": "opus"},
+    ],
+)
+async def test_invalid_configuration_is_refused(launch_app, change):
+    app = launch_app
+    created = (await app.client.post("/hosted-launches", json=body())).json()
+    response = await app.client.put(
+        f"/hosted-launches/{created['request_id']}/configuration",
+        json=_configuration() | change,
+    )
+    assert response.status_code == 422
+    launch = await _launch(app.factory, created["request_id"])
+    assert launch.spec["definition_attributes"] == {"model": "sonnet"}
+
+
+async def test_identity_edits_keep_the_launch_spec_that_registers_it_again(
+    launch_app,
+):
+    app = launch_app
+    created = (await app.client.post("/hosted-launches", json=body())).json()
+    agent_id = created["agent_id"]
+    owner = app.identity["user"]
+    policy = {"rules": [{"users": [], "agents": [], "owner": True}]}
+    async with app.factory() as session:
+        await update_agent_display_name(
+            agent_id,
+            UpdateAgentDisplayNameRequest(display_name="Helper"),
+            session,
+            AgentStore(),
+            owner,
+            False,
+        )
+        await update_agent_icon(
+            agent_id,
+            UpdateAgentIconRequest(icon_url=ICON),
+            session,
+            AgentStore(),
+            owner,
+            False,
+        )
+        await update_addressing_policy(
+            agent_id,
+            UpdateAddressingPolicyRequest.model_validate({"policy": policy}),
+            session,
+            AgentStore(),
+            RoomStore(),
+            UserStore(),
+            SimpleNamespace(
+                agent_session_store=AgentSessionStore(),
+                room_role_store=RoomRoleStore(),
+                connections=ConnectionRegistry(),
+            ),
+            owner,
+            False,
+        )
+        agent = await session.get(Agent, agent_id, populate_existing=True)
+        assert agent is not None
+        stored_policy = agent.addressing_policy
+    launch = await _launch(app.factory, created["request_id"])
+    assert launch.spec["display_name"] == "Helper"
+    assert launch.spec["icon_url"] == ICON
+    assert launch.spec["addressing_policy"] == stored_policy
+    assert launch.spec["definition_attributes"] == {"model": "sonnet"}

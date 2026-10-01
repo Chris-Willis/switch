@@ -23,8 +23,9 @@ from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
     TaskProtocolConfig,
 )
-from switch_core.db.models import User
+from switch_core.db.models import Agent, User
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
@@ -60,6 +61,13 @@ router = APIRouter()
 CLOUD_AGENT_DELETE_REFUSED = (
     "This is a cloud agent. Remove it from Switch Console's cloud agents instead."
 )
+
+
+async def _sync_hosted_spec(session: AsyncSession, agent: Agent, changes: dict) -> None:
+    """Keep a cloud agent's launch spec, which registers it again, on the agent's values."""
+    launch_id = hosted_launch_of(agent.metadata_)
+    if launch_id is not None:
+        await HostedLaunchStore().merge_spec(session, launch_id, changes)
 
 
 @router.get("")
@@ -413,6 +421,7 @@ async def update_agent_icon(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     await agent_store.update(session, agent_id, icon_url=icon_url)
+    await _sync_hosted_spec(session, agent, {"icon_url": icon_url})
     await session.commit()
     await session.refresh(agent)
 
@@ -467,6 +476,7 @@ async def update_agent_display_name(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     await agent_store.update(session, agent_id, display_name=display_name)
+    await _sync_hosted_spec(session, agent, {"display_name": display_name})
     await session.commit()
     await session.refresh(agent)
 
@@ -557,6 +567,7 @@ async def update_addressing_policy(
 
     stored = req.policy.model_dump() if req.policy is not None else None
     await agent_store.update(session, agent_id, addressing_policy=stored)
+    await _sync_hosted_spec(session, agent, {"addressing_policy": stored})
     await session.commit()
 
     logger.info(

@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
-from sqlalchemy import and_, case, exists, or_, select, update
+from sqlalchemy import and_, case, exists, literal, or_, select, update
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.crypto import decrypt_token, encrypt_token
@@ -143,6 +144,24 @@ class HostedLaunchStore:
                     HostedLaunch.owner_id == owner_id,
                 )
             ),
+        )
+
+    async def merge_spec(
+        self, session: AsyncSession, launch_id: str, changes: dict
+    ) -> None:
+        """Overwrite these keys of a launch's spec in one statement, keeping its other keys."""
+        await session.execute(
+            update(HostedLaunch)
+            .where(
+                HostedLaunch.tenant_id == require_tenant_id(),
+                HostedLaunch.id == launch_id,
+            )
+            .values(
+                spec=HostedLaunch.spec.op("||", return_type=JSONB)(
+                    literal(changes, JSONB)
+                )
+            )
+            .execution_options(synchronize_session=False)
         )
 
     async def fail_stale_operations(

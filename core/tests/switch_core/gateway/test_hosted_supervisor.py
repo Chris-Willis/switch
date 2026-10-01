@@ -15,6 +15,7 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
+from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.hosted_machine_store import lock_machine
 from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
     HEADERS,
@@ -202,6 +203,27 @@ async def test_agents_lists_the_machine_agents_in_the_contract_shape(supervisor)
     launch = await launch_row(factory, request_id)
     assert launch.state == "provisioning"
     assert launch.worker_capability_hash is not None
+
+
+async def test_agents_lists_the_configuration_edited_since_launch(supervisor):
+    client, request_id, _, _, factory, machine_id, headers = supervisor
+    async with factory() as session:
+        await HostedLaunchStore().merge_spec(
+            session,
+            request_id,
+            {"instructions": "Be brief.", "definition_attributes": {"model": "opus"}},
+        )
+        await session.commit()
+    response = await client.get(
+        f"/hosted/machines/{machine_id}/agents", headers=headers
+    )
+    [entry] = response.json()["agents"]
+    assert entry["spec"] == {
+        **SPEC,
+        "provider": "claude",
+        "instructions": "Be brief.",
+        "definition_attributes": {"model": "opus"},
+    }
 
 
 async def test_worker_capability_is_stable_per_revision_and_rotates_on_a_new_one(

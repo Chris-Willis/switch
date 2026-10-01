@@ -210,6 +210,61 @@ async def status(
     return await launch_summary(session, launch)
 
 
+class ConfigurationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    instructions: str = Field(max_length=32768)
+    definition: str = Field(max_length=65536)
+    definition_attributes: dict
+
+
+def configuration(spec: dict) -> dict:
+    return {
+        "description": spec["description"],
+        "instructions": spec["instructions"],
+        "definition_attributes": spec["definition_attributes"],
+    }
+
+
+@router.get("/{request_id}/configuration")
+async def get_configuration(
+    request_id: UUID,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    launch = await HostedLaunchStore().owned(session, str(request_id), user.id)
+    if launch is None:
+        raise HTTPException(404, "Cloud launch not found.")
+    return configuration(launch.spec)
+
+
+@router.put("/{request_id}/configuration")
+async def update_configuration(
+    request_id: UUID,
+    body: ConfigurationRequest,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """Replace the launch's instructions and definition; the agent's next start runs them.
+
+    The revision is not bumped: a running agent keeps its deployment until a
+    lifecycle action issues a new revision, which the machine applies from
+    this spec.
+    """
+    launch, _machine = await locked_owned(session, str(request_id), user.id)
+    if launch.desired_state == "deleted":
+        raise HTTPException(409, "This worker has been removed.")
+    if launch.spec.get("provider", "claude") == "claude" and not body.definition:
+        raise HTTPException(422, "Claude Code requires an agent definition.")
+    changes = body.model_dump(mode="json")
+    spec = {**launch.spec, **changes}
+    bounded = {key: value for key, value in spec.items() if key != "session_limit"}
+    if len(json.dumps(bounded).encode()) > 32768:
+        raise HTTPException(422, "Cloud agent configuration must fit within 32 KiB.")
+    await HostedLaunchStore().merge_spec(session, launch.id, changes)
+    await session.commit()
+    return configuration(spec)
+
+
 async def _register(
     protocol: ProtocolService, launch: HostedLaunch, agent_id: str
 ) -> None:
