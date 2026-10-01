@@ -148,6 +148,19 @@ describe('SshExecutionContext.exec', () => {
     expect(isTransportFailure(error)).toBe(true);
   });
 
+  it('wraps ssh2 "Not connected" as a transport failure', async () => {
+    // A dead transport, not a failed command: read as an ordinary failure, a
+    // CLI lookup that hit it reported the CLI as not installed.
+    const ctx = new SshExecutionContext(
+      makeProxy((_command, cb) => {
+        cb(new Error('Not connected'));
+      })
+    );
+
+    const error = await ctx.exec('which', ['claude']).catch((e: unknown) => e);
+    expect(isTransportFailure(error)).toBe(true);
+  });
+
   it('wraps a missing connection as a transport failure', async () => {
     const proxy = {
       getRemoteShellProfile: () => Promise.reject(new Error('SSH connection is not available')),

@@ -7,6 +7,7 @@ import {
 import {
   isSshChannelOpenFailure,
   isSshChannelTimeout,
+  isSshTransportGone,
 } from '@main/core/ssh/lifecycle/ssh-channel-open-failure';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
 import { quoteShellArg } from '@main/utils/shellEscape';
@@ -26,6 +27,10 @@ function toTransportError(error: unknown): TransportError {
 
 function isTransportShaped(error: unknown): boolean {
   if (isSshChannelOpenFailure(error) || isSshChannelTimeout(error)) return true;
+  // ssh2's "Not connected": the transport is gone. Unrecognised, it fell
+  // through as an ordinary command failure, and a CLI lookup that failed this
+  // way reported the CLI as not installed.
+  if (isSshTransportGone(error)) return true;
   return error instanceof Error && error.message.includes('SSH connection is not available');
 }
 

@@ -440,7 +440,15 @@ export class SwitchEventStream {
    */
   private reopen(): void {
     this.reopensWanted += 1;
-    if (this.fence.admitting) this.socketAbort?.abort();
+    if (!this.fence.admitting) return;
+    // Held from this instant, not from when the stream loop gets round to its
+    // own `detaching`. Whoever asked for the reopen — the heartbeat, after a
+    // refusal — goes straight back to the gate, and could otherwise find it
+    // still open and send one more beat under the incarnation this reopen is
+    // about to replace. Arriving just behind the open, that beat is refused as
+    // a takeover and the client stands down over a connection it made itself.
+    this.fence.closeAdmission();
+    this.socketAbort?.abort();
   }
 
   /**
@@ -1042,6 +1050,11 @@ export class SwitchEventStream {
       // beat could be sent under an incarnation later than the one recorded.
       await Promise.race([this.fence.reached, until(signal, this.halt.signal)]);
       if (signal.aborted || this.halt.signal.aborted) return;
+      // The gate this pass awaited may already have been closed by the time
+      // the await resumed: a reopen closes it synchronously, and the resolved
+      // promise we were handed is the old one. Checked here, with nothing
+      // awaited before the tick, so no beat leaves while admission is shut.
+      if (!this.fence.admitting) continue;
       // A connection the server has just attached has never beaten, and has
       // 6 seconds to. Whatever an earlier connection's failures built up says
       // nothing about this one, so it starts at the base cadence.

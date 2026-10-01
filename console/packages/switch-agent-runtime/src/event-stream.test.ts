@@ -656,12 +656,14 @@ describe('the heartbeat', () => {
   it('returns to the base cadence once a beat lands', async () => {
     vi.useFakeTimers();
     let reject = true;
-    const fetchMock = vi.fn(async (url: string) => {
+    // A socket that ends when the client drops it: each refusal reopens, and
+    // the heartbeat is held from the reopen until the new stream is named.
+    const fetchMock = vi.fn(async (url: string, init: { signal: AbortSignal }) => {
       if (String(url).includes('/events'))
         return {
           ok: true,
           status: 200,
-          body: openForever(),
+          body: openUntilAborted(init),
           text: async (): Promise<string> => '',
         };
       if (reject) return { ok: false, status: 404, text: async (): Promise<string> => '' };
@@ -1797,4 +1799,102 @@ it('still stands down when a request is refused as taken over on the incarnation
   } finally {
     abort.abort();
   }
+});
+
+describe('the heartbeat across its own reopen after a refusal', () => {
+  /**
+   * What took every in-Console watcher off the air when a laptop woke
+   * (2026-10-01, four agents within ten seconds). The connection had lapsed
+   * while the machine slept, so the first beat after waking was refused with a
+   * 404. The heartbeat asked the stream to reopen and went straight back to
+   * its gate — which it had found open a moment before the stream loop closed
+   * it for the reopen. One beat went out under the lapsed incarnation right
+   * behind the open that replaced it. The server, holding the new incarnation,
+   * answered that beat `taken_over`, and the client believed it: it stood down
+   * over a connection it had just made itself. In the server log the open and
+   * the stale beat arrived 11 ms apart, every time.
+   */
+  function lapsingServer() {
+    let generation = 0;
+    let lapsed = false;
+    const fetchMock = vi.fn(async (url: string, init: { signal: AbortSignal; body?: string }) => {
+      if (String(url).includes('/events')) {
+        generation += 1;
+        lapsed = false;
+        const gen = generation;
+        return {
+          ok: true,
+          status: 200,
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(connected(gen));
+              init.signal.addEventListener(
+                'abort',
+                () => {
+                  try {
+                    controller.error(new DOMException('The operation was aborted.', 'AbortError'));
+                  } catch {
+                    // Already closed.
+                  }
+                },
+                { once: true }
+              );
+            },
+          }),
+          text: async (): Promise<string> => '',
+        };
+      }
+      if (lapsed) return { ok: false, status: 404, text: async (): Promise<string> => '' };
+      const claimed = (JSON.parse(init.body ?? '{}') as { generation: number | null }).generation;
+      if (claimed !== null && claimed !== generation) {
+        return {
+          ok: false,
+          status: 409,
+          text: async (): Promise<string> =>
+            JSON.stringify({
+              detail: {
+                code: 'taken_over',
+                message: `connection conn-1 was reopened since incarnation ${claimed} and is now at ${generation}`,
+              },
+            }),
+        };
+      }
+      return { ok: true, status: 200, text: async (): Promise<string> => '' };
+    });
+    /** The server sweeps the connection for silence; its socket stays up
+     * client-side, the way a socket does across a sleep. */
+    const lapse = (): void => {
+      lapsed = true;
+    };
+    return { fetchMock, lapse };
+  }
+
+  it('sends no beat under the lapsed incarnation once it has asked for a reopen', async () => {
+    vi.useFakeTimers();
+    const server = lapsingServer();
+    const evicted: Eviction[] = [];
+    const { abort } = makeStream(server.fetchMock, {
+      rooms: [],
+      onEvicted: (eviction) => evicted.push(eviction),
+    });
+
+    await vi.advanceTimersByTimeAsync(BEAT_INTERVAL_MS / 2);
+    server.lapse();
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    // The beat refused with a 404 is the last one under the lapsed
+    // incarnation: what follows it on the wire is the reopen, not another beat
+    // that the server could only take for someone else's.
+    const sent = server.fetchMock.mock.calls.map((call) =>
+      String(call[0]).includes('/events')
+        ? 'open'
+        : `beat@${(JSON.parse((call[1] as { body: string }).body) as { generation: number }).generation}`
+    );
+    const reopen = sent.indexOf('open', 1);
+    expect(reopen).toBeGreaterThan(0);
+    expect(sent.slice(1, reopen).filter((s) => s === 'beat@1')).toHaveLength(2);
+    expect(sent.slice(reopen + 1).every((s) => s === 'beat@2')).toBe(true);
+    expect(evicted).toEqual([]);
+    abort.abort();
+  });
 });
