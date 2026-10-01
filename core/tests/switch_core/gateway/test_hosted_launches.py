@@ -735,6 +735,11 @@ async def _operation_count(factory) -> int:
             "The cloud machine needs attention. Retry it in Switch Console.",
         ),
         (
+            {"state": "error", "error_code": "machine_needs_attention"},
+            "machine_error",
+            "The cloud machine needs attention. Contact your server administrator.",
+        ),
+        (
             {"state": "stopped", "desired_state": "stopped", "stop_reason": "owner"},
             "machine_stopped",
             "The owner stopped the cloud machine. Start it in Switch Console.",

@@ -28,9 +28,9 @@ function isRetained(machine: CloudMachine): boolean {
 }
 
 function machineLabel(machine: CloudMachine): string {
+  if (machine.state === 'deleting' || machine.desired_state === 'deleted') return 'Deleting disk…';
   if (machine.state === 'error') return 'Error';
   if (isRetained(machine)) return 'Retained';
-  if (machine.state === 'deleting' || machine.desired_state === 'deleted') return 'Deleting disk…';
   if (machine.sleeping) return 'Sleeping';
   if (machine.desired_state === 'stopped')
     return machine.state === 'stopped' ? 'Stopped' : 'Stopping…';
@@ -39,6 +39,7 @@ function machineLabel(machine: CloudMachine): string {
 }
 
 function machineProblem(machine: CloudMachine): string | null {
+  if (machine.desired_state === 'deleted') return null;
   if (machine.error_code === 'disk_full') return 'The machine’s disk is full.';
   if (machine.state !== 'error') return null;
   if (machine.error_code === 'machine_needs_attention')

@@ -6,6 +6,7 @@ import pytest
 from switch_core.db.models import HostedLaunch, HostedMachine, User, require_tenant_id
 from switch_core.db.stores.hosted_machine_store import (
     MACHINE_BEING_REMOVED,
+    MACHINE_NEEDS_ADMIN,
     MACHINE_NEEDS_ATTENTION,
     HostedMachineConflict,
     HostedMachineStore,
@@ -174,18 +175,21 @@ async def test_a_stopped_machine_is_started(factory):
 
 
 @pytest.mark.parametrize(
-    ("state", "desired_state", "detail"),
+    ("state", "desired_state", "error_code", "detail"),
     [
-        ("error", "running", MACHINE_NEEDS_ATTENTION),
-        ("error", "deleted", MACHINE_BEING_REMOVED),
-        ("deleting", "deleted", MACHINE_BEING_REMOVED),
-        ("retained", "deleted", MACHINE_BEING_REMOVED),
+        ("error", "running", None, MACHINE_NEEDS_ATTENTION),
+        ("error", "running", "machine_connect_timeout", MACHINE_NEEDS_ATTENTION),
+        ("error", "running", "machine_needs_attention", MACHINE_NEEDS_ADMIN),
+        ("error", "deleted", "machine_needs_attention", MACHINE_BEING_REMOVED),
+        ("error", "deleted", None, MACHINE_BEING_REMOVED),
+        ("deleting", "deleted", None, MACHINE_BEING_REMOVED),
+        ("retained", "deleted", None, MACHINE_BEING_REMOVED),
     ],
 )
 async def test_a_machine_that_cannot_take_agents_refuses_the_claim(
-    factory, state, desired_state, detail
+    factory, state, desired_state, error_code, detail
 ):
-    await seed(
+    seeded = await seed(
         factory,
         owner_id="owner-a",
         slot_id="slot-a",
@@ -195,6 +199,11 @@ async def test_a_machine_that_cannot_take_agents_refuses_the_claim(
         revision=2,
         generation=1,
     )
+    async with factory() as session:
+        row = await HostedMachineStore().get(session, seeded.id)
+        assert row is not None
+        row.error_code = error_code
+        await session.commit()
     with pytest.raises(HostedMachineConflict) as raised:
         await claim(factory, "owner-a")
     assert str(raised.value) == detail
@@ -272,6 +281,31 @@ async def test_start_stop_and_retry(factory):
         machine.revision,
         machine.running_observed_at,
     ) == ("queued", None, None, 4, None)
+
+
+async def test_retrying_a_released_machine_brings_it_back_to_running(factory):
+    now = datetime.now(UTC)
+    machine = await seed(
+        factory,
+        owner_id="owner-a",
+        slot_id="slot-a",
+        state="error",
+        desired_state="retained",
+        stop_reason=None,
+        revision=3,
+        generation=1,
+    )
+    machine.retain_until = now
+    machine.error_code = "machine_connect_timeout"
+    HostedMachineStore().retry(machine, now)
+    assert (
+        machine.state,
+        machine.desired_state,
+        machine.retain_until,
+        machine.error_code,
+        machine.revision,
+        machine.active_at,
+    ) == ("queued", "running", None, None, 4, now)
 
 
 async def test_starting_a_ready_machine_again_waits_for_it_to_reconnect(factory):

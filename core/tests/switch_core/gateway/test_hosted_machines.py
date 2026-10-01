@@ -219,7 +219,7 @@ async def test_retry_only_from_error(mailbox_app):  # noqa: F811
     assert machine["revision"] == 2
 
 
-async def test_retry_requeues_the_retire_of_a_machine_in_error(mailbox_app):  # noqa: F811
+async def test_retry_brings_a_retained_machine_in_error_back_to_running(mailbox_app):  # noqa: F811
     app = mailbox_app
     await set_machine(
         app.factory,
@@ -239,7 +239,7 @@ async def test_retry_requeues_the_retire_of_a_machine_in_error(mailbox_app):  # 
         machine["desired_state"],
         machine["error"],
         machine["revision"],
-    ) == ("queued", "retained", None, 2)
+    ) == ("queued", "running", None, 2)
 
 
 @pytest.mark.parametrize(

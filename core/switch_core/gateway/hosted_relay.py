@@ -45,7 +45,11 @@ from switch_core.db.stores.hosted_machine_store import (
 )
 from switch_core.gateway.auth import get_current_user, get_current_user_in_transaction
 from switch_core.gateway.dependencies import get_protocol, get_session
-from switch_core.gateway.hosted_launches import launch_summary, summary
+from switch_core.gateway.hosted_launches import (
+    launch_summary,
+    machine_error_detail,
+    summary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +105,7 @@ def relay_target(
     if machine is not None and owner_stopped(machine):
         raise RelayError("machine_stopped", "The owner stopped the cloud machine.", 409)
     if machine is not None and machine.state == "error":
-        raise RelayError(
-            "machine_error",
-            "The cloud machine needs attention. Retry it in Switch Console.",
-            409,
-        )
+        raise RelayError("machine_error", machine_error_detail(machine), 409)
     if machine is not None and idle_sleeping(machine) and kind == "read_only":
         raise RelayError("worker_sleeping", "The cloud machine is asleep.", 409)
     if is_waking(launch, machine):

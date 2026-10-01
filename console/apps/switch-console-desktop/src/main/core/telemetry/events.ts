@@ -194,7 +194,8 @@ export type TelemetryAuthMethod = 'password' | 'oidc' | 'signup';
 /**
  * Why a sign-in failed. `cancelled` is the browser window being closed on the
  * single-sign-on path, which is someone changing their mind rather than a fault.
- * `email_taken`, `invalid`, and `disabled` are sign-up specific failures.
+ * `email_taken`, `invalid`, `disabled`, and `rate_limited` are sign-up specific
+ * failures; `rate_limited` is the server's cap on sign-ups per hour.
  */
 export type TelemetrySignInFailure =
   | 'none'
@@ -204,7 +205,8 @@ export type TelemetrySignInFailure =
   | 'unreachable'
   | 'email_taken'
   | 'invalid'
-  | 'disabled';
+  | 'disabled'
+  | 'rate_limited';
 
 /** What was done to a step of a remote host's setup. */
 export type TelemetryHostSetupAction = 'install' | 'update' | 'skip';

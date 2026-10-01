@@ -16,6 +16,9 @@ MACHINE_CONNECT_TIMEOUT = timedelta(minutes=10)
 MACHINE_NEEDS_ATTENTION = (
     "Your cloud machine needs attention. Retry it in Switch Console."
 )
+MACHINE_NEEDS_ADMIN = (
+    "Your cloud machine needs attention. Contact your server administrator."
+)
 MACHINE_BEING_REMOVED = (
     "Your previous cloud machine is being removed. Try again in a minute."
 )
@@ -74,6 +77,8 @@ def claim_conflict(machine: HostedMachine) -> str | None:
     if machine.desired_state == "deleted" or machine.state == "deleting":
         return MACHINE_BEING_REMOVED
     if machine.state == "error":
+        if machine.error_code == "machine_needs_attention":
+            return MACHINE_NEEDS_ADMIN
         return MACHINE_NEEDS_ATTENTION
     return None
 
@@ -240,6 +245,11 @@ class HostedMachineStore:
         bump_revision(machine, now)
 
     def retry(self, machine: HostedMachine, now: datetime) -> None:
+        if machine.desired_state == "retained":
+            machine.desired_state = "running"
+            machine.retain_until = None
+            machine.stop_reason = None
+            machine.active_at = now
         machine.state = "queued"
         machine.error = None
         machine.error_code = None

@@ -177,6 +177,25 @@ it('shows the server’s refusal beside the form', async () => {
   expect(onSignedIn).not.toHaveBeenCalled();
 });
 
+it('shows the server’s sign-up cap as it words it', async () => {
+  const message = 'Too many sign-ups on this server in the last hour. Try again later.';
+  switchServers.signup.mockResolvedValue({
+    success: false,
+    error: { kind: 'rate_limited', message },
+  });
+  const onSignedIn = vi.fn();
+  const el = await render(onSignedIn);
+  await openCreateAccount(el);
+  await type(el, 'test-email', 'ada@example.com');
+  await type(el, 'test-password', 'correct-horse');
+  await type(el, 'test-confirm-password', 'correct-horse');
+
+  await submit(el);
+
+  await vi.waitFor(() => expect(el.querySelector('[role="alert"]')?.textContent).toBe(message));
+  expect(onSignedIn).not.toHaveBeenCalled();
+});
+
 it('signs up and hands on the machine status, without warming it twice', async () => {
   const machine = { status: 'unavailable', reason: 'No machine is free right now.' };
   switchServers.signup.mockResolvedValue({

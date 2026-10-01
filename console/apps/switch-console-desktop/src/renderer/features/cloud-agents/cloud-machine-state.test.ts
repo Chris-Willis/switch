@@ -43,6 +43,11 @@ describe('machinePresentation label', () => {
     ['retaining', machine({ ...running, state: 'ready', desired_state: 'retained' }), 'Retained'],
     ['reused while retained', machine({ ...running, state: 'retained' }), 'Provisioning'],
     ['deleting', machine({ state: 'deleting', desired_state: 'deleted' }), 'Deleting disk…'],
+    [
+      'error while deleting',
+      machine({ state: 'error', desired_state: 'deleted', error_code: 'x' }),
+      'Deleting disk…',
+    ],
   ])('%s', (_name, input, label) => {
     expect(machinePresentation(input).label).toBe(label);
   });
@@ -82,6 +87,19 @@ describe('machinePresentation problem', () => {
     );
     expect(shown.problem).toBe('The machine’s disk is full.');
     expect(shown.label).toBe('Ready');
+  });
+
+  it('is null for a machine that errored while being deleted', () => {
+    expect(
+      machinePresentation(
+        machine({
+          state: 'error',
+          desired_state: 'deleted',
+          error_code: 'other',
+          error: 'Retry it in Switch Console.',
+        })
+      ).problem
+    ).toBeNull();
   });
 
   it('ignores an error code on a machine that is not in error', () => {

@@ -42,6 +42,7 @@ export type SignupError =
   | { kind: 'disabled'; message: string }
   | { kind: 'email_taken'; message: string }
   | { kind: 'invalid'; message: string }
+  | { kind: 'rate_limited'; message: string }
   | { kind: 'failed'; message: string };
 
 type TransportError = { kind: 'failed'; message: string };
@@ -162,6 +163,7 @@ const SIGNUP_REFUSAL_KIND: Partial<Record<number, SignupError['kind']>> = {
   403: 'disabled',
   409: 'email_taken',
   422: 'invalid',
+  429: 'rate_limited',
 };
 
 const signupMachineSchema = z.object({

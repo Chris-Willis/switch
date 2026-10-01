@@ -80,6 +80,9 @@ IDENTITY_FAILED = (
     "Switch could not create this cloud agent's identity. Retry it to try again."
 )
 MACHINE_ERROR = "The cloud machine needs attention. Retry it in Switch Console."
+MACHINE_ERROR_NEEDS_ADMIN = (
+    "The cloud machine needs attention. Contact your server administrator."
+)
 MACHINE_STOPPED = "The owner stopped the cloud machine. Start it in Switch Console."
 WORKER_WAKING = "The cloud machine is starting. Try again in a moment."
 
@@ -87,6 +90,13 @@ WORKER_WAKING = "The cloud machine is starting. Try again in a moment."
 def coded_conflict(code: str, message: str) -> JSONResponse:
     """A 409 whose `detail` is the message and whose `code` names the refusal."""
     return JSONResponse(status_code=409, content={"detail": message, "code": code})
+
+
+def machine_error_detail(machine: HostedMachine) -> str:
+    """Why an errored machine refuses work, and whether retrying it can help."""
+    if machine.error_code == "machine_needs_attention":
+        return MACHINE_ERROR_NEEDS_ADMIN
+    return MACHINE_ERROR
 
 
 LAUNCH_DISABLED = "Cloud agent launch is not enabled on this server."
@@ -690,7 +700,7 @@ async def session_operation(
             )
         return operation_summary(existing)
     if machine.state == "error":
-        return coded_conflict("machine_error", MACHINE_ERROR)
+        return coded_conflict("machine_error", machine_error_detail(machine))
     if owner_stopped(machine):
         return coded_conflict("machine_stopped", MACHINE_STOPPED)
     if (

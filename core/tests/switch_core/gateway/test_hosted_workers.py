@@ -819,6 +819,24 @@ async def test_relay_to_an_errored_machine_is_machine_error(worker_app):
     assert (await _launch(factory, request_id)).relay_seq == 0
 
 
+async def test_relay_to_a_machine_needing_an_administrator_says_so(worker_app):
+    client, request_id, _, _, factory, prepared = worker_app
+    await set_machine(
+        factory,
+        prepared["machine_id"],
+        state="error",
+        error_code="machine_needs_attention",
+    )
+    status, body = await _relay_code(client, request_id, READ_ONLY)
+    assert (status, body["error"]) == (
+        409,
+        {
+            "code": "machine_error",
+            "message": "The cloud machine needs attention. Contact your server administrator.",
+        },
+    )
+
+
 async def test_relay_to_an_errored_sleeping_machine_does_not_wake_it(worker_app):
     client, request_id, _, _, factory, prepared = worker_app
     machine_id = prepared["machine_id"]

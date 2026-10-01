@@ -227,6 +227,7 @@ const SIGNUP_FAILURE: Record<SignupError['kind'], TelemetrySignInFailure> = {
   disabled: 'disabled',
   email_taken: 'email_taken',
   invalid: 'invalid',
+  rate_limited: 'rate_limited',
   failed: 'failed',
 };
 

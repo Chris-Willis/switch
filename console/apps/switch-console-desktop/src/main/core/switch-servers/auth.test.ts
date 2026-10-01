@@ -93,6 +93,25 @@ describe('signup', () => {
     expect(setSessionCookie).not.toHaveBeenCalled();
   });
 
+  it('reports the server’s sign-up cap with its explanation and no HTTP prefix', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(429, {
+        detail: 'Too many sign-ups on this server in the last hour. Try again later.',
+      })
+    );
+
+    const result = await signup(SERVER, { email: 'ada@example.com', password: 'correct-horse' });
+
+    expect(result).toEqual({
+      success: false,
+      error: {
+        kind: 'rate_limited',
+        message: 'Too many sign-ups on this server in the last hour. Try again later.',
+      },
+    });
+    expect(setSessionCookie).not.toHaveBeenCalled();
+  });
+
   it('renders a validation refusal one sentence per field', async () => {
     fetchMock.mockResolvedValueOnce(
       response(422, {

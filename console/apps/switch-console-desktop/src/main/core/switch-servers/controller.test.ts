@@ -327,6 +327,30 @@ describe('an action a server whose host has gone down cannot take', () => {
     });
   });
 
+  it('reports a sign-up refused by the server’s hourly cap as rate limited', async () => {
+    managedServerHostBlocked.mockReturnValue(null);
+    signup.mockResolvedValue({
+      success: false,
+      error: {
+        kind: 'rate_limited',
+        message: 'Too many sign-ups on this server in the last hour. Try again later.',
+      },
+    });
+
+    await switchServersController.signup({
+      serverId: 'srv',
+      email: 'dev@example.com',
+      password: 'hunter2',
+    });
+
+    expect(trackEvent).toHaveBeenCalledWith('server_sign_in', {
+      auth_method: 'signup',
+      server_kind: 'remote_managed',
+      outcome: 'failure',
+      failure_reason: 'rate_limited',
+    });
+  });
+
   it('reports a sign-up that worked', async () => {
     managedServerHostBlocked.mockReturnValue(null);
     signup.mockResolvedValue({
