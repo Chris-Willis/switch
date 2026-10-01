@@ -610,6 +610,8 @@ Include with `nindent 12`.
   value: "false"
 {{- end }}
 {{- end }}
+- name: GATEWAY_SIGNUP_ENABLED
+  value: {{ .Values.switchCore.signupEnabled | quote }}
 - name: GATEWAY_COOKIE_SECURE
   value: {{ .Values.switchCore.cookieSecure | quote }}
 - name: SWITCH_LOG_LEVEL

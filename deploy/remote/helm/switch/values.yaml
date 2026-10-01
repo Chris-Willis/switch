@@ -208,6 +208,8 @@ switchCore:
   # gateway is served over HTTPS (ALB / Tailscale); keep false only for plain-HTTP
   # local dev.
   cookieSecure: true
+  # Allow email+password self sign-up on the gateway login page.
+  signupEnabled: false
   # Gateway OIDC login (bring-your-own IdP, e.g. Okta). Disabled by default;
   # set enabled=true and supply issuerUrl/clientId (plus
   # secrets.gatewayOidcClientSecret) to gate the gateway behind OIDC. Provider
