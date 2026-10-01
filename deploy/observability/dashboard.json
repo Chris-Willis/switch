@@ -269,11 +269,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.messages.sent{$env,$service}.as_rate()",
+            "q": "sum:switch.messages.sent{$env,$service} by {actor}.as_rate()",
             "display_type": "line"
           },
           {
-            "q": "sum:switch.messages.delivered{$env,$service}.as_rate()",
+            "q": "sum:switch.messages.delivered{$env,$service} by {actor}.as_rate()",
             "display_type": "line"
           }
         ]

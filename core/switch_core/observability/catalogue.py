@@ -148,38 +148,47 @@ MESSAGES_SENT = _spec(
     "{message}",
     "Messages accepted into the room, counted after the write commits. "
     "`kind:ephemeral` is the exception: presence-like state is delivered live "
-    "and never stored.",
+    "and never stored. `actor` is who wrote it: human, agent, system or bridge.",
     "kind",
+    "actor",
 )
 MESSAGES_DELIVERED = _spec(
     "switch.messages.delivered",
     "sum",
     "{message}",
-    "Messages handed to a client's handler.",
+    "Messages handed to a client's handler. `actor` is who read it: agent, "
+    "system or bridge. Never human, because a human actor reads nothing.",
     "kind",
+    "actor",
 )
 SEND_FAILURES = _spec(
     "switch.messages.send_failures",
     "sum",
     "{failure}",
     "Sends that raised before the row was committed. Without this a database "
-    "outage shows as an absence, which is what a quiet room looks like too.",
+    "outage shows as an absence, which is what a quiet room looks like too. "
+    "`actor` is who was writing.",
     "kind",
+    "actor",
 )
 DELIVERY_FAILURES = _spec(
     "switch.messages.delivery_failures",
     "sum",
     "{failure}",
     "Delivery-loop iterations that raised. The loop survives these by design, "
-    "which is what makes them invisible without a counter.",
+    "which is what makes them invisible without a counter. `actor` is whose "
+    "loop it was.",
+    "actor",
 )
 DELIVERY_LAG = _spec(
     "switch.messages.delivery_lag",
     "histogram",
     "ms",
     "Age of a message when it reached a client's handler — whether the room is "
-    "keeping up, measured per delivery rather than inferred from a queue.",
+    "keeping up, measured per delivery rather than inferred from a queue. "
+    "`actor` is who read it.",
     "kind",
+    "actor",
 )
 
 # ── Bridges ──────────────────────────────────────────────────────────────────

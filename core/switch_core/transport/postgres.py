@@ -167,6 +167,7 @@ class PostgresTransport:
         client_id: str,
         tenant_id: str,
         display_name: str,
+        actor_role: str,
         session_factory: async_sessionmaker[AsyncSession],
         room_store: RoomStore,
         message_store: MessageStore,
@@ -178,6 +179,9 @@ class PostgresTransport:
     ) -> None:
         self.user_id = user_id
         self.client_id = client_id
+        # Who this client is in message metrics: the writer of what it sends
+        # and the reader of what it is handed. Bounded, never an id.
+        self._actor_role = actor_role
         # The tenant everything this transport reads and writes is scoped to,
         # handed in with the client id rather than looked up from it. Neither
         # this transport's context nor its caller's is the right answer — the
@@ -311,7 +315,9 @@ class PostgresTransport:
                             # problem, and this loop is the only delivery this
                             # client has. Counted as well as logged: swallowing
                             # it is what makes a stalled room invisible.
-                            metrics().increment(DELIVERY_FAILURES, {})
+                            metrics().increment(
+                                DELIVERY_FAILURES, {"actor": self._actor_role}
+                            )
                             logger.error(
                                 "Delivery failed for client %s in room %s",
                                 self.user_id,
@@ -566,10 +572,14 @@ class PostgresTransport:
         if handler is None:
             return
         kind = _delivered_kind(event)
-        metrics().increment(MESSAGES_DELIVERED, {"kind": kind})
+        metrics().increment(
+            MESSAGES_DELIVERED, {"kind": kind, "actor": self._actor_role}
+        )
         lag_ms = _age_ms(row.sent_at)
         if lag_ms is not None:
-            metrics().observe(DELIVERY_LAG, {"kind": kind}, lag_ms)
+            metrics().observe(
+                DELIVERY_LAG, {"kind": kind, "actor": self._actor_role}, lag_ms
+            )
         await handler(room, event)
 
     def _handler_for(self, event: InboundEvent) -> Handler | None:
@@ -683,7 +693,9 @@ class PostgresTransport:
                     event_type=event_type,
                 ),
             )
-            metrics().increment(MESSAGES_SENT, {"kind": kind})
+            metrics().increment(
+                MESSAGES_SENT, {"kind": kind, "actor": self._actor_role}
+            )
             return result
 
         try:
@@ -719,9 +731,11 @@ class PostgresTransport:
             # `MESSAGES_SENT` is recorded only after the commit, so without
             # this a database outage reads as silence — and so does a quiet
             # room.
-            metrics().increment(SEND_FAILURES, {"kind": kind})
+            metrics().increment(
+                SEND_FAILURES, {"kind": kind, "actor": self._actor_role}
+            )
             raise
-        metrics().increment(MESSAGES_SENT, {"kind": kind})
+        metrics().increment(MESSAGES_SENT, {"kind": kind, "actor": self._actor_role})
         return result
 
     async def set_typing(self, room_id: str, is_typing: bool) -> None:

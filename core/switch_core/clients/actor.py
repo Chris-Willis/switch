@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Literal, TypedDict, Unpack
+from typing import TYPE_CHECKING, ClassVar, Literal, TypedDict, Unpack
 
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -64,8 +64,15 @@ class ActorKwargs[ConfigT: ClientConfig](TypedDict):
     transport_factory: Callable[[Actor[ConfigT]], MessageTransport]
 
 
+# Who an actor is, as message metrics report it: the writer of a sent message
+# and the reader of a delivered one. A plain `Actor` is a collaboration bridge's
+# own member, the identity its `WorkspaceConsumer` reads for.
+type ActorRole = Literal["human", "agent", "system", "bridge"]
+
+
 class Actor[ConfigT: ClientConfig]:
     config_class: type[ConfigT] = ClientConfig  # type: ignore[assignment]
+    role: ClassVar[ActorRole] = "bridge"
 
     def __init__(
         self,
@@ -303,6 +310,8 @@ class HumanActor(Actor[ClientConfig]):
     room says reaches that person through the bridge's `WorkspaceConsumer`.
     """
 
+    role: ClassVar[ActorRole] = "human"
+
 
 class AgentActor(Actor[ClientConfig]):
     """An agent, as a member of Switch rooms (client type `agent`).
@@ -311,6 +320,8 @@ class AgentActor(Actor[ClientConfig]):
     through it, found by agent id. The row is loaded by the agent's consumer
     when it starts, and refreshed there when it may have been edited.
     """
+
+    role: ClassVar[ActorRole] = "agent"
 
     def __init__(self, **kwargs: Unpack[ActorKwargs[ClientConfig]]) -> None:
         super().__init__(**kwargs)
@@ -336,6 +347,8 @@ class SystemActor(Actor[ClientConfig]):
     Writes command answers, notices and a template's kickoff. What it answers
     is read by its `CommandConsumer`.
     """
+
+    role: ClassVar[ActorRole] = "system"
 
     # ── Platform messages ───────────────────────────────────────────────────
 

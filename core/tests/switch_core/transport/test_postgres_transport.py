@@ -176,6 +176,7 @@ def _transport(
     listener: _FakeListener | None = None,
     ephemeral: EphemeralBus | None = None,
     invites: InviteBus | None = None,
+    actor_role: str = "agent",
 ) -> PostgresTransport:
     """A transport for `client_id`, acting in `tenant_id`.
 
@@ -192,6 +193,7 @@ def _transport(
         client_id=client_id,
         tenant_id=tenant_id,
         display_name="agent one",
+        actor_role=actor_role,
         session_factory=session_factory,
         room_store=RoomStore(),
         message_store=MessageStore(),
@@ -581,6 +583,7 @@ class TestMedia:
                 user_id="@a:test",
                 client_id="ghost",
                 display_name="agent one",
+                actor_role="agent",
                 session_factory=session_factory,
                 room_store=RoomStore(),
                 message_store=MessageStore(),
@@ -1518,6 +1521,7 @@ class TestWhatIsMeasured:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         handlers: TransportHandlers | None = None,
+        actor_role: str = "agent",
     ) -> tuple[PostgresTransport, _FakeListener, str]:
         async with session_factory() as session:
             _, transport_room_id, client_id, user_id = await _make_room(session)
@@ -1525,7 +1529,11 @@ class TestWhatIsMeasured:
 
         listener = _FakeListener()
         transport = _transport(
-            session_factory, client_id=client_id, user_id=user_id, listener=listener
+            session_factory,
+            client_id=client_id,
+            user_id=user_id,
+            listener=listener,
+            actor_role=actor_role,
         )
         transport.register_handlers(handlers or _Received().handlers())
         await transport.join_room(transport_room_id)
@@ -1553,6 +1561,24 @@ class TestWhatIsMeasured:
         payloads = {p.name: p for p in _registry.collect()}
         assert self._kinds(payloads, "switch.messages.sent") == {"message": 1.0}
         assert self._kinds(payloads, "switch.messages.delivered") == {"message": 1.0}
+
+    async def test_writes_and_reads_say_which_actor_did_them(
+        self, session_factory: async_sessionmaker[AsyncSession], _registry
+    ) -> None:
+        # The same tag on both sides, so a dashboard can put who writes next
+        # to who reads.
+        transport, listener, room = await self._receiving(
+            session_factory, actor_role="system"
+        )
+
+        await transport.send_message(room, "hello", sender_name="Switch", metered=False)
+        await listener.announce(await _watched_room(transport))
+
+        payloads = {p.name: p for p in _registry.collect()}
+        for name in ("switch.messages.sent", "switch.messages.delivered"):
+            assert [dict(point.attributes) for point in payloads[name].numbers] == [
+                {"kind": "message", "actor": "system"}
+            ], name
 
     async def test_media_is_counted_apart_from_text(
         self, session_factory: async_sessionmaker[AsyncSession], _registry
@@ -1592,7 +1618,7 @@ class TestWhatIsMeasured:
         )
         point = payload.histograms[0]
         assert point.count == 1
-        assert point.attributes == {"kind": "message"}
+        assert point.attributes == {"kind": "message", "actor": "agent"}
         # Never negative: the row's timestamp comes from the database's clock
         # and the subtraction happens on this process's, so skew is ordinary.
         assert 0.0 <= point.total < 60_000.0

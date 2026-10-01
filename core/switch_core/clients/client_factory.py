@@ -113,6 +113,7 @@ class ClientFactory:
             client_id=client.client_id,
             tenant_id=client.tenant_id,
             display_name=client.display_name,
+            actor_role=client.role,
             session_factory=self._session_factory,
             room_store=self._room_store,
             message_store=self._message_store,

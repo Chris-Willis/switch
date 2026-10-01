@@ -65,6 +65,7 @@ class TestTheDeliveryLoopBindsItsRoom:
     async def test_a_failing_drain_carries_the_room(self, captured: _Capture) -> None:
         transport = object.__new__(PostgresTransport)
         transport.user_id = "@someone:test"  # type: ignore[attr-defined]
+        transport._actor_role = "agent"  # type: ignore[attr-defined]
         transport._wake = asyncio.Event()  # type: ignore[attr-defined]
         transport._pending = {"room-7"}  # type: ignore[attr-defined]
         transport._delivering = False  # type: ignore[attr-defined]
@@ -93,6 +94,7 @@ class TestTheDeliveryLoopBindsItsRoom:
         every later line in the same task."""
         transport = object.__new__(PostgresTransport)
         transport.user_id = "@someone:test"  # type: ignore[attr-defined]
+        transport._actor_role = "agent"  # type: ignore[attr-defined]
         transport._wake = asyncio.Event()  # type: ignore[attr-defined]
         transport._pending = {"room-7"}  # type: ignore[attr-defined]
         transport._delivering = False  # type: ignore[attr-defined]
