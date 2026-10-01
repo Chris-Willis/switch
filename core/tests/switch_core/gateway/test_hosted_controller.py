@@ -1204,6 +1204,72 @@ async def test_owner_stopped_empty_machine_is_left_alone(controller_app):
     assert (item["desired_state"], item["revision"]) == ("stopped", 1)
 
 
+async def test_errored_machine_that_never_hosted_an_agent_is_released(controller_app):
+    client, _, _, service, _, _ = controller_app
+    service.config.hosted_idle_stop_minutes = 30
+    machine_id, _ = await _empty_machine(
+        controller_app,
+        state="error",
+        error="The instance failed its status checks.",
+        error_code="machine_needs_attention",
+        updated_at=datetime.now(UTC) - timedelta(minutes=31),
+    )
+    before = datetime.now(UTC)
+    item = await _listed(client, machine_id)
+    assert (item["state"], item["desired_state"], item["revision"]) == (
+        "error",
+        "retained",
+        2,
+    )
+    assert before <= datetime.fromisoformat(item["retain_until"]) <= datetime.now(UTC)
+    await observe(client, machine_id, state="retained", revision=2)
+    item = await _listed(client, machine_id)
+    assert (item["state"], item["desired_state"], item["revision"]) == (
+        "retained",
+        "deleted",
+        3,
+    )
+
+
+async def test_errored_machine_that_hosted_an_agent_is_left_for_its_owner(
+    controller_app,
+):
+    client, request_id, _, service, factory, _ = controller_app
+    service.config.hosted_idle_stop_minutes = 30
+    machine = await machine_of(factory, request_id)
+    await update_launch(factory, request_id, state="deleted", desired_state="deleted")
+    await update_machine(
+        factory,
+        machine.id,
+        state="error",
+        error="The instance failed its status checks.",
+        updated_at=datetime.now(UTC) - timedelta(minutes=31),
+    )
+    [item] = await list_machines(client)
+    assert (item["state"], item["desired_state"], item["revision"]) == (
+        "error",
+        "running",
+        1,
+    )
+
+
+async def test_recently_errored_empty_machine_is_left_alone(controller_app):
+    client, _, _, service, _, _ = controller_app
+    service.config.hosted_idle_stop_minutes = 30
+    machine_id, _ = await _empty_machine(
+        controller_app,
+        state="error",
+        error="The instance failed its status checks.",
+        updated_at=datetime.now(UTC) - timedelta(minutes=10),
+    )
+    item = await _listed(client, machine_id)
+    assert (item["state"], item["desired_state"], item["revision"]) == (
+        "error",
+        "running",
+        1,
+    )
+
+
 async def test_idle_machine_whose_agents_were_removed_keeps_its_disk(controller_app):
     client, request_id, _, _, factory, _ = controller_app
     await _idle_ready(controller_app, minutes=30, report=False)

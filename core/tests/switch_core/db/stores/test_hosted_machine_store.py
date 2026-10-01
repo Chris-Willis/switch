@@ -175,8 +175,16 @@ async def test_a_stopped_machine_is_started(factory):
     ("state", "desired_state", "detail"),
     [
         ("error", "running", "machine needs attention"),
-        ("deleting", "deleted", "machine is being deleted"),
-        ("retained", "deleted", "machine is being deleted"),
+        (
+            "deleting",
+            "deleted",
+            "Your previous cloud machine is being removed. Try again in a minute.",
+        ),
+        (
+            "retained",
+            "deleted",
+            "Your previous cloud machine is being removed. Try again in a minute.",
+        ),
     ],
 )
 async def test_a_machine_that_cannot_take_agents_refuses_the_claim(

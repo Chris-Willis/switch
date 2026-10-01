@@ -14,6 +14,7 @@ from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.hosted_machine_store import (
     HostedMachineConflict,
     HostedMachineStore,
+    claim_conflict,
     idle_sleeping,
     lock_launches,
     owner_stopped,
@@ -80,7 +81,8 @@ async def ensure_machine(
 ) -> HostedMachine:
     """The owner's machine, claimed and started so it warms before an agent needs it.
 
-    A machine its owner stopped stays stopped and is returned as it is.
+    A machine its owner stopped, or one in error or being removed, is
+    returned as it is.
     Raises `MachineUnavailable` when the server offers the tenant no cloud
     machines and `HostedMachineConflict` when none can be had. The caller
     commits.
@@ -92,7 +94,9 @@ async def ensure_machine(
     existing = await machines.live_for_owner(session, owner_id)
     if existing is not None:
         existing = await machines.locked(session, existing.id)
-        if existing is not None and owner_stopped(existing):
+        if existing is not None and (
+            owner_stopped(existing) or claim_conflict(existing) is not None
+        ):
             return existing
     return await machines.claim(
         session,

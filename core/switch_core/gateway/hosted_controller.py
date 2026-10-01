@@ -111,6 +111,17 @@ def _stop_timed_out(
     )
 
 
+def _errored_unclaimed(
+    machine: HostedMachine, now: datetime, idle_minutes: int
+) -> bool:
+    return (
+        idle_minutes > 0
+        and machine.state == "error"
+        and machine.desired_state not in {"retained", "deleted"}
+        and now - machine.updated_at > timedelta(minutes=idle_minutes)
+    )
+
+
 def _needs_sweep(machine: HostedMachine, now: datetime, idle_minutes: int) -> bool:
     return (
         (machine.state == "queued" and now - machine.updated_at > QUEUED_TIMEOUT)
@@ -122,6 +133,7 @@ def _needs_sweep(machine: HostedMachine, now: datetime, idle_minutes: int) -> bo
             and machine.retain_until is not None
             and machine.retain_until <= now
         )
+        or _errored_unclaimed(machine, now, idle_minutes)
         or idle_sleeping(machine)
         or (
             idle_minutes > 0
@@ -236,6 +248,12 @@ async def _sweep(
     ):
         machine.desired_state = "deleted"
         bump_revision(machine, now)
+    elif _errored_unclaimed(machine, now, idle_minutes) and not await store.ever_hosted(
+        session, machine.id
+    ):
+        await store.release_if_empty(
+            session, machine, retention_days=retention_days, now=now
+        )
     elif idle_sleeping(machine):
         await store.release_if_empty(
             session, machine, retention_days=retention_days, now=now

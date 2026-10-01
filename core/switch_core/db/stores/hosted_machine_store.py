@@ -63,6 +63,15 @@ def machine_starting(machine: HostedMachine) -> bool:
     }
 
 
+def claim_conflict(machine: HostedMachine) -> str | None:
+    """The reason a live machine cannot be claimed, or None when it can."""
+    if machine.state == "error":
+        return "machine needs attention"
+    if machine.desired_state == "deleted" or machine.state == "deleting":
+        return "Your previous cloud machine is being removed. Try again in a minute."
+    return None
+
+
 def bump_revision(machine: HostedMachine, now: datetime) -> None:
     machine.revision += 1
     machine.running_observed_at = None
@@ -156,10 +165,8 @@ class HostedMachineStore:
         if machine is not None:
             machine = await self.locked(session, machine.id)
         if machine is not None and machine.state != "deleted":
-            if machine.state == "error":
-                raise HostedMachineConflict("machine needs attention")
-            if machine.desired_state == "deleted" or machine.state == "deleting":
-                raise HostedMachineConflict("machine is being deleted")
+            if (conflict := claim_conflict(machine)) is not None:
+                raise HostedMachineConflict(conflict)
             if machine.desired_state == "retained":
                 machine.desired_state = "running"
                 machine.retain_until = None
@@ -297,16 +304,22 @@ class HostedMachineStore:
             session, machine, retention_days=retention_days, now=now
         ):
             return False
-        if not await session.scalar(
-            select(
-                exists().where(
-                    HostedLaunch.tenant_id == require_tenant_id(),
-                    HostedLaunch.machine_id == machine.id,
-                )
-            )
-        ):
+        if not await self.ever_hosted(session, machine.id):
             machine.retain_until = now
         return True
+
+    async def ever_hosted(self, session: AsyncSession, machine_id: str) -> bool:
+        """Whether any launch row ever referenced the machine, deleted or not."""
+        return bool(
+            await session.scalar(
+                select(
+                    exists().where(
+                        HostedLaunch.tenant_id == require_tenant_id(),
+                        HostedLaunch.machine_id == machine_id,
+                    )
+                )
+            )
+        )
 
     def issue_capability(self, machine: HostedMachine, secret_key: str) -> str:
         """The machine capability for the machine's current revision.

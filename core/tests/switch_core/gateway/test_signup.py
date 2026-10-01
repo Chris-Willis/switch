@@ -14,6 +14,11 @@ from switch_core.config import SwitchConfig
 from switch_core.db.models import TENANT_ZERO_ID, HostedMachine, TenantMember, User
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import decode_jwt, get_current_user, verify_password
+from switch_core.gateway.auth_routes import (
+    MACHINE_NEEDS_ATTENTION,
+    MACHINE_OWNER_STOPPED,
+    _prewarm,
+)
 from switch_core.gateway.auth_routes import router as auth_router
 from switch_core.gateway.dependencies import (
     get_config,
@@ -287,6 +292,64 @@ async def test_ensure_leaves_an_owner_stopped_machine_stopped(signup_app):
         "owner",
         2,
     )
+
+
+async def _set_machine(app, machine_id: str, **values) -> None:
+    with tenant_scope(TENANT_ZERO_ID):
+        async with app.factory() as session:
+            row = await session.get(HostedMachine, (TENANT_ZERO_ID, machine_id))
+            assert row is not None
+            for key, value in values.items():
+                setattr(row, key, value)
+            await session.commit()
+
+
+REMOVING = "Your previous cloud machine is being removed. Try again in a minute."
+
+
+@pytest.mark.parametrize(
+    ("values", "reason"),
+    [
+        (
+            {"state": "error", "error": "The instance failed its status checks."},
+            MACHINE_NEEDS_ATTENTION,
+        ),
+        ({"state": "retained", "desired_state": "deleted"}, REMOVING),
+        ({"state": "deleting", "desired_state": "deleted"}, REMOVING),
+        (
+            {"state": "stopped", "desired_state": "stopped", "stop_reason": "owner"},
+            MACHINE_OWNER_STOPPED,
+        ),
+    ],
+    ids=["error", "retained-deleting", "deleting", "owner-stopped"],
+)
+async def test_ensure_returns_an_unclaimable_machine_as_it_is(
+    signup_app, values, reason
+):
+    app = signup_app
+    await _signup(app)
+    (machine,) = await _machines(app)
+    await _set_machine(app, machine.id, revision=2, **values)
+    response = await _ensure(app, "new.person@example.com")
+    assert response.status_code == 200, response.text
+    assert response.json()["machine_id"] == machine.id
+    assert (response.json()["state"], response.json()["revision"]) == (
+        values["state"],
+        2,
+    )
+    (after,) = await _machines(app)
+    assert (after.state, after.desired_state, after.revision) == (
+        values["state"],
+        values.get("desired_state", "running"),
+        2,
+    )
+    user = await _user(app, "new.person@example.com")
+    with tenant_scope(TENANT_ZERO_ID):
+        async with app.factory() as session:
+            prewarmed = await _prewarm(
+                session, user.id, app.config, app.app.state.hosted_controller_settings
+            )
+    assert (prewarmed.status, prewarmed.reason) == ("unavailable", reason)
 
 
 async def test_ensure_wakes_an_idle_sleeping_machine(signup_app):

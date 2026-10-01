@@ -12,7 +12,11 @@ from switch_core.config import SwitchConfig
 from switch_core.db.models import TENANT_ZERO_ID, User
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
-from switch_core.db.stores.hosted_machine_store import HostedMachineConflict
+from switch_core.db.stores.hosted_machine_store import (
+    HostedMachineConflict,
+    claim_conflict,
+    owner_stopped,
+)
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     get_current_user,
@@ -51,6 +55,11 @@ from switch_core.version import server_declaration
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+MACHINE_NEEDS_ATTENTION = (
+    "Your cloud machine needs attention. Retry it in Switch Console."
+)
+MACHINE_OWNER_STOPPED = "Your cloud machine is stopped. Start it in Switch Console."
 
 
 def _gateway_declaration() -> ServerDeclaration:
@@ -123,7 +132,7 @@ async def _prewarm(
     settings: HostedControllerSettings | None,
 ) -> SignupMachine:
     try:
-        await ensure_machine(session, user_id, config, settings)
+        machine = await ensure_machine(session, user_id, config, settings)
     except (MachineUnavailable, HostedMachineConflict) as error:
         await session.rollback()
         logger.warning(
@@ -131,6 +140,12 @@ async def _prewarm(
         )
         return SignupMachine(status="unavailable", reason=str(error))
     await session.commit()
+    if machine.state == "error":
+        return SignupMachine(status="unavailable", reason=MACHINE_NEEDS_ATTENTION)
+    if (conflict := claim_conflict(machine)) is not None:
+        return SignupMachine(status="unavailable", reason=conflict)
+    if owner_stopped(machine):
+        return SignupMachine(status="unavailable", reason=MACHINE_OWNER_STOPPED)
     return SignupMachine(status="starting", reason=None)
 
 
