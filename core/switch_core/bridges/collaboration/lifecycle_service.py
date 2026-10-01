@@ -1328,7 +1328,25 @@ class CollaborationBridgeLifecycleService:
         self._connect_started.pop(bridge_id, None)
 
     def get(self, bridge_id: str) -> BridgeCore | None:
-        return self._bridges.get(bridge_id)
+        """The running bridge for ``bridge_id``, if it is the bound tenant's.
+
+        The registry holds every tenant's bridges, so a caller acting for one
+        tenant must not be handed another's. With no tenant bound (boot and
+        the per-tenant fan-outs) there is nothing to compare against.
+        """
+        bridge_core = self._bridges.get(bridge_id)
+        if bridge_core is None:
+            return None
+        bound = current_tenant_id()
+        if bound is not None and bridge_core.tenant_id != bound:
+            logger.warning(
+                "Refused bridge %s to tenant %s: it belongs to tenant %s",
+                bridge_id,
+                bound,
+                bridge_core.tenant_id,
+            )
+            return None
+        return bridge_core
 
     def expected_count(self) -> int:
         """Bridges that were started and have not been stopped deliberately."""

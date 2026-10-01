@@ -375,6 +375,20 @@ class RoomService:
             )
         return default.id
 
+    async def _require_tenant_bridge(self, bridge_id: str) -> None:
+        """Refuse a bridge id that is not one of the bound tenant's bridges.
+
+        The collaboration lifecycle's registry of running bridges is
+        process-wide and holds every tenant's, so finding a bridge there says
+        nothing about whether this caller may use it. The bridge's row, read
+        under the tenant's row-level security, does. Checked before anything
+        is provisioned on the platform behind it.
+        """
+        async with self._session_factory() as session:
+            bridge = await self._collab_bridge_store.get(session, bridge_id)
+        if bridge is None:
+            raise ValueError(f"Bridge not found: {bridge_id}")
+
     async def _require_channel_creation(self, bridge_id: str) -> None:
         """Refuse to make a channel on a connection an operator has withheld it
         from, before anything is provisioned.
@@ -386,7 +400,9 @@ class RoomService:
         """
         async with self._session_factory() as session:
             bridge = await self._collab_bridge_store.get(session, bridge_id)
-        if bridge is None or bridge.channel_creation_enabled:
+        if bridge is None:
+            raise ValueError(f"Bridge not found: {bridge_id}")
+        if bridge.channel_creation_enabled:
             return
         raise ChannelCreationUnsupported(
             f"Creating channels is turned off for the '{bridge.display_name}' "
@@ -473,6 +489,7 @@ class RoomService:
         bridge_id = await self._resolve_bridge_id(config)
         bridge_core = None
         if bridge_id:
+            await self._require_tenant_bridge(bridge_id)
             bridge_core = self._collab_lifecycle.get(bridge_id)
             if bridge_core is None:
                 raise ValueError(f"Bridge not running: {bridge_id}")
@@ -1144,6 +1161,7 @@ class RoomService:
             if room is None:
                 raise ValueError(f"Room not found: {room_id}")
 
+        await self._require_tenant_bridge(bridge_id)
         bridge_core = self._collab_lifecycle.get(bridge_id)
 
         if external_channel_id is None and bridge_core is not None:
@@ -1241,6 +1259,7 @@ class RoomService:
         if old_bridge_id == bridge_id:
             raise ValueError(f"Room {room_id} is already bound to bridge {bridge_id}")
 
+        await self._require_tenant_bridge(bridge_id)
         new_bridge = self._collab_lifecycle.get(bridge_id)
         if new_bridge is None:
             raise ValueError(f"Bridge not running: {bridge_id}")
@@ -1458,6 +1477,7 @@ class RoomService:
         Raises when the bridge is not running, since nothing can be looked up
         on it then.
         """
+        await self._require_tenant_bridge(bridge_id)
         bridge_core = self._collab_lifecycle.get(bridge_id)
         if bridge_core is None:
             raise ValueError("the room's messaging app is not running")
