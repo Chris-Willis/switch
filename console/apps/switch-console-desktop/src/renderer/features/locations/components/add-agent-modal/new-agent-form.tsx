@@ -512,7 +512,7 @@ export const NewAgentForm = observer(function NewAgentForm({
         <ManagedProviderConnectionStep
           serverId={pickState.serverId}
           provider={pickState.providerId ?? 'claude'}
-          context="settings"
+          continueLabel="Done"
           onBack={finishConnection}
           onDone={finishConnection}
         />

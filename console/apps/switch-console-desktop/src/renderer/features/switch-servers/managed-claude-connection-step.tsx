@@ -17,12 +17,12 @@ export function ManagedClaudeConnectionStep({
   serverId,
   onBack,
   onDone,
-  context,
+  continueLabel,
 }: {
   serverId: string;
   onBack: () => void;
   onDone: () => void;
-  context: 'onboarding' | 'settings';
+  continueLabel: string;
 }) {
   const [connection, setConnection] = useState<ClaudeConnection | null>(null);
   const [editing, setEditing] = useState(false);
@@ -123,9 +123,7 @@ export function ManagedClaudeConnectionStep({
             >
               Remove
             </Button>
-            <Button onClick={onDone}>
-              {context === 'settings' ? 'Done' : 'Continue to GitHub'}
-            </Button>
+            <Button onClick={onDone}>{continueLabel}</Button>
           </>
         )}
       </DialogFooter>

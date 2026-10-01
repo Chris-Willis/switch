@@ -36,7 +36,7 @@ import { ConnectionsStep } from './connections-step';
 import { LinkAccountsStep } from './link-accounts-step';
 import { localServerStore } from './local-server-store';
 import { LogTail } from './log-tail';
-import { ManagedProviderConnectionStep } from './managed-provider-connection-step';
+import { ManagedProviderConnectionSequence } from './managed-provider-connection-step';
 import { ManagedProvidersStep } from './managed-providers-step';
 import { remoteServerStore } from './remote-server-store';
 import { ServerSignInFields, useServerSignIn } from './server-sign-in';
@@ -264,18 +264,14 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   }
   if (step === 'managedClaude' && connected) {
     return (
-      <ManagedProviderConnectionStep
-        context="onboarding"
-        provider={selectedProviders[providerIndex] ?? 'claude'}
+      <ManagedProviderConnectionSequence
         serverId={connected.id}
-        onBack={() =>
-          providerIndex > 0 ? setProviderIndex(providerIndex - 1) : goToStep('managedReady')
-        }
-        onDone={() =>
-          providerIndex + 1 < selectedProviders.length
-            ? setProviderIndex(providerIndex + 1)
-            : goToStep('managedGitHub')
-        }
+        providers={selectedProviders}
+        index={providerIndex}
+        onIndexChange={setProviderIndex}
+        onBack={() => goToStep('managedReady')}
+        onDone={() => goToStep('managedGitHub')}
+        doneStepName="GitHub"
       />
     );
   }

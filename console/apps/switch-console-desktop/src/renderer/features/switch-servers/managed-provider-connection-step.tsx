@@ -40,18 +40,53 @@ const instructions = {
   },
 };
 
+/**
+ * Connect each chosen provider in turn, then hand over to the step after them.
+ *
+ * The continue label is read from the same list that decides where continuing
+ * goes, so it always names the step it leads to.
+ */
+export function ManagedProviderConnectionSequence({
+  serverId,
+  providers,
+  index,
+  onIndexChange,
+  onBack,
+  onDone,
+  doneStepName,
+}: {
+  serverId: string;
+  providers: AgentProviderId[];
+  index: number;
+  onIndexChange: (index: number) => void;
+  onBack: () => void;
+  onDone: () => void;
+  doneStepName: string;
+}) {
+  const next = providers[index + 1];
+  return (
+    <ManagedProviderConnectionStep
+      serverId={serverId}
+      provider={providers[index] ?? 'claude'}
+      continueLabel={`Continue to ${next ? providerDisplayName(next) : doneStepName}`}
+      onBack={() => (index > 0 ? onIndexChange(index - 1) : onBack())}
+      onDone={() => (next ? onIndexChange(index + 1) : onDone())}
+    />
+  );
+}
+
 export function ManagedProviderConnectionStep({
   serverId,
   provider,
   onBack,
   onDone,
-  context,
+  continueLabel,
 }: {
   serverId: string;
   provider: AgentProviderId;
   onBack: () => void;
   onDone: () => void;
-  context: 'onboarding' | 'settings';
+  continueLabel: string;
 }) {
   if (provider === 'claude')
     return (
@@ -59,7 +94,7 @@ export function ManagedProviderConnectionStep({
         serverId={serverId}
         onBack={onBack}
         onDone={onDone}
-        context={context}
+        continueLabel={continueLabel}
       />
     );
   return (
@@ -69,7 +104,7 @@ export function ManagedProviderConnectionStep({
       provider={provider}
       onBack={onBack}
       onDone={onDone}
-      context={context}
+      continueLabel={continueLabel}
     />
   );
 }
@@ -79,13 +114,13 @@ function OtherProviderConnectionStep({
   provider,
   onBack,
   onDone,
-  context,
+  continueLabel,
 }: {
   serverId: string;
   provider: Exclude<AgentProviderId, 'claude'>;
   onBack: () => void;
   onDone: () => void;
-  context: 'onboarding' | 'settings';
+  continueLabel: string;
 }) {
   const [kind, setKind] = useState<'api-key' | 'auth-json'>(
     provider === 'codex' || provider === 'cursor' ? 'api-key' : 'auth-json'
@@ -346,7 +381,7 @@ function OtherProviderConnectionStep({
           }
           onClick={onDone}
         >
-          {context === 'settings' ? 'Done' : 'Continue'}
+          {continueLabel}
         </Button>
       </DialogFooter>
     </>
