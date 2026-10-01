@@ -385,6 +385,46 @@ class TenantJoinDomain(TenantScoped, Base):
     )
 
 
+class AuditEvent(TenantScoped, Base):
+    """One security-relevant change in a tenant: who did what, to what, when.
+
+    Written in the same transaction as the change it records wherever that
+    change is made on the caller's session, so a change that rolls back
+    leaves no event. Where a service commits the change on sessions of its
+    own (registering or removing a bridge, disconnecting an install), the
+    event is written after it succeeds, so it never describes a change that
+    did not happen.
+
+    Append-only for the runtime role: `grant_runtime_role` takes `UPDATE` and
+    `DELETE` on this table back off it, so the process serving requests can
+    add to the history but not rewrite it.
+
+    `actor_user_id` carries no foreign key, so the history outlives the
+    account; it is null when no signed-in person acted. `details` holds
+    identifiers and field names, never secrets or the values of connection
+    settings.
+
+    `occurred_at` defaults to `clock_timestamp()`, not `now()`: two events in
+    one transaction would otherwise share a timestamp, and the read pages back
+    by it.
+    """
+
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        Index("ix_audit_events_tenant_occurred_at", "tenant_id", "occurred_at"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False
+    )
+    actor_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    target_type: Mapped[str] = mapped_column(Text, nullable=False)
+    target_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
 # ── Clients ────────────────────────────────────────────────────────────────────
 
 

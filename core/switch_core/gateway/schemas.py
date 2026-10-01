@@ -798,6 +798,16 @@ class AddressedInvitationAcceptRequest(BaseModel):
     invitation_id: str
 
 
+class AuditEventDetail(BaseModel):
+    id: str
+    occurred_at: str
+    actor_user_id: str | None
+    action: str
+    target_type: str
+    target_id: str | None
+    details: dict[str, Any] | None
+
+
 class JoinDomainDetail(BaseModel):
     domain: str
     created_by: str

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
+from switch_core.db.audit import AuditAction, list_audit_events, record_audit_event
 from switch_core.db.models import (
     Invitation,
     Tenant,
@@ -87,6 +88,7 @@ from switch_core.gateway.invite_mail import (
 from switch_core.gateway.schemas import (
     AddressedInvitation,
     AddressedInvitationAcceptRequest,
+    AuditEventDetail,
     BudgetCreateRequest,
     BudgetResponse,
     BudgetUpdateRequest,
@@ -368,6 +370,15 @@ async def _provision_workspace(
             await user_store.add_membership(
                 session, tenant_id=tenant.id, user_id=caller.id, role="owner"
             )
+            await record_audit_event(
+                session,
+                tenant_id=tenant.id,
+                actor_user_id=caller.id,
+                action=AuditAction.TENANT_CREATED,
+                target_type="tenant",
+                target_id=tenant.id,
+                details={"name": tenant.name, "slug": tenant.slug},
+            )
             await session.commit()
     except Exception:
         logger.error(
@@ -546,6 +557,19 @@ async def create_invitation(
         expires_at=expires_at,
         uses_remaining=req.uses_remaining,
         created_by=user.id,
+    )
+    await record_audit_event(
+        session,
+        tenant_id=tenant_id,
+        actor_user_id=user.id,
+        action=AuditAction.INVITATION_CREATED,
+        target_type="invitation",
+        target_id=invitation.id,
+        details={
+            "role": invitation.role,
+            "email": invitation.email,
+            "uses_remaining": invitation.uses_remaining,
+        },
     )
     tenant = await session.get(Tenant, tenant_id)
     assert tenant is not None
@@ -782,13 +806,43 @@ async def list_invitations(
     return [_invitation_detail(i) for i in invitations]
 
 
+@router.get("/tenants/{tenant_id}/audit-events")
+async def list_tenant_audit_events(
+    tenant_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    before: Annotated[datetime | None, Query()] = None,
+) -> list[AuditEventDetail]:
+    """The bound tenant's audit log, newest first. `owner`/`admin` only.
+
+    Page back by passing the oldest `occurred_at` returned as `before`.
+    """
+    _require_bound_tenant(tenant_id)
+    events = await list_audit_events(
+        session, tenant_id=tenant_id, limit=limit, before=before
+    )
+    return [
+        AuditEventDetail(
+            id=event.id,
+            occurred_at=event.occurred_at.isoformat(),
+            actor_user_id=event.actor_user_id,
+            action=event.action,
+            target_type=event.target_type,
+            target_id=event.target_id,
+            details=event.details,
+        )
+        for event in events
+    ]
+
+
 @router.delete("/tenants/{tenant_id}/invitations/{invitation_id}")
 async def revoke_invitation(
     tenant_id: str,
     invitation_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     invitation_store: Annotated[InvitationStore, Depends(get_invitation_store)],
-    _user: Annotated[User, Depends(require_tenant_admin)],
+    user: Annotated[User, Depends(require_tenant_admin)],
 ) -> InvitationDetail:
     """Revoke an invitation of the bound tenant. `owner`/`admin` only."""
     _require_bound_tenant(tenant_id)
@@ -796,6 +850,15 @@ async def revoke_invitation(
         invitation = await invitation_store.revoke(session, invitation_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await record_audit_event(
+        session,
+        tenant_id=tenant_id,
+        actor_user_id=user.id,
+        action=AuditAction.INVITATION_REVOKED,
+        target_type="invitation",
+        target_id=invitation.id,
+        details=None,
+    )
     await session.commit()
     return _invitation_detail(invitation)
 
@@ -887,6 +950,15 @@ async def _join_through(
         role = invitation.role
         await user_store.add_membership(
             session, tenant_id=tenant_id, user_id=caller.id, role=role
+        )
+        await record_audit_event(
+            session,
+            tenant_id=tenant_id,
+            actor_user_id=caller.id,
+            action=AuditAction.INVITATION_ACCEPTED,
+            target_type="invitation",
+            target_id=invitation.id,
+            details={"role": role},
         )
         # Only on the branch that actually joined someone. A caller who
         # was already a member takes the `else` below and has accepted
@@ -1092,6 +1164,15 @@ async def add_join_domain(
         raise HTTPException(
             status_code=409, detail=f"The workspace is already open to {domain}"
         ) from exc
+    await record_audit_event(
+        session,
+        tenant_id=tenant_id,
+        actor_user_id=user.id,
+        action=AuditAction.JOIN_DOMAIN_ADDED,
+        target_type="join_domain",
+        target_id=row.domain,
+        details=None,
+    )
     await session.commit()
     return _join_domain_detail(row)
 
@@ -1102,7 +1183,7 @@ async def remove_join_domain(
     domain: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     join_domain_store: Annotated[JoinDomainStore, Depends(get_join_domain_store)],
-    _user: Annotated[User, Depends(require_tenant_admin)],
+    user: Annotated[User, Depends(require_tenant_admin)],
 ) -> None:
     """Stop letting people at a domain join the bound tenant. `owner`/`admin`
     only, and any domain: closing a workspace needs no proof of anything.
@@ -1114,6 +1195,15 @@ async def remove_join_domain(
         raise HTTPException(
             status_code=404, detail=f"The workspace is not open to {domain}"
         ) from exc
+    await record_audit_event(
+        session,
+        tenant_id=tenant_id,
+        actor_user_id=user.id,
+        action=AuditAction.JOIN_DOMAIN_REMOVED,
+        target_type="join_domain",
+        target_id=domain.lower(),
+        details=None,
+    )
     await session.commit()
 
 
@@ -1181,6 +1271,15 @@ async def join_tenant_by_domain(
             await user_store.add_membership(
                 session, tenant_id=tenant_id, user_id=caller.id, role=role
             )
+            await record_audit_event(
+                session,
+                tenant_id=tenant_id,
+                actor_user_id=caller.id,
+                action=AuditAction.MEMBER_JOINED_BY_DOMAIN,
+                target_type="user",
+                target_id=caller.id,
+                details={"role": role, "domain": domain},
+            )
         tenant, user = await _enter(session, tenant_id, caller, user_store)
 
     set_session_cookie(
@@ -1215,7 +1314,7 @@ async def update_member_role(
     req: MemberUpdateRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
-    _admin: Annotated[User, Depends(require_tenant_admin)],
+    admin: Annotated[User, Depends(require_tenant_admin)],
     is_owner: Annotated[bool, Depends(get_tenant_is_owner)],
 ) -> MemberDetail:
     """Change a member's role. `owner`/`admin` only.
@@ -1245,6 +1344,16 @@ async def update_member_role(
         if await user_store.count_owners(session) <= 1:
             raise HTTPException(status_code=409, detail="Cannot demote the last owner")
 
+    if membership.role != req.role:
+        await record_audit_event(
+            session,
+            tenant_id=tenant_id,
+            actor_user_id=admin.id,
+            action=AuditAction.MEMBER_ROLE_CHANGED,
+            target_type="user",
+            target_id=user_id,
+            details={"from": membership.role, "to": req.role},
+        )
     membership.role = req.role
     await session.commit()
 
@@ -1262,7 +1371,7 @@ async def remove_member(
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
-    _admin: Annotated[User, Depends(require_tenant_admin)],
+    admin: Annotated[User, Depends(require_tenant_admin)],
     is_owner: Annotated[bool, Depends(get_tenant_is_owner)],
 ) -> dict[str, bool]:
     """Remove a member from the bound tenant. `owner`/`admin` only.
@@ -1318,6 +1427,15 @@ async def remove_member(
     for key in keys:
         await api_key_store.delete(session, key.id)
 
+    await record_audit_event(
+        session,
+        tenant_id=tenant_id,
+        actor_user_id=admin.id,
+        action=AuditAction.MEMBER_REMOVED,
+        target_type="user",
+        target_id=user_id,
+        details={"role": membership.role, "api_keys_deleted": len(keys)},
+    )
     await session.delete(membership)
     await session.commit()
 

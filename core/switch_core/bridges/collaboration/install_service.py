@@ -76,6 +76,7 @@ from switch_core.bridges.collaboration.lifecycle_service import (
 )
 from switch_core.bridges.collaboration.models import BridgeStartRefused
 from switch_core.crypto import decrypt_token, encrypt_token
+from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import MessagingInstall
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
@@ -273,6 +274,21 @@ class MessagingInstallService:
             ) as session:
                 attached = await self._store.attach_bridge(
                     session, install_id=install_id, bridge_id=bridge.id
+                )
+                await record_audit_event(
+                    session,
+                    tenant_id=state.tenant_id,
+                    actor_user_id=burnt.created_by_user_id,
+                    action=AuditAction.MESSAGING_INSTALL_CONNECTED,
+                    target_type="messaging_install",
+                    target_id=install_id,
+                    details={
+                        "platform": platform,
+                        "external_workspace_id": grant.external_workspace_id,
+                        "workspace_name": grant.workspace_name,
+                        "bridge_id": bridge.id,
+                        "scopes": grant.scopes,
+                    },
                 )
                 await session.commit()
 

@@ -89,7 +89,7 @@ async def _update(
                 bridge_store=_BRIDGE_STORE,
                 room_store=RoomStore(),
                 collab_lifecycle=lifecycle,  # type: ignore[arg-type]
-                _user=_admin(),
+                user=_admin(),
             )
     return refused.value
 
@@ -116,7 +116,7 @@ async def test_a_shared_bridge_cannot_be_registered_by_hand() -> None:
             session=None,  # type: ignore[arg-type]
             bridge_store=_BRIDGE_STORE,
             collab_lifecycle=lifecycle,  # type: ignore[arg-type]
-            _user=_admin(),
+            user=_admin(),
         )
 
     assert refused.value.status_code == 422
