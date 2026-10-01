@@ -59,6 +59,7 @@ import { ServerStatTiles } from './server-stat-tiles';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
 import { TelemetryConsentNotice } from './TelemetryConsentNotice';
+import { managedCloudServerId } from './use-cloud-launches';
 import { myIdentitiesQueryKey } from './use-my-identities';
 import { VersionDriftNotice } from './VersionDriftNotice';
 
@@ -499,6 +500,7 @@ function StatusDot({ connected }: { connected: boolean }) {
 const LoginPanel = observer(function LoginPanel({ serverId }: { serverId: string }) {
   const signIn = useServerSignIn(serverId);
   const onSignedIn = (signedIn: SignedIn) => {
+    if (serverId !== managedCloudServerId()) return;
     const reason = machineUnavailableReason(signedIn);
     if (reason) toast({ title: 'Your cloud machine is not starting', description: reason });
   };

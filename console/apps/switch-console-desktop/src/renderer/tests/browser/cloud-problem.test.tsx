@@ -23,14 +23,20 @@ afterEach(async () => {
 async function render(
   problem: CloudRelayProblem,
   action: CloudProblemAction | null = null,
-  machineReady = false
+  machineReady = false,
+  compact = true
 ): Promise<HTMLDivElement> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () =>
     root!.render(
-      <CloudProblem problem={problem} machineReady={machineReady} compact action={action} />
+      <CloudProblem
+        problem={problem}
+        machineReady={machineReady}
+        compact={compact}
+        action={action}
+      />
     )
   );
   return container;
@@ -115,4 +121,23 @@ it('says the machine is starting while the machine itself wakes', async () => {
   const el = await render(waking, null, false);
   expect(el.textContent).toContain('The cloud machine is starting.');
   expect(el.textContent).not.toContain('The agent is starting.');
+});
+
+const unknownCode: CloudRelayProblem = {
+  code: 'quota_exceeded',
+  message: 'The account has used its cloud hours for this month.',
+  wakeAvailable: false,
+};
+
+it('shows the server’s reason for a code it has no title for', async () => {
+  const el = await render(unknownCode);
+  expect(el.textContent).toContain('The account has used its cloud hours for this month.');
+  expect(el.textContent).not.toContain('could not be reached');
+});
+
+it('shows the server’s reason beside the generic title outside the compact view', async () => {
+  const el = await render(unknownCode, null, false, false);
+  expect(el.textContent).toContain('The cloud worker could not be reached.');
+  const detail = el.querySelector('[role="alert"] .text-foreground-muted');
+  expect(detail?.textContent).toContain('The account has used its cloud hours for this month.');
 });

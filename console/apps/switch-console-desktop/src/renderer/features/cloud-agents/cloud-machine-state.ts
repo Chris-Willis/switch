@@ -69,7 +69,7 @@ function machineActions(machine: CloudMachine): MachineAction[] {
   )
     return [];
   const actions: MachineAction[] = [];
-  if (machine.desired_state === 'running' && machine.state !== 'error')
+  if ((machine.desired_state === 'running' && machine.state !== 'error') || machine.sleeping)
     actions.push('stop');
   if (machine.desired_state === 'stopped') actions.push('start');
   if (machine.state === 'error' && machine.error_code !== 'machine_needs_attention')

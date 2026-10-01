@@ -49,12 +49,11 @@ export function CloudProblem({
       <span className="min-w-0 flex-1 leading-5">
         {agentStarting
           ? 'The agent is starting.'
-          : (PROBLEM_TITLES[problem.code] ?? 'The cloud worker could not be reached.')}{' '}
-        {!compact &&
-          !agentStarting &&
-          problem.message !== PROBLEM_TITLES[problem.code] && (
-            <span className="text-foreground-muted">{problem.message} </span>
-          )}
+          : (PROBLEM_TITLES[problem.code] ??
+            (compact ? problem.message : 'The cloud worker could not be reached.'))}{' '}
+        {!compact && !agentStarting && problem.message !== PROBLEM_TITLES[problem.code] && (
+          <span className="text-foreground-muted">{problem.message} </span>
+        )}
         {sleeping && problem.wakeAvailable && !action && 'Send a message to wake it. '}
         {action?.error && (
           <span role="alert" className="block text-foreground-destructive">

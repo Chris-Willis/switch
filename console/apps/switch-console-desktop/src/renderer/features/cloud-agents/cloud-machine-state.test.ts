@@ -147,9 +147,9 @@ describe('machinePresentation disk', () => {
 
 describe('machinePresentation actions', () => {
   it.each([
-    ['sleeping stopped', machine({}), ['start']],
-    ['sleeping stopping', machine({ state: 'stopping' }), ['start']],
-    ['sleeping ready', machine({ state: 'ready' }), ['start']],
+    ['sleeping stopped', machine({}), ['stop', 'start']],
+    ['sleeping stopping', machine({ state: 'stopping' }), ['stop', 'start']],
+    ['sleeping ready', machine({ state: 'ready' }), ['stop', 'start']],
     ['owner stopped', machine({ ...ownerStopped }), ['start']],
     ['owner stopping', machine({ ...ownerStopped, state: 'ready' }), ['start']],
     ['ready', machine({ ...running, state: 'ready' }), ['stop']],

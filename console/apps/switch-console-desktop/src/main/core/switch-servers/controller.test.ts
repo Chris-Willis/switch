@@ -10,6 +10,7 @@ const trackEvent = vi.hoisted(() => vi.fn());
 const addServer = vi.hoisted(() => vi.fn());
 const resolveAgentServers = vi.hoisted(() => vi.fn());
 const passwordLogin = vi.hoisted(() => vi.fn());
+const signup = vi.hoisted(() => vi.fn());
 const createRoomOnServer = vi.hoisted(() => vi.fn());
 const deleteBridge = vi.hoisted(() => vi.fn());
 const deleteRoom = vi.hoisted(() => vi.fn());
@@ -45,7 +46,7 @@ vi.mock('./local-provider-sign-in', () => ({
   localProviderAuthPath: vi.fn(),
   readLocalProviderSignIn: vi.fn(),
 }));
-vi.mock('./auth', () => ({ oidcLogin: vi.fn(), passwordLogin }));
+vi.mock('./auth', () => ({ oidcLogin: vi.fn(), passwordLogin, signup }));
 // Reads this install's own agent rows, and through them the database client.
 vi.mock('./backfill-agent-icons', () => ({ backfillAgentIcons: vi.fn() }));
 // Reaches the encrypted secrets store, and through it the database client.
@@ -284,6 +285,66 @@ describe('an action a server whose host has gone down cannot take', () => {
       server_kind: 'remote_managed',
       outcome: 'failure',
       failure_reason: 'invalid_credentials',
+    });
+  });
+
+  it('reports the sign-up that never left this machine', async () => {
+    await expect(
+      switchServersController.signup({
+        serverId: 'srv',
+        email: 'dev@example.com',
+        password: 'hunter2',
+      })
+    ).rejects.toBeInstanceOf(HostUnreachableError);
+
+    expect(signup).not.toHaveBeenCalled();
+    expect(trackEvent).toHaveBeenCalledWith('server_sign_in', {
+      auth_method: 'password',
+      server_kind: 'remote_managed',
+      outcome: 'failure',
+      failure_reason: 'unreachable',
+    });
+  });
+
+  it('reports a sign-up by its own reason while the host is up', async () => {
+    managedServerHostBlocked.mockReturnValue(null);
+    signup.mockResolvedValue({
+      success: false,
+      error: { kind: 'email_taken', message: 'That email is already registered.' },
+    });
+
+    await switchServersController.signup({
+      serverId: 'srv',
+      email: 'dev@example.com',
+      password: 'hunter2',
+    });
+
+    expect(trackEvent).toHaveBeenCalledWith('server_sign_in', {
+      auth_method: 'password',
+      server_kind: 'remote_managed',
+      outcome: 'failure',
+      failure_reason: 'invalid_credentials',
+    });
+  });
+
+  it('reports a sign-up that worked', async () => {
+    managedServerHostBlocked.mockReturnValue(null);
+    signup.mockResolvedValue({
+      success: true,
+      data: { user: {}, machine: { status: 'starting', reason: null } },
+    });
+
+    await switchServersController.signup({
+      serverId: 'srv',
+      email: 'dev@example.com',
+      password: 'hunter2',
+    });
+
+    expect(trackEvent).toHaveBeenCalledWith('server_sign_in', {
+      auth_method: 'password',
+      server_kind: 'remote_managed',
+      outcome: 'success',
+      failure_reason: 'none',
     });
   });
 });

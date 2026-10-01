@@ -505,7 +505,7 @@ it.each([
   expect(el.textContent).toMatch(/Sleeping · c7i\.2xlarge · 1 agent/);
   expect(el.textContent).toMatch(/190\.0 GB free of 200\.0 GB/);
   expect(button(el, /start machine/i)).toBeDefined();
-  expect(button(el, /stop machine/i)).toBeUndefined();
+  expect(button(el, /stop machine/i)).toBeDefined();
 });
 
 it('stops a ready machine once confirmed', async () => {

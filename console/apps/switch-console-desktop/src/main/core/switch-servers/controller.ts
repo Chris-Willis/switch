@@ -223,6 +223,17 @@ function signInFailureReason(result: Result<unknown, LoginError>): TelemetrySign
   return result.success ? 'none' : SIGN_IN_FAILURE[result.error.kind];
 }
 
+const SIGNUP_FAILURE: Record<SignupError['kind'], TelemetrySignInFailure> = {
+  disabled: 'failed',
+  email_taken: 'invalid_credentials',
+  invalid: 'invalid_credentials',
+  failed: 'failed',
+};
+
+function signupFailureReason(result: Result<unknown, SignupError>): TelemetrySignInFailure {
+  return result.success ? 'none' : SIGNUP_FAILURE[result.error.kind];
+}
+
 /**
  * Reported by reason rather than by outcome: the two are the same fact, and a
  * sign-in that never left this machine — the server's host is down — has a
@@ -495,12 +506,21 @@ export const switchServersController = createRPCController({
     return result;
   },
 
-  signup: async (params: SignupParams): Promise<Result<SignupResult, SignupError>> =>
-    signup(await requireReachableServer(params.serverId), {
+  signup: async (params: SignupParams): Promise<Result<SignupResult, SignupError>> => {
+    const server = await requireServer(params.serverId);
+    const unreachable = hostUnreachable(server);
+    if (unreachable) {
+      reportSignIn('password', server, 'unreachable');
+      throw unreachable;
+    }
+    const result = await signup(server, {
       email: params.email,
       password: params.password,
       displayName: params.displayName,
-    }),
+    });
+    reportSignIn('password', server, signupFailureReason(result));
+    return result;
+  },
 
   ensureCloudMachine: async (serverId: string) =>
     ensureCloudMachine(await requireReachableServer(serverId)),
