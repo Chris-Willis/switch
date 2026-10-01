@@ -13,6 +13,7 @@ import {
   useJoinableWorkspaces,
   usePendingInvitations,
 } from '@renderer/features/workspaces/pending-invitations';
+import { WorkspaceAvatar } from '@renderer/features/workspaces/workspace-avatar';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useToast } from '@renderer/lib/hooks/use-toast';
@@ -464,33 +465,6 @@ function WorkspaceSearch({ value, onChange }: { value: string; onChange: (v: str
         className="h-8 w-full rounded-md border border-border bg-background-tertiary pr-2 pl-8 text-sm text-foreground outline-none placeholder:text-foreground-muted focus:border-foreground-muted"
       />
     </div>
-  );
-}
-
-/** A workspace's initial in a square, the way a server's avatar shows a server. */
-function WorkspaceAvatar({
-  name,
-  size,
-  active = false,
-}: {
-  name: string;
-  size: 'sm' | 'md';
-  active?: boolean;
-}) {
-  // Drawn from an attribute rather than as text, so the letter is not read out
-  // or counted as part of the row's name.
-  return (
-    <span
-      aria-hidden
-      data-initial={name.trim().charAt(0).toUpperCase() || '?'}
-      className={cn(
-        'flex shrink-0 items-center justify-center rounded-md font-semibold before:content-[attr(data-initial)]',
-        size === 'sm' ? 'size-5 text-[10px]' : 'size-[26px] text-xs',
-        active
-          ? 'bg-[var(--accent-solid)] text-white'
-          : 'bg-background-tertiary text-foreground-muted'
-      )}
-    />
   );
 }
 
