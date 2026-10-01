@@ -31,6 +31,7 @@ const state = vi.hoisted(() => ({
   acceptPendingInvitation: vi.fn(),
   listJoinableWorkspaces: vi.fn(),
   joinByDomain: vi.fn(),
+  cloud: 'open' as 'reading' | 'closed' | 'open' | 'failed',
 }));
 
 vi.mock('@renderer/lib/ipc', () => ({
@@ -41,6 +42,15 @@ vi.mock('@renderer/lib/ipc', () => ({
     },
   },
   events: { on: () => () => {}, emit: () => {} },
+}));
+
+vi.mock('@renderer/features/switch-servers/use-switch-cloud', () => ({
+  useSwitchCloud: () =>
+    state.cloud === 'open'
+      ? { kind: 'open', url: 'https://cloud.example.invalid' }
+      : state.cloud === 'failed'
+        ? { kind: 'failed', headline: 'broken', detail: null }
+        : { kind: state.cloud },
 }));
 
 vi.mock('@renderer/features/switch-servers/server-availability', () => ({
@@ -111,7 +121,10 @@ vi.mock('@renderer/lib/hooks/use-toast', () => ({
   useToast: () => ({ toast: state.toast }),
 }));
 
-import { WorkspaceSwitcher } from '@renderer/features/switch-servers/workspace-switcher';
+import {
+  showsServers,
+  WorkspaceSwitcher,
+} from '@renderer/features/switch-servers/workspace-switcher';
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -152,7 +165,8 @@ function workspace(
 async function openSwitcher(
   servers: SwitchServer[],
   workspaces: Workspace[],
-  activeId: string
+  activeId: string,
+  trigger: 'Switch workspace' | 'Switch server' = 'Switch workspace'
 ): Promise<void> {
   state.servers = servers;
   state.workspaces = workspaces;
@@ -171,9 +185,9 @@ async function openSwitcher(
   );
   await settle();
 
-  const trigger = container.querySelector<HTMLElement>('[aria-label="Switch workspace"]');
-  expect(trigger, 'the switcher did not render its trigger').not.toBeNull();
-  await act(async () => trigger!.click());
+  const button = container.querySelector<HTMLElement>(`[aria-label="${trigger}"]`);
+  expect(button, `the switcher did not render its ${trigger} trigger`).not.toBeNull();
+  await act(async () => button!.click());
 }
 
 async function settle(): Promise<void> {
@@ -190,6 +204,7 @@ function row(name: string): HTMLElement {
 }
 
 beforeEach(() => {
+  state.cloud = 'open';
   state.setActive.mockReset().mockResolvedValue(undefined);
   state.navigate.mockReset();
   state.toast.mockReset();
@@ -510,5 +525,91 @@ describe('workspaces open to your e-mail domain', () => {
     expect(document.body.textContent).toContain(
       'Could not check for workspaces open to your e-mail domain.'
     );
+  });
+});
+
+describe('which switcher a build shows', () => {
+  it('shows workspaces when the build can reach Switch Cloud', () => {
+    expect(showsServers('open', [1, 1])).toBe(false);
+  });
+
+  it('shows workspaces when the Cloud configuration is broken, so it is not hidden', () => {
+    expect(showsServers('failed', [1])).toBe(false);
+  });
+
+  it('shows servers on a build without Switch Cloud', () => {
+    expect(showsServers('closed', [1, 1, 0])).toBe(true);
+    expect(showsServers('reading', [1])).toBe(true);
+  });
+
+  it('shows workspaces once any server holds more than one, so none is stranded', () => {
+    expect(showsServers('closed', [1, 2])).toBe(false);
+  });
+});
+
+describe('the server switcher on a build without Switch Cloud', () => {
+  beforeEach(() => {
+    state.cloud = 'closed';
+  });
+
+  function serverRow(name: string): HTMLElement {
+    const found = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((item) =>
+      item.querySelector('span span')?.textContent?.startsWith(name)
+    );
+    expect(found, `no row for ${name}`).toBeDefined();
+    return found!;
+  }
+
+  it('lists servers, not workspaces, and offers no workspace actions', async () => {
+    await openSwitcher(
+      [server('srv-1', 'Acme'), server('srv-2', 'Local dev')],
+      [workspace('ws-a', 'srv-1', { role: 'owner' }), workspace('ws-c', 'srv-2')],
+      'ws-a',
+      'Switch server'
+    );
+
+    expect(serverRow('Acme').getAttribute('aria-current')).toBe('true');
+    expect(serverRow('Local dev').getAttribute('aria-current')).toBeNull();
+    expect(document.body.textContent).not.toContain('New workspace');
+    expect(document.body.textContent).not.toContain('Invite people');
+  });
+
+  it("switches to a server's workspace when the server is clicked", async () => {
+    await openSwitcher(
+      [server('srv-1', 'Acme'), server('srv-2', 'Local dev')],
+      [workspace('ws-a', 'srv-1'), workspace('ws-c', 'srv-2')],
+      'ws-a',
+      'Switch server'
+    );
+
+    await act(async () => serverRow('Local dev').click());
+
+    expect(state.setActive).toHaveBeenCalledWith('ws-c');
+    expect(state.navigate).toHaveBeenCalledWith('server', { serverId: 'srv-2' });
+  });
+
+  it('refuses a server that has no workspace yet, and says why', async () => {
+    await openSwitcher(
+      [server('srv-1', 'Acme'), server('srv-2', 'Half set up')],
+      [workspace('ws-a', 'srv-1')],
+      'ws-a',
+      'Switch server'
+    );
+
+    const half = serverRow('Half set up');
+    expect(half.getAttribute('title')).toContain('not finished being set up');
+    await act(async () => half.click());
+    expect(state.setActive).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the workspace menu when a server holds two workspaces', async () => {
+    await openSwitcher(
+      [server('srv-1', 'Acme')],
+      [workspace('ws-a', 'srv-1'), workspace('ws-b', 'srv-1')],
+      'ws-a',
+      'Switch workspace'
+    );
+
+    expect(row('ws-b')).toBeDefined();
   });
 });
