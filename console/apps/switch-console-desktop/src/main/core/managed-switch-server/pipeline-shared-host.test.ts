@@ -95,7 +95,9 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({
   setActiveServerId: vi.fn(() => Promise.resolve()),
 }));
 vi.mock('@main/core/switch-servers/auth', () => ({ passwordLogin: passwordLoginMock }));
-vi.mock('@main/core/agents/resolve-servers', () => ({ resolveAgentServers: vi.fn() }));
+vi.mock('@main/core/workspaces/reconcile-workspaces', () => ({
+  reconcileServerWorkspaces: vi.fn(async () => {}),
+}));
 vi.mock('./matrix-migration', () => ({
   crossesMatrixBoundary: () => false,
   runBackfill: vi.fn(),

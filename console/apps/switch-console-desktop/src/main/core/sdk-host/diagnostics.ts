@@ -6,7 +6,6 @@ import { getAgentLocation } from '@main/core/agents/agent-location';
 import { connectRemoteAgent } from '@main/core/agents/connect-remote-agent';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
-import { getServer } from '@main/core/switch-servers/servers-store';
 import { redactSecrets } from '@main/lib/file-logger';
 import { listHostSessions } from './host-sessions';
 import { hostWatcherStatus } from './host-watcher-snapshot';
@@ -29,7 +28,7 @@ const watcherSchema = z.object({
 
 async function agentHost(agentId: string) {
   const agent = await getAgentById(agentId);
-  if (!agent?.serverId || !agent.switchAgentId)
+  if (!agent?.workspaceId || !agent.switchAgentId)
     throw new Error('The agent is not linked to Switch.');
   const location = await getAgentLocation(agent);
   const ctx = location.sshHost
@@ -60,8 +59,6 @@ async function remoteWatchers(agentId: string): Promise<z.infer<typeof watcherSc
 
 export async function sharedAgentDiagnostics(agentId: string) {
   const { agent, location, ctx } = await agentHost(agentId);
-  const server = await getServer(agent.serverId!);
-  if (!server) throw new Error('The agent’s Switch server is missing.');
   const [watchers, bundle, remote] = await Promise.all([
     location.sshHost
       ? remoteWatchers(agentId)

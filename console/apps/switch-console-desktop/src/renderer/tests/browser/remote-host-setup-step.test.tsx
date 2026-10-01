@@ -117,7 +117,12 @@ async function render() {
     root!.render(
       <Dialog open>
         <DialogContent>
-          <RemoteHostSetupStep onBack={() => {}} onDone={() => {}} onClose={() => {}} />
+          <RemoteHostSetupStep
+            onBack={() => {}}
+            onDone={() => {}}
+            onClose={() => {}}
+            onRegistered={null}
+          />
         </DialogContent>
       </Dialog>
     )
@@ -266,13 +271,15 @@ describe('another Console changing the server', () => {
     expect(state.cancelWait).toHaveBeenCalledWith('vm-1');
   });
 
-  it('offers no way out of a start that is not waiting on anyone', async () => {
+  it('offers Back, not Stop waiting, during a start that is not waiting on anyone', async () => {
+    // The start belongs to the store, which outlives the page, so leaving it
+    // abandons nothing; only a wait for another Console can be called off.
     state.transitioning = true;
     state.status = status({ phase: 'starting', message: 'Starting containers…' });
     await render();
 
     expect(() => button(/^Stop waiting$/)).toThrow();
-    expect(button(/^Cancel$/).disabled).toBe(true);
+    expect(button(/^Back$/).disabled).toBe(false);
   });
 });
 
@@ -311,7 +318,12 @@ describe('the rest of the step', () => {
       root!.render(
         <Dialog open>
           <DialogContent>
-            <RemoteHostSetupStep onBack={() => {}} onDone={onDone} onClose={() => {}} />
+            <RemoteHostSetupStep
+              onBack={() => {}}
+              onDone={onDone}
+              onClose={() => {}}
+              onRegistered={null}
+            />
           </DialogContent>
         </Dialog>
       )
