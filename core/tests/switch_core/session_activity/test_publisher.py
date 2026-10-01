@@ -17,7 +17,7 @@ from switch_core.db.models import (
 )
 from switch_core.session_activity.listener import SessionActivityListener
 from switch_core.session_activity.publisher import (
-    SessionActivityPublisher,
+    AgentSessionActivityPublisher,
 )
 from switch_core.session_activity.service import (
     ApprovalOption,
@@ -89,7 +89,7 @@ def online() -> Online:
 def _publisher(session_factory, bridged, listener, platform, online):
     tenant = current_tenant_id()
     assert tenant is not None
-    return SessionActivityPublisher(
+    return AgentSessionActivityPublisher(
         adapter=platform,  # type: ignore[arg-type]
         bridge_id=bridged.bridge_id,
         bridge_type="slack",
@@ -104,7 +104,7 @@ def _publisher(session_factory, bridged, listener, platform, online):
 @pytest.fixture
 async def publisher(
     session_factory, bridged, listener, platform, online
-) -> AsyncIterator[SessionActivityPublisher]:
+) -> AsyncIterator[AgentSessionActivityPublisher]:
     publisher = _publisher(session_factory, bridged, listener, platform, online)
     publisher.start()
     try:

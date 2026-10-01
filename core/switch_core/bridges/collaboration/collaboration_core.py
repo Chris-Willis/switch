@@ -62,7 +62,7 @@ from switch_core.room_service import RoomCreateConfig
 from switch_core.session_activity.bridge_answers import ApprovalAnswers
 from switch_core.session_activity.listener import SessionActivityListener
 from switch_core.session_activity.publisher import (
-    SessionActivityPublisher,
+    AgentSessionActivityPublisher,
 )
 from switch_core.session_activity.service import (
     PlatformPerson,
@@ -155,7 +155,7 @@ def _no_agents_notice(slash_hint: str | None) -> str:
 
 class CollaborationCore:
     # Tests assemble a CollaborationCore with `__new__`; these read as "not wired".
-    _activity_publisher: SessionActivityPublisher | None = None
+    _activity_publisher: AgentSessionActivityPublisher | None = None
     _approval_answers: ApprovalAnswers | None = None
 
     def __init__(
@@ -251,7 +251,7 @@ class CollaborationCore:
         self._connections = connections
         self._session_activity_service = session_activity_service
         self._activity_publisher = (
-            SessionActivityPublisher(
+            AgentSessionActivityPublisher(
                 adapter=adapter,
                 bridge_id=bridge_id,
                 bridge_type=bridge_type,

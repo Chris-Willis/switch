@@ -192,7 +192,7 @@ _Key = tuple[str, ...]
 _RESYNC: _Key = ("resync",)
 
 
-class SessionActivityPublisher:
+class AgentSessionActivityPublisher:
     def __init__(
         self,
         *,
@@ -236,7 +236,7 @@ class SessionActivityPublisher:
 
     def start(self) -> None:
         if self._tasks:
-            raise RuntimeError("SessionActivityPublisher is already started")
+            raise RuntimeError("AgentSessionActivityPublisher is already started")
         self._unsubscribe = self._listener.subscribe(
             self._tenant_id, self._on_change, self._on_resync
         )

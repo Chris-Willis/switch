@@ -78,7 +78,7 @@ The session status line reuses the existing `agent_runtime_states` table
      `SnapshotRequest`/`RequestCard`, so every platform draws it unchanged
      (answerer shown as `DecidedBy`, with the platform handle when they
      answered on this bridge).
-   - `session_activity/bridge_publisher.py` (`SessionActivityPublisher`):
+   - `session_activity/publisher.py` (`AgentSessionActivityPublisher`):
      one per bridge whose adapter `publishes_sdk_sessions`, subscribed to the
      listener for the bridge's tenant, with its own queue and task. Keys are
      coalesced while queued and handled by reading the rows as they are now.
