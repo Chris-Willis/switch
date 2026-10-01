@@ -207,6 +207,10 @@ services:
       DB_OWNER_PASSWORD: ${DB_OWNER_PASSWORD}
       DB_NAME: ${DB_NAME}
       ID_SERVER_NAME: localhost
+      # The same setting under its old name, for a SWITCH_VERSION released
+      # before the rename, which reads only this one. Drop it once the oldest
+      # supported release reads ID_SERVER_NAME.
+      MATRIX_SERVER_NAME: localhost
       AGENT_REGISTRATION_TOKEN: ${AGENT_REGISTRATION_TOKEN}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       GATEWAY_ADMIN_EMAIL: ${GATEWAY_ADMIN_EMAIL}

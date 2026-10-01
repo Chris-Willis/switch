@@ -566,6 +566,10 @@ Include with `nindent 12`.
   value: {{ .Values.switchCore.authCache.ttlSeconds | quote }}
 - name: ID_SERVER_NAME
   value: {{ .Values.clientIdentity.serverName | quote }}
+{{- /* The old name, for an image released before the rename, which reads only
+this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
+- name: MATRIX_SERVER_NAME
+  value: {{ .Values.clientIdentity.serverName | quote }}
 - name: AGENT_REGISTRATION_TOKEN
   valueFrom:
     secretKeyRef:

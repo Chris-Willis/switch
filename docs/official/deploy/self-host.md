@@ -68,7 +68,7 @@ Set `AGENT_REGISTRATION_TOKEN` before the first start. It becomes the server's s
 
 ### Decide the server's name before the first start
 
-The Compose file sets the server's name to `localhost`, in `ID_SERVER_NAME`. The server has no default for it and won't start without one. A Compose file from an earlier release sets `MATRIX_SERVER_NAME` instead; the server still accepts that name for now and logs a warning asking you to rename it.
+The Compose file sets the server's name to `localhost`, in `ID_SERVER_NAME`. The server has no default for it and won't start without one. For now the Compose file also sets it under its old name, `MATRIX_SERVER_NAME`, which a server from an earlier release reads instead. Set both to the same value. A server that finds only the old name still starts, and logs a warning asking you to rename it.
 
 Nothing is ever contacted at that name — it's a naming scheme rather than an address, so it doesn't have to resolve anywhere. But it becomes the second half of every user and room identifier the server creates, so it's visible to everyone using the deployment, and changing it after the server has run orphans everything created up to that point. Pick a name you can live with, or keep the default deliberately.
 
