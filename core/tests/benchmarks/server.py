@@ -48,9 +48,9 @@ from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.engine import create_unpooled_engine
 from switch_core.db.models import (
     TENANT_ZERO_ID,
+    AgentSessionActivityItem,
     ApprovalRequest,
     Message,
-    SessionActivityItem,
     User,
 )
 from switch_core.db.session_scope import tenant_session
@@ -65,9 +65,9 @@ from switch_core.observability.runtime import EventLoopLag
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomCreateConfig, RoomService
-from switch_core.session_activity.listener import SessionActivityListener
+from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.outcomes import ApprovalOutcomes
-from switch_core.session_activity.service import SessionActivityService, SwitchUser
+from switch_core.session_activity.service import AgentSessionActivityService, SwitchUser
 from switch_core.sessions.contract import ApprovalResult
 from switch_core.tenant_context import bind_tenant_id, tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
@@ -135,7 +135,7 @@ class BenchServer:
         statements: Counter[str],
         owner_id: str,
         session_factory: async_sessionmaker[AsyncSession],
-        activity: SessionActivityService,
+        activity: AgentSessionActivityService,
         agents: tuple[BenchAgent, ...],
     ) -> None:
         self.base_url = base_url
@@ -192,14 +192,14 @@ class BenchServer:
                 found.setdefault(correlation, []).append(room_id)
         return found
 
-    async def activity_rows(self, agent_id: str) -> list[SessionActivityItem]:
+    async def activity_rows(self, agent_id: str) -> list[AgentSessionActivityItem]:
         """The turn-step rows this agent's session hosts reported."""
         async with tenant_session(self._session_factory, TENANT_ZERO_ID) as db:
             return list(
                 (
                     await db.execute(
-                        select(SessionActivityItem).where(
-                            SessionActivityItem.agent_id == agent_id
+                        select(AgentSessionActivityItem).where(
+                            AgentSessionActivityItem.agent_id == agent_id
                         )
                     )
                 )
@@ -448,9 +448,11 @@ async def _serve(
 
     message_listener = MessageListener(lambda: create_unpooled_engine(config))
     await message_listener.start()
-    activity_listener = SessionActivityListener(lambda: create_unpooled_engine(config))
+    activity_listener = AgentSessionActivityListener(
+        lambda: create_unpooled_engine(config)
+    )
     await activity_listener.start()
-    activity = SessionActivityService(session_factory)
+    activity = AgentSessionActivityService(session_factory)
     invites = InviteBus()
     ephemeral = EphemeralBus()
 

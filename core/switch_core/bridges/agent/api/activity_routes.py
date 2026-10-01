@@ -32,11 +32,11 @@ from switch_core.session_activity.service import (
     MAX_TEXT_CHARS,
     MAX_TITLE_CHARS,
     MAX_TOKENS,
+    AgentSessionActivityService,
     ApprovalOption,
     Decision,
     Question,
     QuestionOption,
-    SessionActivityService,
     TokenSpend,
 )
 from switch_core.telemetry import TelemetryService
@@ -199,7 +199,7 @@ async def report_started(
 async def report_activity(
     session_id: _Id, body: ActivityReport, agent: AuthenticatedAgent, factory: Factory
 ) -> ActivityReceipt:
-    recorded = await SessionActivityService(factory).report_item(
+    recorded = await AgentSessionActivityService(factory).report_item(
         agent.id,
         session_id,
         turn_id=body.turn_id,
@@ -232,7 +232,7 @@ async def report_activity(
 async def open_approval(
     session_id: _Id, body: ApprovalOpen, agent: AuthenticatedAgent, factory: Factory
 ) -> ApprovalView:
-    row = await SessionActivityService(factory).open_approval(
+    row = await AgentSessionActivityService(factory).open_approval(
         agent.id,
         session_id,
         request_id=body.request_id,
@@ -265,7 +265,7 @@ async def open_approval(
 async def close_approval(
     session_id: _Id, request_id: _Id, agent: AuthenticatedAgent, factory: Factory
 ) -> ApprovalView:
-    row = await SessionActivityService(factory).close_approval(
+    row = await AgentSessionActivityService(factory).close_approval(
         agent.id, session_id, request_id
     )
     return ApprovalView.of(row)
@@ -277,7 +277,7 @@ async def close_approval(
 async def mark_delivered(
     session_id: _Id, request_id: _Id, agent: AuthenticatedAgent, factory: Factory
 ) -> ApprovalView:
-    row = await SessionActivityService(factory).mark_delivered(
+    row = await AgentSessionActivityService(factory).mark_delivered(
         agent.id, session_id, request_id
     )
     return ApprovalView.of(row)
@@ -288,5 +288,5 @@ async def undelivered_outcomes(
     agent: AuthenticatedAgent, factory: Factory
 ) -> list[ApprovalView]:
     """Answers and expiries the agent has not acknowledged, oldest first."""
-    rows = await SessionActivityService(factory).undelivered_outcomes(agent.id)
+    rows = await AgentSessionActivityService(factory).undelivered_outcomes(agent.id)
     return [ApprovalView.of(row) for row in rows]

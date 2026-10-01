@@ -60,13 +60,13 @@ from switch_core.observability.metrics import metrics
 from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomCreateConfig
 from switch_core.session_activity.bridge_answers import ApprovalAnswers
-from switch_core.session_activity.listener import SessionActivityListener
+from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.publisher import (
     AgentSessionActivityPublisher,
 )
 from switch_core.session_activity.service import (
+    AgentSessionActivityService,
     PlatformPerson,
-    SessionActivityService,
 )
 from switch_core.sessions.attachments import normalise_mime_type
 from switch_core.sessions.errors import SessionError
@@ -178,8 +178,8 @@ class CollaborationCore:
         id_server_name: str,
         workspace_consumer_transport_user_id: str,
         max_attachment_bytes: int,
-        session_activity_listener: SessionActivityListener,
-        session_activity_service: SessionActivityService,
+        session_activity_listener: AgentSessionActivityListener,
+        session_activity_service: AgentSessionActivityService,
         connections: AgentConnectionRegistry,
         gateway_public_url: str | None = None,
     ) -> None:

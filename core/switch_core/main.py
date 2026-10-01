@@ -145,12 +145,12 @@ from switch_core.observability.runtime import EventLoopLag
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
-from switch_core.session_activity.listener import SessionActivityListener
+from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
     maintenance_loop as session_activity_maintenance_loop,
 )
 from switch_core.session_activity.outcomes import ApprovalOutcomes
-from switch_core.session_activity.service import SessionActivityService
+from switch_core.session_activity.service import AgentSessionActivityService
 from switch_core.telemetry.reporter import SnapshotReporter
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.setup import build_telemetry
@@ -367,7 +367,7 @@ async def run(config: SwitchConfig) -> None:
     message_listener = MessageListener(lambda: create_unpooled_engine(config))
     # The same arrangement for session activity and approval requests: their
     # tables announce each change with the row attached, and this pushes it on.
-    session_activity_listener = SessionActivityListener(
+    session_activity_listener = AgentSessionActivityListener(
         lambda: create_unpooled_engine(config)
     )
 
@@ -533,7 +533,7 @@ async def run(config: SwitchConfig) -> None:
         config=config,
         client_factory=client_factory,
         session_activity_listener=session_activity_listener,
-        session_activity_service=SessionActivityService(session_factory),
+        session_activity_service=AgentSessionActivityService(session_factory),
         connections=connections,
         telemetry=telemetry,
     )
@@ -587,7 +587,7 @@ async def run(config: SwitchConfig) -> None:
         session_factory=session_factory,
         config=config,
         approval_outcomes=ApprovalOutcomes(
-            session_activity_listener, SessionActivityService(session_factory)
+            session_activity_listener, AgentSessionActivityService(session_factory)
         ),
         connections=connections,
         telemetry=telemetry,

@@ -15,7 +15,7 @@ from switch_core.db.models import (
     BridgeMessageMap,
     TurnStatusPost,
 )
-from switch_core.session_activity.listener import SessionActivityListener
+from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.publisher import (
     AgentSessionActivityPublisher,
 )
@@ -64,8 +64,8 @@ async def bridged(session_factory, people) -> BridgedRoom:
 
 
 @pytest.fixture
-async def listener(postgres_url) -> AsyncIterator[SessionActivityListener]:
-    listener = SessionActivityListener(
+async def listener(postgres_url) -> AsyncIterator[AgentSessionActivityListener]:
+    listener = AgentSessionActivityListener(
         lambda: create_async_engine(postgres_url, poolclass=NullPool)
     )
     await listener.start()

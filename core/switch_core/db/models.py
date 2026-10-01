@@ -2218,7 +2218,7 @@ class ApprovalRequest(TenantScoped, Base):
     )
 
 
-class SessionActivityItem(TenantScoped, Base):
+class AgentSessionActivityItem(TenantScoped, Base):
     """One step of a turn as a platform draws it: the turn itself, a message,
     a tool call, or a notice.
 
@@ -2395,7 +2395,7 @@ for _table, _triggers in (
         ApprovalRequest.__table__,
         (CREATE_APPROVAL_INSERT_TRIGGER, CREATE_APPROVAL_STATE_TRIGGER),
     ),
-    (SessionActivityItem.__table__, (CREATE_ACTIVITY_TRIGGER,)),
+    (AgentSessionActivityItem.__table__, (CREATE_ACTIVITY_TRIGGER,)),
 ):
     for _ddl in (CREATE_SESSION_ACTIVITY_NOTIFY_FUNCTION, *_triggers):
         event.listen(_table, "after_create", DDL(_ddl).execute_if(dialect="postgresql"))

@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_runs import RunRefused, RunState, run_control
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
-from switch_core.db.models import Room, SessionActivityItem, User
+from switch_core.db.models import AgentSessionActivityItem, Room, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.session_activity_store import TURN_ITEM_ID
@@ -134,12 +134,12 @@ async def _working(
     if not live or not room_ids:
         return False
     open_turn = await session.execute(
-        select(SessionActivityItem.agent_id)
+        select(AgentSessionActivityItem.agent_id)
         .where(
-            SessionActivityItem.room_id.in_(room_ids),
-            SessionActivityItem.item_id == TURN_ITEM_ID,
-            SessionActivityItem.status.not_in(TURN_ENDED),
-            SessionActivityItem.agent_id.in_(live),
+            AgentSessionActivityItem.room_id.in_(room_ids),
+            AgentSessionActivityItem.item_id == TURN_ITEM_ID,
+            AgentSessionActivityItem.status.not_in(TURN_ENDED),
+            AgentSessionActivityItem.agent_id.in_(live),
         )
         .limit(1)
     )

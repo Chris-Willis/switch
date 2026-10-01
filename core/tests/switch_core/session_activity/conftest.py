@@ -22,8 +22,8 @@ from switch_core.db.models import (
     User,
     room_agents,
 )
-from switch_core.session_activity.listener import Change, SessionActivityListener
-from switch_core.session_activity.service import SessionActivityService
+from switch_core.session_activity.listener import AgentSessionActivityListener, Change
+from switch_core.session_activity.service import AgentSessionActivityService
 from switch_core.sessions.contract import ApprovalResult
 from switch_core.tenant_context import current_tenant_id
 
@@ -139,8 +139,8 @@ async def people(session_factory) -> People:
 
 
 @pytest.fixture
-async def service(session_factory, people) -> SessionActivityService:
-    return SessionActivityService(session_factory)
+async def service(session_factory, people) -> AgentSessionActivityService:
+    return AgentSessionActivityService(session_factory)
 
 
 class Recorder:
@@ -172,7 +172,7 @@ class Recorder:
 async def changes(postgres_url) -> AsyncIterator[Recorder]:
     tenant = current_tenant_id()
     assert tenant is not None
-    listener = SessionActivityListener(
+    listener = AgentSessionActivityListener(
         lambda: create_async_engine(postgres_url, poolclass=NullPool)
     )
     recorder = Recorder()

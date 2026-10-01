@@ -54,8 +54,8 @@ if TYPE_CHECKING:
     )
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
     from switch_core.room_service import RoomService
-    from switch_core.session_activity.listener import SessionActivityListener
-    from switch_core.session_activity.service import SessionActivityService
+    from switch_core.session_activity.listener import AgentSessionActivityListener
+    from switch_core.session_activity.service import AgentSessionActivityService
 
 # Every platform SDK below is registered dynamically (`register_adapter`), so a
 # deployment that only wires up some of the five is plausible even though
@@ -320,8 +320,8 @@ class CollaborationBridgeLifecycleService:
         session_factory: async_sessionmaker[AsyncSession],
         config: SwitchConfig,
         client_factory: ClientFactory,
-        session_activity_listener: SessionActivityListener,
-        session_activity_service: SessionActivityService,
+        session_activity_listener: AgentSessionActivityListener,
+        session_activity_service: AgentSessionActivityService,
         connections: AgentConnectionRegistry,
         telemetry: TelemetryService | None = None,
     ) -> None:
