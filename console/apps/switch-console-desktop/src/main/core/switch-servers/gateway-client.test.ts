@@ -29,6 +29,7 @@ vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer }));
 
 const {
   cloudLifecycle,
+  getCloudLaunchConfiguration,
   getConnectionCatalog,
   getGitHubConnection,
   startGitHubConnection,
@@ -43,7 +44,9 @@ const {
   fetchMe,
   ownsOwnerAddressedAgent,
   registerKnownAgent,
+  updateAgentDisplayName,
   updateBridge,
+  updateCloudLaunchConfiguration,
 } = await import('./gateway-client');
 
 const SERVER = {
@@ -671,6 +674,97 @@ describe('ownsOwnerAddressedAgent', () => {
     );
 
     await expect(ownsOwnerAddressedAgent(SERVER)).rejects.toMatchObject({ status: 503 });
+  });
+});
+
+describe('cloud agent edits', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const configuration = {
+    description: 'Reviews pull requests',
+    instructions: 'Be brief.',
+    definition_attributes: { model: 'opus' },
+  };
+
+  it('reads the configuration a launch carries', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(configuration) as never);
+
+    await expect(getCloudLaunchConfiguration(SERVER, 'launch-1')).resolves.toEqual(configuration);
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/hosted-launches/launch-1/configuration');
+  });
+
+  it('PUTs the new instructions with the rendered definition', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(configuration) as never);
+
+    await updateCloudLaunchConfiguration(SERVER, 'launch-1', {
+      instructions: 'Be brief.',
+      definition_attributes: { model: 'opus' },
+      definition: '---\nname: helper\n---\nBe brief.',
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { method: string; body: string },
+    ];
+    expect(url).toBe('https://switch.example.com/gateway/hosted-launches/launch-1/configuration');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body)).toEqual({
+      instructions: 'Be brief.',
+      definition_attributes: { model: 'opus' },
+      definition: '---\nname: helper\n---\nBe brief.',
+    });
+  });
+
+  it('surfaces a refused configuration rather than reporting it saved', async () => {
+    fetchMock.mockResolvedValue(
+      errorResponse(409, '{"detail":"This worker has been removed."}') as never
+    );
+
+    await expect(
+      updateCloudLaunchConfiguration(SERVER, 'launch-1', {
+        instructions: '',
+        definition_attributes: {},
+        definition: 'x',
+      })
+    ).rejects.toMatchObject({ status: 409, detail: 'This worker has been removed.' });
+  });
+
+  it('PUTs a display name, or null to clear it', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        id: 'a1',
+        name: 'helper',
+        display_name: 'Helper',
+        description: '',
+        connector_type: 'mcp',
+        owner_name: 'Ada',
+        known_agent_type: null,
+        created_at: '2026-01-01T00:00:00Z',
+      }) as never
+    );
+
+    const agent = await updateAgentDisplayName(SERVER, 'a1', 'Helper');
+    await updateAgentDisplayName(SERVER, 'a1', null);
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { method: string; body: string },
+    ];
+    expect(url).toBe('https://switch.example.com/gateway/agents/a1/display-name');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body)).toEqual({ display_name: 'Helper' });
+    const [, cleared] = fetchMock.mock.calls[1] as unknown as [string, { body: string }];
+    expect(JSON.parse(cleared.body)).toEqual({ display_name: null });
+    expect(agent.displayName).toBe('Helper');
   });
 });
 

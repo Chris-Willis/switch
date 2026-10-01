@@ -80,6 +80,7 @@ async function sectionCount(): Promise<number> {
           sshHost={null}
           dir=""
           providerId={'claude' as never}
+          initial={{}}
           onChange={() => {}}
         />
         <LaunchProfileConfig

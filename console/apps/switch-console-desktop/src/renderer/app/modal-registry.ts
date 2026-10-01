@@ -1,3 +1,4 @@
+import { EditCloudAgentModal } from '@renderer/features/cloud-agents/edit-cloud-agent-modal';
 import { CommandPaletteModal } from '@renderer/features/command-palette/command-palette-modal';
 import { AddAgentModal } from '@renderer/features/locations/components/add-agent-modal/add-agent-modal';
 import { DeleteAgentModal } from '@renderer/features/locations/components/delete-agent-modal';
@@ -72,6 +73,10 @@ export const modalRegistry = {
     dismissOnOutsideClick: false,
   }),
   deleteServerModal: createModal(DeleteServerModal, { size: 'sm' }),
+  editCloudAgentModal: createModal(EditCloudAgentModal, {
+    size: 'md',
+    dismissOnOutsideClick: false,
+  }),
   createRoomModal: createModal(CreateRoomModal, { size: 'lg', dismissOnOutsideClick: false }),
   connectMessagingAppModal: createModal(ConnectMessagingAppModal, {
     size: 'md',

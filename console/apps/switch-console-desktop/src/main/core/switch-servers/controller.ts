@@ -28,7 +28,10 @@ import {
   validateClaudeCredential,
   type ClaudeCredentialKind,
 } from '@shared/core/switch-servers/claude-credential';
-import type { CloudLaunchInput } from '@shared/core/switch-servers/cloud-launch';
+import type {
+  CloudConfigurationInput,
+  CloudLaunchInput,
+} from '@shared/core/switch-servers/cloud-launch';
 import type {
   AddressingPolicy,
   AddServerParams,
@@ -77,6 +80,8 @@ import {
   getGitHubConnection,
   createCloudLaunch,
   cloudLifecycle,
+  getCloudLaunchConfiguration,
+  updateCloudLaunchConfiguration,
   cloudMachineLifecycle,
   getCloudProviderConnection,
   connectCloudProvider,
@@ -120,6 +125,7 @@ import {
   type TemplateVisibility,
   type ProvisionFromTemplateResult,
   updateAddressingPolicy,
+  updateAgentDisplayName,
   updateAgentIcon,
   updateRoom,
 } from './gateway-client';
@@ -304,6 +310,19 @@ function reportRoomCreated(
   );
 }
 
+/** The agent definition a cloud launch carries, rendered by its provider like a local one. */
+function renderCloudDefinition(input: CloudConfigurationInput): string {
+  const definitions = getPlugin(input.provider).behavior.repoAgents;
+  return definitions
+    ? definitions.renderDefinition({
+        ...input.definition_attributes,
+        name: input.name,
+        description: input.description,
+        instructions: input.instructions,
+      })
+    : '';
+}
+
 export const switchServersController = createRPCController({
   getLocalProviderSignIn,
   connectLocalProviderSignIn: async (serverId: string, provider: LocalSignInProvider) => {
@@ -322,18 +341,23 @@ export const switchServersController = createRPCController({
   ) => connectCloudProvider(await requireReachableServer(serverId), provider, kind, credential),
   disconnectCloudProvider: async (serverId: string, provider: Exclude<AgentProviderId, 'claude'>) =>
     disconnectCloudProvider(await requireReachableServer(serverId), provider),
-  createCloudLaunch: async (serverId: string, input: CloudLaunchInput) => {
-    const definitions = getPlugin(input.provider).behavior.repoAgents;
-    const definition = definitions
-      ? definitions.renderDefinition({
-          ...input.definition_attributes,
-          name: input.name,
-          description: input.description,
-          instructions: input.instructions,
-        })
-      : '';
-    return createCloudLaunch(await requireReachableServer(serverId), { ...input, definition });
-  },
+  createCloudLaunch: async (serverId: string, input: CloudLaunchInput) =>
+    createCloudLaunch(await requireReachableServer(serverId), {
+      ...input,
+      definition: renderCloudDefinition(input),
+    }),
+  getCloudLaunchConfiguration: async (serverId: string, requestId: string) =>
+    getCloudLaunchConfiguration(await requireReachableServer(serverId), requestId),
+  updateCloudLaunchConfiguration: async (
+    serverId: string,
+    requestId: string,
+    input: CloudConfigurationInput
+  ) =>
+    updateCloudLaunchConfiguration(await requireReachableServer(serverId), requestId, {
+      instructions: input.instructions,
+      definition_attributes: input.definition_attributes,
+      definition: renderCloudDefinition(input),
+    }),
   cloudLifecycle: async (
     serverId: string,
     requestId: string,
@@ -886,6 +910,18 @@ export const switchServersController = createRPCController({
     iconUrl: string | null;
   }): Promise<RemoteAgentSummary> =>
     updateAgentIcon(await requireServer(params.serverId), params.agentId, params.iconUrl),
+
+  /** Set or clear an agent's display name. Returns the agent as the server now holds it. */
+  updateAgentDisplayName: async (params: {
+    serverId: string;
+    agentId: string;
+    displayName: string | null;
+  }): Promise<RemoteAgentSummary> =>
+    updateAgentDisplayName(
+      await requireServer(params.serverId),
+      params.agentId,
+      params.displayName
+    ),
 
   verifyAgent: async (params: {
     serverId: string;

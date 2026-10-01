@@ -68,6 +68,7 @@ export type NewAgentFormProps = {
 
 /** Sentinel `runHost` value meaning "run on this machine" (no remote host). */
 const LOCAL_RUN_LOCATION = 'local';
+const NO_ATTRIBUTES: RepoAgentAttributes = {};
 
 /** Canonical working-directory path: trimmed, with trailing slashes removed
  * (except a bare root), so `/repo` and `/repo/` behave identically through
@@ -730,6 +731,7 @@ export const NewAgentForm = observer(function NewAgentForm({
                     providerId={pickState.providerId}
                     sshHost={isRemoteRun ? runHost : null}
                     dir={dir}
+                    initial={NO_ATTRIBUTES}
                     onChange={onAdvancedChange}
                   />
                 )}

@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { Bot, ExternalLink, MoreVertical, Plus, RotateCcw, Trash2 } from 'lucide-react';
+import { Bot, ExternalLink, MoreVertical, Pencil, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -217,6 +217,7 @@ const CloudAgentCard = observer(function CloudAgentCard({
     }
   };
   const addToRooms = useShowModal('addAgentToRoomModal');
+  const editAgent = useShowModal('editCloudAgentModal');
   const { toastPromise } = useToast();
   const iconUrl = useAgentIconUrl(serverId, launch.agent_id);
   const phase = launch.desired_state === 'deleted' ? null : cloudAgentPhase(launch, listed.machine);
@@ -263,7 +264,27 @@ const CloudAgentCard = observer(function CloudAgentCard({
     );
   };
   return (
-    <div className="flex min-h-[184px] flex-col rounded-[11px] bg-[var(--surface-2)] p-[14px]">
+    <div className="group relative flex min-h-[184px] flex-col rounded-[11px] bg-[var(--surface-2)] p-[14px]">
+      <div className="absolute top-2 right-2 flex items-center opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <Button variant="ghost" size="icon-xs" aria-label={`${launch.name} actions`}>
+                <MoreVertical className="size-3" />
+              </Button>
+            }
+          />
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              disabled={launch.agent_id === null || launch.desired_state === 'deleted'}
+              onClick={() => editAgent({ serverId, launch })}
+            >
+              <Pencil className="size-4" />
+              Edit agent…
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
       <div className="flex flex-1 items-center justify-center py-3">
         <AgentAvatar name={launch.name} iconUrl={iconUrl} size={66} />
       </div>

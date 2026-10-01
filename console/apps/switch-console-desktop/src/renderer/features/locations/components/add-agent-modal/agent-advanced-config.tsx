@@ -10,7 +10,7 @@ import {
   advancedFields,
   attributesFromForm,
   DefinitionFieldInput,
-  emptyForm,
+  formFromAttributes,
   type FormState,
   type FormValue,
 } from '../agent-definition-fields';
@@ -28,12 +28,15 @@ export function AgentAdvancedConfig({
   cloud,
   sshHost,
   dir,
+  initial,
   onChange,
 }: {
   providerId: AgentProviderId | null;
   cloud: boolean;
   sshHost: string | null;
   dir: string;
+  /** The attributes the form starts from; pass a stable value, a new one resets the form. */
+  initial: RepoAgentAttributes;
   onChange: (attributes: RepoAgentAttributes) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -65,10 +68,10 @@ export function AgentAdvancedConfig({
   // changes, so switching agent type does not carry stale values. `onChange` is a
   // stable callback from the modal, so including it does not re-run this.
   useEffect(() => {
-    const initial = emptyForm(fields);
-    setState(initial);
-    onChange(attributesFromForm(fields, initial));
-  }, [fields, onChange]);
+    const form = formFromAttributes(fields, initial);
+    setState(form);
+    onChange(attributesFromForm(fields, form));
+  }, [fields, initial, onChange]);
 
   if (!providerId || fields.length === 0) return null;
 

@@ -51,7 +51,7 @@ export function AddressingPolicySettingsSection({
   );
 }
 
-function AddressingPolicyRow({
+export function AddressingPolicyRow({
   serverId,
   agentId,
   agentName,

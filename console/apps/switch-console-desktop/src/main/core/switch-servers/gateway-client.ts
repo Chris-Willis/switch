@@ -12,7 +12,10 @@ import type {
   ClaudeCredentialKind,
   ClaudeConnection,
 } from '@shared/core/switch-servers/claude-credential';
-import type { CloudLaunchInput } from '@shared/core/switch-servers/cloud-launch';
+import type {
+  CloudLaunchConfiguration,
+  CloudLaunchInput,
+} from '@shared/core/switch-servers/cloud-launch';
 import { connectionCatalogSchema } from '@shared/core/switch-servers/connection-catalog';
 import {
   gitHubConnectionSchema,
@@ -624,6 +627,24 @@ export async function updateAgentIcon(
     authenticated: true,
     method: 'PUT',
     body: { icon_url: iconUrl },
+  });
+  return toRemoteAgentSummary((await res.json()) as AgentSummaryJson);
+}
+
+/**
+ * Set (or clear, with `displayName = null`) an agent's display name
+ * (`PUT /agents/{id}/display-name`). Only the agent's owner (or an admin) may
+ * change it; a refusal surfaces as a `GatewayError`.
+ */
+export async function updateAgentDisplayName(
+  server: SwitchServer,
+  agentId: string,
+  displayName: string | null
+): Promise<RemoteAgentSummary> {
+  const res = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}/display-name`, {
+    authenticated: true,
+    method: 'PUT',
+    body: { display_name: displayName },
   });
   return toRemoteAgentSummary((await res.json()) as AgentSummaryJson);
 }
@@ -1614,6 +1635,44 @@ export async function createCloudLaunch(
       })
     ).json()
   );
+}
+
+const cloudConfigurationSchema = z.object({
+  description: z.string(),
+  instructions: z.string(),
+  definition_attributes: z.record(z.string(), z.unknown()),
+});
+
+export async function getCloudLaunchConfiguration(
+  server: SwitchServer,
+  requestId: string
+): Promise<CloudLaunchConfiguration> {
+  return cloudConfigurationSchema.parse(
+    await (
+      await gatewayFetch(
+        server,
+        `/hosted-launches/${encodeURIComponent(requestId)}/configuration`,
+        { authenticated: true }
+      )
+    ).json()
+  ) as CloudLaunchConfiguration;
+}
+
+/** Replace a launch's instructions and definition; Core applies them at the agent's next start. */
+export async function updateCloudLaunchConfiguration(
+  server: SwitchServer,
+  requestId: string,
+  body: Omit<CloudLaunchConfiguration, 'description'> & { definition: string }
+): Promise<CloudLaunchConfiguration> {
+  return cloudConfigurationSchema.parse(
+    await (
+      await gatewayFetch(
+        server,
+        `/hosted-launches/${encodeURIComponent(requestId)}/configuration`,
+        { authenticated: true, method: 'PUT', body }
+      )
+    ).json()
+  ) as CloudLaunchConfiguration;
 }
 
 export async function cloudLifecycle(

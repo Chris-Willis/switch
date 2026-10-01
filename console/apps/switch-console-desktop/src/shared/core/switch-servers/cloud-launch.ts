@@ -18,6 +18,22 @@ export type CloudLaunchInput = {
   addressing_policy: AddressingPolicy | null;
 };
 
+/** What a cloud agent's next start runs, as Core stores it on the launch. */
+export type CloudLaunchConfiguration = {
+  description: string;
+  instructions: string;
+  definition_attributes: RepoAgentAttributes;
+};
+
+/** An edit to a launch's configuration, with what its definition is rendered from. */
+export type CloudConfigurationInput = {
+  provider: AgentProviderId;
+  name: string;
+  description: string;
+  instructions: string;
+  definition_attributes: RepoAgentAttributes;
+};
+
 export type CloudRepositorySelection = {
   installationId: number;
   repositoryId: number;
