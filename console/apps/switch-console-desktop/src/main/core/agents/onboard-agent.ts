@@ -4,6 +4,7 @@ import { locationManager } from '@main/core/locations/location-manager';
 import { checkIsValidDirectory } from '@main/core/locations/path-utils';
 import { ensureLocation } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
+import { autoSessionWatcher } from '@main/core/switch-rooms/auto-session-watcher';
 import { readSwitchAgentCredentials } from '@main/core/switch-rooms/switch-credentials';
 import { agentExistsOnServer, GatewayError } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
@@ -27,7 +28,6 @@ import { createAgent } from './createAgent';
 import { detectSwitchAgent } from './detect';
 import { detectSwitchAgentRemote } from './detect-remote';
 import { importAgentConfig } from './import-agent-config';
-import { reconcileAgentAutoSessionFromGateway } from './setAgentAutoSession';
 import { writeAgentNeutralSettings } from './write-switch-settings';
 
 /**
@@ -250,16 +250,9 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
     }
   }
 
-  // Seed the local auto_session mirror + start the watcher from the gateway
-  // profile so an agent registered with auto_session on starts watching now,
-  // without the operator toggling it off→on (CHOO-1185). Best-effort: a gateway
-  // hiccup must not fail onboarding — the settings panel reconciles later.
-  await reconcileAgentAutoSessionFromGateway(agent.id).catch((error) => {
-    log.warn('onboardAgent: failed to reconcile auto_session for new agent', {
-      agentId: agent.id,
-      error: String(error),
-    });
-  });
+  // Creating the agent is the ask for its controller. It does not fail
+  // onboarding when the controller cannot come up yet; it is retried.
+  await autoSessionWatcher.bringUp(agent.id, 'explicit');
 
   await locationManager.openLocation(location);
   agentEvents._emit('agent:created', agent, ONBOARD_ENTRY_POINT);

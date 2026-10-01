@@ -5,6 +5,7 @@ import { locationManager } from '@main/core/locations/location-manager';
 import { checkIsValidDirectory } from '@main/core/locations/path-utils';
 import { ensureLocation } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
+import { autoSessionWatcher } from '@main/core/switch-rooms/auto-session-watcher';
 import { agentExistsOnServer, GatewayError } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
@@ -21,7 +22,6 @@ import { resolveWorkdirFsFor } from './agent-workdir-fs';
 import { createAgent } from './createAgent';
 import { discoverConfiguredAgents } from './discover-configured-agents';
 import { importAgentConfig } from './import-agent-config';
-import { reconcileAgentAutoSessionFromGateway } from './setAgentAutoSession';
 
 export type AttachConfiguredAgentsParams = {
   sshHost: string | null;
@@ -176,12 +176,7 @@ export async function attachConfiguredAgents(
     });
     created.push(agent);
 
-    await reconcileAgentAutoSessionFromGateway(agent.id).catch((error) => {
-      log.warn('attachConfiguredAgents: failed to reconcile auto_session', {
-        agentId: agent.id,
-        error: String(error),
-      });
-    });
+    await autoSessionWatcher.bringUp(agent.id, 'explicit');
   }
 
   await locationManager.openLocation(location);

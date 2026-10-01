@@ -1,6 +1,5 @@
 import type { RepoAgentAttributes } from '@switch-console/core/agents/plugins';
 import { getPlugin } from '@main/core/providers/plugin-registry';
-import { listAutoSessionAgentIds } from '@main/core/switch-rooms/auto-session-store';
 import { providerConfigFromAttributes } from '@shared/core/agents/agent-provider-config';
 import type { AgentConfigFile } from './agent-config-file';
 import { writeAgentConfigFile, type AgentTemplateOrigin } from './agent-config-file';
@@ -109,6 +108,5 @@ async function propagateToLaunch(agentId: string, config: AgentConfigFile): Prom
     return;
   }
 
-  if (!(await listAutoSessionAgentIds()).includes(agentId)) return;
   await ensureRemoteWatcher(agentId);
 }

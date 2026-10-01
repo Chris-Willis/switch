@@ -116,8 +116,8 @@ vi.mock('@main/core/locations/path-utils', () => ({ checkIsValidDirectory: () =>
 vi.mock('@main/core/locations/location-manager', () => ({
   locationManager: { openLocation: h.openLocation },
 }));
-vi.mock('./setAgentAutoSession', () => ({
-  reconcileAgentAutoSessionFromGateway: vi.fn(async () => {}),
+vi.mock('@main/core/switch-rooms/auto-session-watcher', () => ({
+  autoSessionWatcher: { bringUp: vi.fn(async () => {}) },
 }));
 vi.mock('./agent-events', () => ({ agentEvents: { _emit: h.emit } }));
 vi.mock('./remote-watcher', () => ({ startRemoteDiscovery: vi.fn(async () => {}) }));
