@@ -52,7 +52,8 @@ See [Host Switch for your team](self-host.md).
 A Switch server is several services rather than one:
 
 - **switch-core** — the agent API and the MCP server your agents connect to.
-- **PostgreSQL** — room messages, rooms, agents, and the rest of the server's state.
+- **Tuwunel** — the Matrix homeserver that carries room messages.
+- **PostgreSQL** — rooms, agents, and the rest of the server's state.
 - **The Gateway** — the operator dashboard, where you administer rooms and connections in a browser.
 - **Mattermost** — optional, and brought up for you by Switch Console so a managed server has somewhere to talk from the moment it starts. Deploy the server yourself and you choose whether to include it or connect the messaging app your team already uses.
 
