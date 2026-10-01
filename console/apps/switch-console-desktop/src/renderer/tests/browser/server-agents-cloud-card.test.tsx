@@ -492,8 +492,10 @@ it('removes a running agent once confirmed', async () => {
   );
 });
 
-it('shows the machine card and stops the machine once confirmed', async () => {
-  const machine = sleepingMachine();
+it.each([
+  ['stopped', sleepingMachine()],
+  ['stopping', { ...sleepingMachine(), state: 'stopping' } satisfies CloudMachine],
+])('shows the machine card for a sleeping machine (%s)', async (_state, machine) => {
   switchServers.cloudMachineLifecycle.mockResolvedValue(machine);
   sdkHost.cloudAgents.mockResolvedValue([]);
   sdkHost.cloudMachines.mockResolvedValue([machine]);
@@ -503,6 +505,24 @@ it('shows the machine card and stops the machine once confirmed', async () => {
   expect(el.textContent).toMatch(/Sleeping · c7i\.2xlarge · 1 agent/);
   expect(el.textContent).toMatch(/190\.0 GB free of 200\.0 GB/);
   expect(button(el, /start machine/i)).toBeDefined();
+  expect(button(el, /stop machine/i)).toBeUndefined();
+});
+
+it('stops a ready machine once confirmed', async () => {
+  const machine = {
+    ...sleepingMachine(),
+    state: 'ready',
+    desired_state: 'running',
+    stop_reason: null,
+    sleeping: false,
+  } satisfies CloudMachine;
+  switchServers.cloudMachineLifecycle.mockResolvedValue(machine);
+  sdkHost.cloudAgents.mockResolvedValue([]);
+  sdkHost.cloudMachines.mockResolvedValue([machine]);
+  const el = await render();
+
+  expect(el.textContent).toMatch(/Ready · c7i\.2xlarge · 1 agent/);
+  expect(button(el, /start machine/i)).toBeUndefined();
 
   await act(async () => button(el, /stop machine/i)!.click());
   expect(el.textContent).toMatch(/mentions will not wake it/);

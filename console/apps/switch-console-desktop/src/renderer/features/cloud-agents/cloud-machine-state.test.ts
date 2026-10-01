@@ -28,8 +28,9 @@ const ownerStopped = { desired_state: 'stopped', stop_reason: 'owner', sleeping:
 
 describe('machinePresentation label', () => {
   it.each([
-    ['sleeping', machine({}), 'Sleeping'],
-    ['going to sleep', machine({ state: 'stopping' }), 'Going to sleep…'],
+    ['sleeping stopped', machine({}), 'Sleeping'],
+    ['sleeping stopping', machine({ state: 'stopping' }), 'Sleeping'],
+    ['sleeping ready', machine({ state: 'ready' }), 'Sleeping'],
     ['owner stopped', machine({ ...ownerStopped }), 'Stopped'],
     ['owner stopping', machine({ ...ownerStopped, state: 'stopping' }), 'Stopping…'],
     ['queued', machine({ ...running, state: 'queued' }), 'Provisioning'],
@@ -146,8 +147,11 @@ describe('machinePresentation disk', () => {
 
 describe('machinePresentation actions', () => {
   it.each([
-    ['sleeping', machine({}), ['stop', 'start']],
+    ['sleeping stopped', machine({}), ['start']],
+    ['sleeping stopping', machine({ state: 'stopping' }), ['start']],
+    ['sleeping ready', machine({ state: 'ready' }), ['start']],
     ['owner stopped', machine({ ...ownerStopped }), ['start']],
+    ['owner stopping', machine({ ...ownerStopped, state: 'ready' }), ['start']],
     ['ready', machine({ ...running, state: 'ready' }), ['stop']],
     ['provisioning', machine({ ...running, state: 'provisioning' }), ['stop']],
     ['error', machine({ ...running, state: 'error', error_code: 'other' }), ['retry']],

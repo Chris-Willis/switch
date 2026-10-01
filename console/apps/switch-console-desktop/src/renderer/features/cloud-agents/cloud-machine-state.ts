@@ -31,7 +31,7 @@ function machineLabel(machine: CloudMachine): string {
   if (machine.state === 'error') return 'Error';
   if (isRetained(machine)) return 'Retained';
   if (machine.state === 'deleting' || machine.desired_state === 'deleted') return 'Deleting disk…';
-  if (machine.sleeping) return machine.state === 'stopped' ? 'Sleeping' : 'Going to sleep…';
+  if (machine.sleeping) return 'Sleeping';
   if (machine.desired_state === 'stopped')
     return machine.state === 'stopped' ? 'Stopped' : 'Stopping…';
   if (machine.state === 'ready') return 'Ready';
@@ -69,7 +69,7 @@ function machineActions(machine: CloudMachine): MachineAction[] {
   )
     return [];
   const actions: MachineAction[] = [];
-  if ((machine.desired_state === 'running' && machine.state !== 'error') || machine.sleeping)
+  if (machine.desired_state === 'running' && machine.state !== 'error')
     actions.push('stop');
   if (machine.desired_state === 'stopped') actions.push('start');
   if (machine.state === 'error' && machine.error_code !== 'machine_needs_attention')
