@@ -4,6 +4,7 @@ import type { Workspace } from '@shared/core/workspaces/workspaces';
 const list = vi.hoisted(() => vi.fn());
 const getActiveId = vi.hoisted(() => vi.fn());
 const setActive = vi.hoisted(() => vi.fn());
+const serversWithoutMembership = vi.hoisted(() => vi.fn(async () => [] as string[]));
 const subscribers = vi.hoisted(() => new Map<string, (data: unknown) => void>());
 
 vi.mock('@renderer/lib/ipc', () => ({
@@ -13,7 +14,7 @@ vi.mock('@renderer/lib/ipc', () => ({
       return () => subscribers.delete(event.name);
     },
   },
-  rpc: { workspaces: { list, getActiveId, setActive } },
+  rpc: { workspaces: { list, getActiveId, setActive, serversWithoutMembership } },
 }));
 
 const { WorkspacesStore } = await import('./workspaces-store');

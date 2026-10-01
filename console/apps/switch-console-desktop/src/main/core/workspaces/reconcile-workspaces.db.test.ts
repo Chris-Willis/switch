@@ -39,7 +39,7 @@ vi.mock('@main/lib/logger', () => {
 // store at import, which a test has no key for.
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getSessionCookie, listServers }));
 
-const { reconcileAllWorkspaces, reconcileServerWorkspaces } =
+const { listServersWithoutMembership, reconcileAllWorkspaces, reconcileServerWorkspaces } =
   await import('./reconcile-workspaces');
 const {
   createTenantWorkspace,
@@ -109,6 +109,22 @@ describe('reconcile-workspaces', () => {
     expect(found[0]!.id).toBe(before.id);
     expect(found[0]!.tenantId).toBe('t-1');
     expect(found[0]!.role).toBe('owner');
+  });
+
+  it('remembers a server whose account belongs to no workspace, until it joins one', async () => {
+    const placeholder = await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
+    fetchTenants.mockResolvedValue([]);
+
+    await reconcileServerWorkspaces('srv-1');
+
+    expect(listServersWithoutMembership()).toEqual(['srv-1']);
+    // The placeholder is left alone, so the agents and selection naming it stay put.
+    expect((await listWorkspacesForServer('srv-1')).map((w) => w.id)).toEqual([placeholder.id]);
+
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default', 'owner')]);
+    await reconcileServerWorkspaces('srv-1');
+
+    expect(listServersWithoutMembership()).toEqual([]);
   });
 
   /**

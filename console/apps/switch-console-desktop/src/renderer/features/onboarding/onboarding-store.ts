@@ -65,6 +65,13 @@ class OnboardingStore {
    * account on the server, and the link arrives before there is one.
    */
   invite: InviteLink | null = null;
+  /**
+   * The flow was opened on purpose from a dev or canary build that already has
+   * servers, to walk through the first-run pages again. It keeps the flow on
+   * screen from its welcome page, which a launch with servers would otherwise
+   * skip, and offers a way back to the app from every page.
+   */
+  rehearsal = false;
 
   constructor() {
     makeAutoObservable(this);
@@ -77,7 +84,13 @@ class OnboardingStore {
    * been started, so a launch that finds servers should go straight past it.
    */
   get inProgress(): boolean {
-    return this.page !== 'welcome';
+    return this.rehearsal || this.page !== 'welcome';
+  }
+
+  /** Open the first-run pages from their start, whatever the install holds. */
+  rehearse(): void {
+    this.reset();
+    this.rehearsal = true;
   }
 
   goTo(page: OnboardingPage): void {
@@ -150,6 +163,7 @@ class OnboardingStore {
     this.joinOfferCount = 0;
     this.registeredOn = null;
     this.invite = null;
+    this.rehearsal = false;
   }
 }
 

@@ -146,6 +146,19 @@ export async function reconcileServerWorkspaces(serverId: string): Promise<void>
 
 const inFlight = new Map<string, Promise<void>>();
 
+/**
+ * Servers whose account, at the last reconcile, belonged to no workspace.
+ *
+ * Kept in memory rather than on the row: it is a fact about the account at the
+ * moment it was asked, the reconcile asks again on every launch and sign-in,
+ * and a stale "no workspace" surviving a restart would hide one gained since.
+ */
+const serversWithoutMembership = new Set<string>();
+
+export function listServersWithoutMembership(): string[] {
+  return [...serversWithoutMembership];
+}
+
 async function reconcileOneServer(serverId: string): Promise<void> {
   const server = await requireServer(serverId);
   const tenants = await fetchTenants(server);
@@ -160,8 +173,10 @@ async function reconcileOneServer(serverId: string): Promise<void> {
     log.warn('workspaces: the gateway reports no workspace membership for this account', {
       server: serverId,
     });
+    serversWithoutMembership.add(serverId);
     return;
   }
+  serversWithoutMembership.delete(serverId);
 
   const claimed = new Map(
     local

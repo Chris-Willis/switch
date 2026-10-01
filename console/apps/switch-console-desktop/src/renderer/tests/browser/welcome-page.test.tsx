@@ -39,12 +39,17 @@ afterEach(async () => {
   root = null;
 });
 
-async function renderPage(cloud: WelcomeCloud = { kind: 'closed' }): Promise<HTMLDivElement> {
+async function renderPage(
+  cloud: WelcomeCloud = { kind: 'closed' },
+  onLeave: (() => void) | null = null
+): Promise<HTMLDivElement> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () =>
-    root!.render(<WelcomePage cloud={cloud} onContinue={onContinue} onInvite={onInvite} />)
+    root!.render(
+      <WelcomePage cloud={cloud} onContinue={onContinue} onInvite={onInvite} onLeave={onLeave} />
+    )
   );
   return container;
 }
@@ -200,5 +205,23 @@ describe('the welcome page when the Cloud setting is broken', () => {
     expect(
       [...el.querySelectorAll('button')].some((b) => b.textContent?.includes('Switch Cloud'))
     ).toBe(false);
+  });
+});
+
+describe('the welcome page opened again from a build with servers', () => {
+  it('offers no way back on a fresh install, where there is no app to go back to', async () => {
+    const el = await renderPage();
+
+    expect(() => button(el, 'Back to the app')).toThrow();
+  });
+
+  it('offers a way back to the app when replayed', async () => {
+    const onLeave = vi.fn();
+    const el = await renderPage({ kind: 'closed' }, onLeave);
+
+    await act(async () => button(el, 'Back to the app').click());
+
+    expect(onLeave).toHaveBeenCalledOnce();
+    expect(onContinue).not.toHaveBeenCalled();
   });
 });

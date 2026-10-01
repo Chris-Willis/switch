@@ -51,15 +51,25 @@ export function WelcomePage({
   cloud,
   onContinue,
   onInvite,
+  onLeave,
 }: {
   cloud: WelcomeCloud;
   onContinue: () => void;
   /** Join a workspace someone else set up, from the link they sent. */
   onInvite: () => void;
+  /** Back to the app, when the pages were opened again rather than on a fresh install. */
+  onLeave: (() => void) | null;
 }) {
   const cloudOpen = cloud.kind === 'open';
   return (
     <div className="flex h-full flex-col bg-background text-foreground [-webkit-app-region:drag]">
+      {onLeave && (
+        <div className="flex justify-end px-4 pt-3 [-webkit-app-region:no-drag]">
+          <Button variant="ghost" size="sm" onClick={onLeave}>
+            Back to the app
+          </Button>
+        </div>
+      )}
       <div className="flex min-h-0 flex-1 flex-col overflow-auto">
         {/* Everything the page shows opts out of the drag region: a scroll
             inside one is swallowed by the window move. What stays draggable is

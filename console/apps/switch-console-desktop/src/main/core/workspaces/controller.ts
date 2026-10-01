@@ -100,6 +100,7 @@ import {
   removeWorkspaceJoinDomain,
   revokeWorkspaceInvitation,
 } from './invitations';
+import { listServersWithoutMembership } from './reconcile-workspaces';
 import {
   withReachableWorkspaceSession,
   withWorkspaceSession,
@@ -230,6 +231,9 @@ export const workspacesController = createRPCController({
   list: (): Promise<Workspace[]> => listWorkspaces(),
 
   getActiveId: (): Promise<string | null> => getActiveWorkspaceId(),
+
+  /** Servers where the signed-in account belongs to no workspace yet. */
+  serversWithoutMembership: async (): Promise<string[]> => listServersWithoutMembership(),
 
   setActive: (workspaceId: string): Promise<void> => setActiveWorkspaceId(workspaceId),
 
