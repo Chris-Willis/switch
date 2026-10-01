@@ -837,6 +837,29 @@ async def test_relay_to_a_machine_needing_an_administrator_says_so(worker_app):
     )
 
 
+async def test_relay_to_an_errored_owner_stopped_machine_is_machine_error(worker_app):
+    client, request_id, _, _, factory, prepared = worker_app
+    await _ready_worker(worker_app)
+    await set_machine(
+        factory,
+        prepared["machine_id"],
+        desired_state="stopped",
+        stop_reason="owner",
+        state="error",
+        error_code="machine_needs_attention",
+        revision=2,
+    )
+    for message in (READ_ONLY, {"forget": str(uuid4())}):
+        status, body = await _relay_code(client, request_id, message)
+        assert (status, body["error"]) == (
+            409,
+            {
+                "code": "machine_error",
+                "message": "The cloud machine needs attention. Contact your server administrator.",
+            },
+        )
+
+
 async def test_relay_to_an_errored_sleeping_machine_does_not_wake_it(worker_app):
     client, request_id, _, _, factory, prepared = worker_app
     machine_id = prepared["machine_id"]

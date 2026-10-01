@@ -73,12 +73,8 @@ function machineDisk(machine: CloudMachine): MachineDisk | null {
 
 function machineActions(machine: CloudMachine, now: number): MachineAction[] {
   if (isBeingDeleted(machine, now)) return [];
-  if (
-    machine.state === 'error' &&
-    machine.error_code !== 'machine_needs_attention' &&
-    isRetained(machine)
-  )
-    return ['retry'];
+  if (machine.state === 'error')
+    return machine.error_code === 'machine_needs_attention' ? [] : ['retry'];
   if (
     isRetained(machine) ||
     machine.state === 'retained' ||
@@ -88,11 +84,8 @@ function machineActions(machine: CloudMachine, now: number): MachineAction[] {
   )
     return [];
   const actions: MachineAction[] = [];
-  if ((machine.desired_state === 'running' && machine.state !== 'error') || machine.sleeping)
-    actions.push('stop');
+  if (machine.desired_state === 'running' || machine.sleeping) actions.push('stop');
   if (machine.desired_state === 'stopped') actions.push('start');
-  if (machine.state === 'error' && machine.error_code !== 'machine_needs_attention')
-    actions.push('retry');
   return actions;
 }
 

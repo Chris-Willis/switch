@@ -52,6 +52,8 @@ describe('machinePresentation label', () => {
     ['waking while stopping', machine({ ...running, state: 'stopping' }), 'Provisioning'],
     ['ready', machine({ ...running, state: 'ready' }), 'Ready'],
     ['error', machine({ ...running, state: 'error', error_code: 'x' }), 'Error'],
+    ['error while owner stopped', machine({ ...ownerStopped, state: 'error' }), 'Error'],
+    ['error while sleeping', machine({ state: 'error', error_code: 'x' }), 'Error'],
     ['retained', machine({ state: 'retained', desired_state: 'retained' }), 'Retained'],
     ['retaining', machine({ ...running, state: 'ready', desired_state: 'retained' }), 'Retained'],
     ['reused while retained', machine({ ...running, state: 'retained' }), 'Provisioning'],
@@ -234,6 +236,17 @@ describe('machinePresentation actions', () => {
     ['ready', machine({ ...running, state: 'ready' }), ['stop']],
     ['provisioning', machine({ ...running, state: 'provisioning' }), ['stop']],
     ['error', machine({ ...running, state: 'error', error_code: 'other' }), ['retry']],
+    [
+      'error while owner stopped',
+      machine({ ...ownerStopped, state: 'error', error_code: 'other' }),
+      ['retry'],
+    ],
+    ['error while sleeping', machine({ state: 'error', error_code: 'other' }), ['retry']],
+    [
+      'error needing attention while owner stopped',
+      machine({ ...ownerStopped, state: 'error', error_code: 'machine_needs_attention' }),
+      [],
+    ],
     [
       'error needing attention',
       machine({ ...running, state: 'error', error_code: 'machine_needs_attention' }),

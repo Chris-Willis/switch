@@ -102,10 +102,10 @@ def relay_target(
     A mutating message to an idle-sleeping machine is the caller's to wake
     first; here it falls through to the launch's own state.
     """
-    if machine is not None and owner_stopped(machine):
-        raise RelayError("machine_stopped", "The owner stopped the cloud machine.", 409)
     if machine is not None and machine.state == "error":
         raise RelayError("machine_error", machine_error_detail(machine), 409)
+    if machine is not None and owner_stopped(machine):
+        raise RelayError("machine_stopped", "The owner stopped the cloud machine.", 409)
     if machine is not None and idle_sleeping(machine) and kind == "read_only":
         raise RelayError("worker_sleeping", "The cloud machine is asleep.", 409)
     if is_waking(launch, machine):

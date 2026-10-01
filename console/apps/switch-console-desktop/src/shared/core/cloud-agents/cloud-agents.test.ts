@@ -130,6 +130,15 @@ it('reads a machine in error whatever the launch', () => {
   expect(cloudAgentPhase(stopped, machine({ state: 'error' }))).toBe('machine_error');
 });
 
+it('reads a machine in error before its owner stopping it', () => {
+  expect(
+    cloudAgentPhase(
+      stopped,
+      machine({ state: 'error', desired_state: 'stopped', stop_reason: 'owner' })
+    )
+  ).toBe('machine_error');
+});
+
 it('reads a launch without a machine from the launch', () => {
   expect(
     cloudAgentPhase({ ...launch, machine_id: null, sleeping: true, state: 'stopped' }, null)
