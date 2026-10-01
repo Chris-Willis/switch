@@ -43,7 +43,6 @@ from switch_core.db.models import CollaborationBridge, User
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.rooms_yaml import GroupSpec, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
-from switch_core.template_lint import lint_template
 
 logger = logging.getLogger(__name__)
 
@@ -1939,16 +1938,13 @@ async def run_template(
         )
 
 
-def _lint_warnings(content: str) -> list[str]:
-    return [f.message for f in lint_template(content).warnings]
-
-
 @operation
 async def save_template(
     name: str,
     description: str,
     yaml: str,
     visibility: str = "private",
+    bypass_warnings: bool = False,
 ) -> dict[str, Any]:
     """Save a template to this workspace, so it can be found and run again.
 
@@ -1962,24 +1958,28 @@ async def save_template(
         yaml: The template document, as ``create_room_from_yaml`` takes it.
         visibility: ``private`` (only your owner sees it) or ``shared``
             (everyone on the workspace sees it, only you change it).
+        bypass_warnings: Leave false. A document with warnings, such as an
+            agent it never says which provider runs, is then refused and the
+            warnings listed, so you can fix them or advise whoever asked
+            first. Set true only to save it anyway: Switch Console will not
+            create an agent from it until what a warning names is fixed.
 
     Returns:
-        ``{id, name, kind, visibility, warnings}``. ``warnings`` is advice
-        about the document, such as an agent it never says which provider
-        runs. The template is saved regardless; Switch Console refuses to
-        create from it until what a warning names is fixed.
+        ``{id, name, kind, visibility, warnings}``. ``warnings`` lists what
+        was saved past with ``bypass_warnings``; empty otherwise.
     """
     protocol = get_protocol()
     async with _refusals_reported("save_template"):
         acting = await _acting_for()
         async with protocol.session_factory() as session:
-            template = await _agent_templates().save(
+            template, warnings = await _agent_templates().save(
                 session,
                 acting,
                 name=name,
                 description=description,
                 content=yaml,
                 visibility=visibility,
+                bypass_warnings=bypass_warnings,
             )
             await session.commit()
             return {
@@ -1987,7 +1987,7 @@ async def save_template(
                 "name": template.name,
                 "kind": template.kind,
                 "visibility": visibility,
-                "warnings": _lint_warnings(yaml),
+                "warnings": warnings,
             }
 
 
@@ -1998,22 +1998,25 @@ async def update_template(
     description: str | None = None,
     yaml: str | None = None,
     visibility: str | None = None,
+    bypass_warnings: bool = False,
 ) -> dict[str, Any]:
     """Change a template you saved. Only the fields you pass change.
 
     Templates saved by a person, or by another agent, cannot be changed by
     you; save your own version under another name instead.
 
+    A new ``yaml`` with warnings is refused unless ``bypass_warnings`` is
+    true, as in ``save_template``.
+
     Returns:
-        ``{id, name, kind, visibility, version, warnings}``. ``warnings`` is
-        advice about the new document, as ``save_template`` gives it; empty
-        when ``yaml`` was not passed.
+        ``{id, name, kind, visibility, version, warnings}``. ``warnings``
+        lists what was saved past with ``bypass_warnings``; empty otherwise.
     """
     protocol = get_protocol()
     async with _refusals_reported("update_template"):
         acting = await _acting_for()
         async with protocol.session_factory() as session:
-            template = await _agent_templates().update(
+            template, warnings = await _agent_templates().update(
                 session,
                 acting,
                 template_id,
@@ -2021,6 +2024,7 @@ async def update_template(
                 description=description,
                 content=yaml,
                 visibility=visibility,
+                bypass_warnings=bypass_warnings,
             )
             await session.commit()
             return {
@@ -2031,7 +2035,7 @@ async def update_template(
                 if template.read_visibility == "public"
                 else "private",
                 "version": template.version,
-                "warnings": _lint_warnings(yaml) if yaml is not None else [],
+                "warnings": warnings,
             }
 
 

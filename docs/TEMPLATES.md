@@ -270,22 +270,22 @@ agent:
   sources:       [ {label, url} or url ]
   addressing:    owner | owner-agents | anyone
   join:          [ room name or "{param}" ]
+  allow_existing: true | false
 ```
 
 `agents:` is a list of the same block, for a template that creates a team.
 In that form a room refers to each agent by the text written as its `name`
 (`"{team}-triager"`).
 
-An entry whose `name` is exactly one `agent` param is filled by the
-existing agent the deployer picks for that param, and is not created. This
-is how a template asks for an existing agent; the form offers no such
-choice otherwise.
+An entry with `allow_existing: true` lets the deployer fill it with an
+agent the server already has instead of creating it: its card on the form
+offers New agent or Existing agent. Without it the agent is always created,
+and the form offers no such choice.
 
 ```yaml
-params:
-  reviewer: { type: agent, label: Reviewer }
 agents:
-  - name: "{reviewer}"
+  - name: "{team}-reviewer"
+    allow_existing: true
     instructions: Review what the fixer opens.
 ```
 
@@ -335,6 +335,10 @@ deployer only; `owner-agents`, the deployer and their other agents;
 
 **`join`**. Rooms the agent is added to once it exists, by name or through
 a `room` param. See the next section but one.
+
+**`allow_existing`**. Data type: boolean. Default: `false`. Whether the
+deployer may use an agent the server already has for this entry instead of
+creating it.
 
 ## The room block
 
@@ -503,9 +507,11 @@ documents against (`core/switch_core/template_guide.py`; keep it in step).
   Console-only params are dropped, and the room half runs.
 - **Saving.** An agent saves for its owner, `private` or `shared` (everyone
   reads it, only the saver changes it), and the template records which
-  agent saved it. A name the owner already uses is refused. The reply
-  carries the document's warnings, an agent with no provider for example;
-  the template is saved regardless.
+  agent saved it. A name the owner already uses is refused. A document with
+  warnings, an agent with no provider for example, is refused and the
+  warnings listed, so the agent can fix them or advise whoever asked;
+  `bypass_warnings: true` saves it anyway and returns the warnings.
+  `update_template` does the same for a new document.
 - **Changing and deleting.** Only the agent that saved a template may change
   or delete it; not its owner's templates, and not another agent's.
 
@@ -524,9 +530,12 @@ uses, an agent whose provider, location or directory the document never
 says.
 
 Completeness is warned about on save and enforced on run. A registry keeps
-documents written for other versions of the format, so saving never refuses
-one for what it leaves out; the form, which knows exactly what this Console
-needs, refuses to create from it and names what is missing.
+documents written for other versions of the format, so the registry never
+refuses one for what it leaves out; the form, which knows exactly what this
+Console needs, refuses to create from it and names what is missing. An
+agent saving through its Switch tools is stopped at the warnings first and
+saves past them with `bypass_warnings`, so it knows before it stores a
+template nobody can use yet.
 
 A param field this server does not know is a warning, not an error, since a
 registry holds documents written for newer versions of Switch than the one

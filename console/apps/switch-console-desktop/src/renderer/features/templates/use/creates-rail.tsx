@@ -2,7 +2,9 @@ import { Check, ChevronRight, DoorOpen, Loader2, TriangleAlert } from 'lucide-re
 import { useState } from 'react';
 import type { ParsedAgentEntry } from '@main/core/agent-templates/template-document';
 import type { TemplateRoom } from '@main/core/room-templates/controller';
+import { AgentField, type EntityLists } from '@renderer/features/room-templates/entity-fields';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
+import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Switch } from '@renderer/lib/ui/switch';
 import { cn } from '@renderer/utils/utils';
 import { hasPlaceholder, interpolate, type Values } from './use-template-model';
@@ -10,11 +12,16 @@ import { hasPlaceholder, interpolate, type Values } from './use-template-model';
 export type SlotStatus = 'idle' | 'creating' | 'created' | 'failed';
 
 /**
- * One agent entry of the template and the state of creating it on the Use
- * page: whether to clone its repository, and how far creation got.
+ * One agent entry of the template and the choices made for it on the Use
+ * page: create it or, when the template allows it, use an existing agent;
+ * whether to clone its repository; and how far creation got.
  */
 export type AgentSlot = {
   entry: ParsedAgentEntry;
+  /** `existing` only for an entry whose template sets `allow_existing: true`. */
+  mode: 'new' | 'existing';
+  /** The existing agent's name, when `mode` is `existing`. */
+  existingName: string;
   cloneRepo: boolean;
   status: SlotStatus;
   error: string | null;
@@ -33,6 +40,8 @@ export type SlotStep = 'prepare' | 'create' | 'policy';
 export function newSlot(entry: ParsedAgentEntry): AgentSlot {
   return {
     entry,
+    mode: 'new',
+    existingName: '',
     cloneRepo: true,
     status: 'idle',
     error: null,
@@ -164,30 +173,27 @@ function RuntimeRow({ label, value }: { label: string; value: string | null }) {
 export function AgentSlotCard({
   slot,
   wantedName,
-  existingName,
   runtime,
   onChange,
+  lists,
   busy,
   children,
 }: {
   slot: AgentSlot;
   /** The name the agent is created under, as far as the inputs resolve it. */
   wantedName: string;
-  /** Set when the template fills this entry with an existing agent through an
-   * `agent` param: the agent picked, or empty while none is. */
-  existingName: string | null;
   /** What a new agent runs with. Null for an existing agent. */
   runtime: SlotRuntime | null;
   onChange: (next: AgentSlot) => void;
+  lists: EntityLists;
   busy: boolean;
   /** Notices about the machine it runs on. */
   children?: React.ReactNode;
 }) {
-  const existing = existingName !== null;
+  const existing = slot.mode === 'existing';
+  const existingName = slot.existingName;
   const unresolved = hasPlaceholder(wantedName) || wantedName === '';
-  const shownName = existing
-    ? existingName || 'Picked by an input'
-    : (slot.createdName ?? wantedName);
+  const shownName = existing ? existingName || 'Pick an agent' : (slot.createdName ?? wantedName);
   return (
     <Card className={cn(slot.status === 'failed' && 'border-destructive/50')}>
       <div className="flex items-center gap-3">
@@ -211,6 +217,32 @@ export function AgentSlotCard({
           {existing ? 'Existing agent' : 'Agent'}
         </span>
       </div>
+
+      {/* Offered only when the template allows it. An agent that exists can no
+          longer change how it is made, even when a later step for it failed. */}
+      {slot.entry.allowExisting &&
+        (slot.status === 'idle' || slot.status === 'failed') &&
+        slot.createdName === null && (
+          <div className="mt-3 flex flex-col gap-2.5 border-t border-border pt-3">
+            <SegmentedControl
+              value={slot.mode}
+              onChange={(mode) => onChange({ ...slot, mode })}
+              options={[
+                { value: 'new', label: 'New agent' },
+                { value: 'existing', label: 'Existing agent' },
+              ]}
+              ariaLabel={`How to fill ${wantedName || 'this agent'}`}
+              className="w-max"
+            />
+            {existing && (
+              <AgentField
+                value={slot.existingName}
+                onChange={(name) => onChange({ ...slot, existingName: name })}
+                lists={lists}
+              />
+            )}
+          </div>
+        )}
 
       {runtime && (
         <div className="mt-3 flex flex-col gap-1.5 border-t border-border pt-3">

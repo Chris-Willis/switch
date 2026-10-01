@@ -179,21 +179,6 @@ export function unsaidMessage(unsaid: UnsaidRuntime): string {
 }
 
 /**
- * The `agent` param an entry is named by, when its whole `name` is that one
- * placeholder. Such an entry is filled by the existing agent the deployer
- * picks rather than created: this is how a template asks for an existing
- * agent.
- */
-export function existingAgentParam(
-  entry: Pick<ParsedAgentEntry, 'name'>,
-  params: ParamSpec[]
-): ParamSpec | null {
-  const match = entry.name?.match(/^\{(\w+)\}$/);
-  if (!match) return null;
-  return params.find((p) => p.name === match[1] && p.type === 'agent') ?? null;
-}
-
-/**
  * The params only the room part reads: written into the room document and
  * into no agent entry. They do nothing when the room is not created.
  */

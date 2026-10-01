@@ -6,7 +6,6 @@ import {
   unsaidMessage,
   paramLabel,
   resolveChain,
-  existingAgentParam,
   roomOnlyParams,
   serverInputs,
   valueProblem,
@@ -107,19 +106,6 @@ describe('roomOnlyParams', () => {
     const agents = [{ placeholders: ['repo'] }, { placeholders: [] }];
     const params = [param({ name: 'bridge' }), param({ name: 'repo' })];
     expect([...roomOnlyParams(params, agents, room)]).toEqual(['bridge']);
-  });
-});
-
-describe('existingAgentParam', () => {
-  const params = [param({ name: 'reviewer', type: 'agent' }), param({ name: 'team' })];
-  it('finds the agent param an entry is named by, whole', () => {
-    expect(existingAgentParam({ name: '{reviewer}' }, params)?.name).toBe('reviewer');
-  });
-
-  it('ignores names that are not exactly one agent param', () => {
-    expect(existingAgentParam({ name: '{team}' }, params)).toBeNull();
-    expect(existingAgentParam({ name: '{reviewer}-2' }, params)).toBeNull();
-    expect(existingAgentParam({ name: null }, params)).toBeNull();
   });
 });
 

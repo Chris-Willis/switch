@@ -23,14 +23,8 @@ it with save_template, or run a saved one with run_template.
   in a group, put kickoff inside each room entry).
 - agent / agents: agents to create. Only Switch Console creates agents. To
   run such a template yourself, fill every agent it describes with an agent
-  that already exists: run_template(agents={slot name: agent name}).
-  The Console fills in nothing the document does not say, so every agent
-  must say its provider, location and directory: its own field (a literal
-  or "{param}"), or a param of that type no agent's field reads, which then
-  applies to every agent. save_template warns about each one missing and
-  saves anyway; the Console will not create the agent until it is there.
-  An entry whose name is exactly one agent-typed param ("{reviewer}") is
-  filled by the existing agent the deployer picks rather than created.
+  that already exists: run_template(agents={slot name: agent name}). See
+  "An agent" below for what each entry must say.
 
 ## A room
 
@@ -46,6 +40,45 @@ room:
 
 Without bridge the room goes on the server's default messaging app. users
 needs the room to be on a messaging app.
+
+## An agent (created by Switch Console)
+
+agent:                           # or agents: [ ...the same block... ]
+  instructions: text             # REQUIRED. The agent's brief.
+  provider: claude | codex | opencode | "{param}"   # REQUIRED (see below)
+  location: local | ssh host | "{param}"            # REQUIRED (see below)
+  directory: path | "{param}"                       # REQUIRED (see below)
+  name: identifier               # optional; derived from display_name.
+                                 # Lowercase letters, digits, . - _
+  display_name: text             # optional; how people see it
+  description: text              # optional; what it is for
+  repo: URL                      # optional; cloned into its directory
+  sources: [{label, url} or url] # optional; pages it should read
+  addressing: owner | owner-agents | anyone   # optional; default owner
+  join: [room name or "{param}"] # optional; rooms it is added to
+  allow_existing: true | false   # optional; default false
+
+provider, location and directory: Switch Console fills in nothing the
+document does not say, so every agent must say all three. Write each on the
+entry, as a literal or "{param}", or declare a param of that type that no
+entry's field reads, which then applies to every agent. A param can offer a
+choice with a default: provider default [claude, codex, opencode] takes the
+first one installed; location default local is the deployer's computer;
+directory default "{$agents_dir}/{agent}" gives the agent a folder of its
+own. A template missing one is refused by save_template unless you pass
+bypass_warnings=true, and the Console will not create the agent from it.
+
+allow_existing: true lets the deployer fill this entry with an agent the
+server already has instead of creating one. Leave it out unless the person
+asked for that.
+
+In a single agent: document the room refers to the agent as {agent}; in
+agents: a room refers to each one by the text written as its name.
+
+Before saving an agent template, settle with the person who asked: which
+coding agent runs each agent, on which machine, in which directory (fixed,
+or a param with a default they can change), who may talk to it
+(addressing), and whether an existing agent may stand in for it.
 
 ## A group
 
@@ -68,6 +101,12 @@ params:
     enum: [choices]              # enum only
     pattern: regex               # string only, whole value must match
     min: number, max: number     # number only
+    label: text                  # the input's name on the form
+    input: ask | advanced | fixed  # shown, folded away, or not editable
+    multiline: true | false      # string only, a text area
+
+An agent template may also declare params of type provider, location and
+directory; see "An agent".
 
 provider, location and directory params are the Console's. run_template
 drops them from an agent or team template. In a room or group document with

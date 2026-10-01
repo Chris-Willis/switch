@@ -53,6 +53,12 @@ export type ParsedAgentEntry = {
   join: string[];
   /** Every `{name}` written anywhere in the entry, its instructions included. */
   placeholders: string[];
+  /**
+   * Whether the deployer may fill this entry with an agent the server already
+   * has instead of creating it. From `allow_existing:`, false unless the
+   * template says so.
+   */
+  allowExisting: boolean;
 };
 
 /** What runs an agent, where, and in which folder: what a template must say for every agent it creates. */
@@ -192,6 +198,7 @@ export function parseTemplateAgents(
         ? agent.join.filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
         : [],
       placeholders: [...placeholdersIn(agent)],
+      allowExisting: agent.allow_existing === true,
     };
   });
   return {

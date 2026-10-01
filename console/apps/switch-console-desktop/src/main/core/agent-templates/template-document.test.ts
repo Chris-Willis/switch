@@ -296,3 +296,17 @@ agent:
     expect(agents[0].placeholders.sort()).toEqual(['repo', 'team']);
   });
 });
+
+describe('parseTemplateAgents: allow_existing', () => {
+  it('lets an entry be filled by an existing agent only when the template says so', () => {
+    const { agents } = parseTemplateAgents(`
+agents:
+  - name: reviewer
+    allow_existing: true
+    instructions: Review.
+  - name: fixer
+    instructions: Fix.
+`);
+    expect(agents.map((a) => a.allowExisting)).toEqual([true, false]);
+  });
+});

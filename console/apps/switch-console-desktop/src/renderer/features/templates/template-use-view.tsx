@@ -69,7 +69,6 @@ import {
   type CreateStep,
   createStepStatus,
   defaultsFor,
-  existingAgentParam,
   hasPlaceholder,
   interpolate,
   isChain,
@@ -218,8 +217,8 @@ function FixedRow({ label, value }: { label: string; value: string }) {
 type SlotSetup = {
   /** The identifier the agent is created under. */
   name: string;
-  /** Set when the template fills the entry with an existing agent through an
-   * `agent` param: that param's value, empty while none is picked. */
+  /** Set when the deployer fills the entry with an existing agent, which the
+   * template allows with `allow_existing`: its name, empty while none is picked. */
   existing: string | null;
   displayName: string | null;
   provider: AgentProviderId | null;
@@ -440,8 +439,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       templateParams.find((p) => p.type === 'room' && entry.join.includes(`{${p.name}}`)) ?? null;
     return slots.map((slot) => {
       const entry = slot.entry;
-      const existingParam = existingAgentParam(entry, templateParams);
-      const existing = existingParam ? String(values[existingParam.name] ?? '') : null;
+      const existing = entry.allowExisting && slot.mode === 'existing' ? slot.existingName : null;
       const name =
         existing ??
         (entry.name
@@ -1553,7 +1551,6 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                         key={i}
                         slot={slot}
                         wantedName={setup.name}
-                        existingName={setup.existing}
                         runtime={
                           setup.existing !== null
                             ? null
@@ -1574,6 +1571,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                         onChange={(next) =>
                           setSlots((prev) => prev.map((s, j) => (j === i ? next : s)))
                         }
+                        lists={lists}
                         busy={busy}
                       >
                         {hostNotices(setup)}
