@@ -173,6 +173,19 @@ describe('machinePresentation retainUntil', () => {
       present(machine({ ...running, state: 'retained', retain_until: null })).retainUntil
     ).toBeNull();
   });
+
+  it('is null for a machine that needs attention with expired retention', () => {
+    expect(
+      present(
+        machine({
+          state: 'error',
+          desired_state: 'retained',
+          error_code: 'machine_needs_attention',
+          retain_until: '2026-01-01T00:00:00Z',
+        })
+      ).retainUntil
+    ).toBeNull();
+  });
 });
 
 describe('machinePresentation disk', () => {

@@ -101,7 +101,13 @@ export function machinePresentation(machine: CloudMachine, now: number): Machine
   return {
     label: machineLabel(machine, now),
     problem: machineProblem(machine, now),
-    retainUntil: isRetained(machine) && !isBeingDeleted(machine, now) ? machine.retain_until : null,
+    retainUntil:
+      isRetained(machine) &&
+      !isBeingDeleted(machine, now) &&
+      machine.retain_until !== null &&
+      Date.parse(machine.retain_until) > now
+        ? machine.retain_until
+        : null,
     disk: machineDisk(machine),
     actions: machineActions(machine, now),
   };
