@@ -54,6 +54,7 @@ import { ServerSignInFields, useServerSignIn } from './server-sign-in';
 import { ServerStatTiles } from './server-stat-tiles';
 import { useSharedActionConfirm } from './shared-action-confirm';
 import { SharedConsolesSection } from './shared-consoles-section';
+import { isSwitchCloudServer } from './switch-cloud-store';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
 import { TelemetryConsentNotice } from './TelemetryConsentNotice';
@@ -223,7 +224,10 @@ const ServerMainPanel = observer(function ServerMainPanel() {
                   sidebar already use for it rather than as a second vocabulary
                   in words. */}
                 <PlacementIcon
-                  aria-label={serverPlacementLabel(server) ?? 'Reached over the network'}
+                  aria-label={
+                    serverPlacementLabel(server) ??
+                    (isSwitchCloudServer(server) ? 'Switch Cloud' : 'Reached over the network')
+                  }
                   className="size-3.5 shrink-0"
                 />
                 {title !== server.name && <span className="truncate">{server.name}</span>}
