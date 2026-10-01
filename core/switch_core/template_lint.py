@@ -249,36 +249,36 @@ def _check_agent_runtime(document: dict[str, Any], warnings: list[Finding]) -> N
     params = document.get("params")
     params = params if isinstance(params, dict) else {}
     field_texts = [
-        str(entry[field])
+        str(entry[setting])
         for entry in entries
-        for field in _RUNTIME_FIELDS
-        if entry.get(field) is not None
+        for setting in _RUNTIME_FIELDS
+        if entry.get(setting) is not None
     ]
 
-    def applies_to_all(field: str) -> bool:
+    def applies_to_all(setting: str) -> bool:
         return any(
             isinstance(spec, dict)
-            and spec.get("type") == field
+            and spec.get("type") == setting
             and not any(f"{{{name}}}" in text for text in field_texts)
             for name, spec in params.items()
         )
 
     for index, entry in enumerate(entries):
         label = entry.get("name") or entry.get("display_name") or f"agent {index + 1}"
-        for field in _RUNTIME_FIELDS:
-            if entry.get(field) is None and not applies_to_all(field):
+        for setting in _RUNTIME_FIELDS:
+            if entry.get(setting) is None and not applies_to_all(setting):
                 what = {
                     "provider": f"which coding agent runs {label}",
                     "location": f"which machine {label} runs on",
                     "directory": f"which directory {label} works in",
-                }[field]
+                }[setting]
                 warnings.append(
                     Finding(
                         "agent_runtime_unsaid",
-                        f"The template never says {what}. Give it a '{field}:' or "
-                        f"declare a '{field}' param. Switch Console will not create "
+                        f"The template never says {what}. Give it a '{setting}:' or "
+                        f"declare a '{setting}' param. Switch Console will not create "
                         "the agent until it does.",
-                        field,
+                        setting,
                     )
                 )
 
