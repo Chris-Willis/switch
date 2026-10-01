@@ -4,6 +4,7 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -155,7 +156,25 @@ async def signup(
         )
 
     with tenant_scope(TENANT_ZERO_ID):
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": "gateway-signup"},
+        )
+        created, retry_after = await user_store.created_in_last_hour(session)
+        if created >= config.gateway_signup_max_per_hour:
+            logger.warning(
+                "Refused sign-up: %d users created in the last hour (cap %d)",
+                created,
+                config.gateway_signup_max_per_hour,
+            )
+            await session.rollback()
+            raise HTTPException(
+                status_code=429,
+                detail="Too many sign-ups on this server in the last hour. Try again later.",
+                headers={"Retry-After": str(retry_after)},
+            )
         if await user_store.get_by_email(session, req.email) is not None:
+            await session.rollback()
             raise HTTPException(status_code=409, detail="Email already registered")
         user = User(
             name=req.display_name or req.email.split("@")[0],
@@ -167,6 +186,7 @@ async def signup(
             async with session.begin_nested():
                 await user_store.create(session, user)
         except IntegrityError:
+            await session.rollback()
             raise HTTPException(
                 status_code=409, detail="Email already registered"
             ) from None

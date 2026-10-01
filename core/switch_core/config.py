@@ -131,6 +131,10 @@ class SwitchConfig(BaseSettings):
     # gateway can create an account in tenant zero. Only takes effect while
     # password login is enabled.
     gateway_signup_enabled: bool = False
+    # Counts every user created in the last hour (sign-up, admin-created and
+    # OIDC first sign-in alike), read from the users table so it holds across
+    # replicas. Sign-up is refused once the count reaches this.
+    gateway_signup_max_per_hour: int = Field(default=20, ge=1)
     hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
     hosted_sessions_per_agent: int = Field(default=8, ge=1, le=100)
     hosted_agents_per_owner: int = Field(default=3, ge=1, le=100)

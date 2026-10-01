@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from switch_core.config import SwitchConfig
 from switch_core.db.models import TENANT_ZERO_ID, HostedMachine, TenantMember, User
@@ -40,6 +41,7 @@ async def signup_app(session_factory):
     )
     config = SimpleNamespace(
         gateway_signup_open=True,
+        gateway_signup_max_per_hour=20,
         gateway_password_login_enabled=True,
         gateway_oidc_enabled=False,
         gateway_oidc_provider_label=None,
@@ -287,3 +289,53 @@ async def test_ensure_refuses_when_cloud_machines_are_off(signup_app):
     response = await _ensure(app, "new.person@example.com")
     assert response.status_code == 503
     assert response.json()["detail"] == LAUNCH_DISABLED
+
+
+async def _user_count(app) -> int:
+    async with app.factory() as session:
+        return await session.scalar(select(func.count()).select_from(User))
+
+
+async def test_signup_is_refused_once_the_hourly_cap_is_reached(signup_app, caplog):
+    app = signup_app
+    app.config.gateway_signup_max_per_hour = 2
+    assert (await _signup(app, email="first@example.com")).status_code == 201
+    assert (await _signup(app, email="second@example.com")).status_code == 201
+
+    response = await _signup(app, email="third@example.com")
+    assert response.status_code == 429, response.text
+    assert response.json()["detail"] == (
+        "Too many sign-ups on this server in the last hour. Try again later."
+    )
+    assert 1 <= int(response.headers["Retry-After"]) <= 3600
+    assert "2 users created in the last hour (cap 2)" in caplog.text
+    async with app.factory() as session:
+        assert await UserStore().get_by_email(session, "third@example.com") is None
+    assert await _user_count(app) == 2
+
+
+async def test_signup_cap_counts_a_rolling_hour(signup_app):
+    app = signup_app
+    app.config.gateway_signup_max_per_hour = 1
+    assert (await _signup(app, email="first@example.com")).status_code == 201
+    assert (await _signup(app, email="second@example.com")).status_code == 429
+
+    async with app.factory() as session:
+        await session.execute(
+            text("UPDATE users SET created_at = created_at - interval '61 minutes'")
+        )
+        await session.commit()
+
+    response = await _signup(app, email="second@example.com")
+    assert response.status_code == 201, response.text
+
+
+async def test_concurrent_signups_cannot_overrun_the_cap(signup_app):
+    app = signup_app
+    app.config.gateway_signup_max_per_hour = 1
+    responses = await asyncio.gather(
+        _signup(app, email="first@example.com"),
+        _signup(app, email="second@example.com"),
+    )
+    assert sorted(r.status_code for r in responses) == [201, 429]
+    assert await _user_count(app) == 1

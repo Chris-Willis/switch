@@ -612,6 +612,8 @@ Include with `nindent 12`.
 {{- end }}
 - name: GATEWAY_SIGNUP_ENABLED
   value: {{ .Values.switchCore.signupEnabled | quote }}
+- name: GATEWAY_SIGNUP_MAX_PER_HOUR
+  value: {{ .Values.switchCore.signupMaxPerHour | quote }}
 - name: GATEWAY_COOKIE_SECURE
   value: {{ .Values.switchCore.cookieSecure | quote }}
 - name: SWITCH_LOG_LEVEL
