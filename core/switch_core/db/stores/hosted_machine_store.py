@@ -13,6 +13,12 @@ from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import HostedLaunch, HostedMachine, require_tenant_id
 
 MACHINE_CONNECT_TIMEOUT = timedelta(minutes=10)
+MACHINE_NEEDS_ATTENTION = (
+    "Your cloud machine needs attention. Retry it in Switch Console."
+)
+MACHINE_BEING_REMOVED = (
+    "Your previous cloud machine is being removed. Try again in a minute."
+)
 
 
 class HostedMachineConflict(Exception):
@@ -65,10 +71,10 @@ def machine_starting(machine: HostedMachine) -> bool:
 
 def claim_conflict(machine: HostedMachine) -> str | None:
     """The reason a live machine cannot be claimed, or None when it can."""
-    if machine.state == "error":
-        return "machine needs attention"
     if machine.desired_state == "deleted" or machine.state == "deleting":
-        return "Your previous cloud machine is being removed. Try again in a minute."
+        return MACHINE_BEING_REMOVED
+    if machine.state == "error":
+        return MACHINE_NEEDS_ATTENTION
     return None
 
 

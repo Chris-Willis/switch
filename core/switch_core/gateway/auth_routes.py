@@ -56,9 +56,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-MACHINE_NEEDS_ATTENTION = (
-    "Your cloud machine needs attention. Retry it in Switch Console."
-)
 MACHINE_OWNER_STOPPED = "Your cloud machine is stopped. Start it in Switch Console."
 
 
@@ -140,8 +137,6 @@ async def _prewarm(
         )
         return SignupMachine(status="unavailable", reason=str(error))
     await session.commit()
-    if machine.state == "error":
-        return SignupMachine(status="unavailable", reason=MACHINE_NEEDS_ATTENTION)
     if (conflict := claim_conflict(machine)) is not None:
         return SignupMachine(status="unavailable", reason=conflict)
     if owner_stopped(machine):

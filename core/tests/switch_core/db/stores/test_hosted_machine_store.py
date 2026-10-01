@@ -5,6 +5,8 @@ import pytest
 
 from switch_core.db.models import HostedLaunch, HostedMachine, User, require_tenant_id
 from switch_core.db.stores.hosted_machine_store import (
+    MACHINE_BEING_REMOVED,
+    MACHINE_NEEDS_ATTENTION,
     HostedMachineConflict,
     HostedMachineStore,
     idle_sleeping,
@@ -174,17 +176,10 @@ async def test_a_stopped_machine_is_started(factory):
 @pytest.mark.parametrize(
     ("state", "desired_state", "detail"),
     [
-        ("error", "running", "machine needs attention"),
-        (
-            "deleting",
-            "deleted",
-            "Your previous cloud machine is being removed. Try again in a minute.",
-        ),
-        (
-            "retained",
-            "deleted",
-            "Your previous cloud machine is being removed. Try again in a minute.",
-        ),
+        ("error", "running", MACHINE_NEEDS_ATTENTION),
+        ("error", "deleted", MACHINE_BEING_REMOVED),
+        ("deleting", "deleted", MACHINE_BEING_REMOVED),
+        ("retained", "deleted", MACHINE_BEING_REMOVED),
     ],
 )
 async def test_a_machine_that_cannot_take_agents_refuses_the_claim(

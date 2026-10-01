@@ -12,13 +12,13 @@ from sqlalchemy import func, select, text
 
 from switch_core.config import SwitchConfig
 from switch_core.db.models import TENANT_ZERO_ID, HostedMachine, TenantMember, User
+from switch_core.db.stores.hosted_machine_store import (
+    MACHINE_BEING_REMOVED,
+    MACHINE_NEEDS_ATTENTION,
+)
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import decode_jwt, get_current_user, verify_password
-from switch_core.gateway.auth_routes import (
-    MACHINE_NEEDS_ATTENTION,
-    MACHINE_OWNER_STOPPED,
-    _prewarm,
-)
+from switch_core.gateway.auth_routes import MACHINE_OWNER_STOPPED, _prewarm
 from switch_core.gateway.auth_routes import router as auth_router
 from switch_core.gateway.dependencies import (
     get_config,
@@ -304,9 +304,6 @@ async def _set_machine(app, machine_id: str, **values) -> None:
             await session.commit()
 
 
-REMOVING = "Your previous cloud machine is being removed. Try again in a minute."
-
-
 @pytest.mark.parametrize(
     ("values", "reason"),
     [
@@ -314,14 +311,15 @@ REMOVING = "Your previous cloud machine is being removed. Try again in a minute.
             {"state": "error", "error": "The instance failed its status checks."},
             MACHINE_NEEDS_ATTENTION,
         ),
-        ({"state": "retained", "desired_state": "deleted"}, REMOVING),
-        ({"state": "deleting", "desired_state": "deleted"}, REMOVING),
+        ({"state": "retained", "desired_state": "deleted"}, MACHINE_BEING_REMOVED),
+        ({"state": "error", "desired_state": "deleted"}, MACHINE_BEING_REMOVED),
+        ({"state": "deleting", "desired_state": "deleted"}, MACHINE_BEING_REMOVED),
         (
             {"state": "stopped", "desired_state": "stopped", "stop_reason": "owner"},
             MACHINE_OWNER_STOPPED,
         ),
     ],
-    ids=["error", "retained-deleting", "deleting", "owner-stopped"],
+    ids=["error", "retained-deleting", "error-deleting", "deleting", "owner-stopped"],
 )
 async def test_ensure_returns_an_unclaimable_machine_as_it_is(
     signup_app, values, reason

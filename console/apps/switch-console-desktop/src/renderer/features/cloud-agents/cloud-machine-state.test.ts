@@ -172,7 +172,7 @@ describe('machinePresentation actions', () => {
     [
       'error while deleting',
       machine({ state: 'error', desired_state: 'deleted', error_code: 'other' }),
-      ['retry'],
+      [],
     ],
   ])('%s', (_name, input, actions) => {
     expect(machinePresentation(input).actions).toEqual(actions);

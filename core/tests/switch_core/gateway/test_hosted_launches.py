@@ -24,6 +24,7 @@ from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
+from switch_core.db.stores.hosted_machine_store import MACHINE_NEEDS_ATTENTION
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
@@ -293,7 +294,7 @@ async def test_create_refuses_without_a_machine(session_factory, launch_app):
     )
     broken = await app.client.post("/hosted-launches", json=body("reviewer"))
     assert broken.status_code == 409
-    assert broken.json()["detail"] == "machine needs attention"
+    assert broken.json()["detail"] == MACHINE_NEEDS_ATTENTION
 
 
 async def test_identity_failure_is_an_error_that_retry_registers(
