@@ -177,12 +177,7 @@ it('does not take a subagent watcher’s setting for its parent’s', async () =
     return { stdout, stderr };
   });
 
-  await configureAgentHost(
-    'agent-1',
-    { connected: true, spawning: true },
-    'explicit',
-    'helper'
-  );
+  await configureAgentHost('agent-1', { connected: true, spawning: true }, 'explicit', 'helper');
 
   expect(adopted()).toBe(false);
   expect(mocks.updateAgent).not.toHaveBeenCalled();

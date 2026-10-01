@@ -226,11 +226,7 @@ it('connects only once the agent’s managed server is ready', async () => {
       ready = resolve;
     })
   );
-  const connecting = configureAgentHost(
-    'agent-1',
-    { connected: true, spawning: true },
-    'restore'
-  );
+  const connecting = configureAgentHost('agent-1', { connected: true, spawning: true }, 'restore');
   await vi.waitFor(() =>
     expect(mocks.ready).toHaveBeenCalledWith(expect.objectContaining({ id: 'server-1' }))
   );

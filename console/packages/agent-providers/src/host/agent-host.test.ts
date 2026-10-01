@@ -7,10 +7,6 @@ import { join } from 'node:path';
 import type * as runtime from '@sandboxaq/switch-agent-runtime';
 import type { AgentBridgeEvent, SwitchEventStreamDeps } from '@sandboxaq/switch-agent-runtime';
 import { afterEach, expect, it, vi } from 'vitest';
-import type { Handoff } from './handoff';
-import { ensureSharedProcess, type Supervision } from './launch';
-import { type SessionRequest, SessionLinks } from './session-channel';
-import { sharedConfigSchema } from './shared-config';
 import {
   MAX_HOST_RESTARTS,
   stopSupersededSessions,
@@ -18,6 +14,10 @@ import {
   AgentHostAssignments,
   supersededSessions,
 } from './agent-host';
+import type { Handoff } from './handoff';
+import { ensureSharedProcess, type Supervision } from './launch';
+import { type SessionRequest, SessionLinks } from './session-channel';
+import { sharedConfigSchema } from './shared-config';
 import { clearTakenOver, recordTakenOver } from './taken-over';
 import { WatcherControl } from './watcher-tools';
 
@@ -1123,13 +1123,7 @@ it('keeps a held event, content and all, across a controller restart', async () 
 
   await writeFlags(root, { enabled: true, spawn: true });
   const second = new AbortController();
-  const restarted = runAgentHost(
-    root,
-    config,
-    second.signal,
-    supervision,
-    new WatcherControl()
-  );
+  const restarted = runAgentHost(root, config, second.signal, supervision, new WatcherControl());
   try {
     await eventually(() => hosts.requests.length >= 1);
     await eventually(() => settled(root));
@@ -1392,13 +1386,7 @@ it('reports its connection and placements as they change, and why it stopped', a
   control.onHealth(({ state, detail, placements }) => heard.push({ state, detail, placements }));
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-  const run = runAgentHost(
-    root,
-    config,
-    new AbortController().signal,
-    hosts.supervision,
-    control
-  );
+  const run = runAgentHost(root, config, new AbortController().signal, hosts.supervision, control);
   await eventually(() => streams.length === 1);
   expect(control.health()).toMatchObject({ state: 'connecting', placements: {} });
   streams[0]!.onConnected!();
@@ -1430,13 +1418,7 @@ it('reports a room connection that is turned off, and a watcher that failed', as
   const hosts = sessionHosts();
   const control = new WatcherControl();
 
-  const run = runAgentHost(
-    root,
-    config,
-    new AbortController().signal,
-    hosts.supervision,
-    control
-  );
+  const run = runAgentHost(root, config, new AbortController().signal, hosts.supervision, control);
   await eventually(() => streams.length === 1);
   await writeFlags(root, { enabled: false, spawn: false });
   await run;

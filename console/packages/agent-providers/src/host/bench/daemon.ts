@@ -23,6 +23,7 @@
 import { spawn } from 'node:child_process';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { runAgentHost } from '../agent-host';
 import { ensureSessions, serveControl } from '../control';
 import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from '../launch';
 import { replaceOwner } from '../ownership-lock';
@@ -30,7 +31,6 @@ import { ownProcessGroup } from '../process-fence';
 import { SessionLinks } from '../session-channel';
 import { sharedConfigSchema } from '../shared-config';
 import { hostSessionProcess } from '../shared-host';
-import { runAgentHost } from '../agent-host';
 import { superviseSharedHost } from '../supervisor';
 import { WatcherControl } from '../watcher-tools';
 import { createBenchAdapter } from './adapter';
@@ -89,9 +89,7 @@ async function main(): Promise<void> {
     // start it again.
     try {
       await Promise.all([
-        runAgentHost(root, config, stop.signal, supervision, control).finally(() =>
-          stop.abort()
-        ),
+        runAgentHost(root, config, stop.signal, supervision, control).finally(() => stop.abort()),
         serveControl(resolve(root), links, ensure, control, stop.signal),
       ]);
     } finally {

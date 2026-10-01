@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
+import { configureAgentHost } from '@main/core/sdk-host/agent-host';
 import { listHostSessions } from '@main/core/sdk-host/host-sessions';
 import { stopSharedSession } from '@main/core/sdk-host/shared-agent-runtime';
-import { configureAgentHost } from '@main/core/sdk-host/agent-host';
 import { manageAgentSidecar } from '@main/core/sdk-host/sidecar-management';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manager';
