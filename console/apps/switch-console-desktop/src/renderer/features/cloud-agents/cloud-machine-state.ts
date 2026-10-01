@@ -104,6 +104,7 @@ export function machinePresentation(machine: CloudMachine, now: number): Machine
     retainUntil:
       isRetained(machine) &&
       !isBeingDeleted(machine, now) &&
+      machine.state !== 'error' &&
       machine.retain_until !== null &&
       Date.parse(machine.retain_until) > now
         ? machine.retain_until

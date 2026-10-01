@@ -186,6 +186,19 @@ describe('machinePresentation retainUntil', () => {
       ).retainUntil
     ).toBeNull();
   });
+
+  it('is null for an errored retained machine with future retain_until', () => {
+    expect(
+      present(
+        machine({
+          state: 'error',
+          desired_state: 'retained',
+          error_code: 'other',
+          retain_until: '2026-02-01T00:00:00Z',
+        })
+      ).retainUntil
+    ).toBeNull();
+  });
 });
 
 describe('machinePresentation disk', () => {
