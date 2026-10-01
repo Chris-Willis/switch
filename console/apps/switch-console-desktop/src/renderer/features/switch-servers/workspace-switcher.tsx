@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { Check, ChevronsUpDown, Plus, Search, Server, UserPlus } from 'lucide-react';
+import { Check, ChevronsUpDown, LogIn, Plus, Search, Server, UserPlus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import {
@@ -320,6 +320,10 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
   const [query, setQuery] = useState('');
 
   const drift = serverDrift(activeServer);
+  const noWorkspaceYet =
+    active.tenantId === null &&
+    serverAvailability(activeServer.id) === 'available' &&
+    workspacesStore.hasNoMembership(activeServer.id);
   const anyMatch =
     query.trim() === '' ||
     store.servers.some(
@@ -341,10 +345,12 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
               <WorkspaceAvatar name={active.name} size="md" active />
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-medium text-foreground">
-                  {active.name}
+                  {noWorkspaceYet ? 'No workspace yet' : active.name}
                 </span>
                 <span className="flex items-center gap-1.5 text-xs text-foreground-muted">
-                  <span className="truncate">{switcherSubtitle(active, activeServer)}</span>
+                  <span className="truncate">
+                    {noWorkspaceYet ? activeServer.name : switcherSubtitle(active, activeServer)}
+                  </span>
                   <ServerStatusDot server={activeServer} />
                   {drift && <ServerDriftIndicator drift={drift} />}
                 </span>
@@ -590,6 +596,9 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
   invitationsFailed: boolean;
   joinableFailed: boolean;
 }) {
+  const { navigate } = useNavigate();
+  const { toast } = useToast();
+  const showCreateWorkspaceModal = useShowModal('createWorkspaceModal');
   const Icon = serverIcon(server);
   const drift = serverDrift(server);
   const searching = query.trim() !== '';
@@ -597,17 +606,46 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
   // the quickest way to say "the ones on that server".
   const whole = !searching || matchesQuery(server.name, query);
   const all = workspacesStore.onServer(server.id);
-  const workspaces = whole ? all : all.filter((w) => matchesQuery(w.name, query));
+  const availability = serverAvailability(server.id);
+  const signedOut = availability === 'signed-out';
+  const noMembership = availability === 'available' && workspacesStore.hasNoMembership(server.id);
+  // The row a server is registered with names no workspace until sign-in
+  // matches it to one. Signed out, or signed in to an account that belongs to
+  // none, it would read as a workspace called after the server that does not
+  // exist there, so it gives way to what can actually be done.
+  const placeholder = all.find((w) => w.tenantId === null) ?? null;
+  const hidePlaceholder = signedOut || noMembership;
+  const listed = hidePlaceholder ? all.filter((w) => w.tenantId !== null) : all;
+  const workspaces = whole ? listed : listed.filter((w) => matchesQuery(w.name, query));
+  const signInTarget = placeholder ?? all[0] ?? null;
+  const openForSignIn = () => {
+    if (!signInTarget) return;
+    void workspacesStore
+      .setActive(signInTarget.id)
+      .then(() => navigate('server', { serverId: server.id }))
+      .catch(() => {
+        toast({
+          title: `Could not open ${server.name}`,
+          description: 'The app stayed where it was.',
+          variant: 'destructive',
+        });
+      });
+  };
   const shownInvitations = whole
     ? invitations
     : invitations.filter((i) => matchesQuery(i.workspaceName, query));
   const shownJoinable = whole
     ? joinable
     : joinable.filter((j) => matchesQuery(j.workspaceName, query));
-  if (searching && workspaces.length + shownInvitations.length + shownJoinable.length === 0) {
+  const extraRows = (signedOut && signInTarget) || noMembership;
+  if (
+    searching &&
+    !(whole && extraRows) &&
+    workspaces.length + shownInvitations.length + shownJoinable.length === 0
+  ) {
     return null;
   }
-  const available = serverAvailability(server.id) === 'available';
+  const available = availability === 'available';
 
   return (
     <DropdownMenuGroup>
@@ -633,6 +671,30 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
           )}
         </span>
       </DropdownMenuLabel>
+      {signedOut && signInTarget && whole && (
+        <DropdownMenuItem onClick={openForSignIn}>
+          <LogIn className="size-4" />
+          Sign in…
+        </DropdownMenuItem>
+      )}
+      {noMembership && whole && (
+        <>
+          <div className="px-2 py-1.5 text-xs text-foreground-muted">
+            No workspace yet — create one, or accept an invitation below.
+          </div>
+          <DropdownMenuItem
+            onClick={() =>
+              showCreateWorkspaceModal({
+                serverId: server.id,
+                onSuccess: (workspace) => navigate('server', { serverId: workspace.serverId }),
+              })
+            }
+          >
+            <Plus className="size-4" />
+            Create a workspace…
+          </DropdownMenuItem>
+        </>
+      )}
       {all.length === 0 ? (
         // Registering a server is what creates its first workspace, so a server
         // with none did not finish being registered. Saying so beats an empty

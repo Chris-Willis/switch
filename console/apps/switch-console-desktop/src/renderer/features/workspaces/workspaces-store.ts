@@ -22,6 +22,8 @@ import type { Workspace } from '@shared/core/workspaces/workspaces';
 export class WorkspacesStore {
   workspaces: Workspace[] = [];
   activeId: string | null = null;
+  /** Servers where the signed-in account belongs to no workspace yet, as the main process last found. */
+  serversWithoutMembership: string[] = [];
   /** Ordinal of the most recent {@link setActive}; nothing renders it. */
   lastSwitch = 0;
 
@@ -133,13 +135,15 @@ export class WorkspacesStore {
   }
 
   async refresh(): Promise<void> {
-    const [workspaces, activeId] = await Promise.all([
+    const [workspaces, activeId, serversWithoutMembership] = await Promise.all([
       rpc.workspaces.list(),
       rpc.workspaces.getActiveId(),
+      rpc.workspaces.serversWithoutMembership(),
     ]);
     runInAction(() => {
       this.workspaces = workspaces;
       this.activeId = activeId;
+      this.serversWithoutMembership = serversWithoutMembership;
     });
   }
 
@@ -150,6 +154,11 @@ export class WorkspacesStore {
   /** The server hosting a workspace, or null while the list is not loaded. */
   serverIdFor(workspaceId: string): string | null {
     return this.byId(workspaceId)?.serverId ?? null;
+  }
+
+  /** Whether this server's signed-in account was found to belong to no workspace. */
+  hasNoMembership(serverId: string): boolean {
+    return this.serversWithoutMembership.includes(serverId);
   }
 
   onServer(serverId: string): Workspace[] {

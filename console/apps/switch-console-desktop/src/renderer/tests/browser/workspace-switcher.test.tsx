@@ -27,6 +27,7 @@ const state = vi.hoisted(() => ({
   navigate: vi.fn(),
   toast: vi.fn(),
   unavailable: new Set<string>(),
+  noMembership: new Set<string>(),
   listPendingInvitations: vi.fn(),
   acceptPendingInvitation: vi.fn(),
   listJoinableWorkspaces: vi.fn(),
@@ -78,6 +79,7 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
       return state.workspaces.find((w) => w.id === state.activeId) ?? null;
     },
     onServer: (serverId: string) => state.workspaces.filter((w) => w.serverId === serverId),
+    hasNoMembership: (serverId: string) => state.noMembership.has(serverId),
     setActive: state.setActive,
     acceptPendingInvitation: state.acceptPendingInvitation,
     joinByDomain: state.joinByDomain,
@@ -210,6 +212,7 @@ beforeEach(() => {
   state.navigate.mockReset();
   state.toast.mockReset();
   state.unavailable.clear();
+  state.noMembership.clear();
   state.listPendingInvitations.mockReset().mockResolvedValue({ kind: 'listed', invitations: [] });
   state.acceptPendingInvitation.mockReset();
   state.listJoinableWorkspaces.mockReset().mockResolvedValue({ kind: 'listed', workspaces: [] });
@@ -697,3 +700,68 @@ describe('the server headings', () => {
     expect(labels[1]).not.toContain('Official');
   });
 });
+
+describe('a server with no workspace to show yet', () => {
+  function menuText(): string[] {
+    return [...document.querySelectorAll('[role="menuitem"]')].map((el) => el.textContent ?? '');
+  }
+
+  it('offers Sign in… instead of a workspace named after a server you are signed out of', async () => {
+    state.unavailable.add('cloud');
+    await openSwitcher(
+      [server('srv-1', 'Acme'), server('cloud', 'Switch Cloud')],
+      [workspace('ws-a', 'srv-1'), { ...workspace('Switch Cloud', 'cloud', { tenantId: null }) }],
+      'ws-a'
+    );
+
+    expect(menuText()).toContain('Sign in…');
+    expect(names()).not.toContain('Switch Cloud');
+
+    const signIn = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+      (el) => el.textContent === 'Sign in…'
+    );
+    await act(async () => signIn!.click());
+    expect(state.setActive).toHaveBeenCalledWith('Switch Cloud');
+    expect(state.navigate).toHaveBeenCalledWith('server', { serverId: 'cloud' });
+  });
+
+  it('says there is no workspace yet when the account belongs to none', async () => {
+    state.noMembership.add('cloud');
+    await openSwitcher(
+      [server('srv-1', 'Acme'), server('cloud', 'Switch Cloud')],
+      [workspace('ws-a', 'srv-1'), workspace('Switch Cloud', 'cloud', { tenantId: null })],
+      'ws-a'
+    );
+
+    expect(document.body.textContent).toContain('No workspace yet');
+    expect(menuText()).toContain('Create a workspace…');
+    expect(names()).not.toContain('Switch Cloud');
+  });
+
+  it('names the button after the missing workspace while the placeholder is open', async () => {
+    state.noMembership.add('cloud');
+    state.servers = [server('cloud', 'Switch Cloud')];
+    state.workspaces = [workspace('Switch Cloud', 'cloud', { tenantId: null })];
+    state.activeId = 'Switch Cloud';
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    await act(async () =>
+      root!.render(
+        <QueryClientProvider client={client}>
+          <WorkspaceSwitcher />
+        </QueryClientProvider>
+      )
+    );
+
+    const trigger = container.querySelector('[aria-label="Switch workspace"]');
+    expect(trigger?.textContent).toContain('No workspace yet');
+  });
+});
+
+function names(): (string | null | undefined)[] {
+  return [...document.querySelectorAll('[role="menuitem"] [data-row-name]')].map(
+    (el) => el.textContent
+  );
+}
