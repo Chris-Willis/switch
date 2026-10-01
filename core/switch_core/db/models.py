@@ -26,6 +26,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
 from switch_core.db.base import Base
+from switch_core.db.encrypted_json import EncryptedJSONB
 from switch_core.db.notify_ddl import (
     CREATE_NOTIFY_FUNCTION,
     CREATE_NOTIFY_TRIGGER,
@@ -1213,7 +1214,9 @@ class CollaborationBridge(TenantScoped, Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
-    connection_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    connection_config: Mapped[dict | None] = mapped_column(
+        EncryptedJSONB, nullable=True
+    )
     client_id: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     agent_greetings_enabled: Mapped[bool] = mapped_column(
@@ -1475,7 +1478,9 @@ class ServerConnector(TenantScoped, Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
-    connection_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    connection_config: Mapped[dict | None] = mapped_column(
+        EncryptedJSONB, nullable=True
+    )
     api_key_id: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(

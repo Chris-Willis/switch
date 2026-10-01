@@ -87,13 +87,20 @@ from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.crypto import encrypt_token
+from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
 from switch_core.db.engine import (
     create_engine_from_config,
     create_session_factory,
     create_unpooled_engine,
 )
-from switch_core.db.models import TENANT_ZERO_ID, ApiKey, User
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    ApiKey,
+    CollaborationBridge,
+    ServerConnector,
+    User,
+)
 from switch_core.db.runtime_role import (
     RuntimeRoleError,
     grant_runtime_role,
@@ -342,6 +349,7 @@ async def run(config: SwitchConfig) -> None:
     # — see `main._migrate_and_grant`, which `main()` awaits first. Both use
     # the schema owner's connection where one is configured, and neither
     # belongs on the pooled application engine built below.
+    encrypted_json.configure(config.jwt_secret_key)
     engine = create_engine_from_config(config)
     await _check_tenant_isolation(config, engine)
     session_factory = create_session_factory(engine)
@@ -458,6 +466,9 @@ async def run(config: SwitchConfig) -> None:
     for tenant_id in tenant_ids:
         async with tenant_session(session_factory, tenant_id) as session:
             await resource_service.log_builtin_shadowing(session)
+    await encrypted_json.encrypt_legacy_connection_configs(
+        session_factory, tenant_ids, [CollaborationBridge, ServerConnector]
+    )
 
     # ── Provisioning ─────────────────────────────────────────────────────────
     matrix_admin: Provisioning = PostgresProvisioning(
