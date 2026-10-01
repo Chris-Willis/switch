@@ -280,6 +280,34 @@ class HostedMachineStore:
         bump_revision(machine, now)
         return True
 
+    async def release_if_empty(
+        self,
+        session: AsyncSession,
+        machine: HostedMachine,
+        *,
+        retention_days: int,
+        now: datetime,
+    ) -> bool:
+        """Retain an agentless machine, expiring at once if it never had an agent.
+
+        Launch rows are never hard-deleted, so a machine no row references has
+        no disk worth keeping. The caller holds the machine lock and commits.
+        """
+        if not await self.retain_if_empty(
+            session, machine, retention_days=retention_days, now=now
+        ):
+            return False
+        if not await session.scalar(
+            select(
+                exists().where(
+                    HostedLaunch.tenant_id == require_tenant_id(),
+                    HostedLaunch.machine_id == machine.id,
+                )
+            )
+        ):
+            machine.retain_until = now
+        return True
+
     def issue_capability(self, machine: HostedMachine, secret_key: str) -> str:
         """The machine capability for the machine's current revision.
 

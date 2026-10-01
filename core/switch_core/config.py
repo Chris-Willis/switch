@@ -810,7 +810,13 @@ class SwitchConfig(BaseSettings):
 
     @property
     def gateway_signup_open(self) -> bool:
-        return self.gateway_signup_enabled and self.gateway_password_login_enabled
+        # Sign-up does not verify email ownership and an OIDC login links to an
+        # existing user by email, so a signed-up account could pre-claim one.
+        return (
+            self.gateway_signup_enabled
+            and self.gateway_password_login_enabled
+            and not self.gateway_oidc_enabled
+        )
 
     @property
     def gateway_oidc_metadata_url(self) -> str:

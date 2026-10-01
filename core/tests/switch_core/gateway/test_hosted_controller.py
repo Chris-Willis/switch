@@ -55,6 +55,7 @@ from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.hosted_machine_store import (
     HostedMachineStore,
     lock_launch,
+    lock_launches,
 )
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
 from switch_core.gateway.auth import get_current_user, get_current_user_in_transaction
@@ -186,6 +187,7 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
     service.connections = ConnectionRegistry()
     service.event_buffer = SimpleNamespace(boot=1, remove=Mock())
     service.config.hosted_idle_stop_minutes = 0
+    service.config.hosted_disk_retention_days = 7
     agent_id = await register_hosted_agent(
         service, owner=owner, request_id=request_id, name="cloud-helper", spec=SPEC
     )
@@ -1137,6 +1139,112 @@ async def test_machine_with_no_counted_agents_sleeps(controller_app):
     await update_launch(factory, request_id, state="stopped", desired_state="stopped")
     [item] = await list_machines(client)
     assert item["desired_state"] == "stopped"
+
+
+async def _empty_machine(controller_app, **values) -> tuple[str, str]:
+    """Another owner's machine that never hosted an agent, quiet for 31 minutes."""
+    factory = controller_app[4]
+    async with factory() as session:
+        owner = User(
+            name="empty", email="empty@example.com", role="user", password_hash="x"
+        )
+        session.add(owner)
+        await session.flush()
+        machine = await seed_machine(
+            session,
+            owner_id=owner.id,
+            slot_id="slot-b",
+            state="ready",
+            desired_state="running",
+            stop_reason=None,
+            revision=1,
+            generation=1,
+        )
+        machine.active_at = datetime.now(UTC) - timedelta(minutes=31)
+        for key, value in values.items():
+            setattr(machine, key, value)
+        await session.commit()
+        return machine.id, owner.id
+
+
+async def _listed(client, machine_id: str) -> dict:
+    return {item["machine_id"]: item for item in await list_machines(client)}[
+        machine_id
+    ]
+
+
+@pytest.mark.parametrize(
+    ("minutes", "values"),
+    [
+        (30, {}),
+        (0, {"state": "stopped", "desired_state": "stopped", "stop_reason": "idle"}),
+    ],
+    ids=["idle", "idle-sleeping"],
+)
+async def test_machine_that_never_hosted_an_agent_is_released(
+    controller_app, minutes, values
+):
+    client, _, _, service, _, _ = controller_app
+    service.config.hosted_idle_stop_minutes = minutes
+    machine_id, _ = await _empty_machine(controller_app, **values)
+    before = datetime.now(UTC)
+    item = await _listed(client, machine_id)
+    assert (item["desired_state"], item["revision"]) == ("retained", 2)
+    assert before <= datetime.fromisoformat(item["retain_until"]) <= datetime.now(UTC)
+    await observe(client, machine_id, state="retained", revision=2)
+    assert (await _listed(client, machine_id))["desired_state"] == "deleted"
+
+
+async def test_owner_stopped_empty_machine_is_left_alone(controller_app):
+    client, *_ = controller_app
+    machine_id, _ = await _empty_machine(
+        controller_app, state="stopped", desired_state="stopped", stop_reason="owner"
+    )
+    item = await _listed(client, machine_id)
+    assert (item["desired_state"], item["revision"]) == ("stopped", 1)
+
+
+async def test_idle_machine_whose_agents_were_removed_keeps_its_disk(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    await _idle_ready(controller_app, minutes=30, report=False)
+    await update_launch(factory, request_id, state="deleted", desired_state="deleted")
+    before = datetime.now(UTC)
+    [item] = await list_machines(client)
+    assert item["desired_state"] == "retained"
+    retain_until = datetime.fromisoformat(item["retain_until"])
+    assert before + timedelta(days=7) <= retain_until
+    assert retain_until <= datetime.now(UTC) + timedelta(days=7)
+
+
+async def _claim(factory, owner_id: str) -> HostedMachine:
+    async with factory() as session:
+        await lock_launches(session)
+        machine = await HostedMachineStore().claim(
+            session,
+            owner_id=owner_id,
+            slots=["slot-a", "slot-b"],
+            capacity=2,
+            now=datetime.now(UTC),
+        )
+        await session.commit()
+        return machine
+
+
+async def test_released_machine_is_revived_or_replaced_by_a_claim(controller_app):
+    client, _, _, service, factory, _ = controller_app
+    service.config.hosted_idle_stop_minutes = 30
+    machine_id, owner_id = await _empty_machine(controller_app)
+    assert (await _listed(client, machine_id))["desired_state"] == "retained"
+    revived = await _claim(factory, owner_id)
+    assert (revived.id, revived.desired_state, revived.retain_until) == (
+        machine_id,
+        "running",
+        None,
+    )
+    await update_machine(factory, machine_id, state="deleted", desired_state="deleted")
+    replaced = await _claim(factory, owner_id)
+    assert replaced.id != machine_id
+    assert (replaced.slot_id, replaced.desired_state) == ("slot-b", "running")
 
 
 async def test_idle_stop_is_off_when_the_setting_is_zero(controller_app):

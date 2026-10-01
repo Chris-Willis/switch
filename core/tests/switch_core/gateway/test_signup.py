@@ -117,6 +117,31 @@ def test_signup_needs_password_login_too():
     ).gateway_signup_open
 
 
+OIDC = {
+    "gateway_oidc_issuer_url": "https://idp.example.com",
+    "gateway_oidc_client_id": "switch",
+    "gateway_oidc_client_secret": "placeholder",  # gitleaks:allow
+}
+
+
+def test_signup_is_closed_when_oidc_is_configured():
+    assert not SwitchConfig.model_construct(
+        gateway_signup_enabled=True, gateway_password_login_enabled=True, **OIDC
+    ).gateway_signup_open
+
+
+async def test_oidc_deployment_refuses_signup(signup_app):
+    app = signup_app
+    app.app.dependency_overrides[get_config] = lambda: SwitchConfig.model_construct(
+        gateway_signup_enabled=True, gateway_password_login_enabled=True, **OIDC
+    )
+    body = (await app.client.get("/auth/config")).json()
+    assert (body["oidc_enabled"], body["signup_enabled"]) == (True, False)
+    assert (await _signup(app)).status_code == 403
+    async with app.factory() as session:
+        assert await session.scalar(select(func.count()).select_from(User)) == 0
+
+
 async def test_auth_config_reports_signup(signup_app):
     app = signup_app
     assert (await app.client.get("/auth/config")).json()["signup_enabled"] is True

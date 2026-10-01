@@ -23,6 +23,7 @@ from switch_core.db.stores.hosted_machine_store import (
     MACHINE_CONNECT_TIMEOUT,
     HostedMachineStore,
     bump_revision,
+    idle_sleeping,
     lock_launch,
 )
 from switch_core.gateway.dependencies import (
@@ -121,6 +122,7 @@ def _needs_sweep(machine: HostedMachine, now: datetime, idle_minutes: int) -> bo
             and machine.retain_until is not None
             and machine.retain_until <= now
         )
+        or idle_sleeping(machine)
         or (
             idle_minutes > 0
             and machine.state == "ready"
@@ -207,8 +209,10 @@ async def _sweep(
     machine: HostedMachine,
     protocol: ProtocolService,
     idle_minutes: int,
+    retention_days: int,
     now: datetime,
 ) -> None:
+    store = HostedMachineStore()
     if machine.state == "queued" and now - machine.updated_at > QUEUED_TIMEOUT:
         machine.state = "error"
         machine.error_code = "machine_connect_timeout"
@@ -232,6 +236,10 @@ async def _sweep(
     ):
         machine.desired_state = "deleted"
         bump_revision(machine, now)
+    elif idle_sleeping(machine):
+        await store.release_if_empty(
+            session, machine, retention_days=retention_days, now=now
+        )
     elif (
         idle_minutes > 0
         and machine.state == "ready"
@@ -240,7 +248,10 @@ async def _sweep(
             session, machine, protocol, timedelta(minutes=idle_minutes), now
         )
     ):
-        HostedMachineStore().stop(machine, "idle", now)
+        if not await store.release_if_empty(
+            session, machine, retention_days=retention_days, now=now
+        ):
+            store.stop(machine, "idle", now)
 
 
 async def _expire_operations(session: AsyncSession) -> None:
@@ -321,7 +332,12 @@ async def machines(
         machine = await store.locked(session, candidate.id)
         if machine is not None:
             await _sweep(
-                session, machine, protocol, config.hosted_idle_stop_minutes, now
+                session,
+                machine,
+                protocol,
+                config.hosted_idle_stop_minutes,
+                config.hosted_disk_retention_days,
+                now,
             )
         await session.commit()
     await _expire_operations(session)
