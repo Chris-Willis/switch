@@ -209,6 +209,10 @@ _HOSTED_MACHINE_STOPPED_MESSAGE = (
     "My owner stopped my cloud machine, so I did not process this message. "
     "Ask my owner to start it in Switch Console, then send it again."
 )
+_HOSTED_MACHINE_ERROR_MESSAGE = (
+    "My cloud machine has a problem, so I did not process this message. "
+    "My owner can check it in Switch Console."
+)
 
 
 def _hosted_unavailable(
@@ -223,6 +227,8 @@ def _hosted_unavailable(
         return _HOSTED_REMOVED_MESSAGE
     if launch.state == "error":
         return _HOSTED_ERROR_MESSAGE
+    if machine is not None and machine.state == "error":
+        return _HOSTED_MACHINE_ERROR_MESSAGE
     if machine is not None and owner_stopped(machine):
         return _HOSTED_MACHINE_STOPPED_MESSAGE
     if launch.desired_state == "stopped":

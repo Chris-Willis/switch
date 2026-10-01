@@ -853,6 +853,40 @@ async def test_restart_and_retry_do_not_start_an_owner_stopped_machine(
 
 
 @pytest.mark.parametrize("action", ["restart", "retry"])
+@pytest.mark.parametrize(
+    "error_code,message",
+    [
+        (
+            None,
+            "The cloud machine needs attention. Retry it in Switch Console.",
+        ),
+        (
+            "machine_needs_attention",
+            "The cloud machine needs attention. Contact your server administrator.",
+        ),
+    ],
+)
+async def test_restart_and_retry_refuse_an_errored_machine_even_if_owner_stopped(
+    launch_app, action, error_code, message
+):
+    app = launch_app
+    created = await _restartable(app, action, "owner")
+    machine_updates = {"state": "error", "revision": 3}
+    if error_code is not None:
+        machine_updates["error_code"] = error_code
+    await _update(app.factory, HostedMachine, created["machine_id"], **machine_updates)
+    refused = await _lifecycle(app, created["request_id"], action, 1)
+    assert refused.status_code == 409
+    assert refused.json() == {
+        "detail": message,
+        "code": "machine_error",
+    }
+    machine = await _machine(app.factory, created["machine_id"])
+    assert machine.state == "error"
+    assert (await _launch(app.factory, created["request_id"])).revision == 1
+
+
+@pytest.mark.parametrize("action", ["restart", "retry"])
 async def test_restart_and_retry_wake_an_idle_sleeping_machine(launch_app, action):
     app = launch_app
     created = await _restartable(app, action, "idle")

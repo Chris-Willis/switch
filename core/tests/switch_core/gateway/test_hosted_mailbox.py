@@ -23,6 +23,7 @@ from switch_core.bridges.agent.protocol.types import (
     TaskDelegatePayload,
 )
 from switch_core.clients.agent_client import (
+    _HOSTED_MACHINE_ERROR_MESSAGE,
     _HOSTED_MACHINE_STOPPED_MESSAGE,
     AgentClient,
     _hosted_unavailable,
@@ -738,6 +739,27 @@ async def test_mention_to_an_owner_stopped_machine_is_refused_not_queued(
     )
     machine = await _machine(app.factory, app.machine_id)
     assert (machine.desired_state, machine.revision) == ("stopped", 2)
+
+
+async def test_mention_to_an_errored_owner_stopped_machine_reports_machine_error(
+    mailbox_app,
+):
+    app = mailbox_app
+    await set_machine(
+        app.factory,
+        app.machine_id,
+        desired_state="stopped",
+        stop_reason="owner",
+        state="error",
+        revision=2,
+    )
+    noted = await address(app, addressed(app.rooms[0], "$m1"))
+    assert await rows(app) == {}
+    assert _hosted_unavailable(noted.launch, noted.machine) == (
+        _HOSTED_MACHINE_ERROR_MESSAGE
+    )
+    machine = await _machine(app.factory, app.machine_id)
+    assert machine.state == "error"
 
 
 def fail_first_send(app) -> None:
