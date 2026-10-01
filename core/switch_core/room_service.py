@@ -127,7 +127,9 @@ class RoomCreateConfig(BaseModel):
     acting_user_id: str | None = None
     acting_is_admin: bool = False
     # Not derivable from `created_by`, which holds the *agent's owner* on the
-    # agent path. Stamped into the room's metadata so it survives.
+    # agent path. Stamped into the room's metadata so it survives. `system` is
+    # a channel the platform delivered to the bridge, so it is the one kind
+    # whose `external_channel_id` the bridge is not asked to vouch for.
     created_by_kind: Literal["user", "agent", "system"] = "user"
     # Provisioned from a room template rather than created directly.
     from_template: bool = False
@@ -474,6 +476,15 @@ class RoomService:
             bridge_core = self._collab_lifecycle.get(bridge_id)
             if bridge_core is None:
                 raise ValueError(f"Bridge not running: {bridge_id}")
+
+        # A channel the platform delivered to this bridge is its own by
+        # construction; one named by the caller has to be shown to be.
+        if (
+            bridge_core
+            and external_channel_id is not None
+            and config.created_by_kind != "system"
+        ):
+            await bridge_core.adapter.require_bindable_channel(external_channel_id)
 
         if bridge_core and external_channel_id is not None and channel_type is None:
             channel_type = await bridge_core.adapter.get_channel_type(
@@ -1199,7 +1210,8 @@ class RoomService:
         back onto a channel it previously used (channels are left in place on
         bridge change, so the old one still exists). The caller is responsible
         for the id being a real channel on that bridge whose bridge bot is a
-        member; agents are still (re-)added to it.
+        member, and the bridge refuses one that is not its own to bind
+        (`require_bindable_channel`); agents are still (re-)added to it.
 
         Human users are **not** carried over. A user's identity is
         bridge-specific (a Mattermost account is not the same as a Slack
@@ -1246,6 +1258,8 @@ class RoomService:
                 room.description,
                 channel_type=resolved_channel_type,
             )
+        else:
+            await new_bridge.adapter.require_bindable_channel(external_channel_id)
 
         # One binding for everything from here on: the bridge-column update,
         # and the invite/kick below, both write rows scoped to this room's
