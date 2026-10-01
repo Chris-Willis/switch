@@ -190,6 +190,9 @@ otherwise. In mode: existing DB_USER's password is POSTGRES_PASSWORD, as
 before.
 */}}
 {{- define "switch.runtimePasswordSeparate" -}}
+{{- if and .Values.secrets.existingSecret .Values.secrets.dbRuntimePassword -}}
+{{- fail "secrets.dbRuntimePassword cannot be used with secrets.existingSecret: the chart renders no Secret to put it in. Store the password in a Secret and name it in postgresql.managed.runtimeExistingSecret (it may be the same Secret as secrets.existingSecret)." -}}
+{{- end -}}
 {{- if and (eq .Values.postgresql.mode "managed") (or .Values.postgresql.managed.runtimeExistingSecret .Values.secrets.dbRuntimePassword) -}}
 true
 {{- end -}}

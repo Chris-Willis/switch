@@ -95,7 +95,8 @@ secrets:
   # postgresql.owner.existingSecret names a Secret that already carries it.
   dbOwnerPassword: ""
   # Password for the managed-mode runtime role (postgresql.managed
-  # .runtimeUsername). Optional; see that setting for why to set it.
+  # .runtimeUsername). Optional; see that setting for why to set it. Not
+  # usable with existingSecret: use postgresql.managed.runtimeExistingSecret.
   dbRuntimePassword: ""
   agentRegistrationToken: ""
   jwtSecretKey: ""
@@ -733,12 +734,13 @@ postgresql:
     # own password (secrets.postgresPassword / postgresql.existingSecret), as
     # releases before this setting did, and the install notes warn about it.
     #
+    # With secrets.existingSecret, secrets.dbRuntimePassword is refused (the
+    # chart renders no Secret to hold it): set runtimeExistingSecret instead,
+    # which may name that same Secret.
+    #
     # The create-runtime-role pre-upgrade hook re-applies the password on
-    # every upgrade, so setting it on an existing deployment takes effect on
-    # the next upgrade. With switchCore.migrations.preUpgradeJob off and a
-    # chart-managed Secret, that hook reads the previous release's Secret, so
-    # the new password lands one upgrade late — set it from an existing Secret
-    # in that case.
+    # every upgrade, so setting it on an existing deployment takes effect in
+    # that same upgrade.
     runtimeUsername: switch_app
     runtimeExistingSecret: ""
     runtimeExistingSecretKey: DB_RUNTIME_PASSWORD
