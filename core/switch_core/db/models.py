@@ -259,6 +259,7 @@ class OidcIdentity(Base):
 class ApiKey(TenantScoped, Base):
     __tablename__ = "api_keys"
     __table_args__ = (
+        Index("ix_api_keys_tenant_id", "tenant_id"),
         UniqueConstraint("id", "tenant_id", name="uq_api_keys_id_tenant"),
     )
 
@@ -315,6 +316,7 @@ class Invitation(TenantScoped, Base):
 
     __tablename__ = "invitations"
     __table_args__ = (
+        Index("ix_invitations_tenant_id", "tenant_id"),
         CheckConstraint(
             "role IN ('owner', 'admin', 'member')", name="ck_invitations_role"
         ),
@@ -410,6 +412,7 @@ class Client(TenantScoped, Base):
 class ClientRoom(TenantScoped, Base):
     __tablename__ = "client_rooms"
     __table_args__ = (
+        Index("ix_client_rooms_tenant_id", "tenant_id"),
         ForeignKeyConstraint(
             ["tenant_id", "client_id"],
             ["clients.tenant_id", "clients.id"],
@@ -506,6 +509,7 @@ class Agent(TenantScoped, Base):
 class Tool(TenantScoped, Base):
     __tablename__ = "tools"
     __table_args__ = (
+        Index("ix_tools_tenant_id", "tenant_id"),
         ForeignKeyConstraint(
             ["tenant_id", "agent_id"],
             ["agents.tenant_id", "agents.id"],
@@ -530,6 +534,7 @@ class Tool(TenantScoped, Base):
 class Model(TenantScoped, Base):
     __tablename__ = "models"
     __table_args__ = (
+        Index("ix_models_tenant_id", "tenant_id"),
         ForeignKeyConstraint(
             ["tenant_id", "agent_id"],
             ["agents.tenant_id", "agents.id"],
@@ -572,12 +577,14 @@ agent_skills = Table(
         ["skills.tenant_id", "skills.id"],
         name="fk_agent_skills_skill",
     ),
+    Index("ix_agent_skills_tenant_id", "tenant_id"),
 )
 
 
 class Skill(TenantScoped, Base):
     __tablename__ = "skills"
     __table_args__ = (
+        Index("ix_skills_tenant_id", "tenant_id"),
         UniqueConstraint("id", "tenant_id", name="uq_skills_id_tenant"),
         ForeignKeyConstraint(
             ["tenant_id", "owner_agent_id"],
@@ -637,6 +644,7 @@ room_agents = Table(
         ["agents.tenant_id", "agents.id"],
         name="fk_room_agents_agent",
     ),
+    Index("ix_room_agents_tenant_id", "tenant_id"),
 )
 
 room_skills = Table(
@@ -661,6 +669,7 @@ room_skills = Table(
         ["skills.tenant_id", "skills.id"],
         name="fk_room_skills_skill",
     ),
+    Index("ix_room_skills_tenant_id", "tenant_id"),
 )
 
 
@@ -787,6 +796,7 @@ class RoomGroup(TenantScoped, Base):
 
     __tablename__ = "room_groups"
     __table_args__ = (
+        Index("ix_room_groups_tenant_id", "tenant_id"),
         CheckConstraint("parent_group_id <> id", name="room_groups_no_self_parent"),
         UniqueConstraint("id", "tenant_id", name="uq_room_groups_id_tenant"),
         ForeignKeyConstraint(
@@ -820,6 +830,7 @@ class RoomLink(TenantScoped, Base):
 
     __tablename__ = "room_links"
     __table_args__ = (
+        Index("ix_room_links_tenant_id", "tenant_id"),
         CheckConstraint("source_room_id <> target_room_id", name="room_links_no_self"),
         ForeignKeyConstraint(
             ["tenant_id", "source_room_id"],
@@ -849,6 +860,7 @@ class RoomLink(TenantScoped, Base):
 class Task(TenantScoped, Base):
     __tablename__ = "tasks"
     __table_args__ = (
+        Index("ix_tasks_tenant_id", "tenant_id"),
         ForeignKeyConstraint(
             ["tenant_id", "room_id"],
             ["rooms.tenant_id", "rooms.id"],
@@ -913,6 +925,7 @@ room_references = Table(
         ["references.tenant_id", "references.id"],
         name="fk_room_references_reference",
     ),
+    Index("ix_room_references_tenant_id", "tenant_id"),
 )
 
 room_documents = Table(
@@ -937,12 +950,14 @@ room_documents = Table(
         ["documents.tenant_id", "documents.id"],
         name="fk_room_documents_document",
     ),
+    Index("ix_room_documents_tenant_id", "tenant_id"),
 )
 
 
 class Reference(TenantScoped, Base):
     __tablename__ = "references"
     __table_args__ = (
+        Index("ix_references_tenant_id", "tenant_id"),
         UniqueConstraint("id", "tenant_id", name="uq_references_id_tenant"),
     )
 
@@ -993,6 +1008,7 @@ class ReferenceType(TenantScoped, Base):
 class Document(TenantScoped, Base):
     __tablename__ = "documents"
     __table_args__ = (
+        Index("ix_documents_tenant_id", "tenant_id"),
         Index(
             "uq_documents_room_name",
             "room_id",
@@ -1050,6 +1066,7 @@ class Template(TenantScoped, Base):
 
     __tablename__ = "templates"
     __table_args__ = (
+        Index("ix_templates_tenant_id", "tenant_id"),
         # Not widened to include the tenant: an owner belongs to one, so
         # scoping the name to the owner already scopes it to the tenant.
         UniqueConstraint("owner_id", "name", name="uq_templates_owner_name"),
@@ -1118,6 +1135,7 @@ room_packages = Table(
         ["packages.tenant_id", "packages.id"],
         name="fk_room_packages_package",
     ),
+    Index("ix_room_packages_tenant_id", "tenant_id"),
 )
 
 package_references = Table(
@@ -1142,6 +1160,7 @@ package_references = Table(
         ["references.tenant_id", "references.id"],
         name="fk_package_references_reference",
     ),
+    Index("ix_package_references_tenant_id", "tenant_id"),
 )
 
 package_documents = Table(
@@ -1166,12 +1185,14 @@ package_documents = Table(
         ["documents.tenant_id", "documents.id"],
         name="fk_package_documents_document",
     ),
+    Index("ix_package_documents_tenant_id", "tenant_id"),
 )
 
 
 class Package(TenantScoped, Base):
     __tablename__ = "packages"
     __table_args__ = (
+        Index("ix_packages_tenant_id", "tenant_id"),
         UniqueConstraint("id", "tenant_id", name="uq_packages_id_tenant"),
     )
 
@@ -1193,6 +1214,7 @@ class Package(TenantScoped, Base):
 class CollaborationBridge(TenantScoped, Base):
     __tablename__ = "collaboration_bridges"
     __table_args__ = (
+        Index("ix_collaboration_bridges_tenant_id", "tenant_id"),
         # The bridge new rooms land on when no bridge is named. At most one row
         # per tenant may be true; this partial unique index is what actually
         # enforces that, so concurrent writers cannot produce two defaults.
@@ -1307,6 +1329,7 @@ class MessagingInstall(TenantScoped, Base):
 
     __tablename__ = "messaging_installs"
     __table_args__ = (
+        Index("ix_messaging_installs_tenant_id", "tenant_id"),
         Index(
             "uq_messaging_installs_workspace",
             "platform",
@@ -1378,6 +1401,7 @@ class MessagingInstallState(TenantScoped, Base):
     """
 
     __tablename__ = "messaging_install_states"
+    __table_args__ = (Index("ix_messaging_install_states_tenant_id", "tenant_id"),)
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     platform: Mapped[str] = mapped_column(Text, nullable=False)
@@ -1465,6 +1489,7 @@ class MessagingEventReceipt(TenantScoped, Base):
 class ServerConnector(TenantScoped, Base):
     __tablename__ = "server_connectors"
     __table_args__ = (
+        Index("ix_server_connectors_tenant_id", "tenant_id"),
         ForeignKeyConstraint(
             ["tenant_id", "api_key_id"],
             ["api_keys.tenant_id", "api_keys.id"],
@@ -1489,6 +1514,7 @@ class ServerConnector(TenantScoped, Base):
 class ExternalUser(TenantScoped, Base):
     __tablename__ = "external_users"
     __table_args__ = (
+        Index("ix_external_users_tenant_id", "tenant_id"),
         UniqueConstraint("bridge_id", "external_user_id"),
         UniqueConstraint("id", "tenant_id", name="uq_external_users_id_tenant"),
         ForeignKeyConstraint(
@@ -1528,6 +1554,7 @@ class ExternalUserClaim(TenantScoped, Base):
 
     __tablename__ = "external_user_claims"
     __table_args__ = (
+        Index("ix_external_user_claims_tenant_id", "tenant_id"),
         Index("ix_external_user_claims_user_id", "user_id"),
         ForeignKeyConstraint(
             ["tenant_id", "external_user_id"],
@@ -1571,6 +1598,7 @@ class AgentSession(TenantScoped, Base):
 
     __tablename__ = "agent_sessions"
     __table_args__ = (
+        Index("ix_agent_sessions_tenant_id", "tenant_id"),
         Index(
             "uq_agent_sessions_agent_room",
             text("agent_id"),
@@ -1620,6 +1648,7 @@ class AgentRuntimeState(TenantScoped, Base):
 
     __tablename__ = "agent_runtime_states"
     __table_args__ = (
+        Index("ix_agent_runtime_states_tenant_id", "tenant_id"),
         UniqueConstraint(
             "agent_id", "room_id", name="uq_agent_runtime_states_agent_room"
         ),
@@ -1681,6 +1710,7 @@ class RoomRole(TenantScoped, Base):
 
     __tablename__ = "room_roles"
     __table_args__ = (
+        Index("ix_room_roles_tenant_id", "tenant_id"),
         UniqueConstraint("room_id", "name", name="uq_room_roles_room_name"),
         UniqueConstraint("id", "tenant_id", name="uq_room_roles_id_tenant"),
         ForeignKeyConstraint(
@@ -1728,6 +1758,7 @@ class RoleLease(TenantScoped, Base):
 
     __tablename__ = "role_leases"
     __table_args__ = (
+        Index("ix_role_leases_tenant_id", "tenant_id"),
         UniqueConstraint("agent_id", name="uq_role_leases_agent"),
         Index("ix_role_leases_role_id", "role_id"),
         ForeignKeyConstraint(
@@ -1779,6 +1810,7 @@ class BridgeMessageMap(TenantScoped, Base):
 
     __tablename__ = "bridge_message_map"
     __table_args__ = (
+        Index("ix_bridge_message_map_tenant_id", "tenant_id"),
         UniqueConstraint("bridge_id", "transport_event_id"),
         UniqueConstraint("bridge_id", "external_post_id"),
         ForeignKeyConstraint(
@@ -1975,6 +2007,7 @@ class MessageAttachment(TenantScoped, Base):
 
     __tablename__ = "message_attachments"
     __table_args__ = (
+        Index("ix_message_attachments_tenant_id", "tenant_id"),
         Index("ix_message_attachments_message", "message_id"),
         ForeignKeyConstraint(
             ["tenant_id", "message_id"],
@@ -2014,6 +2047,7 @@ class DeliveryCursor(TenantScoped, Base):
 
     __tablename__ = "delivery_cursors"
     __table_args__ = (
+        Index("ix_delivery_cursors_tenant_id", "tenant_id"),
         UniqueConstraint("agent_id", "room_id", name="uq_delivery_cursors_agent_room"),
         ForeignKeyConstraint(
             ["tenant_id", "agent_id"],
@@ -2472,6 +2506,7 @@ class UsageBudget(TenantScoped, Base):
 
     __tablename__ = "usage_budgets"
     __table_args__ = (
+        Index("ix_usage_budgets_tenant_id", "tenant_id"),
         ForeignKeyConstraint(
             ["tenant_id", "agent_id"],
             ["agents.tenant_id", "agents.id"],
