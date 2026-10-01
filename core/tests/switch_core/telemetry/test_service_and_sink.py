@@ -80,6 +80,7 @@ class TestTagging:
             "flint.client_id": "deployment-uuid",
             "service.version": "1.2.3",
             "deployment.environment": "pilot",
+            "flint_env": "prod",
         }
 
     async def test_an_unset_environment_is_omitted_rather_than_empty(self) -> None:

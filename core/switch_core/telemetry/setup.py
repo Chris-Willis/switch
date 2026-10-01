@@ -134,6 +134,7 @@ def _service(
         service_name=config.service_name,
         version=version,
         environment=config.environment,
+        flint_env=config.telemetry_environment,
         session_factory=session_factory,
         installed_at=installed_at,
     )

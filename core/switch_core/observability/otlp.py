@@ -129,6 +129,9 @@ class OtlpResource:
     service_version: str | None
     environment: str | None
     deployment_id: str
+    # Flint's prod/staging/dev, which the analytics relay copies onto every
+    # event. Product telemetry sets it; operational export does not.
+    flint_env: str | None = None
 
     def attributes(self) -> dict[str, AttributeValue]:
         values: dict[str, AttributeValue] = {
@@ -142,6 +145,8 @@ class OtlpResource:
         if self.environment:
             # Datadog maps this onto `env`.
             values["deployment.environment"] = self.environment
+        if self.flint_env:
+            values["flint_env"] = self.flint_env
         return values
 
 

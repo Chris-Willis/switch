@@ -2,6 +2,7 @@ import re
 import ssl
 import uuid
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import model_validator
@@ -249,6 +250,15 @@ class SwitchConfig(BaseSettings):
     # timezone it is in; the schedule is anchored to what was last sent, not
     # to how long this process has been up.
     telemetry_snapshot_interval_hours: float = 24.0
+
+    # Which of Flint's environments the usage belongs to, sent as `flint_env`.
+    # Every client of the relay lands in one Amplitude project, and this is the
+    # one resource attribute the relay copies onto each event, so it is what
+    # keeps a test server's usage apart from real usage. `ENVIRONMENT` above
+    # cannot do it: the relay overwrites `deployment.environment` with its own.
+    # `prod` by default because a server that switches telemetry on is
+    # usually someone's real one; our own test servers say `dev`.
+    telemetry_environment: Literal["prod", "staging", "dev"] = "prod"
 
     server_host: str = "0.0.0.0"
     server_port: int = 8000

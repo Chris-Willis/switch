@@ -43,6 +43,7 @@ class TelemetryService:
         service_name: str,
         version: str | None,
         environment: str | None,
+        flint_env: str = "prod",
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         installed_at: datetime | None = None,
     ) -> None:
@@ -55,6 +56,7 @@ class TelemetryService:
         self._resource = {
             "service.name": service_name,
             "flint.client_id": client_id,
+            "flint_env": flint_env,
         }
         # Omitted rather than sent empty: an absent attribute reads as "not
         # configured", where `""` reads as a real environment named nothing.

@@ -253,6 +253,7 @@ services:
       TELEMETRY_ENABLED:
       TELEMETRY_ENDPOINT:
       TELEMETRY_SNAPSHOT_INTERVAL_HOURS:
+      TELEMETRY_ENVIRONMENT:
     depends_on:
       postgres:
         condition: service_healthy

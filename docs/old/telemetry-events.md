@@ -139,12 +139,19 @@ On every event:
 | `service.version` | the running version, as `/version` reports it |
 | `flint.client_id` | the per-deployment id |
 | `deployment.environment` | from the existing `ENVIRONMENT` setting |
+| `flint_env` | `prod`, `staging` or `dev`, from `TELEMETRY_ENVIRONMENT` (default `prod`) |
 
 `deployment.environment` is the OpenTelemetry-conventional name and is already a
 server setting. The Console instead sends a bespoke `build` attribute
 (`dev`/`canary`/`stable`), which is a desktop release-channel notion with no
 server equivalent. The two are deliberately different fields rather than one
 field meaning different things on each side.
+
+`flint_env` is what separates test servers from real ones in analytics. The
+relay writes every client into one Amplitude project and overwrites
+`deployment.environment` with its own, but copies `flint_env` onto each event,
+the same way the Flint sensor uses it. A server that exists only for testing
+sets `TELEMETRY_ENVIRONMENT=dev`.
 
 ## Three kinds of event
 
