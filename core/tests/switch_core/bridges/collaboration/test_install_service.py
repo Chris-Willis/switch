@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from typing import ClassVar
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from switch_core.bridges.collaboration.install import (
@@ -28,6 +30,9 @@ from switch_core.bridges.collaboration.install import (
     MessagingInstallerRegistry,
     MessagingInstallError,
     WebhookEndpoint,
+)
+from switch_core.bridges.collaboration.install_confirmation import (
+    InstallTicketError,
 )
 from switch_core.bridges.collaboration.install_service import (
     InstallPlatformMismatch,
@@ -43,6 +48,7 @@ from switch_core.db.models import (
     Client,
     CollaborationBridge,
     MessagingInstall,
+    MessagingInstallState,
     Tenant,
     User,
 )
@@ -237,11 +243,17 @@ async def _begin(factory: async_sessionmaker, fixture: _Fixture, tenant_id: str)
 async def _installed(
     factory: async_sessionmaker, fixture: _Fixture, tenant_id: str
 ) -> MessagingInstall:
-    """Run both legs and return the install they produced."""
+    """Run both legs, confirm, and return the install they produced."""
     state = await _begin(factory, fixture, tenant_id)
-    return await fixture.service.complete(
+    return await _land(fixture, state)
+
+
+async def _land(fixture: _Fixture, state: str) -> MessagingInstall:
+    """Finish the callback and choose Connect on the page it renders."""
+    pending = await fixture.service.complete(
         platform="slack", code="the-code", state_token=state
     )
+    return await fixture.service.confirm(platform="slack", ticket=pending.ticket)
 
 
 async def _reread(
@@ -258,9 +270,7 @@ class TestTheRoundTrip:
         fixture = await _fixture(rls_harness)
         state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
 
-        install = await fixture.service.complete(
-            platform="slack", code="the-code", state_token=state
-        )
+        install = await _land(fixture, state)
 
         assert install.tenant_id == fixture.tenant_a
         assert install.external_workspace_id == fixture.workspace
@@ -272,9 +282,7 @@ class TestTheRoundTrip:
         fixture = await _fixture(rls_harness)
         state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
 
-        install = await fixture.service.complete(
-            platform="slack", code="the-code", state_token=state
-        )
+        install = await _land(fixture, state)
 
         assert "xoxb-granted" not in install.encrypted_bot_token
         assert decrypt_token(install.encrypted_bot_token, _SECRET) == "xoxb-granted"
@@ -287,9 +295,7 @@ class TestTheRoundTrip:
         fixture = await _fixture(rls_harness)
         state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
 
-        install = await fixture.service.complete(
-            platform="slack", code="the-code", state_token=state
-        )
+        install = await _land(fixture, state)
 
         assert len(fixture.lifecycle.registered) == 1
         registered = fixture.lifecycle.registered[0]
@@ -421,10 +427,151 @@ class TestWhatTheCallbackWillNotDo:
 
         state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
         with pytest.raises(MessagingInstallClaimedError):
-            await fixture.service.complete(
-                platform="slack", code="the-code", state_token=state
-            )
+            await _land(fixture, state)
         assert fixture.lifecycle.registered == []
+
+
+class TestTheConfirmation:
+    """The callback asks before it claims, and only the page's answer counts."""
+
+    async def test_the_callback_claims_nothing_and_names_the_organisation(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
+
+        pending = await fixture.service.complete(
+            platform="slack", code="the-code", state_token=state
+        )
+
+        assert pending.organisation == fixture.tenant_a
+        assert pending.requested_by.endswith("@example.test")
+        assert pending.workspace_name == "Acme"
+        assert pending.external_workspace_id == fixture.workspace
+        assert "xoxb-granted" not in pending.ticket
+        assert fixture.lifecycle.registered == []
+        async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+            assert await MessagingInstallStore().list_for_tenant(session) == []
+
+    async def test_the_state_token_alone_cannot_connect(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Whoever started the install holds the state; only the page holds
+        the ticket. Otherwise they could confirm on the approver's behalf."""
+        fixture = await _fixture(rls_harness)
+        state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
+        await fixture.service.complete(
+            platform="slack", code="the-code", state_token=state
+        )
+
+        with pytest.raises(InstallTicketError):
+            await fixture.service.confirm(platform="slack", ticket=state)
+        assert fixture.lifecycle.registered == []
+
+    async def test_a_tampered_ticket_is_refused(self, rls_harness: RLSHarness) -> None:
+        fixture = await _fixture(rls_harness)
+        state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
+        pending = await fixture.service.complete(
+            platform="slack", code="the-code", state_token=state
+        )
+        flipped = pending.ticket[:-5] + ("A" if pending.ticket[-5] != "A" else "B")
+        tampered = flipped + pending.ticket[-4:]
+
+        with pytest.raises(InstallTicketError):
+            await fixture.service.confirm(platform="slack", ticket=tampered)
+
+    async def test_a_ticket_for_another_platform_is_refused(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
+        pending = await fixture.service.complete(
+            platform="slack", code="the-code", state_token=state
+        )
+
+        with pytest.raises(InstallPlatformMismatch):
+            await fixture.service.confirm(platform="teams", ticket=pending.ticket)
+
+    async def test_a_confirmation_connects_once(self, rls_harness: RLSHarness) -> None:
+        fixture = await _fixture(rls_harness)
+        state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
+        pending = await fixture.service.complete(
+            platform="slack", code="the-code", state_token=state
+        )
+        await fixture.service.confirm(platform="slack", ticket=pending.ticket)
+
+        with pytest.raises(MessagingInstallStateError):
+            await fixture.service.confirm(platform="slack", ticket=pending.ticket)
+        with pytest.raises(MessagingInstallStateError):
+            await fixture.service.cancel(platform="slack", ticket=pending.ticket)
+        assert len(fixture.lifecycle.registered) == 1
+        assert fixture.installer.revoked_tokens == []
+
+    async def test_a_stale_confirmation_is_refused(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
+        pending = await fixture.service.complete(
+            platform="slack", code="the-code", state_token=state
+        )
+        async with rls_harness.owner() as session:
+            await session.execute(
+                update(MessagingInstallState)
+                .where(MessagingInstallState.tenant_id == fixture.tenant_a)
+                .values(consumed_at=datetime.now(UTC) - timedelta(hours=1))
+            )
+            await session.commit()
+
+        with pytest.raises(MessagingInstallStateError):
+            await fixture.service.confirm(platform="slack", ticket=pending.ticket)
+        assert fixture.lifecycle.registered == []
+
+    async def test_cancel_records_nothing_and_revokes_the_token(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
+        pending = await fixture.service.complete(
+            platform="slack", code="the-code", state_token=state
+        )
+
+        await fixture.service.cancel(platform="slack", ticket=pending.ticket)
+
+        assert fixture.installer.revoked_tokens == ["xoxb-granted"]
+        assert fixture.lifecycle.registered == []
+        with pytest.raises(MessagingInstallStateError):
+            await fixture.service.confirm(platform="slack", ticket=pending.ticket)
+        async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+            assert await MessagingInstallStore().list_for_tenant(session) == []
+
+    async def test_cancel_leaves_a_token_another_install_is_using(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """The platform issues one bot token per app and workspace, so revoking
+        it here would disconnect the tenant that already holds the workspace."""
+        fixture = await _fixture(rls_harness)
+        async with tenant_session(rls_harness.restricted, fixture.tenant_b) as session:
+            session.add(
+                MessagingInstall(
+                    tenant_id=fixture.tenant_b,
+                    platform="slack",
+                    external_workspace_id=fixture.workspace,
+                    encrypted_bot_token="ciphertext",
+                    scopes="chat:write",
+                    status="active",
+                    installed_by_user_id=fixture.user_id,
+                )
+            )
+            await session.commit()
+        state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
+        pending = await fixture.service.complete(
+            platform="slack", code="the-code", state_token=state
+        )
+
+        await fixture.service.cancel(platform="slack", ticket=pending.ticket)
+
+        assert fixture.installer.revoked_tokens == []
 
 
 class TestDisconnecting:
@@ -651,9 +798,7 @@ class TestATokenlessGrant:
         fixture = await _fixture(rls_harness, tokenless=True)
         state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
 
-        install = await fixture.service.complete(
-            platform="slack", code="the-code", state_token=state
-        )
+        install = await _land(fixture, state)
 
         assert install.encrypted_bot_token is None
         assert install.bridge_id is not None

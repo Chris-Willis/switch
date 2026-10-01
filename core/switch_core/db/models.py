@@ -1375,6 +1375,10 @@ class MessagingInstallState(TenantScoped, Base):
     is a bound on how long the platform's round trip may take; `consumed_at`
     is the fact of redemption, kept rather than deleted so an operator asking
     why a link stopped working can see it was used rather than lost.
+
+    `decided_at` is the second single use. Redeeming the state does not claim
+    the workspace: the callback asks whoever approved it to confirm which
+    organisation it joins, and their Connect or Cancel is recorded here, once.
     """
 
     __tablename__ = "messaging_install_states"
@@ -1389,6 +1393,9 @@ class MessagingInstallState(TenantScoped, Base):
     )
     expires_at: Mapped[str] = mapped_column(DateTime(timezone=True), nullable=False)
     consumed_at: Mapped[str | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    decided_at: Mapped[str | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
