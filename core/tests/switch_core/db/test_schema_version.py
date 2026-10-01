@@ -69,8 +69,9 @@ async def test_a_database_behind_head_is_refused(
 ) -> None:
     script = ScriptDirectory.from_config(alembic_cfg)
     (head,) = script.get_heads()
-    previous = script.get_revision(head).down_revision
-    assert isinstance(previous, str)
+    parents = script.get_revision(head).down_revision
+    assert parents is not None
+    previous = parents if isinstance(parents, str) else parents[0]
     await _stamp(scratch_engine, previous)
 
     with pytest.raises(SchemaNotAtHeadError, match="DB_MIGRATE_ON_BOOT"):

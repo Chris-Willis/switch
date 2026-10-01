@@ -23,7 +23,9 @@ def _current_heads(connection: Connection) -> set[str]:
     return set(MigrationContext.configure(connection).get_current_heads())
 
 
-async def require_schema_at_head(engine: AsyncEngine, alembic_cfg: AlembicConfig) -> None:
+async def require_schema_at_head(
+    engine: AsyncEngine, alembic_cfg: AlembicConfig
+) -> None:
     expected = set(ScriptDirectory.from_config(alembic_cfg).get_heads())
     async with engine.connect() as connection:
         current = await connection.run_sync(_current_heads)
