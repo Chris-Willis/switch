@@ -329,6 +329,23 @@ async def _set_machine(app, machine_id: str, **values) -> None:
             MACHINE_BEING_REMOVED,
         ),
         (
+            {
+                "state": "error",
+                "desired_state": "deleted",
+                "error_code": "machine_needs_attention",
+            },
+            MACHINE_NEEDS_ADMIN,
+        ),
+        (
+            {
+                "state": "error",
+                "desired_state": "retained",
+                "error_code": "machine_needs_attention",
+                "retain_until": datetime.now(UTC) - timedelta(minutes=1),
+            },
+            MACHINE_NEEDS_ADMIN,
+        ),
+        (
             {"state": "stopped", "desired_state": "stopped", "stop_reason": "owner"},
             MACHINE_OWNER_STOPPED,
         ),
@@ -340,6 +357,8 @@ async def _set_machine(app, machine_id: str, **values) -> None:
         "error-deleting",
         "deleting",
         "error-released",
+        "needs-admin-deleting",
+        "needs-admin-released",
         "owner-stopped",
     ],
 )

@@ -82,6 +82,8 @@ def retention_expired(machine: HostedMachine, now: datetime) -> bool:
 
 def claim_conflict(machine: HostedMachine, now: datetime) -> str | None:
     """The reason a live machine cannot be claimed, or None when it can."""
+    if machine.state == "error" and machine.error_code == "machine_needs_attention":
+        return MACHINE_NEEDS_ADMIN
     if (
         machine.desired_state == "deleted"
         or machine.state == "deleting"
@@ -89,8 +91,6 @@ def claim_conflict(machine: HostedMachine, now: datetime) -> str | None:
     ):
         return MACHINE_BEING_REMOVED
     if machine.state == "error":
-        if machine.error_code == "machine_needs_attention":
-            return MACHINE_NEEDS_ADMIN
         return MACHINE_NEEDS_ATTENTION
     return None
 

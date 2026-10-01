@@ -28,6 +28,7 @@ function isRetained(machine: CloudMachine): boolean {
 }
 
 function isBeingDeleted(machine: CloudMachine, now: number): boolean {
+  if (machine.state === 'error' && machine.error_code === 'machine_needs_attention') return false;
   return (
     machine.state === 'deleting' ||
     machine.desired_state === 'deleted' ||

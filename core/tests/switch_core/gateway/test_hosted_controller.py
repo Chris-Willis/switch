@@ -971,6 +971,58 @@ async def test_errored_machine_retained_after_its_last_agent_expires(controller_
     assert item["revision"] == 3
 
 
+async def test_retention_sweep_deletes_an_expired_errored_machine(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    await update_launch(factory, request_id, state="deleted", desired_state="deleted")
+    await update_machine(
+        factory,
+        machine.id,
+        state="error",
+        error="The instance failed its status checks.",
+        error_code="machine_needs_attention",
+        desired_state="retained",
+        retain_until=datetime.now(UTC) - timedelta(seconds=1),
+        revision=2,
+    )
+    [item] = await list_machines(client)
+    assert (item["state"], item["desired_state"], item["revision"]) == (
+        "error",
+        "deleted",
+        3,
+    )
+    item = await observe(client, machine.id, state="deleting", revision=3)
+    assert item["state"] == "deleting"
+    saved = await machine_of(factory, request_id)
+    assert (saved.error, saved.error_code) == (None, None)
+
+
+async def test_retention_sweep_keeps_an_errored_machine_inside_its_window(
+    controller_app,
+):
+    client, request_id, _, _, factory, _ = controller_app
+    machine = await machine_of(factory, request_id)
+    await update_launch(factory, request_id, state="deleted", desired_state="deleted")
+    until = datetime.now(UTC) + timedelta(days=3)
+    await update_machine(
+        factory,
+        machine.id,
+        state="error",
+        error="The instance failed its status checks.",
+        error_code="machine_needs_attention",
+        desired_state="retained",
+        retain_until=until,
+        revision=2,
+    )
+    [item] = await list_machines(client)
+    assert (item["state"], item["desired_state"], item["revision"]) == (
+        "error",
+        "retained",
+        2,
+    )
+    assert item["retain_until"] == until.isoformat()
+
+
 async def test_deleted_observation_with_live_launches_logs_an_invariant_failure(
     controller_app, caplog
 ):

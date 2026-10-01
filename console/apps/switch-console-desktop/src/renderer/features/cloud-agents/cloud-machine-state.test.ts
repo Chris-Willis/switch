@@ -124,6 +124,22 @@ describe('machinePresentation problem', () => {
     ).toBeNull();
   });
 
+  it.each([
+    [
+      'being deleted',
+      machine({ state: 'error', desired_state: 'deleted', error_code: 'machine_needs_attention' }),
+    ],
+    [
+      'past its retention',
+      machine({ ...expiredRetained, state: 'error', error_code: 'machine_needs_attention' }),
+    ],
+  ])('names the machine that needs attention while %s', (_name, input) => {
+    const shown = present(input);
+    expect(shown.label).toBe('Error');
+    expect(shown.problem).toBe('The machine needs attention. Contact your server administrator.');
+    expect(shown.actions).toEqual([]);
+  });
+
   it('ignores an error code on a machine that is not in error', () => {
     expect(
       present(machine({ ...running, state: 'ready', error_code: 'machine_needs_attention' }))

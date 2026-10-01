@@ -25,6 +25,7 @@ from switch_core.db.stores.hosted_machine_store import (
     bump_revision,
     idle_sleeping,
     lock_launch,
+    retention_expired,
 )
 from switch_core.gateway.dependencies import (
     get_config,
@@ -127,12 +128,7 @@ def _needs_sweep(machine: HostedMachine, now: datetime, idle_minutes: int) -> bo
         (machine.state == "queued" and now - machine.updated_at > QUEUED_TIMEOUT)
         or _connect_timed_out(machine, now)
         or _start_timed_out(machine, now)
-        or (
-            machine.state == "retained"
-            and machine.desired_state == "retained"
-            and machine.retain_until is not None
-            and machine.retain_until <= now
-        )
+        or (machine.state in {"retained", "error"} and retention_expired(machine, now))
         or _errored_unclaimed(machine, now, idle_minutes)
         or idle_sleeping(machine)
         or (
@@ -240,12 +236,7 @@ async def _sweep(
         machine.error_code = "machine_connect_timeout"
         machine.error = "The cloud machine did not start within 10 minutes. Retry it in Switch Console, or contact your administrator if it still cannot start."
         machine.updated_at = now
-    elif (
-        machine.state == "retained"
-        and machine.desired_state == "retained"
-        and machine.retain_until is not None
-        and machine.retain_until <= now
-    ):
+    elif machine.state in {"retained", "error"} and retention_expired(machine, now):
         machine.desired_state = "deleted"
         bump_revision(machine, now)
     elif _errored_unclaimed(machine, now, idle_minutes) and not await store.ever_hosted(
