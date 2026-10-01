@@ -111,15 +111,12 @@ describe('buildEnvFile', () => {
       'SLACK_APP_CLIENT_SECRET',
       'SLACK_APP_SIGNING_SECRET',
       // Discord grants no per-install token, so its four are deployment config
-      // rather than per-workspace secrets; the two intents are privileged flags
-      // that only matter once an app is configured. None can be held by a
-      // loopback stack (see above), so all are unset here.
+      // rather than per-workspace secrets. None can be held by a loopback stack
+      // (see above), so all are unset here.
       'DISCORD_APP_CLIENT_ID',
       'DISCORD_APP_CLIENT_SECRET',
       'DISCORD_APP_BOT_TOKEN',
       'DISCORD_APP_APPLICATION_ID',
-      'DISCORD_APP_MESSAGE_CONTENT',
-      'DISCORD_APP_MEMBERS',
     ]);
 
     const missing = [...interpolated]
