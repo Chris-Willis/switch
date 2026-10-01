@@ -239,3 +239,60 @@ describe('formOptions', () => {
     });
   });
 });
+
+describe('parseTemplateAgents: what a template leaves unsaid', () => {
+  it('reports each runtime setting an agent has no field or shared param for', () => {
+    const { unsaid } = parseTemplateAgents(`
+agent:
+  name: helper
+  provider: claude
+  instructions: Help.
+`);
+    expect(unsaid).toEqual([
+      { index: 0, label: 'helper', field: 'location' },
+      { index: 0, label: 'helper', field: 'directory' },
+    ]);
+  });
+
+  it('counts a param of that type no field reads as said for every agent', () => {
+    const { unsaid } = parseTemplateAgents(`
+params:
+  provider: { type: provider, default: [claude] }
+  where: { type: location, default: local }
+  dir: { type: directory, default: "{$agents_dir}/{agent}" }
+agents:
+  - name: a
+    instructions: A.
+  - name: b
+    instructions: B.
+`);
+    expect(unsaid).toEqual([]);
+  });
+
+  it('does not count a param one agent reads as said for another', () => {
+    const { unsaid } = parseTemplateAgents(`
+params:
+  where: { type: location, default: local }
+agents:
+  - name: a
+    provider: claude
+    location: "{where}"
+    directory: /tmp/a
+    instructions: A.
+  - name: b
+    provider: claude
+    directory: /tmp/b
+    instructions: B.
+`);
+    expect(unsaid).toEqual([{ index: 1, label: 'b', field: 'location' }]);
+  });
+
+  it('records every placeholder an entry reads, its instructions included', () => {
+    const { agents } = parseTemplateAgents(`
+agent:
+  name: "{team}-fixer"
+  instructions: Work on {repo}.
+`);
+    expect(agents[0].placeholders.sort()).toEqual(['repo', 'team']);
+  });
+});
