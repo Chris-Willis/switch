@@ -71,21 +71,34 @@ function switcherSubtitle(workspace: Workspace, server: SwitchServer): string {
 /**
  * Whether the sidebar shows servers rather than workspaces.
  *
- * Workspaces are a Switch Cloud idea: on a build that cannot reach the Cloud,
- * every server holds one workspace named after itself, and a menu of headings
- * each over a single row of the same name says nothing the server list did not.
- * So such a build keeps the server list.
- *
- * Only while that holds, though. An account that has joined a second workspace
- * on some server — by an invite link, say — gets the workspace menu, since a
- * server list has no row for the second one and would strand it.
+ * Workspaces are a Switch Cloud idea, so a build that cannot reach the Cloud
+ * keeps the server list it had before them. A server row opens one workspace
+ * on that server; any others the account has there are not offered from the
+ * sidebar on such a build. A build whose Cloud configuration could not be read
+ * keeps the workspace menu, so the broken configuration stays visible.
  */
-export function showsServers(
-  cloud: SwitchCloudAvailability['kind'],
-  workspacesPerServer: number[]
-): boolean {
-  if (cloud === 'open' || cloud === 'failed') return false;
-  return workspacesPerServer.every((count) => count <= 1);
+export function showsServers(cloud: SwitchCloudAvailability['kind']): boolean {
+  return cloud === 'reading' || cloud === 'closed';
+}
+
+/**
+ * The workspace a server row opens: the one the window is already in when it
+ * is on that server, otherwise the first that can be opened. Null when there is
+ * none to open, with the first workspace's reason when there is one to give.
+ */
+export function serverRowWorkspace(
+  workspaces: Workspace[],
+  activeId: string | null
+): { workspace: Workspace | null; unavailable: WorkspaceUnavailability | null } {
+  const active = workspaces.find((w) => w.id === activeId);
+  if (active) return { workspace: active, unavailable: null };
+  const open = workspaces.find((w) => workspaceUnavailability(w, workspaces.length) === null);
+  if (open) return { workspace: open, unavailable: null };
+  const first = workspaces[0];
+  return {
+    workspace: null,
+    unavailable: first ? workspaceUnavailability(first, workspaces.length) : null,
+  };
 }
 
 /**
@@ -117,8 +130,7 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher() {
 
   if (!active || !activeServer) return <NoServerYet />;
 
-  const perServer = store.servers.map((server) => workspacesStore.onServer(server.id).length);
-  return showsServers(cloud.kind, perServer) ? (
+  return showsServers(cloud.kind) ? (
     <ServerMenu activeServer={activeServer} />
   ) : (
     <WorkspaceMenu active={active} activeServer={activeServer} />
@@ -228,12 +240,14 @@ const ServerMenuItem = observer(function ServerMenuItem({
   const Icon = serverIcon(server);
   const placement = serverPlacementLabel(server);
   const drift = serverDrift(server);
-  const workspace = workspacesStore.onServer(server.id)[0] ?? null;
-  const unavailable = workspace ? workspaceUnavailability(workspace, 1) : null;
-  const reason = !workspace
-    ? 'This server has not finished being set up.'
-    : unavailable
-      ? UNAVAILABLE_REASON[unavailable](server.name)
+  const { workspace, unavailable } = serverRowWorkspace(
+    workspacesStore.onServer(server.id),
+    workspacesStore.activeId
+  );
+  const reason = unavailable
+    ? UNAVAILABLE_REASON[unavailable](server.name)
+    : !workspace
+      ? 'This server has not finished being set up.'
       : undefined;
 
   return (
