@@ -164,6 +164,16 @@ describe('machinePresentation actions', () => {
     ['retaining', machine({ ...running, state: 'ready', desired_state: 'retained' }), []],
     ['reused while retained', machine({ ...running, state: 'retained' }), []],
     ['deleting', machine({ state: 'deleting', desired_state: 'deleted', sleeping: false }), []],
+    [
+      'error while retaining',
+      machine({ state: 'error', desired_state: 'retained', error_code: 'other' }),
+      ['retry'],
+    ],
+    [
+      'error while deleting',
+      machine({ state: 'error', desired_state: 'deleted', error_code: 'other' }),
+      ['retry'],
+    ],
   ])('%s', (_name, input, actions) => {
     expect(machinePresentation(input).actions).toEqual(actions);
   });

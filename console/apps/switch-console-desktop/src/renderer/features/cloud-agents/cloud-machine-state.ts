@@ -60,6 +60,9 @@ function machineDisk(machine: CloudMachine): MachineDisk | null {
 }
 
 function machineActions(machine: CloudMachine): MachineAction[] {
+  if (machine.state === 'error' && machine.error_code !== 'machine_needs_attention') {
+    if (isRetained(machine) || machine.desired_state === 'deleted') return ['retry'];
+  }
   if (
     isRetained(machine) ||
     machine.state === 'retained' ||

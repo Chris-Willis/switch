@@ -299,7 +299,7 @@ describe('an action a server whose host has gone down cannot take', () => {
 
     expect(signup).not.toHaveBeenCalled();
     expect(trackEvent).toHaveBeenCalledWith('server_sign_in', {
-      auth_method: 'password',
+      auth_method: 'signup',
       server_kind: 'remote_managed',
       outcome: 'failure',
       failure_reason: 'unreachable',
@@ -320,10 +320,10 @@ describe('an action a server whose host has gone down cannot take', () => {
     });
 
     expect(trackEvent).toHaveBeenCalledWith('server_sign_in', {
-      auth_method: 'password',
+      auth_method: 'signup',
       server_kind: 'remote_managed',
       outcome: 'failure',
-      failure_reason: 'invalid_credentials',
+      failure_reason: 'email_taken',
     });
   });
 
@@ -341,7 +341,7 @@ describe('an action a server whose host has gone down cannot take', () => {
     });
 
     expect(trackEvent).toHaveBeenCalledWith('server_sign_in', {
-      auth_method: 'password',
+      auth_method: 'signup',
       server_kind: 'remote_managed',
       outcome: 'success',
       failure_reason: 'none',

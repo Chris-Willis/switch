@@ -189,18 +189,22 @@ export type TelemetryRoomCreateFailure =
   | 'error';
 
 /** How someone signed in. Not a setting — which of the two forms they used. */
-export type TelemetryAuthMethod = 'password' | 'oidc';
+export type TelemetryAuthMethod = 'password' | 'oidc' | 'signup';
 
 /**
  * Why a sign-in failed. `cancelled` is the browser window being closed on the
  * single-sign-on path, which is someone changing their mind rather than a fault.
+ * `email_taken`, `invalid`, and `disabled` are sign-up specific failures.
  */
 export type TelemetrySignInFailure =
   | 'none'
   | 'invalid_credentials'
   | 'cancelled'
   | 'failed'
-  | 'unreachable';
+  | 'unreachable'
+  | 'email_taken'
+  | 'invalid'
+  | 'disabled';
 
 /** What was done to a step of a remote host's setup. */
 export type TelemetryHostSetupAction = 'install' | 'update' | 'skip';

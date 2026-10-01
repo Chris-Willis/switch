@@ -224,9 +224,9 @@ function signInFailureReason(result: Result<unknown, LoginError>): TelemetrySign
 }
 
 const SIGNUP_FAILURE: Record<SignupError['kind'], TelemetrySignInFailure> = {
-  disabled: 'failed',
-  email_taken: 'invalid_credentials',
-  invalid: 'invalid_credentials',
+  disabled: 'disabled',
+  email_taken: 'email_taken',
+  invalid: 'invalid',
   failed: 'failed',
 };
 
@@ -510,7 +510,7 @@ export const switchServersController = createRPCController({
     const server = await requireServer(params.serverId);
     const unreachable = hostUnreachable(server);
     if (unreachable) {
-      reportSignIn('password', server, 'unreachable');
+      reportSignIn('signup', server, 'unreachable');
       throw unreachable;
     }
     const result = await signup(server, {
@@ -518,7 +518,7 @@ export const switchServersController = createRPCController({
       password: params.password,
       displayName: params.displayName,
     });
-    reportSignIn('password', server, signupFailureReason(result));
+    reportSignIn('signup', server, signupFailureReason(result));
     return result;
   },
 
