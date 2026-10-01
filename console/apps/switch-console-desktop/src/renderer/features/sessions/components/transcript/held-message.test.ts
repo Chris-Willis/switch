@@ -178,6 +178,22 @@ describe('relay refusals the user has to act on', () => {
     );
   });
 
+  it('prefers the server detail for a machine that needs admin attention', () => {
+    const error = Object.assign(
+      new Error('The cloud machine needs attention. Contact your server administrator.'),
+      {
+        name: 'CloudRelayError',
+        relayCode: 'machine_error',
+        status: 409,
+        wakeAvailable: false,
+      }
+    );
+    const rpcError = new RpcError(serializeRpcError(error));
+    expect(relayRefusalText(rpcError)).toBe(
+      'The cloud machine needs attention. Contact your server administrator.'
+    );
+  });
+
   it('has nothing to add for any other failure', () => {
     expect(relayRefusalText(relayError('worker_waking'))).toBeNull();
     expect(relayRefusalText(relayError('worker_busy'))).toBeNull();

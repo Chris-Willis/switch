@@ -34,9 +34,15 @@ export function relayRefusal(code: keyof typeof REFUSALS): string {
 /** What to tell the user when Switch will not relay a message until they act. */
 export function relayRefusalText(error: unknown): string | null {
   const code = relayCode(error);
-  return code !== undefined && Object.hasOwn(REFUSALS, code)
-    ? REFUSALS[code as keyof typeof REFUSALS]
-    : null;
+  if (code === undefined || !Object.hasOwn(REFUSALS, code)) return null;
+  if (
+    code === 'machine_error' &&
+    error instanceof RpcError &&
+    error.message.includes('Contact your server administrator')
+  ) {
+    return error.message;
+  }
+  return REFUSALS[code as keyof typeof REFUSALS];
 }
 
 /**

@@ -103,6 +103,11 @@ describe('why a held message will not be delivered', () => {
       'The cloud machine is in error.',
     ],
     [
+      'the machine needs attention',
+      agent({}, machine({ state: 'error', error_code: 'machine_needs_attention' })),
+      'Contact your server administrator.',
+    ],
+    [
       'the agent was stopped elsewhere',
       agent({ desired_state: 'stopped', state: 'stopping' }, machine({ state: 'provisioning' })),
       'This agent is stopped.',

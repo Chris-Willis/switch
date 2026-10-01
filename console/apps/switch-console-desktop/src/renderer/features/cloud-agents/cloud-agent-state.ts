@@ -36,7 +36,12 @@ export function cloudHoldBlocker(agent: CloudAgent): string | null {
   const { launch } = agent;
   if (launch.desired_state === 'deleted') return 'This agent is being removed.';
   const phase = cloudAgentPhase(launch, agent.machine);
-  if (phase === 'machine_stopped' || phase === 'machine_error') return relayRefusal(phase);
+  if (phase === 'machine_stopped') return relayRefusal(phase);
+  if (phase === 'machine_error') {
+    return agent.machine?.error_code === 'machine_needs_attention'
+      ? 'The cloud machine needs attention. Contact your server administrator.'
+      : relayRefusal(phase);
+  }
   if (launch.desired_state === 'stopped') return relayRefusal('agent_stopped');
   if (launch.process_state === 'crashed' || launch.error_code === 'agent_crashed')
     return relayRefusal('agent_crashed');
