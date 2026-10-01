@@ -11,10 +11,10 @@ single deployment-level object, started at boot alongside the bridges and living
 in the one switch-core pod (a forced singleton), so there is never a second
 owner of the socket and no leader election to arrange.
 
-It opens the shared socket with the right intents, routes each guild message
-and each global slash invocation to the bridge its guild resolves to (fresh per
-event, no tenant cached — guards G1/G3), and registers the command set globally
-once for the application. Removal / out-of-band-join handling lands after.
+It opens the shared socket with the right intents, routes each guild message,
+each global slash invocation and each press on a card's button to the bridge its
+guild resolves to (fresh per event, no tenant cached — guards G1/G3), and
+registers the command set globally once for the application. Removal / out-of-band-join handling lands after.
 """
 
 from __future__ import annotations
@@ -120,12 +120,13 @@ class DiscordGatewayClient:
             adapter.attach_shared_connection(self._connection)
 
     async def start(self) -> None:
-        # One handler for every guild's messages: each event resolves its guild
-        # to a tenant fresh, so nothing about which tenant a guild belongs to is
-        # cached on the connection (guard G1). The DM handler is deliberately
-        # left unset (guard G4). No commands yet — global slash routing lands in
-        # a later stage.
+        # One handler for every guild's messages, and one for every press on a
+        # card's button: each event resolves its guild to a tenant fresh, so
+        # nothing about which tenant a guild belongs to is cached on the
+        # connection (guard G1). The DM handler is deliberately left unset
+        # (guard G4).
         self._connection.set_guild_message_handler(self._on_guild_message)
+        self._connection.set_interaction_handler(self._on_interaction)
         self._connection.set_guild_lifecycle_handlers(
             on_remove=self._on_guild_remove,
             on_join=self._on_guild_join,
@@ -232,54 +233,80 @@ class DiscordGatewayClient:
         """Route one global slash invocation to the bridge its guild resolves to.
 
         Global commands appear in every guild the bot is in, including ones with
-        no Switch install, so an invocation from an unmapped guild is answered
-        with an ephemeral refusal rather than dropped — Discord shows
-        "interaction failed" for one left unacknowledged. Resolved fresh per
-        event and dispatched with no tenant bound, like the message path (G1).
+        no Switch install, so those are refused rather than dropped.
+        """
+        with no_tenant():
+            adapter = await self._interaction_adapter(
+                interaction,
+                outside_a_server="This command only works inside a server.",
+            )
+            if adapter is not None:
+                await adapter.dispatch_slash(interaction, command, values)
+
+    async def _on_interaction(self, interaction: discord.Interaction) -> None:
+        """Route one press on a card's button to the bridge its guild resolves to.
+
+        The connection hands every interaction here, slash invocations
+        included; those reach `_on_slash` through the command tree instead, so
+        only presses are taken. A press from a guild no longer installed (a
+        card left behind after a disconnect) is refused like a slash command.
+        """
+        if interaction.type is not discord.InteractionType.component:
+            return
+        with no_tenant():
+            adapter = await self._interaction_adapter(
+                interaction,
+                outside_a_server="This button only works inside a server.",
+            )
+            if adapter is not None:
+                await adapter.dispatch_interaction(interaction)
+
+    async def _interaction_adapter(
+        self, interaction: discord.Interaction, *, outside_a_server: str
+    ) -> DiscordAdapter | None:
+        """The bridge an interaction's guild resolves to, attached, or None.
+
+        Resolved fresh per event, and called with no tenant bound, like the
+        message path (G1). An interaction that resolves to no bridge is
+        answered with an ephemeral refusal rather than dropped: Discord shows
+        "interaction failed" for one left unacknowledged.
         """
         guild_id = interaction.guild_id
         if guild_id is None:
-            await self._refuse_slash(
-                interaction, "This command only works inside a server."
+            await self._refuse(interaction, outside_a_server)
+            return None
+        try:
+            target = await self._install_service.resolve_by_workspace(
+                platform=_PLATFORM, workspace_id=str(guild_id)
             )
-            return
-        with no_tenant():
-            try:
-                target = await self._install_service.resolve_by_workspace(
-                    platform=_PLATFORM, workspace_id=str(guild_id)
-                )
-            except (WebhookWorkspaceUnknown, WebhookBridgeUnavailable) as exc:
-                logger.info(
-                    "Refusing Discord slash command for guild %s: %s", guild_id, exc
-                )
-                await self._refuse_slash(
-                    interaction, "Switch is not connected to this server."
-                )
-                return
+        except (WebhookWorkspaceUnknown, WebhookBridgeUnavailable) as exc:
+            logger.info(
+                "Refusing a Discord interaction from guild %s: %s", guild_id, exc
+            )
+            await self._refuse(interaction, "Switch is not connected to this server.")
+            return None
 
-            adapter = target.adapter
-            if not isinstance(adapter, DiscordAdapter):
-                logger.error(
-                    "Bridge %s for Discord guild %s is not a Discord adapter (%s); "
-                    "refusing the slash command",
-                    target.bridge_id,
-                    guild_id,
-                    type(adapter).__name__,
-                )
-                await self._refuse_slash(
-                    interaction, "Switch is not connected to this server."
-                )
-                return
+        adapter = target.adapter
+        if not isinstance(adapter, DiscordAdapter):
+            logger.error(
+                "Bridge %s for Discord guild %s is not a Discord adapter (%s); "
+                "refusing the interaction",
+                target.bridge_id,
+                guild_id,
+                type(adapter).__name__,
+            )
+            await self._refuse(interaction, "Switch is not connected to this server.")
+            return None
 
-            adapter.attach_shared_connection(self._connection)
-            await adapter.dispatch_slash(interaction, command, values)
+        adapter.attach_shared_connection(self._connection)
+        return adapter
 
     @staticmethod
-    async def _refuse_slash(interaction: discord.Interaction, message: str) -> None:
+    async def _refuse(interaction: discord.Interaction, message: str) -> None:
         try:
             await interaction.response.send_message(message, ephemeral=True)
         except discord.HTTPException:
-            logger.exception("Failed to refuse a Discord slash interaction")
+            logger.exception("Failed to refuse a Discord interaction")
 
     async def _on_guild_remove(self, guild: discord.Guild) -> None:
         """The bot was removed from a guild: end that guild's install.

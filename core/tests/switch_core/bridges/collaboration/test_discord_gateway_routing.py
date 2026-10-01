@@ -211,8 +211,17 @@ class _FakeResponse:
         self.refusals.append((content, ephemeral))
 
 
-def _interaction(guild_id: int | None) -> Any:
-    return type("_I", (), {"guild_id": guild_id, "response": _FakeResponse()})()
+def _interaction(
+    guild_id: int | None,
+    kind: discord.InteractionType = discord.InteractionType.application_command,
+) -> Any:
+    return type(
+        "_I", (), {"guild_id": guild_id, "type": kind, "response": _FakeResponse()}
+    )()
+
+
+def _press(guild_id: int | None) -> Any:
+    return _interaction(guild_id, discord.InteractionType.component)
 
 
 def _command() -> Any:
@@ -262,6 +271,68 @@ async def test_a_slash_with_no_guild_is_refused() -> None:
     await gateway._on_slash(interaction, _command(), {})
 
     assert len(interaction.response.refusals) == 1
+
+
+async def test_the_shared_connection_takes_presses_on_cards() -> None:
+    """Without a handler the connection drops every press, and Discord tells
+    the presser it failed."""
+    gateway = _gateway(_FakeInstallService())
+
+    async def _connect(**_: Any) -> None: ...
+
+    gateway.connection.connect = _connect  # type: ignore[method-assign]
+    await gateway.start()
+
+    assert gateway.connection._interaction_handler == gateway._on_interaction
+
+
+async def test_a_press_is_routed_to_its_guilds_bridge() -> None:
+    adapter = _shared_adapter()
+    seen: dict[str, Any] = {}
+
+    async def fake_press(interaction: Any) -> None:
+        seen["tenant_during"] = current_tenant_id()
+        seen["interaction"] = interaction
+
+    adapter.dispatch_interaction = fake_press  # type: ignore[method-assign]
+    service = _FakeInstallService(target=_target(adapter))
+    gateway = _gateway(service)
+
+    press = _press(GUILD_ID)
+    with tenant_scope("tenant-somebody-else"):
+        await gateway._on_interaction(press)
+
+    assert seen["interaction"] is press
+    assert seen["tenant_during"] is None  # G1
+    assert service.calls == [("discord", str(GUILD_ID))]
+    assert press.response.refusals == []
+    assert adapter._connection is gateway.connection
+
+
+async def test_a_press_from_an_uninstalled_guild_is_refused_ephemerally() -> None:
+    """A card left behind after a disconnect is still pressable; the presser is
+    told why nothing happened (and G3)."""
+    gateway = _gateway(
+        _FakeInstallService(error=WebhookWorkspaceUnknown("no tenant holds it"))
+    )
+    press = _press(GUILD_ID)
+
+    await gateway._on_interaction(press)
+
+    assert press.response.refusals == [
+        ("Switch is not connected to this server.", True)
+    ]
+
+
+async def test_a_slash_invocation_is_left_to_the_command_tree() -> None:
+    service = _FakeInstallService()
+    gateway = _gateway(service)
+    interaction = _interaction(GUILD_ID)
+
+    await gateway._on_interaction(interaction)
+
+    assert service.calls == []
+    assert interaction.response.refusals == []
 
 
 def _guild(guild_id: int) -> Any:

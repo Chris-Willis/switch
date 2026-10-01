@@ -735,6 +735,15 @@ class DiscordAdapter(CollaborationAdapter):
         """
         await self._handle_slash_command(interaction, command, values)
 
+    async def dispatch_interaction(self, interaction: discord.Interaction) -> None:
+        """Handle one press on a card's button the shared client routed here.
+
+        The self-registered connection calls the same handler directly; the
+        shared connection receives every guild's presses and routes each by
+        guild, as it does slash invocations.
+        """
+        await self._handle_interaction(interaction)
+
     def _require_connection(self) -> DiscordConnection:
         """The bridge's Gateway connection, or a loud error if it has none.
 
