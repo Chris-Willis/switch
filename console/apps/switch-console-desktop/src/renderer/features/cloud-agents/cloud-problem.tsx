@@ -43,10 +43,10 @@ export function CloudProblem({
   return (
     <div
       role={sleeping ? 'status' : 'alert'}
-      className={`flex items-start gap-1.5 rounded-md bg-background-secondary text-xs ${compact ? 'px-2 py-1' : 'px-3 py-2'} ${sleeping ? 'text-foreground-muted' : 'text-foreground-destructive'}`}
+      className={`flex items-center gap-2 rounded-md bg-background-secondary text-xs ${compact ? 'px-2 py-1.5' : 'px-3 py-2'} ${sleeping ? 'text-foreground-muted' : 'text-foreground-destructive'}`}
     >
-      <Icon className="mt-px size-3.5 shrink-0" />
-      <span className="min-w-0 flex-1">
+      <Icon className="size-3.5 shrink-0" />
+      <span className="min-w-0 flex-1 leading-5">
         {agentStarting
           ? 'The agent is starting.'
           : (PROBLEM_TITLES[problem.code] ?? 'The cloud worker could not be reached.')}{' '}
