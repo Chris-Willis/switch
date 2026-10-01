@@ -2,13 +2,13 @@
 
 There was an eighth exempt lookup, `tenant_of_client`, and it was the most
 called of them: every `PostgresTransport` asked it once, and so did every
-`AgentClient.start`. Both were built from a `clients` row that names the
+`AgentConsumer.start`. Both were built from a `clients` row that names the
 tenant in a column, so the question went to the database with the answer
 already in hand — and a `SECURITY DEFINER` function nobody needs is still a
 function to audit and still one more thing the runtime role's credentials
 reach.
 
-So `ClientBase` and `PostgresTransport` take a `tenant_id` the way they take a
+So `Actor` and `PostgresTransport` take a `tenant_id` the way they take a
 `client_id`. That moves the risk rather than removing it: a lookup that
 resolves the tenant from a primary key cannot be given the wrong one, and a
 parameter can. These tests are what stands in for it.
@@ -38,7 +38,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import switch_core
-from switch_core.clients.client_base import ClientBase, ClientConfig
+from switch_core.clients.actor import Actor, ClientConfig
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.models import TENANT_ZERO_ID, Client, Tenant
@@ -66,7 +66,7 @@ def _factory(session_factory: async_sessionmaker[AsyncSession]) -> ClientFactory
         invites=InviteBus(),
         ephemeral=EphemeralBus(),
     )
-    factory.register("user", ClientBase)
+    factory.register("user", Actor)
     return factory
 
 
@@ -87,7 +87,7 @@ class TestTheFactoryReadsItOffTheRow:
     ) -> None:
         tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
 
-        client = _factory(session_factory).create(_record(tenant_id))
+        client, _ = _factory(session_factory).create(_record(tenant_id))
 
         assert client.tenant_id == tenant_id
 
@@ -101,7 +101,7 @@ class TestTheFactoryReadsItOffTheRow:
         tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
         factory = _factory(session_factory)
 
-        client = factory.create(_record(tenant_id))
+        client, _ = factory.create(_record(tenant_id))
         transport = factory.transport_for(client)
 
         assert transport.tenant_id == tenant_id  # type: ignore[attr-defined]
@@ -114,7 +114,7 @@ class TestTheFactoryReadsItOffTheRow:
         tenant — and silently wrong for the puppet a bridge mints while
         handling another tenant's message."""
         with pytest.raises(TypeError):
-            ClientBase(  # type: ignore[call-arg]
+            Actor(  # type: ignore[call-arg]
                 client_id="c",
                 matrix_user_id="@a:test",
                 display_name="a client",

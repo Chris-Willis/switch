@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from switch_core.clients.client_base import ClientBase
+from switch_core.clients.actor import Actor
 from switch_core.transport import TransportError, UploadResult
 from tests.switch_core.transport.fake import FakeTransport
 
@@ -16,8 +16,8 @@ class _FailingUploadTransport(FakeTransport):
         raise TransportError(f"Failed to upload media '{filename}'")
 
 
-def _client(transport: FakeTransport) -> ClientBase:
-    client = object.__new__(ClientBase)
+def _client(transport: FakeTransport) -> Actor:
+    client = object.__new__(Actor)
     client.transport = transport  # type: ignore[attr-defined]
     client.display_name = "Alice"  # type: ignore[attr-defined]
     client.matrix_user_id = "@alice:switch.local"  # type: ignore[attr-defined]

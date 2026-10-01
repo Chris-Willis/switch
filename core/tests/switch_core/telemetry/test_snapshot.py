@@ -18,7 +18,7 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.clients.admin_messages import AUTO_REPLY_FLAG
-from switch_core.clients.client_base import ClientBase
+from switch_core.clients.consumer import Consumer
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -1191,7 +1191,7 @@ def test_every_event_type_is_decided_spoken_or_not() -> None:
     """A new room event type lands in the message log by default. Undecided,
     it would either inflate the message counts or be silently left out of
     them; this makes whoever adds one say which."""
-    known = set(ClientBase._EVENT_DISPATCH) | {"m.room.message", MEMBERSHIP_EVENT_TYPE}
+    known = set(Consumer._EVENT_DISPATCH) | {"m.room.message", MEMBERSHIP_EVENT_TYPE}
     spoken = set(SPOKEN_EVENT_TYPES)
 
     assert not (known - spoken - NOT_SPOKEN), (

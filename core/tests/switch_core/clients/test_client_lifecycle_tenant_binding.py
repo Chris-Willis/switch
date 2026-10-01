@@ -70,7 +70,8 @@ async def test_a_client_task_runs_with_no_tenant_bound(
     service = _service(session_factory, MagicMock())
 
     with tenant_scope(room_tenant):
-        service._start_task("client-1", _RecordingClient(seen))  # type: ignore[arg-type]
+        recording = _RecordingClient(seen)
+        service._start_task("client-1", recording, recording)  # type: ignore[arg-type]
         await asyncio.sleep(0)
 
     assert seen == [None], (
@@ -88,7 +89,7 @@ async def test_a_client_task_does_not_keep_the_room_it_was_created_in(
     service = _service(session_factory, MagicMock())
 
     with log_context(room_id="room-where-it-was-minted"):
-        service._start_task("client-1", client)  # type: ignore[arg-type]
+        service._start_task("client-1", client, client)  # type: ignore[arg-type]
         await asyncio.sleep(0)
 
     assert client.room_seen is None
@@ -120,7 +121,10 @@ async def test_start_all_binds_nothing_around_starting_each_client(
 
     seen: list[str | None] = []
     client_factory = MagicMock()
-    client_factory.create.side_effect = lambda record: _RecordingClient(seen)
+    client_factory.create.side_effect = lambda record: (
+        (recording := _RecordingClient(seen)),
+        recording,
+    )
 
     service = _service(session_factory, client_factory)
     await service.start_all()

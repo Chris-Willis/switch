@@ -161,7 +161,7 @@ class _AgentRegistry:
     that lookup is where the cross-tenant bug lived and a stand-in would have
     reimplemented the fix rather than exercised it. Resolving an agent to its
     running client is not tenant-sensitive — an agent id is unique across the
-    deployment — and building real `AgentClient`s to say so would add a
+    deployment — and building real `AgentConsumer`s to say so would add a
     transport and a sync loop to a test about bindings.
     """
 
@@ -201,7 +201,9 @@ class _StubClient:
 
 class _StubFactory:
     def create(self, record: Client) -> Any:
-        return _StubClient(record)
+        # The stub reads for itself: it is the actor and its own consumer.
+        client = _StubClient(record)
+        return client, client
 
 
 def _registry(

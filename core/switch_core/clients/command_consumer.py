@@ -1,23 +1,18 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Literal, Unpack
+from typing import TYPE_CHECKING, Literal
 
 from switch_core.agent_display_name import agent_label_with_identifier
 from switch_core.bridges.agent.commands import dispatch_admin_command
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
-    PLATFORM_MARKER,
     AdminMessageType,
-    OnBehalfOf,
     admin_extra_content,
 )
-from switch_core.clients.client_base import (
-    ClientBase,
-    ClientBaseKwargs,
-    ClientConfig,
-)
+from switch_core.clients.consumer import Consumer
 from switch_core.clients.mentions import (
     mention_regex,
     strip_emphasis,
@@ -40,9 +35,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class AdminClient(ClientBase[ClientConfig]):
-    """The always-present system client that lives in every room and emits
-    first-class admin/system messages.
+class CommandConsumer(Consumer[SystemActor]):
+    """Reads every room for Switch itself, and answers through its SystemActor.
 
     Two jobs:
       1. Observe room messages and post heads-up notices when a message tags an
@@ -51,13 +45,14 @@ class AdminClient(ClientBase[ClientConfig]):
          render their results as admin messages.
 
     Every admin message carries the admin marker so it renders natively per
-    bridge and never triggers another client (loop-safe). The admin client is
-    not an agent — it holds no Agent row — so it reasons purely from the stores.
+    bridge and never triggers another member (loop-safe). The system is not an
+    agent — it holds no Agent row — so it reasons purely from the stores.
     """
 
     def __init__(
         self,
         *,
+        actor: SystemActor,
         agent_store: AgentStore,
         room_store: RoomStore,
         room_role_store: RoomRoleStore,
@@ -67,9 +62,8 @@ class AdminClient(ClientBase[ClientConfig]):
         agent_session_store: AgentSessionStore,
         room_service: RoomService,
         frontend_base_url: str | None,
-        **kwargs: Unpack[ClientBaseKwargs[ClientConfig]],
     ) -> None:
-        super().__init__(**kwargs)
+        super().__init__(actor=actor)
         self._agent_store = agent_store
         self._room_store = room_store
         self._room_role_store = room_role_store
@@ -119,70 +113,13 @@ class AdminClient(ClientBase[ClientConfig]):
     ) -> None:
         """Post a command result as an admin/system message (renders natively
         per bridge via the admin rail)."""
-        await self.send_message(
+        await self.actor.send_message(
             room_id,
             body,
             format=format,
             thread_root_id=thread_root_id,
             extra_content=admin_extra_content(AdminMessageType.COMMAND_RESULT),
             metered=False,
-        )
-
-    # ── Platform messages ───────────────────────────────────────────────────
-
-    async def send_platform_message(
-        self,
-        room_id: str,
-        body: str,
-        *,
-        thread_root_id: str | None = None,
-        on_behalf_of: OnBehalfOf | None = None,
-        reply_in_channel: bool = False,
-    ) -> str | None:
-        """Send an addressed message as the Switch platform.
-
-        Unlike an admin notice it carries no ADMIN_MARKER and IS addressed to
-        agents. ``on_behalf_of`` names the person whose authority it carries:
-        each addressed agent applies its policy to that person, so the
-        platform can say what they could have said and nothing more. Without
-        it the message is the platform's own, which agents deny unless a rule
-        opts them in.
-        """
-        marker_value: dict[str, object] = {}
-        if on_behalf_of is not None:
-            marker_value["on_behalf_of"] = {
-                "user_id": on_behalf_of.user_id,
-                "name": on_behalf_of.name,
-                **(
-                    {"agent_id": on_behalf_of.agent_id}
-                    if on_behalf_of.agent_id is not None
-                    else {}
-                ),
-            }
-        if reply_in_channel:
-            # Only meaningful for a threaded message: the agents it addresses
-            # answer at the top level instead of under it.
-            marker_value["reply_in_channel"] = True
-        return await self.send_message(
-            room_id,
-            body,
-            format="markdown",
-            thread_root_id=thread_root_id,
-            extra_content={PLATFORM_MARKER: marker_value},
-            metered=False,
-        )
-
-    # ── Admin notices ─────────────────────────────────────────────────────────
-
-    async def send_notice(self, room_id: str, body: str) -> None:
-        """Post a system notice about the room's run: that it was paused,
-        continued or stopped. Like every admin message it addresses nobody,
-        so no agent wakes on it."""
-        await self._send_admin(
-            room_id,
-            body,
-            message_type=AdminMessageType.RUN_NOTICE,
-            thread_root_id=None,
         )
 
     async def _warn_unreachable_roles(
@@ -219,7 +156,7 @@ class AdminClient(ClientBase[ClientConfig]):
                 f"your message may go unanswered. Run `!roles` to see "
                 f"availability, or have an agent assume it."
             )
-            await self._send_admin(
+            await self.actor.send_admin(
                 room.room_id,
                 notice,
                 message_type=AdminMessageType.UNREACHABLE_ROLE,
@@ -275,7 +212,7 @@ class AdminClient(ClientBase[ClientConfig]):
             f"reach {pronoun}. Add the agent from the room's detail page in the "
             f"gateway, or have an agent with room-management tools invite it."
         )
-        await self._send_admin(
+        await self.actor.send_admin(
             room.room_id,
             notice,
             message_type=AdminMessageType.ABSENT_AGENT,
@@ -284,25 +221,6 @@ class AdminClient(ClientBase[ClientConfig]):
         )
 
     # ── Helpers ────────────────────────────────────────────────────────────────
-
-    async def _send_admin(
-        self,
-        room_id: str,
-        body: str,
-        *,
-        message_type: AdminMessageType,
-        thread_root_id: str | None,
-        mentions: list[str] | None = None,
-    ) -> None:
-        await self.send_message(
-            room_id,
-            body,
-            format="markdown",
-            mentions=mentions,
-            thread_root_id=thread_root_id,
-            extra_content=admin_extra_content(message_type),
-            metered=False,
-        )
 
     def _sender_handle(self, event: InboundMessage) -> str:
         """The @-handle to tag the message sender with.

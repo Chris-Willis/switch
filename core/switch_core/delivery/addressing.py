@@ -13,7 +13,7 @@ ordinary room chatter when so. Nothing here sends anything; deciding is all it
 does, and the refusal wording travels back with the decision so the caller does
 not have to re-derive why.
 
-This used to live on `AgentClient`, where every answer was reached through a
+This used to live on the agent client (now `AgentConsumer`), where every answer was reached through a
 live Matrix client. It takes a message as data instead — a sender, a body, a
 content dict — so the same rules decide for a message read out of the log as
 for one that arrived on the bus. That equivalence is the point: two code paths

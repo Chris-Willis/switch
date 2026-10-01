@@ -43,7 +43,7 @@ async def _no_text_answer(_msg: object) -> None:
 
 
 class _FakePuppet:
-    """Stands in for a ClientBase puppet whose join lands after the invite."""
+    """Stands in for a Actor puppet whose join lands after the invite."""
 
     def __init__(self) -> None:
         self.matrix_user_id = "@ext_alice:switch.local"

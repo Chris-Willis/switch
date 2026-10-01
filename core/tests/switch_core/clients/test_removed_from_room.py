@@ -19,8 +19,9 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
-from switch_core.clients.agent_client import AgentClient, RoomMeta
-from switch_core.clients.client_base import ClientBase
+from switch_core.clients.actor import Actor
+from switch_core.clients.agent_consumer import AgentConsumer, RoomMeta
+from switch_core.clients.consumer import Consumer
 from switch_core.transport import InboundMembership, RoomRef
 
 AGENT = "agent-1"
@@ -58,7 +59,7 @@ def _leave(transport_room_id: str) -> InboundMembership:
 def _client(
     buffer: EventBuffer, connections: AgentConnectionRegistry
 ) -> SimpleNamespace:
-    """A minimal fake `self` for the unbound `AgentClient.on_removed`."""
+    """A minimal fake `self` for the unbound `AgentConsumer.on_removed`."""
     meta = {
         "!left:test": RoomMeta(
             room_id=LEFT,
@@ -80,7 +81,7 @@ def _client(
 
 
 async def _removed(stub: SimpleNamespace, transport_room_id: str) -> None:
-    await AgentClient.on_removed(
+    await AgentConsumer.on_removed(
         stub,  # type: ignore[arg-type]
         RoomRef(room_id=transport_room_id),
         _leave(transport_room_id),
@@ -137,13 +138,15 @@ class _CapturingTransport:
         self.handlers = handlers
 
 
-class _BareClient(ClientBase):
-    """Enough of a client for `setup` to run and a hook to be observed."""
+class _BareClient(Consumer):
+    """Enough of a consumer for `setup` to run and a hook to be observed."""
 
     def __init__(self, transport: _CapturingTransport) -> None:
-        self.matrix_user_id = "@agent:test"
+        actor = Actor.__new__(Actor)
+        actor.matrix_user_id = "@agent:test"
         # `_transport` is a property over this, and raises until it is set.
-        self.transport = transport
+        actor.transport = transport
+        self.actor = actor
         self._self_join_dispatched: set[str] = set()
         self.removed: list[str] = []
 

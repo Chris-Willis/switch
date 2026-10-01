@@ -62,7 +62,7 @@ class RoomStore:
         every inbound-event path that resolves a room this way (provisioning,
         the Postgres transport, admin commands). Every caller that reaches
         this by now already knows its tenant — `PostgresTransport` and the
-        two `ClientBase` subclasses carry it on the row they were built from,
+        two `Actor` subclasses carry it on the row they were built from,
         and `PostgresProvisioning` is only ever called from `room_service`
         inside a `tenant_scope` bound to the room it is acting on — so there
         is no bootstrap case left that needs an unfiltered fallback, the same

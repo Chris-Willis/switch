@@ -20,7 +20,7 @@ from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.clients.admin_client import AdminClient
+from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import OnBehalfOf
 from switch_core.db.models import (
     Agent,
@@ -1170,7 +1170,7 @@ async def test_endpoint_json_body(env):
 # ── kickoff ─────────────────────────────────────────────────────────────────
 
 
-class FakeAdminClient(AdminClient):
+class FakeSystemActor(SystemActor):
     """Records platform sends; never touches a transport."""
 
     def __init__(self) -> None:  # noqa: D107 - test double, no super().__init__
@@ -1214,7 +1214,7 @@ class FakeAgentClient:
 
 
 class FakeLifecycle:
-    def __init__(self, admin: AdminClient | None) -> None:
+    def __init__(self, admin: SystemActor | None) -> None:
         self.admin = admin
         self.agent_clients: dict[str, FakeAgentClient] = {}
 
@@ -1228,7 +1228,7 @@ class FakeLifecycle:
 
 
 def _with_kickoff(
-    env, admin: AdminClient | None
+    env, admin: SystemActor | None
 ) -> tuple[RoomYamlService, FakeLifecycle]:
     lifecycle = FakeLifecycle(admin)
     svc = _svc(env)
@@ -1253,7 +1253,7 @@ kickoff: |
 async def test_provision_kickoff_posts_as_platform_on_behalf_of_creator(env):
     """The kickoff goes out through the admin client with the creator named
     in the marker, after interpolation, and the room reports no failure."""
-    admin = FakeAdminClient()
+    admin = FakeSystemActor()
     svc, _ = _with_kickoff(env, admin)
     spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
     result = await svc.provision(
@@ -1285,7 +1285,7 @@ async def test_provision_kickoff_posts_as_platform_on_behalf_of_creator(env):
 
 @pytest.mark.asyncio
 async def test_provision_kickoff_send_failure_is_reported_not_fatal(env):
-    admin = FakeAdminClient()
+    admin = FakeSystemActor()
     admin.send_error = RuntimeError("transport down")
     svc, _ = _with_kickoff(env, admin)
     spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
@@ -1302,7 +1302,7 @@ async def test_provision_kickoff_send_failure_is_reported_not_fatal(env):
 async def test_provision_kickoff_none_event_id_is_a_failure(env):
     """The admin client answers None when the send did not happen; that is a
     failure, not a silent success."""
-    admin = FakeAdminClient()
+    admin = FakeSystemActor()
     admin.send_returns = None
     svc, _ = _with_kickoff(env, admin)
     spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
@@ -1318,7 +1318,7 @@ async def test_provision_kickoff_none_event_id_is_a_failure(env):
 async def test_provision_kickoff_waits_for_agents_and_reports_the_late(env):
     """An agent whose client has not joined by the timeout is named in the
     failure; the kickoff is still posted for the ones that did."""
-    admin = FakeAdminClient()
+    admin = FakeSystemActor()
     svc, lifecycle = _with_kickoff(env, admin)
     async with env["session_factory"]() as session:
         agent = await AgentStore().get_by_name(session, "claude-code.alice")
@@ -1335,7 +1335,7 @@ async def test_provision_kickoff_waits_for_agents_and_reports_the_late(env):
 
 @pytest.mark.asyncio
 async def test_provision_kickoff_not_posted_when_platform_never_joins(env):
-    admin = FakeAdminClient()
+    admin = FakeSystemActor()
     admin.joined = False
     svc, _ = _with_kickoff(env, admin)
     spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
@@ -1364,7 +1364,7 @@ async def test_provision_kickoff_without_admin_client_is_reported(env):
 
 @pytest.mark.asyncio
 async def test_provision_without_kickoff_posts_nothing(env):
-    admin = FakeAdminClient()
+    admin = FakeSystemActor()
     svc, _ = _with_kickoff(env, admin)
     spec, kickoff = svc.parse("room:\n  name: quiet\n  description: d\n")
     assert kickoff is None

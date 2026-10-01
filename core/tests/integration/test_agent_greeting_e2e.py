@@ -1,7 +1,7 @@
 """End-to-end test for the agent self-join greeting over the real transport.
 
 Drives the genuine path: RoomService creates a room and invites the agent →
-the agent's AgentClient sees the invite → auto-joins → on_self_join posts the
+the agent's AgentConsumer sees the invite → auto-joins → on_self_join posts the
 greeting. The assertion reads the room timeline back out of the messages table,
 so nothing is inferred from in-process state.
 """

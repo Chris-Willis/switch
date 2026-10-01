@@ -58,7 +58,9 @@ class _StubClient:
 
 class _StubFactory:
     def create(self, record: Client) -> Any:
-        return _StubClient(record)
+        # The stub reads for itself: it is the actor and its own consumer.
+        client = _StubClient(record)
+        return client, client
 
 
 def _service(

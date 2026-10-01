@@ -1,7 +1,7 @@
 """End-to-end test for the room_join event over the real transport.
 
 Drives the genuine path: RoomService adds an agent to a room → the invite reaches
-the joiner → the watcher's AgentClient receive loop sees the arrival →
+the joiner → the watcher's AgentConsumer receive loop sees the arrival →
 on_member_event enqueues a `room_join` AgentEvent → it is read off the event
 buffer. No mocks, no HTTP layer.
 """
@@ -59,7 +59,7 @@ async def test_join_emits_room_join_event(harness: Harness) -> None:
     await harness.client_for(joiner.agent_id).wait_ready()
 
     # Room with only the watcher, so the joiner's join is strictly later than the
-    # watcher's own join-time (the AgentClient filters out events predating it).
+    # watcher's own join-time (the AgentConsumer filters out events predating it).
     result = await harness.room_service.create_room(
         RoomCreateConfig(
             name="e2e-room-join",

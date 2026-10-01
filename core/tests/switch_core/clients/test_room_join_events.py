@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 from switch_core.bridges.agent.protocol.types import AgentEvent, RoomJoinPayload
-from switch_core.clients.agent_client import AgentClient, RoomMeta
+from switch_core.clients.agent_consumer import AgentConsumer, RoomMeta
 from switch_core.transport import InboundMembership, RoomRef
 
 
@@ -45,7 +45,7 @@ def _client(
     receives: bool = True,
     known: dict[str, str] | None = None,
 ) -> SimpleNamespace:
-    """A minimal fake `self` for the unbound AgentClient.on_member_event.
+    """A minimal fake `self` for the unbound AgentConsumer.on_member_event.
 
     Stubs the event queue, agent identity, room-meta resolution, and the room
     store / session factory so the handler can run without a DB or live Matrix
@@ -77,7 +77,7 @@ def _client(
         session_factory=_session_factory,
     )
     # Bound, so the handler resolves the name through the real implementation.
-    stub._member_name = lambda session, event: AgentClient._member_name(
+    stub._member_name = lambda session, event: AgentConsumer._member_name(
         stub, session, event
     )
     return stub
@@ -108,7 +108,7 @@ def _member_event(
 
 
 async def _run(client: SimpleNamespace, event: InboundMembership) -> None:
-    await AgentClient.on_member_event(client, RoomRef("!matrix:switch.local"), event)
+    await AgentConsumer.on_member_event(client, RoomRef("!matrix:switch.local"), event)
 
 
 class TestRoomJoinEnqueue:

@@ -7,7 +7,7 @@ over the invite bus → the transport drops the subscription and tells its clien
 it.
 
 The unit tests cover each of those links. What only this can show is that they
-are joined: severing the one line in `ClientBase.setup` that wires the removal
+are joined: severing the one line in `Actor.setup` that wires the removal
 handler to the transport left the whole unit suite green while a kick reached
 nothing.
 

@@ -119,7 +119,7 @@ if TYPE_CHECKING:
     from switch_core.bridges.collaboration.lifecycle_service import (
         CollaborationBridgeLifecycleService,
     )
-    from switch_core.clients.client_base import ClientBase
+    from switch_core.clients.actor import Actor
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
     from switch_core.config import SwitchConfig
     from switch_core.db.stores.agent_session_store import AgentSessionStore
@@ -1180,7 +1180,7 @@ class AgentCore:
         await self._post_agent_notice(client, matrix_room_id, f"🎭 {action}.")
 
     async def _resolve_thread_root(
-        self, client: ClientBase[Any], matrix_room_id: str, thread_id: str
+        self, client: Actor[Any], matrix_room_id: str, thread_id: str
     ) -> str:
         """Resolve a caller-supplied thread_id to the actual thread root.
 
@@ -2051,7 +2051,7 @@ class AgentCore:
         without the same check this call would hand over events from a room
         the agent has since been removed from.
 
-        `AgentClient.on_removed` already empties the buffer of a removed
+        `AgentConsumer.on_removed` already empties the buffer of a removed
         room's events, so this is the second of two answers. It is the
         authoritative one: that signal is in-process, and this reads the table
         the removal wrote.

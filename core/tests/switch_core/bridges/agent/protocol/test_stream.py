@@ -728,7 +728,7 @@ async def test_a_resumed_stream_does_not_replay_a_room_the_agent_was_removed_fro
     buffer.enqueue(AGENT, ROOM_A, _message("said before the removal"))
     buffer.enqueue(AGENT, ROOM_B, _message("still a member here", room=ROOM_B))
 
-    # What a kick does, through the two calls `AgentClient.on_removed` makes.
+    # What a kick does, through the two calls `AgentConsumer.on_removed` makes.
     buffer.drop_room(AGENT, ROOM_A)
     registry.release_room_everywhere(AGENT, ROOM_A)
 

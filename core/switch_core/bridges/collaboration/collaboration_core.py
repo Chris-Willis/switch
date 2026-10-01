@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -33,13 +33,13 @@ from switch_core.bridges.collaboration.models import (
 )
 from switch_core.bridges.collaboration.session.refusal import InboundActor, Refused
 from switch_core.bridges.collaboration.session.renderers import INTERRUPT_ACTION
+from switch_core.clients.actor import Actor, ClientConfig
 from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
     PLATFORM_MARKER,
     AdminMessageType,
     platform_on_behalf_of,
 )
-from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.mentions import mention_regex, strip_emphasis
 from switch_core.db.models import BridgeMessageMap, ExternalUser
 from switch_core.db.session_scope import tenant_session
@@ -87,6 +87,7 @@ if TYPE_CHECKING:
         AgentConnectionRegistry,
     )
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
+    from switch_core.clients.workspace_consumer import WorkspaceConsumer
     from switch_core.room_service import RoomService
 
 
@@ -1349,7 +1350,7 @@ class CollaborationCore:
         external_username: str,
         room_id: str,
         matrix_room_id: str,
-    ) -> ClientBase[ClientConfig] | None:
+    ) -> Actor[ClientConfig] | None:
         """Get-or-create the puppet for this external user and ensure it has
         actually joined the room. Returns the running puppet, or None if it
         couldn't be brought up or didn't join in time. Idempotent."""
@@ -1906,7 +1907,7 @@ class CollaborationCore:
         self,
         room: RoomRef,
         event: TransportMedia,
-        client: ClientBase[Any],
+        client: WorkspaceConsumer,
     ) -> None:
         """Relay a room media event (an agent-sent image/file) out to the
         external channel.
@@ -1945,7 +1946,7 @@ class CollaborationCore:
                 await self._relay_outbound_media(channel_id, event, client)
 
     async def _relay_outbound_media(
-        self, channel_id: str, event: TransportMedia, client: ClientBase[Any]
+        self, channel_id: str, event: TransportMedia, client: WorkspaceConsumer
     ) -> None:
         event_content = event.content
         sender_name = event.sender_name
@@ -2122,7 +2123,7 @@ class CollaborationCore:
             )
 
     async def _download_matrix_media(
-        self, client: ClientBase[Any], mxc: str | None, filename: str
+        self, client: WorkspaceConsumer, mxc: str | None, filename: str
     ) -> bytes | None:
         """Fetch an mxc URI's bytes via the bridge client, or None on failure
         (logged — the caller posts a disclosed fallback, never a silent drop)."""

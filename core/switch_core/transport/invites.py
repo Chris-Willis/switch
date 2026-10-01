@@ -1,7 +1,7 @@
 """How a client is told its membership of a room changed.
 
 Over Matrix this was an event: the admin invited a user, the user's sync loop
-saw the invitation and `ClientBase.on_invite` joined. Nothing else had to know
+saw the invitation and `Consumer.on_invite` joined. Nothing else had to know
 the order things happened in, because the invitation was durable and the client
 picked it up whenever it next synced.
 

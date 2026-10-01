@@ -41,8 +41,8 @@ from switch_core.bridges.agent.protocol.types import (
     TaskProtocolConfig,
 )
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.clients.agent_client import AgentClient
-from switch_core.clients.client_base import ClientBase
+from switch_core.clients.actor import Actor, AgentActor, HumanActor
+from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.engine import create_unpooled_engine
@@ -260,7 +260,7 @@ class BenchServer:
             client = await self._await_client(agent.agent_id, deadline)
             await client.wait_ready()
 
-    async def _await_client(self, agent_id: str, deadline: float) -> AgentClient:
+    async def _await_client(self, agent_id: str, deadline: float) -> AgentConsumer:
         while asyncio.get_event_loop().time() < deadline:
             client = self.client_lifecycle.get_by_agent_id(agent_id)
             if client is not None:
@@ -484,7 +484,8 @@ async def _serve(
     )
     client_factory.register(
         "agent",
-        AgentClient,
+        AgentActor,
+        AgentConsumer,
         event_buffer=event_buffer,
         agent_store=session_env.agent_store,
         room_store=session_env.room_store,
@@ -497,8 +498,8 @@ async def _serve(
         connections=connections,
         frontend_base_url=config.frontend_base_url,
     )
-    client_factory.register("user", ClientBase)
-    client_factory.register("bridge", ClientBase)
+    client_factory.register("user", HumanActor)
+    client_factory.register("bridge", Actor)
 
     client_lifecycle = ClientLifecycleService(
         matrix_admin=provisioning,

@@ -24,7 +24,7 @@ from sqlalchemy import func, select
 
 from switch_core.addressing import can_address, parse_policy
 from switch_core.agent_refusals import AgentRefused
-from switch_core.clients.admin_client import AdminClient
+from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import OnBehalfOf
 from switch_core.clients.mentions import mention_regex, strip_emphasis
 
@@ -457,11 +457,11 @@ class RunService:
         except Exception:  # noqa: BLE001 - the run is running either way
             logger.warning("Could not wake the agent in %s", room.id, exc_info=True)
 
-    def _admin(self, room: Room) -> AdminClient | None:
+    def _admin(self, room: Room) -> SystemActor | None:
         if self._client_lifecycle is None:
             return None
         admins = self._client_lifecycle.get_by_type("admin", room.tenant_id)
-        return next((c for c in admins if isinstance(c, AdminClient)), None)
+        return next((c for c in admins if isinstance(c, SystemActor)), None)
 
     async def _notice(self, room: Room, text: str) -> None:
         """Best effort: the state has changed whether or not the note lands."""

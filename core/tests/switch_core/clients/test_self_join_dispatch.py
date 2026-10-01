@@ -11,20 +11,23 @@ from __future__ import annotations
 
 import pytest
 
-from switch_core.clients.client_base import ClientBase
+from switch_core.clients.actor import Actor
+from switch_core.clients.consumer import Consumer
 from switch_core.transport import InboundMembership, RoomRef
 
 MATRIX_ROOM_ID = "!matrix:switch.local"
 SELF = "@switch-agent-1:switch.local"
 
 
-class _Client(ClientBase):
+class _Client(Consumer):
     def __init__(self) -> None:
-        self.matrix_user_id = SELF
-        self.client_id = "client-1"
-        self.display_name = "client one"
-        self.room_join_times = {}
-        self._room_joined_events = {}
+        actor = Actor.__new__(Actor)
+        actor.matrix_user_id = SELF
+        actor.client_id = "client-1"
+        actor.display_name = "client one"
+        actor.room_join_times = {}
+        actor._room_joined_events = {}
+        self.actor = actor
         self._self_join_dispatched = set()
         self._startup_ts = 1000
         self.self_joins: list[str] = []
@@ -63,7 +66,7 @@ def _member_event(
 async def test_self_join_fires_after_the_client_joined_itself() -> None:
     client = _Client()
     # Auto-accepting the invite records membership before sync reports the join.
-    client._mark_joined(MATRIX_ROOM_ID, 1500)
+    client.actor.mark_joined(MATRIX_ROOM_ID, 1500)
 
     await client._handle_member_event(_room(), _member_event())
 

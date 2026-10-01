@@ -20,6 +20,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     BridgeOperationError,
 )
+from switch_core.clients.actor import Actor
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.workspace_consumer import (
     WorkspaceConsumer,
@@ -931,14 +932,16 @@ class CollaborationBridgeLifecycleService:
 
             workspace_consumer = WorkspaceConsumer(
                 collaboration_core=collaboration_core,
-                client_id=workspace_consumer_record.id,
-                tenant_id=workspace_consumer_record.tenant_id,
-                matrix_user_id=workspace_consumer_record.matrix_user_id,
-                display_name=workspace_consumer_record.display_name,
-                session_factory=self._session_factory,
-                client_store=self._client_store,
-                config=WorkspaceConsumerConfig(bridge_id=bridge_id),
-                transport_factory=self._client_factory.transport_for,
+                actor=Actor(
+                    client_id=workspace_consumer_record.id,
+                    tenant_id=workspace_consumer_record.tenant_id,
+                    matrix_user_id=workspace_consumer_record.matrix_user_id,
+                    display_name=workspace_consumer_record.display_name,
+                    session_factory=self._session_factory,
+                    client_store=self._client_store,
+                    config=WorkspaceConsumerConfig(bridge_id=bridge_id),
+                    transport_factory=self._client_factory.transport_for,
+                ),
             )
 
             for listener in self._bridge_starting_listeners:

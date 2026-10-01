@@ -88,7 +88,7 @@ _ALLOWED_MODULES = {
     # the tenant it produced, so a wrong answer here is a miss rather than a
     # cross-tenant read.
     "switch_core.bridges.collaboration.install_service",
-    # `switch_core.transport.postgres` and `switch_core.clients.agent_client`
+    # `switch_core.transport.postgres` and `switch_core.clients.agent_consumer`
     # came off this list with `tenant_of_client`: both were built from a
     # `clients` row that already named the tenant, so they carry it instead of
     # asking for it.
@@ -130,8 +130,8 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.bridges.collaboration.collaboration_core",
     "switch_core.bridges.collaboration.lifecycle_service",
     "switch_core.bridges.agent.server_connectors.lifecycle",
-    "switch_core.clients.agent_client",
-    "switch_core.clients.admin_client",
+    "switch_core.clients.agent_consumer",
+    "switch_core.clients.command_consumer",
     "switch_core.clients.client_lifecycle_service",
     "switch_core.provisioning.postgres",
     "switch_core.room_service",

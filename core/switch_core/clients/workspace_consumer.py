@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Unpack
+from typing import TYPE_CHECKING
 
-from switch_core.clients.client_base import (
-    ClientBase,
-    ClientBaseKwargs,
-    ClientConfig,
-)
+from switch_core.clients.actor import Actor, ClientConfig
+from switch_core.clients.consumer import Consumer
 from switch_core.transport import InboundMedia, InboundMessage, RoomRef
 
 if TYPE_CHECKING:
@@ -20,16 +17,23 @@ class WorkspaceConsumerConfig(ClientConfig):
     bridge_id: str
 
 
-class WorkspaceConsumer(ClientBase[WorkspaceConsumerConfig]):
-    config_class = WorkspaceConsumerConfig
+class WorkspaceConsumer(Consumer[Actor[WorkspaceConsumerConfig]]):
+    """Reads every room a collaboration bridge mirrors, for its workspace.
+
+    One per bridge (client type `bridge`). Everything new in those rooms is
+    handed to the bridge's `CollaborationCore`, which drops what came from the
+    platform and posts the rest to it. Its actor is the bridge's own identity
+    in the room; it writes nothing, because the people on the platform write
+    through their own `HumanActor`s.
+    """
 
     def __init__(
         self,
         *,
+        actor: Actor[WorkspaceConsumerConfig],
         collaboration_core: CollaborationCore,
-        **kwargs: Unpack[ClientBaseKwargs[WorkspaceConsumerConfig]],
     ) -> None:
-        super().__init__(**kwargs)
+        super().__init__(actor=actor)
         self._collaboration_core = collaboration_core
 
     async def on_message(self, room: RoomRef, event: InboundMessage) -> None:

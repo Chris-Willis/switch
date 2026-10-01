@@ -80,11 +80,11 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramConnectionConfig,
 )
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.clients.admin_client import AdminClient
-from switch_core.clients.agent_client import AgentClient
-from switch_core.clients.client_base import ClientBase
+from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
+from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
+from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.config import SwitchConfig
 from switch_core.crypto import encrypt_token
 from switch_core.db.boot_lock import boot_lock
@@ -489,7 +489,8 @@ async def run(config: SwitchConfig) -> None:
     )
     client_factory.register(
         "agent",
-        AgentClient,
+        AgentActor,
+        AgentConsumer,
         event_buffer=event_buffer,
         agent_store=agent_store,
         room_store=room_store,
@@ -502,8 +503,10 @@ async def run(config: SwitchConfig) -> None:
         connections=connections,
         frontend_base_url=config.frontend_base_url,
     )
-    client_factory.register("user", ClientBase)
-    client_factory.register("bridge", ClientBase)
+    # Members that only write: a person on another platform, and a bridge's own
+    # identity (its reader, the WorkspaceConsumer, is built by the bridge).
+    client_factory.register("user", HumanActor)
+    client_factory.register("bridge", Actor)
 
     # ── Client lifecycle ─────────────────────────────────────────────────────
     client_lifecycle = ClientLifecycleService(
@@ -549,12 +552,13 @@ async def run(config: SwitchConfig) -> None:
     )
     collab_lifecycle._room_service = room_service
 
-    # Registered after RoomService is built: the admin client owns the
+    # Registered after RoomService is built: the command consumer owns the
     # `!invite-agent` command, which reuses RoomService to add agents to the
     # room (and any bridged channel).
     client_factory.register(
         "admin",
-        AdminClient,
+        SystemActor,
+        CommandConsumer,
         agent_store=agent_store,
         room_store=room_store,
         room_role_store=room_role_store,

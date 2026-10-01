@@ -68,7 +68,7 @@ class TestGetByMatrixRoomIdMultiTenant:
 
 class TestGetByMatrixRoomIdRequiresATenant:
     """No caller left reaches `get_by_matrix_room_id` with nothing bound
-    (CHOO-2623): `PostgresTransport` and the two `ClientBase` subclasses carry
+    (CHOO-2623): `PostgresTransport` and the two `Actor` subclasses carry
     their own tenant, and `PostgresProvisioning` is only ever invoked from
     inside a `tenant_scope` bound to the room it acts on. An unfiltered
     fallback for "nothing bound" therefore has no legitimate caller left to

@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.clients.agent_client import AgentClient
-from switch_core.clients.client_base import ClientBase, ClientConfig
+from switch_core.clients.actor import Actor, AgentActor, ClientConfig
 from switch_core.clients.client_factory import ClientFactory
+from switch_core.clients.consumer import Consumer
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Client, Tenant
 from switch_core.db.session_scope import tenant_session
@@ -39,10 +40,13 @@ class ClientLifecycleService:
         self._client_factory = client_factory
         self._session_factory = session_factory
         self._config = config
-        self._clients: dict[str, ClientBase[ClientConfig]] = {}
+        # Every running row is an actor; the ones that read rooms also have a
+        # consumer, keyed by the same client id.
+        self._clients: dict[str, Actor[ClientConfig]] = {}
+        self._consumers: dict[str, Consumer[Any]] = {}
         self._client_types: dict[str, str] = {}
-        # Which tenant each running client's row belongs to. The client
-        # carries the same value (`ClientBase.tenant_id`); this is the index
+        # Which tenant each running client's row belongs to. The actor
+        # carries the same value (`Actor.tenant_id`); this is the index
         # on it, keyed like `_clients` and `_client_types` so the three are
         # populated and emptied together and a caller picking clients *out* of
         # a registry that holds every tenant's at once can say which tenant it
@@ -179,11 +183,7 @@ class ClientLifecycleService:
 
         logger.info("Starting %d clients", len(records))
         for record in records:
-            client = self._client_factory.create(record)
-            self._clients[record.id] = client
-            self._client_types[record.id] = record.type
-            self._client_tenants[record.id] = record.tenant_id
-            self._start_task(record.id, client)
+            self._register(record)
 
     async def create_client(
         self,
@@ -212,16 +212,24 @@ class ClientLifecycleService:
         logger.info("Created client %s (%s)", display_name, matrix_user_id)
         return record
 
-    def start_client(self, record: Client) -> ClientBase[ClientConfig]:
-        client = self._client_factory.create(record)
-        self._clients[record.id] = client
-        self._client_types[record.id] = record.type
-        self._client_tenants[record.id] = record.tenant_id
-        self._start_task(record.id, client)
+    def start_client(self, record: Client) -> Actor[ClientConfig]:
+        actor = self._register(record)
         logger.info(
             "Started client %s (%s)", record.display_name, record.matrix_user_id
         )
-        return client
+        return actor
+
+    def _register(self, record: Client) -> Actor[ClientConfig]:
+        actor, consumer = self._client_factory.create(record)
+        self._clients[record.id] = actor
+        if consumer is not None:
+            self._consumers[record.id] = consumer
+        else:
+            self._consumers.pop(record.id, None)
+        self._client_types[record.id] = record.type
+        self._client_tenants[record.id] = record.tenant_id
+        self._start_task(record.id, actor, consumer)
+        return actor
 
     async def create_and_start(
         self,
@@ -230,7 +238,7 @@ class ClientLifecycleService:
         display_name: str,
         localpart: str | None = None,
         config: dict[str, object] | None = None,
-    ) -> ClientBase[ClientConfig]:
+    ) -> Actor[ClientConfig]:
         record = await self.create_client(
             client_type=client_type,
             display_name=display_name,
@@ -240,11 +248,15 @@ class ClientLifecycleService:
         return self.start_client(record)
 
     async def stop(self, client_id: str) -> None:
-        client = self._clients.get(client_id)
-        if client is None:
+        actor = self._clients.get(client_id)
+        if actor is None:
             logger.warning("Cannot stop unknown client %s", client_id)
             return
-        await client.stop()
+        consumer = self._consumers.pop(client_id, None)
+        if consumer is not None:
+            await consumer.stop()
+        else:
+            await actor.close()
         task = self._cancel_task(client_id)
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
@@ -255,8 +267,12 @@ class ClientLifecycleService:
 
     async def stop_all(self) -> None:
         logger.info("Stopping all %d clients", len(self._clients))
-        for client in self._clients.values():
-            await client.stop()
+        for client_id, actor in self._clients.items():
+            consumer = self._consumers.get(client_id)
+            if consumer is not None:
+                await consumer.stop()
+            else:
+                await actor.close()
         tasks = list(self._tasks.values())
         for task in tasks:
             task.cancel()
@@ -266,6 +282,7 @@ class ClientLifecycleService:
         # garbage collector, in a context that is not the task's.
         await asyncio.gather(*tasks, return_exceptions=True)
         self._clients.clear()
+        self._consumers.clear()
         self._client_types.clear()
         self._client_tenants.clear()
         self._tasks.clear()
@@ -287,26 +304,26 @@ class ClientLifecycleService:
         """
         await self._client_store.delete(session, client_id)
 
-    def get(self, client_id: str) -> ClientBase[ClientConfig] | None:
+    def get(self, client_id: str) -> Actor[ClientConfig] | None:
         return self._clients.get(client_id)
 
     def running_count(self) -> int:
-        """Clients believed to be running right now.
+        """Consumers believed to be running right now: the read loops.
 
-        A crashed client removes itself, so this falling is the only signal.
+        A crashed consumer removes itself and its actor, so this falling is the
+        only signal. Actors with no consumer have no loop to crash.
         """
-        return len(self._clients)
+        return len(self._consumers)
 
-    def get_by_agent_id(self, agent_id: str) -> ClientBase[ClientConfig] | None:
-        for client in self._clients.values():
-            if isinstance(client, AgentClient) and client._agent is not None:
-                if client._agent.id == agent_id:
-                    return client  # type: ignore[return-value]
+    def get_by_agent_id(self, agent_id: str) -> AgentActor | None:
+        for actor in self._clients.values():
+            if isinstance(actor, AgentActor) and actor.agent_id == agent_id:
+                return actor
         return None
 
     def get_by_type(
         self, client_type: str, tenant_id: str
-    ) -> list[ClientBase[ClientConfig]]:
+    ) -> list[Actor[ClientConfig]]:
         """This tenant's running clients of `client_type`.
 
         The tenant is required rather than optional, and that is the fix for a
@@ -327,7 +344,12 @@ class ClientLifecycleService:
             and self._client_tenants.get(client_id) == tenant_id
         ]
 
-    def _start_task(self, client_id: str, client: ClientBase[ClientConfig]) -> None:
+    def _start_task(
+        self,
+        client_id: str,
+        actor: Actor[ClientConfig],
+        consumer: Consumer[Any] | None,
+    ) -> None:
         # A client row is one running task. Anything that starts a second for
         # the same row — a boot sweep reaching a client that registration
         # already started, a bridge restarting its own — replaces the first,
@@ -337,7 +359,7 @@ class ClientLifecycleService:
         # finally reaches it, it runs the teardown for both: the live client
         # for that user goes deaf to invitations it never saw arrive.
         self._cancel_task(client_id)
-        task = asyncio.create_task(self._run_client(client_id, client))
+        task = asyncio.create_task(self._run_client(client_id, actor, consumer))
         self._tasks[client_id] = task
 
     def _cancel_task(self, client_id: str) -> asyncio.Task[None] | None:
@@ -347,7 +369,10 @@ class ClientLifecycleService:
         return task
 
     async def _run_client(
-        self, client_id: str, client: ClientBase[ClientConfig]
+        self,
+        client_id: str,
+        actor: Actor[ClientConfig],
+        consumer: Consumer[Any] | None,
     ) -> None:
         """A client's long-lived task, deliberately ambient-free.
 
@@ -360,7 +385,7 @@ class ClientLifecycleService:
         the tenant of the room it is acting on.
 
         Nothing in here runs unbound, and nothing has to ask the database
-        which tenant this client is in. A `ClientBase` carries its own
+        which tenant this client is in. An `Actor` carries its own
         `tenant_id`, taken from the `clients` row it was built from, and hands
         it to its transport; `joined_rooms` and every media read then go
         through an ordinary `tenant_session` under that tenant. An exemption
@@ -374,12 +399,16 @@ class ClientLifecycleService:
         """
         with no_tenant(), log_context(room_id=None):
             try:
-                await client.start()
+                if consumer is not None:
+                    await consumer.start()
+                else:
+                    await actor.connect()
             except Exception:
                 logger.exception(
-                    "Client %s (%s) crashed", client.display_name, client.matrix_user_id
+                    "Client %s (%s) crashed", actor.display_name, actor.matrix_user_id
                 )
                 self._clients.pop(client_id, None)
+                self._consumers.pop(client_id, None)
                 self._client_types.pop(client_id, None)
                 self._client_tenants.pop(client_id, None)
                 self._tasks.pop(client_id, None)

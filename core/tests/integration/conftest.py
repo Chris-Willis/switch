@@ -4,7 +4,7 @@ Unlike the unit suite (which fakes the transport), these fixtures boot a real
 database and wire up the subset of `switch_core.main:run()` the feature under
 test needs, in-process. Messaging, membership and provisioning all run against
 that database, so a test drives the genuine path RoomService → provisioning →
-AgentClient receive loop → EventBuffer.
+AgentConsumer receive loop → EventBuffer.
 
 The container mirrors the `postgres` service in
 `deploy/local/docker-compose.yml` (see constants below — keep in sync). It gets
@@ -47,8 +47,8 @@ from switch_core.bridges.agent.protocol.types import (
     TaskProtocolConfig,
 )
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.clients.agent_client import AgentClient
-from switch_core.clients.client_base import ClientBase
+from switch_core.clients.actor import Actor, AgentActor, HumanActor
+from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
@@ -312,7 +312,7 @@ class Harness:
             client = await self._await_client(agent_id, timeout)
             await client.wait_ready()
 
-    async def _await_client(self, agent_id: str, timeout: float) -> AgentClient:
+    async def _await_client(self, agent_id: str, timeout: float) -> AgentConsumer:
         deadline = asyncio.get_event_loop().time() + timeout
         while asyncio.get_event_loop().time() < deadline:
             client = self.client_lifecycle.get_by_agent_id(agent_id)
@@ -321,7 +321,7 @@ class Harness:
             await asyncio.sleep(0.1)
         raise AssertionError(f"No running client for agent {agent_id} after {timeout}s")
 
-    def client_for(self, agent_id: str) -> AgentClient:
+    def client_for(self, agent_id: str) -> AgentConsumer:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise AssertionError(f"No running client for agent {agent_id}")
@@ -567,7 +567,8 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
         )
         client_factory.register(
             "agent",
-            AgentClient,
+            AgentActor,
+            AgentConsumer,
             event_buffer=event_buffer,
             agent_store=session_env.agent_store,
             room_store=session_env.room_store,
@@ -580,8 +581,8 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             connections=connections,
             frontend_base_url=config.frontend_base_url,
         )
-        client_factory.register("user", ClientBase)
-        client_factory.register("bridge", ClientBase)
+        client_factory.register("user", HumanActor)
+        client_factory.register("bridge", Actor)
 
         client_lifecycle = ClientLifecycleService(
             matrix_admin=provisioning,

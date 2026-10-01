@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.operations import context as op_context
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.clients.admin_client import AdminClient
+from switch_core.clients.actor import SystemActor
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -124,7 +124,7 @@ async def _make_agent(
     return agent
 
 
-class RecordingAdminClient(AdminClient):
+class RecordingSystemActor(SystemActor):
     """Records the platform messages a kickoff sends; has no transport."""
 
     def __init__(self) -> None:  # noqa: D107 - test double, no super().__init__
@@ -151,7 +151,7 @@ class RecordingAdminClient(AdminClient):
 
 
 class FakeLifecycle:
-    def __init__(self, admin: AdminClient) -> None:
+    def __init__(self, admin: SystemActor) -> None:
         self.admin = admin
 
     def get_by_type(self, client_type: str, tenant_id: str) -> list[Any]:
@@ -173,7 +173,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         room_link_store=RoomLinkStore(),
         session_factory=session_factory,
     )
-    admin = RecordingAdminClient()
+    admin = RecordingSystemActor()
     fake_protocol = SimpleNamespace(
         client_lifecycle=FakeLifecycle(admin),
         session_factory=session_factory,

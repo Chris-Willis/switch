@@ -1,4 +1,4 @@
-"""How many pool checkouts one inbound room message costs an agent client.
+"""How many pool checkouts one inbound room message costs an agent consumer.
 
 A room fans every Matrix message out to *all* of its agent clients at once, in
 a single event-loop tick. So this number is multiplied by the size of the room
@@ -21,7 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.budgets import BudgetGuard
-from switch_core.clients.agent_client import AgentClient
+from switch_core.clients.actor import AgentActor
+from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.models import Agent, ApiKey, Client, Room, User
 from switch_core.db.stores.agent_session_store import AgentSessionStore
@@ -111,19 +112,21 @@ async def _seed(
 
 def _client(
     counting: _CountingSessionFactory, agent: Agent, room_id: str
-) -> AgentClient:
-    """An AgentClient wired to the real stores, with its room-meta cache warm.
+) -> AgentConsumer:
+    """An AgentConsumer wired to the real stores, with its room-meta cache warm.
 
     The cache is warm because that is the steady state: a client resolves a
     room once and then answers every later message in it from memory.
     """
-    client = object.__new__(AgentClient)
-    client.session_factory = counting  # type: ignore[assignment]
-    client.client_store = ClientStore()
-    client.matrix_user_id = f"@{agent.name}:test"
-    client.client_id = agent.client_id
-    client.tenant_id = agent.tenant_id
-    client._agent = agent
+    actor = object.__new__(AgentActor)
+    actor.session_factory = counting  # type: ignore[assignment]
+    actor.client_store = ClientStore()
+    actor.matrix_user_id = f"@{agent.name}:test"
+    actor.client_id = agent.client_id
+    actor.tenant_id = agent.tenant_id
+    actor._agent = agent
+    client = object.__new__(AgentConsumer)
+    client.actor = actor
     client._agent_store = AgentStore()
     client._room_store = RoomStore()
     client._room_role_store = RoomRoleStore()
@@ -156,7 +159,7 @@ def _client(
         client.sent.append((body, counting.live))  # type: ignore[attr-defined]
         return "$sent"
 
-    client.send_message = _send_message  # type: ignore[assignment, method-assign]
+    actor.send_message = _send_message  # type: ignore[assignment, method-assign]
     client._event_buffer = SimpleNamespace(  # type: ignore[assignment]
         enqueue=lambda *_a, **_k: None
     )
