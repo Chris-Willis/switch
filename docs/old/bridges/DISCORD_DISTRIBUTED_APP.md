@@ -191,6 +191,14 @@ refuses a channel outside its own guild at both, and every channel lookup the
 bridge makes refuses one as well, so nothing is posted to another guild even if
 a room names its channel.
 
+Which guild a bridge serves is fixed by its install, because the bridge's own
+config is not proof of it: a shared bridge names a guild and nothing more, and
+the shared bot would reach whichever one it named. So a shared bridge is made
+only by installing the app — `POST /collaborations` refuses
+`event_delivery: shared` — its guild cannot be changed by an edit, and before
+one starts Switch checks that its tenant holds the live install of that guild.
+A bridge that fails the check does not start, and the error says why.
+
 ## Linking an account before speaking
 
 A new install reaches Discord as soon as its bridge starts: each bridge on the

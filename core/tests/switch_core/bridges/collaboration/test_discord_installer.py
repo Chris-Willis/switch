@@ -134,6 +134,29 @@ class TestConnectionConfig:
         assert config == {"guild_id": "42", "event_delivery": "shared"}
 
 
+class TestTheWorkspaceABridgeServes:
+    def test_a_shared_bridge_serves_its_guild(
+        self, installer: DiscordAppInstaller
+    ) -> None:
+        assert (
+            installer.workspace_of_bridge(
+                {"guild_id": "42", "event_delivery": "shared"}
+            )
+            == "42"
+        )
+
+    def test_a_self_registered_bridge_is_not_checked(
+        self, installer: DiscordAppInstaller
+    ) -> None:
+        """Its own token reaches only what its owner added it to."""
+        assert (
+            installer.workspace_of_bridge(
+                {"guild_id": "42", "event_delivery": "own_connection"}
+            )
+            is None
+        )
+
+
 class TestTheWebhookHalfIsStubbed:
     """Discord delivers over the Gateway; these raise so a mistaken caller sees
     it rather than silently getting nothing.

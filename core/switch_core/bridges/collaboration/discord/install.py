@@ -157,6 +157,14 @@ class DiscordAppInstaller(MessagingAppInstaller):
             scopes=payload.get("scope") or "",
         )
 
+    def workspace_of_bridge(
+        self, connection_config: Mapping[str, object]
+    ) -> str | None:
+        if connection_config.get("event_delivery") != "shared":
+            return None
+        guild_id = connection_config.get("guild_id")
+        return str(guild_id) if guild_id is not None else None
+
     def connection_config(self, grant: InstallGrant) -> dict[str, object]:
         return {
             "guild_id": grant.external_workspace_id,

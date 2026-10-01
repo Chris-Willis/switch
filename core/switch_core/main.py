@@ -802,6 +802,12 @@ async def run(config: SwitchConfig) -> None:
 
     # ── Start runtime ────────────────────────────────────────────────────────
     await client_lifecycle.start_all()
+    # Before the bridges start, so none on a shared app runs without the
+    # install that entitles it.
+    if install_service is not None:
+        collab_lifecycle.add_bridge_start_guard(
+            install_service.refuse_uninstalled_bridge
+        )
     await collab_lifecycle.start_all()
 
     # The one shared Discord Gateway connection. Started after the bridges so it

@@ -316,6 +316,20 @@ class MessagingAppInstaller(ABC):
         like :meth:`workspace_of_event` it must not touch the database.
         """
 
+    def workspace_of_bridge(
+        self, connection_config: Mapping[str, object]
+    ) -> str | None:
+        """The workspace a bridge on the deployment's own credential serves.
+
+        Set by a platform whose installed bridges all run on one credential
+        the deployment holds (Discord's one bot), so a bridge naming a
+        workspace is a bridge that can reach it. Such a bridge may only start
+        for the tenant whose live install that workspace is, and this is what
+        names the workspace to check. None for every other bridge, which
+        reaches only what its own credential reaches.
+        """
+        return None
+
     @abstractmethod
     def connection_config(self, grant: InstallGrant) -> dict[str, object]:
         """Render a grant as the connection config this platform's adapter takes.

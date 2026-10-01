@@ -4,8 +4,8 @@ import asyncio
 import logging
 import re
 import time
-from collections.abc import Callable, Iterator
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Iterator, Mapping
+from typing import TYPE_CHECKING, Protocol
 from uuid import uuid4
 
 import aiohttp
@@ -284,6 +284,19 @@ def _bridge_client_localpart(bridge_type: str, display_name: str) -> str:
     return f"switch-bridge-{bridge_type}-{safe_name}-{uuid4().hex[:8]}"
 
 
+class BridgeStartGuard(Protocol):
+    """Asked before a bridge starts whether it may; raises `BridgeStartRefused`."""
+
+    async def __call__(
+        self,
+        *,
+        bridge_id: str,
+        tenant_id: str,
+        bridge_type: str,
+        connection_config: Mapping[str, object],
+    ) -> None: ...
+
+
 class CollaborationBridgeLifecycleService:
     # See RoomService: a test may assemble this without `__init__`.
     _telemetry: TelemetryService | None = None
@@ -330,6 +343,7 @@ class CollaborationBridgeLifecycleService:
         self._bridge_starting_listeners: list[
             Callable[[CollaborationAdapter], None]
         ] = []
+        self._bridge_start_guards: list[BridgeStartGuard] = []
 
         self._adapter_registry: dict[str, type[CollaborationAdapter]] = {}
         self._config_registry: dict[str, type[BridgeConnectionConfig]] = {}
@@ -418,6 +432,33 @@ class CollaborationBridgeLifecycleService:
         so a listener that also walks the running bridges misses none.
         """
         self._bridge_starting_listeners.append(listener)
+
+    def add_bridge_start_guard(self, guard: BridgeStartGuard) -> None:
+        """Be asked before each bridge starts whether it may, and refuse by raising.
+
+        For a condition outside the bridge's own config — whether whatever it
+        claims to serve is really this tenant's. Awaited before the adapter is
+        built, so a refused bridge runs nothing, and on an edit before the new
+        config is stored. A guard raises `BridgeStartRefused`.
+        """
+        self._bridge_start_guards.append(guard)
+
+    async def check_start_guards(
+        self,
+        *,
+        bridge_id: str,
+        tenant_id: str,
+        bridge_type: str,
+        connection_config: Mapping[str, object],
+    ) -> None:
+        """Raise `BridgeStartRefused` unless every guard lets this bridge start."""
+        for guard in self._bridge_start_guards:
+            await guard(
+                bridge_id=bridge_id,
+                tenant_id=tenant_id,
+                bridge_type=bridge_type,
+                connection_config=connection_config,
+            )
 
     def iter_adapters(self) -> Iterator[CollaborationAdapter]:
         """The live adapter of every running bridge, as a snapshot.
@@ -813,6 +854,12 @@ class CollaborationBridgeLifecycleService:
                         )
 
             typed_config = config_cls.model_validate(bridge.connection_config or {})
+            await self.check_start_guards(
+                bridge_id=bridge_id,
+                tenant_id=tenant_id,
+                bridge_type=bridge.type,
+                connection_config=bridge.connection_config or {},
+            )
             adapter = adapter_cls(config=typed_config)  # type: ignore[call-arg]
             adapter.set_service_url_persister(
                 lambda service_url: self._persist_service_url(

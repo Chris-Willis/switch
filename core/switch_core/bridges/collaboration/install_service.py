@@ -74,6 +74,7 @@ from switch_core.bridges.collaboration.install_state import (
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
+from switch_core.bridges.collaboration.models import BridgeStartRefused
 from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import MessagingInstall
 from switch_core.db.session_scope import tenant_session
@@ -280,6 +281,44 @@ class MessagingInstallService:
                 bridge.id,
             )
             return attached
+
+    async def refuse_uninstalled_bridge(
+        self,
+        *,
+        bridge_id: str,
+        tenant_id: str,
+        bridge_type: str,
+        connection_config: Mapping[str, object],
+    ) -> None:
+        """Refuse a bridge on the deployment's credential that no install of its
+        tenant built. A start guard, so a refused bridge never runs.
+
+        Such a bridge reaches whatever workspace its config names through the
+        one credential every tenant shares, so naming a workspace is not
+        evidence of owning it. The tenant's live install of that workspace is:
+        it came from the platform's own consent screen, and the unique index
+        lets only one tenant hold a workspace. The install's bridge pointer is
+        still empty while the install flow registers the bridge, which is what
+        the empty case admits.
+        """
+        if bridge_type not in self._installers.platforms():
+            return
+        workspace_id = self._installers.get(bridge_type).workspace_of_bridge(
+            connection_config
+        )
+        if workspace_id is None:
+            return
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            install = await self._store.get_for_workspace(
+                session, platform=bridge_type, external_workspace_id=workspace_id
+            )
+        if install is None or install.bridge_id not in (None, bridge_id):
+            raise BridgeStartRefused(
+                f"Bridge {bridge_id} names {bridge_type} workspace {workspace_id}, "
+                "which its tenant has not installed this deployment's app into. "
+                "A bridge on that app is created by installing it, and serves "
+                "only what it was installed into."
+            )
 
     async def list_installs(self, session: AsyncSession) -> list[MessagingInstall]:
         """The bound tenant's installs, for the operator's own list.
