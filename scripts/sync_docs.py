@@ -20,7 +20,7 @@ import tempfile
 from pathlib import Path
 
 DOCS_REPO_URL = "https://github.com/sandbox-quantum/docs"
-PRODUCT = "Switch"
+PRODUCT = "Switch Rooms"
 SOURCE_PREFIX = "switch-rooms/"
 SITE_BASE = "https://docs.switchagents.ai"
 
