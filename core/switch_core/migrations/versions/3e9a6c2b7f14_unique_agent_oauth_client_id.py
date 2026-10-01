@@ -7,7 +7,7 @@ sign-in lookup would then refuse both. A partial unique index makes the second
 registration fail instead; agents without an OAuth client are unaffected.
 
 Revision ID: 3e9a6c2b7f14
-Revises: 7d3f5a19e2c8
+Revises: a9e1c3f75b20
 Create Date: 2026-10-01 00:00:00.000000
 
 """
@@ -18,7 +18,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "3e9a6c2b7f14"
-down_revision: str | None = "7d3f5a19e2c8"
+down_revision: str | None = "a9e1c3f75b20"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
