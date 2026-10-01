@@ -17,7 +17,7 @@ import {
   relayRefusalText,
 } from './held-message';
 import { SessionAttachmentList, useSessionAttachments } from './session-attachments';
-import { sessionStatePill, type SessionStateTone } from './session-state';
+import { restartsOnSend, sessionStatePill, type SessionStateTone } from './session-state';
 import { SessionStatePill } from './session-state-pill';
 import { SessionV1Controls } from './session-v1-controls';
 import { SessionV1Request } from './session-v1-request';
@@ -146,10 +146,8 @@ export function SessionV1Chat({
     autoWake?.phase === null &&
     !autoWake.blocked &&
     view.connected &&
-    session?.connectivity === 'offline' &&
-    !session.retired &&
-    session.status !== 'stopped' &&
-    session.status !== 'error';
+    session !== undefined &&
+    restartsOnSend(session);
   const restartedFor = useRef<string | null>(null);
   const runningTurn = view.snapshot?.turns.find((turn) => turn.status === 'running');
   const lastItems = new Map(view.snapshot?.items.map((item) => [item.turnId, item.itemId]));
@@ -306,21 +304,22 @@ export function SessionV1Chat({
     }
   };
 
+  const pill = sessionStatePill({
+    action: busy ? (action ?? 'start') : null,
+    elapsedSeconds: elapsed,
+    host: hostState,
+    failed: Boolean(actionError) || startup?.status === 'error',
+    retired: Boolean(session?.retired),
+    status: session?.status ?? null,
+    connectivity: session?.connectivity ?? null,
+    reachable: available || (view.connected && session?.connectivity === 'online'),
+    startable,
+  });
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
       <SessionHeaderContent slot="left">
-        <SessionStatePill
-          {...sessionStatePill({
-            action: busy ? (action ?? 'start') : null,
-            elapsedSeconds: elapsed,
-            host: hostState,
-            failed: Boolean(actionError) || startup?.status === 'error',
-            retired: Boolean(session?.retired),
-            status: session?.status ?? null,
-            connectivity: session?.connectivity ?? null,
-            reachable: available || (view.connected && session?.connectivity === 'online'),
-          })}
-        />
+        {pill && <SessionStatePill {...pill} />}
       </SessionHeaderContent>
       <SessionHeaderContent slot="right">
         {restartHost && !session?.retired && (

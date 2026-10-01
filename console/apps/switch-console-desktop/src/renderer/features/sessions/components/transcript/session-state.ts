@@ -1,4 +1,22 @@
+import type { Session } from '@switch-console/shared/session-v1';
+
 export type SessionStateTone = 'ready' | 'busy' | 'bad' | 'idle';
+
+/**
+ * Whether a cloud session is down only in a way the next message repairs:
+ * sending restarts it and delivers the message, so its being offline is not
+ * the user's concern and is not shown.
+ */
+export function restartsOnSend(
+  session: Pick<Session, 'connectivity' | 'retired' | 'status'>
+): boolean {
+  return (
+    session.connectivity === 'offline' &&
+    !session.retired &&
+    session.status !== 'stopped' &&
+    session.status !== 'error'
+  );
+}
 
 /**
  * The one reading of a session's state, for the pill beside its name.
@@ -26,7 +44,9 @@ export function sessionStatePill(input: {
   connectivity: 'online' | 'offline' | null;
   /** Whether Console currently holds a live view of the session. */
   reachable: boolean;
-}): { label: string; tone: SessionStateTone } {
+  /** Whether the next message restarts the session, so its being unreachable goes unsaid. */
+  startable: boolean;
+}): { label: string; tone: SessionStateTone } | null {
   if (input.action)
     return {
       label: `${{ stop: 'stopping', resume: 'resuming', restart: 'restarting', start: 'starting' }[input.action]} ${input.elapsedSeconds}s`,
@@ -38,7 +58,7 @@ export function sessionStatePill(input: {
   if (input.status === 'stopped') return { label: 'stopped', tone: 'idle' };
   if (input.status === 'starting' && input.connectivity === 'online')
     return { label: 'connecting…', tone: 'busy' };
-  if (!input.reachable) return { label: 'offline', tone: 'bad' };
+  if (!input.reachable) return input.startable ? null : { label: 'offline', tone: 'bad' };
   if (input.status === null) return { label: 'loading', tone: 'idle' };
   return { label: input.status, tone: input.status === 'error' ? 'bad' : 'ready' };
 }

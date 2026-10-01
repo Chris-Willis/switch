@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { ChevronRight, Cloud, MessageSquare, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
+import { restartsOnSend } from '@renderer/features/sessions/components/transcript/session-state';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
@@ -21,10 +22,6 @@ export function cloudSessionName(session: Session): string {
   const room = session.roomIds?.[0];
   const roomName = room ? switchRoomsStore.roomNameById(room) : null;
   return roomName ?? `Session ${session.sessionId.slice(0, 8)}`;
-}
-
-function sessionLabel(session: Session): string {
-  return session.connectivity === 'offline' ? 'Offline' : session.status;
 }
 
 /**
@@ -205,7 +202,9 @@ const CloudAgentRow = observer(function CloudAgentRow({ listed }: { listed: Clou
             >
               <MessageSquare className="size-3.5 shrink-0" />
               <span className="truncate">{cloudSessionName(session)}</span>
-              <span className="ml-auto text-xs text-foreground-muted">{sessionLabel(session)}</span>
+              <span className="ml-auto text-xs text-foreground-muted">
+                {restartsOnSend(session) ? null : session.status}
+              </span>
             </SidebarMenuButton>
           ))}
         </div>

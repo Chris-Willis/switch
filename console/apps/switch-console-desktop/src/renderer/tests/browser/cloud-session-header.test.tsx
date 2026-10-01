@@ -114,11 +114,12 @@ afterEach(async () => {
 
 async function headerStatus(
   cloudAgent: CloudAgent,
-  relayed: CloudSessions
+  relayed: CloudSessions,
+  opened: typeof snapshot
 ): Promise<string | null | undefined> {
   sdkHost.cloudAgents.mockResolvedValue([cloudAgent]);
   sdkHost.cloudSessions.mockResolvedValue(relayed);
-  sdkHost.transcriptOpen.mockResolvedValue(snapshot);
+  sdkHost.transcriptOpen.mockResolvedValue(opened);
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -145,7 +146,7 @@ async function headerStatus(
 }
 
 it('reads ready while the worker answers', async () => {
-  expect(await headerStatus(agent({}), { sessions: [], problem: null })).toBe('ready');
+  expect(await headerStatus(agent({}), { sessions: [], problem: null }, snapshot)).toBe('ready');
 });
 
 it('reads sleeping, not ready, while the launch is asleep', async () => {
@@ -159,17 +160,36 @@ it('reads sleeping, not ready, while the launch is asleep', async () => {
         wakeAvailable: true,
       },
     }),
-    { sessions: [], problem: null }
+    { sessions: [], problem: null },
+    snapshot
   );
   expect(status).toBe('sleeping');
 });
 
 it('reads unreachable when the relay refuses the worker', async () => {
-  const status = await headerStatus(agent({}), {
-    sessions: null,
-    problem: { code: 'worker_busy', message: 'Too many requests.', wakeAvailable: false },
-  });
+  const status = await headerStatus(
+    agent({}),
+    {
+      sessions: null,
+      problem: { code: 'worker_busy', message: 'Too many requests.', wakeAvailable: false },
+    },
+    snapshot
+  );
   expect(status).toBe('unreachable');
+});
+
+function offline(status: string) {
+  return { ...snapshot, session: { ...snapshot.session, status, connectivity: 'offline' } };
+}
+
+it('says nothing about a session the next message restarts', async () => {
+  const status = await headerStatus(agent({}), { sessions: [], problem: null }, offline('ready'));
+  expect(status).toBeUndefined();
+});
+
+it('still says a stopped session is stopped', async () => {
+  const status = await headerStatus(agent({}), { sessions: [], problem: null }, offline('stopped'));
+  expect(status).toBe('stopped');
 });
 
 it('opens a session on a sleeping machine whose worker cannot be read, and wakes it on send', async () => {

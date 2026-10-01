@@ -10,6 +10,7 @@ const base = {
   status: 'ready',
   connectivity: 'online' as const,
   reachable: true,
+  startable: false,
 };
 
 it('shows the session status when the host is reachable', () => {
@@ -28,6 +29,12 @@ it('reports unreachability rather than a status it cannot stand behind', () => {
     label: 'offline',
     tone: 'bad',
   });
+});
+
+it('says nothing when the next message restarts the session', () => {
+  expect(
+    sessionStatePill({ ...base, reachable: false, connectivity: 'offline', startable: true })
+  ).toBeNull();
 });
 
 it('counts up while Console is acting on the session', () => {

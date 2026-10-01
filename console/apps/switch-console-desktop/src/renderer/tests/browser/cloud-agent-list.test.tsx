@@ -223,6 +223,25 @@ it('keeps a cloud row expanded after remount', async () => {
   expect(remounted.textContent).toContain('Session s1');
 });
 
+it('labels no session the next message restarts, but still a stopped or working one', async () => {
+  sdkHost.cloudAgents.mockResolvedValue([agent()]);
+  sdkHost.cloudSessions.mockResolvedValue({
+    sessions: [
+      { sessionId: 'down', status: 'ready', connectivity: 'offline' },
+      { sessionId: 'done', status: 'stopped', connectivity: 'offline' },
+      { sessionId: 'busy', status: 'running', connectivity: 'online' },
+    ] as never,
+    problem: null,
+  });
+  const el = await render();
+  await act(async () => button(el, /reviewer/i)!.click());
+  await act(async () => await new Promise((resolve) => setTimeout(resolve, 20)));
+  expect(button(el, /Session down/)!.textContent).toBe('Session down');
+  expect(button(el, /Session done/)!.textContent).toBe('Session donestopped');
+  expect(button(el, /Session busy/)!.textContent).toBe('Session busyrunning');
+  expect(el.textContent).not.toMatch(/offline/i);
+});
+
 function asleep(overrides: Partial<CloudAgent['launch']>, wakeAvailable: boolean): CloudAgent {
   return {
     ...agent(),
