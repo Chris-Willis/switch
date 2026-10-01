@@ -269,7 +269,6 @@ it('says once that the machine its agents share is asleep, not under each agent'
   expandedCloudGroups.add(`cloud:${agentKey}`);
   expandedCloudGroups.add(`cloud:${other}`);
   const el = await render();
-  expect(el.textContent?.match(/\(worker_sleeping\)/g)).toHaveLength(1);
   expect(
     [...el.querySelectorAll('button')].filter((b) => /^wake$/i.test(b.textContent ?? ''))
   ).toHaveLength(1);
@@ -288,7 +287,8 @@ it('still says under the agent why only that agent cannot be asked', async () =>
   expect(el.textContent).not.toContain('(agent_crashed)');
   expandedCloudGroups.add(`cloud:${agentKey}`);
   await act(async () => await new Promise((resolve) => setTimeout(resolve, 20)));
-  expect(el.textContent).toContain('(agent_crashed)');
+  expect(el.textContent).toContain('crashed');
+  expect(el.textContent).not.toContain('(agent_crashed)');
 });
 
 it('offers no wake for a stopped agent on a sleeping machine', async () => {
@@ -337,7 +337,6 @@ it.each([
         wakeAvailable: false,
       },
     },
-    'machine_stopped',
   ],
   [
     'asleep',
@@ -354,18 +353,16 @@ it.each([
         wakeAvailable: true,
       },
     },
-    'worker_sleeping',
   ],
 ])(
   'lists the stored sessions on a cold start while the machine is %s, with nothing cached',
-  async (_name, down, code) => {
+  async (_name, down) => {
     sdkHost.cloudAgents.mockResolvedValue([
       { ...down, sessions: sessions(['b4105d35-0000']).sessions },
     ]);
     expandedCloudGroups.add(`cloud:${agentKey}`);
     const el = await render();
     expect(sdkHost.cloudSessions).not.toHaveBeenCalled();
-    expect(el.textContent).toContain(`(${code})`);
     const session = button(el, /Session b4105d35/);
     expect(session).toBeDefined();
     await act(async () => session!.click());

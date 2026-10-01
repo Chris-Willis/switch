@@ -1,7 +1,7 @@
 /**
  * A cloud agent whose worker cannot be asked says why: a sleeping machine reads
  * as asleep and says a message wakes it, or offers Wake where there is no
- * composer, and any other relay refusal is an alert that names its code.
+ * composer, and any other relay refusal is an alert.
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -49,7 +49,7 @@ it('reads a sleeping machine as asleep and says a message wakes it', async () =>
   expect(el.querySelector('button')).toBeNull();
 });
 
-it('shows any other refusal as an alert with its code', async () => {
+it('shows any other refusal as an alert', async () => {
   const el = await render({
     code: 'worker_busy',
     message: 'The worker has too many requests in flight.',
@@ -57,8 +57,6 @@ it('shows any other refusal as an alert with its code', async () => {
   });
   const alert = el.querySelector('[role="alert"]');
   expect(alert?.textContent).toContain('busy');
-  expect(alert?.textContent).toContain('too many requests');
-  expect(alert?.textContent).toContain('(worker_busy)');
   expect(alert?.textContent).not.toContain('wake');
   expect(el.querySelector('button')).toBeNull();
 });
@@ -111,7 +109,6 @@ it('says only the agent is starting when its machine is already running', async 
   const el = await render(waking, null, true);
   expect(el.textContent).toContain('The agent is starting.');
   expect(el.textContent).not.toContain('cloud machine');
-  expect(el.textContent).toContain('(worker_waking)');
 });
 
 it('says the machine is starting while the machine itself wakes', async () => {

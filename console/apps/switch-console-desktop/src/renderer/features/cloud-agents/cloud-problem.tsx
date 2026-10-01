@@ -23,7 +23,7 @@ const PROBLEM_TITLES: Record<string, string> = {
 /**
  * Why a cloud agent's worker cannot be reached, said as such, with what the
  * user can do about it. A sleeping machine that can be woken and offers no
- * Wake here wakes on the next message sent to it. Every refusal shows its code.
+ * Wake here wakes on the next message sent to it.
  * A `worker_waking` on a machine already up is only the agent starting.
  */
 export function CloudProblem({
@@ -50,11 +50,12 @@ export function CloudProblem({
         {agentStarting
           ? 'The agent is starting.'
           : (PROBLEM_TITLES[problem.code] ?? 'The cloud worker could not be reached.')}{' '}
-        {!agentStarting && problem.message !== PROBLEM_TITLES[problem.code] && (
-          <span className="text-foreground-muted">{problem.message} </span>
-        )}
+        {!compact &&
+          !agentStarting &&
+          problem.message !== PROBLEM_TITLES[problem.code] && (
+            <span className="text-foreground-muted">{problem.message} </span>
+          )}
         {sleeping && problem.wakeAvailable && !action && 'Send a message to wake it. '}
-        <code className="text-foreground-muted">({problem.code})</code>
         {action?.error && (
           <span role="alert" className="block text-foreground-destructive">
             {action.error}
