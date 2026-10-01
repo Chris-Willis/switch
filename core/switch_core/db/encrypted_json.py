@@ -21,7 +21,7 @@ import json
 import logging
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Dialect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -105,16 +105,14 @@ async def encrypt_legacy_values(
     the boot fan-out calls it once per tenant. Returns how many rows it
     rewrote; the caller commits.
     """
-    table = model.__table__
+    stored = model.__table__.c[column]
     rows = await session.execute(
-        text(
-            f"SELECT id FROM {table.name} "
-            f"WHERE jsonb_typeof({column}) = 'object' "
-            f"AND NOT jsonb_exists({column}, :key)"
-        ),
-        {"key": _ENVELOPE_KEY},
+        select(model.id).where(
+            func.jsonb_typeof(stored) == "object",
+            ~func.jsonb_exists(stored, _ENVELOPE_KEY),
+        )
     )
-    ids = [row[0] for row in rows]
+    ids = list(rows.scalars())
     if not ids:
         return 0
     instances = await session.execute(select(model).where(model.id.in_(ids)))
