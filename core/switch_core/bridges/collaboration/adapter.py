@@ -1264,6 +1264,15 @@ class CollaborationAdapter(ABC):
         carried on inbound activities) override this to persist it."""
         return None
 
+    def set_tenant_id(self, tenant_id: str) -> None:
+        """Tell the adapter which tenant its bridge belongs to.
+
+        Default is a no-op: an adapter's state is its own bridge's and needs
+        no tenant. Slack overrides it, because it shares one structure across
+        every Slack bridge in the process and has to keep tenants apart in it.
+        """
+        return None
+
     def set_channel_team_persister(
         self, persist: Callable[[str, str], Awaitable[None]]
     ) -> None:

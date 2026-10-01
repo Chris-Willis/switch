@@ -19,7 +19,12 @@ from switch_core.bridges.collaboration.models import (
     BridgeStartRefused,
     DirectoryUser,
 )
-from switch_core.db.models import CollaborationBridge, ExternalUser, User
+from switch_core.db.models import (
+    CollaborationBridge,
+    ExternalUser,
+    User,
+    require_tenant_id,
+)
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
@@ -616,7 +621,12 @@ async def claim_bridge_identity(
             status_code=403,
             detail="Only an admin may claim a messaging identity for another user",
         )
-    if await user_store.get(session, target_user_id) is None:
+    # Membership, not existence: `users` is deployment-wide, and a claim
+    # names who the account is recognised as inside this tenant.
+    if (
+        await user_store.tenant_role(session, require_tenant_id(), target_user_id)
+        is None
+    ):
         raise HTTPException(status_code=404, detail="Switch user not found")
 
     external_user = await external_user_store.get_by_external_id(

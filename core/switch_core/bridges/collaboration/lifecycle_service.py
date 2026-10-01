@@ -874,6 +874,7 @@ class CollaborationBridgeLifecycleService:
                 connection_config=bridge.connection_config or {},
             )
             adapter = adapter_cls(config=typed_config)  # type: ignore[call-arg]
+            adapter.set_tenant_id(tenant_id)
             adapter.set_service_url_persister(
                 lambda service_url: self._persist_service_url(
                     bridge_id, tenant_id, service_url

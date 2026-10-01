@@ -333,7 +333,8 @@ class SlackAdapter(CollaborationAdapter):
 
     # Every Slack bridge in this process shares one, because resolving a
     # mention that crossed a workspace boundary means reading a group another
-    # bridge minted. Rebind it to a fresh instance to isolate a test.
+    # bridge minted; the directory keeps each tenant's apart. Rebind it to a
+    # fresh instance to isolate a test.
     agent_group_directory: ClassVar[SlackAgentGroupDirectory] = (
         SlackAgentGroupDirectory()
     )
@@ -346,6 +347,7 @@ class SlackAdapter(CollaborationAdapter):
         self._bot_user_id: str = ""
         self._bot_id: str = ""
         self._team_id: str = ""
+        self._tenant_id: str | None = None
         self._user_cache: dict[str, SlackUser] = {}
         self._channel_name_cache: dict[str, str] = {}
         self._seen_ts: OrderedDict[str, None] = OrderedDict()
@@ -479,6 +481,17 @@ class SlackAdapter(CollaborationAdapter):
             await self._socket_client.connect()
             logger.info("Slack Socket Mode connected")
 
+    def set_tenant_id(self, tenant_id: str) -> None:
+        self._tenant_id = tenant_id
+
+    def _directory_tenant(self) -> str:
+        if self._tenant_id is None:
+            raise RuntimeError(
+                "Slack adapter used the shared agent group directory before "
+                "set_tenant_id() was called"
+            )
+        return self._tenant_id
+
     async def stop(self) -> None:
         if self._socket_client:
             try:
@@ -487,7 +500,8 @@ class SlackAdapter(CollaborationAdapter):
                 pass
             self._socket_client = None
         self._web_client = None
-        self.agent_group_directory.forget(self._team_id)
+        if self._tenant_id is not None:
+            self.agent_group_directory.forget(self._tenant_id, self._team_id)
         logger.info("Slack adapter stopped")
 
     # ── Messaging ────────────────────────────────────────────────────────────
@@ -2243,7 +2257,9 @@ class SlackAdapter(CollaborationAdapter):
         await self._web_client.usergroups_disable(usergroup=group_id)
         self._agent_group_ids.pop(folded, None)
         self._agent_group_names.pop(group_id, None)
-        self.agent_group_directory.discard(self._team_id, group_id)
+        self.agent_group_directory.discard(
+            self._directory_tenant(), self._team_id, group_id
+        )
         self._agent_groups_disabled[folded] = group_id
         logger.info("Disabled Slack user group %s for agent %s", group_id, agent_name)
 
@@ -2388,7 +2404,9 @@ class SlackAdapter(CollaborationAdapter):
     def _remember_agent_group(self, group_id: str, agent_name: str) -> None:
         self._agent_group_ids[agent_name.casefold()] = group_id
         self._agent_group_names[group_id] = agent_name
-        self.agent_group_directory.add(self._team_id, group_id, agent_name)
+        self.agent_group_directory.add(
+            self._directory_tenant(), self._team_id, group_id, agent_name
+        )
 
     @staticmethod
     def _usergroup_handle(agent_name: str) -> str:
@@ -2466,7 +2484,9 @@ class SlackAdapter(CollaborationAdapter):
             else:
                 self._remember_agent_group(group_id, name)
 
-        self.agent_group_directory.replace(self._team_id, self._agent_group_names)
+        self.agent_group_directory.replace(
+            self._directory_tenant(), self._team_id, self._agent_group_names
+        )
         self._agent_groups_loaded = True
         logger.info(
             "Loaded %d Slack agent user groups (%d disabled, %d other groups seen)",
@@ -3206,7 +3226,7 @@ class SlackAdapter(CollaborationAdapter):
             group_id = match.group(1)
             agent_name = self._agent_group_names.get(
                 group_id
-            ) or self.agent_group_directory.resolve(group_id)
+            ) or self.agent_group_directory.resolve(self._directory_tenant(), group_id)
             if agent_name:
                 return f"@{agent_name}"
             label = match.group(2)

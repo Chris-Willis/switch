@@ -436,6 +436,14 @@ class Agent(TenantScoped, Base):
     __tablename__ = "agents"
     __table_args__ = (
         Index("ix_agents_parent_agent_id", "parent_agent_id"),
+        # Deployment-wide, not per tenant: an OIDC sign-in resolves the agent
+        # from its client id before any tenant is known.
+        Index(
+            "uq_agents_oauth_client_id",
+            "oauth_client_id",
+            unique=True,
+            postgresql_where=text("oauth_client_id IS NOT NULL"),
+        ),
         UniqueConstraint("tenant_id", "name", name="uq_agents_tenant_name"),
         UniqueConstraint("id", "tenant_id", name="uq_agents_id_tenant"),
         ForeignKeyConstraint(
