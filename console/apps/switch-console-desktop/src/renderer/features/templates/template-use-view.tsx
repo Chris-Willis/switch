@@ -831,7 +831,6 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                 ? setup.displayName.trim()
                 : null,
             iconUrl: null,
-            autoSession: true,
             // Nobody sits at a host's terminal to approve tool calls.
             autoApprove: sshHost !== null,
             instructions: slot.entry.instructions,

@@ -122,6 +122,7 @@ vi.mock('@renderer/lib/hooks/use-toast', () => ({
 }));
 
 import {
+  serverRowWorkspace,
   showsServers,
   WorkspaceSwitcher,
 } from '@renderer/features/switch-servers/workspace-switcher';
@@ -530,20 +531,32 @@ describe('workspaces open to your e-mail domain', () => {
 
 describe('which switcher a build shows', () => {
   it('shows workspaces when the build can reach Switch Cloud', () => {
-    expect(showsServers('open', [1, 1])).toBe(false);
+    expect(showsServers('open')).toBe(false);
   });
 
   it('shows workspaces when the Cloud configuration is broken, so it is not hidden', () => {
-    expect(showsServers('failed', [1])).toBe(false);
+    expect(showsServers('failed')).toBe(false);
   });
 
   it('shows servers on a build without Switch Cloud', () => {
-    expect(showsServers('closed', [1, 1, 0])).toBe(true);
-    expect(showsServers('reading', [1])).toBe(true);
+    expect(showsServers('closed')).toBe(true);
+    expect(showsServers('reading')).toBe(true);
+  });
+});
+
+describe('the workspace a server row opens', () => {
+  it('stays in the active workspace when it is on that server', () => {
+    const ws = [workspace('ws-a', 'srv-1'), workspace('ws-b', 'srv-1')];
+    expect(serverRowWorkspace(ws, 'ws-b').workspace?.id).toBe('ws-b');
   });
 
-  it('shows workspaces once any server holds more than one, so none is stranded', () => {
-    expect(showsServers('closed', [1, 2])).toBe(false);
+  it('otherwise opens the first one that can be opened', () => {
+    const ws = [workspace('ws-a', 'srv-1', { tenantId: null }), workspace('ws-b', 'srv-1')];
+    expect(serverRowWorkspace(ws, 'elsewhere').workspace?.id).toBe('ws-b');
+  });
+
+  it('opens nothing on a server with no workspace', () => {
+    expect(serverRowWorkspace([], null)).toEqual({ workspace: null, unavailable: null });
   });
 });
 
@@ -602,14 +615,16 @@ describe('the server switcher on a build without Switch Cloud', () => {
     expect(state.setActive).not.toHaveBeenCalled();
   });
 
-  it('falls back to the workspace menu when a server holds two workspaces', async () => {
+  it('keeps the server list when a server holds two workspaces', async () => {
     await openSwitcher(
-      [server('srv-1', 'Acme')],
-      [workspace('ws-a', 'srv-1'), workspace('ws-b', 'srv-1')],
-      'ws-a',
-      'Switch workspace'
+      [server('srv-1', 'Acme'), server('srv-2', 'Local dev')],
+      [workspace('ws-a', 'srv-1'), workspace('ws-b', 'srv-1'), workspace('ws-c', 'srv-2')],
+      'ws-c',
+      'Switch server'
     );
 
-    expect(row('ws-b')).toBeDefined();
+    expect(document.body.textContent).not.toContain('ws-b');
+    await act(async () => serverRow('Acme').click());
+    expect(state.setActive).toHaveBeenCalledWith('ws-a');
   });
 });

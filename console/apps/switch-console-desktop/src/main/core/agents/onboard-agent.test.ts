@@ -74,8 +74,8 @@ vi.mock('./createAgent', () => ({
   createAgent: vi.fn(async (input: Record<string, unknown>) => ({ ...input })),
 }));
 vi.mock('./agent-events', () => ({ agentEvents: { _emit: h.emit } }));
-vi.mock('./setAgentAutoSession', () => ({
-  reconcileAgentAutoSessionFromGateway: vi.fn(async () => {}),
+vi.mock('@main/core/switch-rooms/auto-session-watcher', () => ({
+  autoSessionWatcher: { bringUp: vi.fn(async () => {}) },
 }));
 vi.mock('./write-switch-settings', () => ({ writeAgentNeutralSettings: vi.fn(async () => {}) }));
 vi.mock('./agent-workdir-fs', () => ({

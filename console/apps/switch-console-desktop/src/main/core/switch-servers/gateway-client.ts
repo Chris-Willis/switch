@@ -2,6 +2,7 @@ import type { KnownAgentType } from '@main/core/agents/known-agent-type';
 import {
   managedServerHostBlocked,
   managedServerStoppedPhase,
+  noteManagedServerUnanswered,
 } from '@main/core/managed-switch-server/managed-server-status';
 import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
@@ -36,6 +37,7 @@ import type {
 } from '@shared/core/workspaces/invitations';
 import type { WorkspaceRole } from '@shared/core/workspaces/workspaces';
 import { extractAuthCookie, reauthenticateManagedServer, refreshSession } from './auth';
+import { consoleIdentityHeaders } from './console-identity';
 import { getSessionCookie, setSessionCookie } from './servers-store';
 
 /** The gateway management API is mounted under `/gateway` on the server. */
@@ -229,8 +231,9 @@ async function gatewayFetch(
   const stopped = managedServerStoppedPhase(server);
   if (stopped) throw new ManagedServerStoppedError(server, stopped);
 
+  const identity = await consoleIdentityHeaders(server);
   const sendOnce = async (cookie: string | null): Promise<Response> => {
-    const headers: Record<string, string> = { Accept: 'application/json' };
+    const headers: Record<string, string> = { Accept: 'application/json', ...identity };
     if (options.body !== undefined) {
       headers['Content-Type'] = 'application/json';
     }
@@ -247,6 +250,7 @@ async function gatewayFetch(
         signal: AbortSignal.timeout(30_000),
       });
     } catch (cause) {
+      noteManagedServerUnanswered(server);
       throw new GatewayError(
         'network',
         `Could not reach ${server.gatewayUrl}: ${cause instanceof Error ? cause.message : String(cause)}`
@@ -895,67 +899,6 @@ export async function fetchAgentRooms(
     status: r.status,
     roomRole: r.room_role,
   }));
-}
-
-/** The agent's current known-agent options (the last validated payload) and
- * its derived connection model, from `GET /agents/{id}`. */
-export type RemoteAgentOptions = {
-  options: Record<string, unknown>;
-  connectionModel: string | null;
-};
-
-/**
- * Fetch the agent's current known-agent options and connection model. Returns
- * empty options for agents with no known-agent type. Used to read-modify-write
- * the options payload (the PATCH endpoint is a full replace, not a merge).
- */
-export async function fetchAgentOptions(
-  server: SwitchServer,
-  agentId: string
-): Promise<RemoteAgentOptions> {
-  const res = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}`, {
-    authenticated: true,
-  });
-  const json = (await res.json()) as {
-    known_agent_options?: Record<string, unknown> | null;
-    connection_model?: string | null;
-  };
-  return {
-    options: json.known_agent_options ?? {},
-    connectionModel: json.connection_model ?? null,
-  };
-}
-
-/**
- * Replace a known-agent's options (`PATCH /agents/{id}/options`). The gateway
- * re-derives the `integration_profile` from the new options, so this is the one
- * write path that keeps options and connection model in sync. The body must be
- * the FULL options payload — callers read current options first and merge.
- */
-export async function updateKnownAgentOptions(
-  server: SwitchServer,
-  agentId: string,
-  options: Record<string, unknown>
-): Promise<void> {
-  await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}/options`, {
-    authenticated: true,
-    method: 'PATCH',
-    body: { options },
-  });
-}
-
-/**
- * Toggle the agent's `auto_session` option, preserving all other options.
- * Read-modify-writes through `updateKnownAgentOptions` so the gateway rebuilds
- * the connection model (`auto_session` ⇄ `session_addressable`).
- */
-export async function setAutoSession(
-  server: SwitchServer,
-  agentId: string,
-  enabled: boolean
-): Promise<void> {
-  const { options } = await fetchAgentOptions(server, agentId);
-  await updateKnownAgentOptions(server, agentId, { ...options, auto_session: enabled });
 }
 
 /**
