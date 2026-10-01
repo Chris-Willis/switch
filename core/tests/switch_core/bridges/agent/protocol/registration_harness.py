@@ -1,4 +1,4 @@
-"""A AgentCore wired up far enough to run `register_agent`.
+"""An AgentCore wired up far enough to run `register_agent`.
 
 Registration touches a Matrix client lifecycle and the collaboration bridges;
 tests about what registration *records* need neither, so the service is built

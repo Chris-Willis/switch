@@ -1,3 +1,4 @@
+import os
 import re
 import ssl
 import uuid
@@ -986,8 +987,6 @@ def deprecated_env_names() -> list[str]:
     Checked against the environment rather than the parsed config, which
     cannot tell which of a field's names supplied it.
     """
-    import os
-
     warnings = []
     if "MATRIX_SERVER_NAME" in os.environ and "ID_SERVER_NAME" not in os.environ:
         warnings.append(

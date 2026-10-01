@@ -49,7 +49,7 @@ class _AgentStore:
 
 
 def _service(store: _AgentStore) -> AgentCore:
-    """A AgentCore with only the two collaborators this path touches.
+    """An AgentCore with only the two collaborators this path touches.
 
     Constructed without __init__ on purpose: the real one wires two dozen
     dependencies, none of which this method uses, and threading them all
