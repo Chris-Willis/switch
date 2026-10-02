@@ -614,9 +614,17 @@ export async function runSharedHost(
       host.onPublished((event) => parent.push(event));
       parent.ready();
     }
-    /** Nothing running, nothing waiting on a person, nothing handed over, for long enough. */
+    /**
+     * Nothing running, nothing waiting on a person, nothing handed over, for
+     * long enough. Subagents still at work after their turn ended count as
+     * running, and the wait starts again from when the last of them stops.
+     */
     const idleEnough = (): boolean => {
       if (!parent || options.parkAfterMs === null) return false;
+      if (host!.backgroundWorkRunning) {
+        active();
+        return false;
+      }
       if (performance.now() - lastActive < options.parkAfterMs) return false;
       const snapshot = host!.snapshot();
       return (

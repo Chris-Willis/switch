@@ -99,6 +99,8 @@ async function start(
     rooms?: boolean;
     ask?: 'approval' | 'questions';
     parkAfterMs?: number;
+    /** The provider reports work, such as subagents, still running outside any turn. */
+    backgroundWork?: { running: boolean };
     resettable?: boolean;
     /** What the launcher recorded when it created this session's root, if it did. */
     owedStart?: string;
@@ -196,6 +198,9 @@ async function start(
     }),
     stopAll: vi.fn(async () => {}),
     hasSession: () => live,
+    ...(opts.backgroundWork
+      ? { hasBackgroundWork: () => live && opts.backgroundWork!.running }
+      : {}),
     subscribe: (fn) => {
       listener = fn;
       return () => {
@@ -679,6 +684,33 @@ it('does not park while a turn waits on a person', async () => {
     await new Promise((resolve) => setTimeout(resolve, 2000));
     expect(await hostParked(host.root)).toBe(false);
     expect(await host.parent.ask({ type: 'snapshot' })).toMatchObject({ ok: true });
+  } finally {
+    await host.stop();
+  }
+});
+
+it('does not park while subagents the provider started are still running', async () => {
+  const backgroundWork = { running: true };
+  const host = await start({ rooms: true, backgroundWork, parkAfterMs: 500 });
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Fan out') });
+    await vi.waitFor(() => expect(host.turns).toHaveLength(1), { timeout: 5000 });
+    // The turn ends with its subagents still at work in the background.
+    host.emit({
+      type: 'turn.completed',
+      turnId: host.turns[0]!.turnId,
+      outcome: 'completed',
+      usage: [],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect(await hostParked(host.root)).toBe(false);
+    // Once they finish the session counts as idle from then, not from the turn.
+    backgroundWork.running = false;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(await hostParked(host.root)).toBe(false);
+    await vi.waitFor(async () => expect(await hostParked(host.root)).toBe(true), {
+      timeout: 5000,
+    });
   } finally {
     await host.stop();
   }
