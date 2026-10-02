@@ -13,7 +13,9 @@ import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
+from pydantic import ValidationError
 from slack_sdk.errors import SlackApiError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -320,3 +322,42 @@ class TestSlackWorkspaceIdIsTheTokens:
         ):
             with pytest.raises(BridgeCredentialError, match="invalid_auth"):
                 await SlackAdapter.verify_credentials(dict(_SLACK))
+
+    @pytest.mark.parametrize(
+        "failure",
+        [aiohttp.ClientConnectionError("connection refused"), TimeoutError()],
+    )
+    async def test_slack_out_of_reach_is_a_credential_error_not_a_crash(
+        self, failure: Exception
+    ) -> None:
+        """Add and edit answer 400 rather than 500 when Slack cannot be
+        reached, and the install flow can tell it apart from a bug."""
+        with patch(
+            "switch_core.bridges.collaboration.slack.adapter.AsyncWebClient.auth_test",
+            AsyncMock(side_effect=failure),
+        ):
+            with pytest.raises(BridgeCredentialError, match="Could not reach Slack"):
+                await SlackAdapter.verify_credentials(dict(_SLACK))
+
+
+class TestMattermostUrlIsCheckedUpFront:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://chat.example.invalid:99999",
+            "https://chat.example.invalid:abc",
+            "chat.example.invalid",
+            "ftp://chat.example.invalid",
+        ],
+    )
+    async def test_an_edit_with_a_bad_url_is_a_validation_error(
+        self, session_factory: async_sessionmaker[AsyncSession], url: str
+    ) -> None:
+        tenant = await _tenant(session_factory)
+        with tenant_scope(tenant):
+            with pytest.raises(ValidationError, match="url"):
+                await _service(session_factory).check_edited_connection_config(
+                    bridge_id="the-edited-bridge",
+                    bridge_type="mattermost",
+                    connection_config={**_MATTERMOST, "url": url},
+                )

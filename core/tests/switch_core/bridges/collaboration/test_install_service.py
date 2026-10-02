@@ -39,6 +39,7 @@ from switch_core.bridges.collaboration.install_state import (
     mint,
 )
 from switch_core.bridges.collaboration.lifecycle_service import BridgeClaimConflict
+from switch_core.bridges.collaboration.models import BridgeCredentialError
 from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
     Client,
@@ -146,6 +147,10 @@ class _FakeLifecycle:
         # Set to make the claim check refuse, as the real one does when another
         # bridge already connects the workspace.
         self.claim_conflict: str | None = None
+        # Set to make the next registration fail before writing anything, as
+        # the real one does when the platform rejects or cannot check the
+        # credential. Cleared once raised, so a retry succeeds.
+        self.register_failure: Exception | None = None
 
     async def reject_claim_conflict(
         self, bridge_type: str, connection_config: dict[str, object]
@@ -154,6 +159,9 @@ class _FakeLifecycle:
             raise BridgeClaimConflict(self.claim_conflict)
 
     async def register(self, **kwargs: object) -> CollaborationBridge:
+        if self.register_failure is not None:
+            failure, self.register_failure = self.register_failure, None
+            raise failure
         self.registered.append(kwargs)
         async with tenant_session(self._factory, self._tenant_id) as session:
             client = Client(
@@ -455,6 +463,48 @@ class TestWhatTheCallbackWillNotDo:
         assert fixture.lifecycle.registered == []
         async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
             assert await fixture.service.list_installs(session) == []
+
+
+class TestAFailedRegistrationReleasesTheWorkspace:
+    """The bridge is registered after the install is recorded, and a platform
+    blip during its credential check must not leave an active install with no
+    bridge holding the workspace against every retry."""
+
+    async def _statuses(self, factory: async_sessionmaker, tenant_id: str) -> list[str]:
+        async with tenant_session(factory, tenant_id) as session:
+            installs = await MessagingInstallStore().list_for_tenant(session)
+        return sorted(install.status for install in installs)
+
+    async def test_a_credential_failure_ends_the_install_and_says_so(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        fixture.lifecycle.register_failure = BridgeCredentialError(
+            "Could not reach Slack to check the bot token: timeout. Try again."
+        )
+
+        with pytest.raises(MessagingInstallError, match="Start the install again"):
+            await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+
+        assert await self._statuses(rls_harness.restricted, fixture.tenant_a) == [
+            INSTALL_DISCONNECTED
+        ]
+        retry = await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+        assert retry.status == INSTALL_ACTIVE
+        assert retry.bridge_id is not None
+
+    async def test_any_other_failure_ends_it_too_and_is_not_disguised(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        fixture.lifecycle.register_failure = RuntimeError("database went away")
+
+        with pytest.raises(RuntimeError, match="database went away"):
+            await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+
+        assert await self._statuses(rls_harness.restricted, fixture.tenant_a) == [
+            INSTALL_DISCONNECTED
+        ]
 
 
 class TestDisconnecting:

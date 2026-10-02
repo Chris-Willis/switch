@@ -28,6 +28,7 @@ from mattermostdriver.exceptions import (
     NotEnoughPermissions,
     ResourceNotFound,
 )
+from pydantic import field_validator
 
 from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.adapter import (
@@ -242,6 +243,20 @@ class MattermostConnectionConfig(BridgeConnectionConfig):
     # cluster. Unset means Switch has no address to give Mattermost, so cards
     # carry no buttons and stay answerable by typing.
     callback_base_url: str | None = None
+
+    @field_validator("url")
+    @classmethod
+    def _url_names_a_server(cls, value: str) -> str:
+        """`url` is what the bridge's claim on a team is worked out from, so
+        it is checked here rather than failing deep inside that."""
+        parts = urlsplit(value)
+        if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
+            raise ValueError("url must be an http(s) URL naming the server")
+        try:
+            parts.port
+        except ValueError as exc:
+            raise ValueError(f"url has an invalid port: {exc}") from exc
+        return value
 
 
 # A refusal being collected for the person who pressed, if a press is what we

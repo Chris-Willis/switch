@@ -62,6 +62,7 @@ from switch_core.bridges.collaboration.install import (
     InboundWebhook,
     MessagingAppInstaller,
     MessagingInstallerRegistry,
+    MessagingInstallError,
     WebhookEndpoint,
     oauth_callback_path,
     public_url,
@@ -75,7 +76,10 @@ from switch_core.bridges.collaboration.lifecycle_service import (
     BridgeClaimConflict,
     CollaborationBridgeLifecycleService,
 )
-from switch_core.bridges.collaboration.models import BridgeStartRefused
+from switch_core.bridges.collaboration.models import (
+    BridgeCredentialError,
+    BridgeStartRefused,
+)
 from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import MessagingInstall
 from switch_core.db.session_scope import tenant_session
@@ -265,19 +269,45 @@ class MessagingInstallService:
                 install_id = install.id
                 await session.commit()
 
-            bridge = await self._lifecycle.register(
-                bridge_type=platform,
-                display_name=grant.workspace_name,
-                connection_config=connection_config,
-                # Off, though the granted scopes would allow it. Nobody was
-                # asked: an install has no registration form, and letting an
-                # app create channels in a customer's workspace is a decision
-                # someone should make rather than inherit.
-                channel_creation_enabled=False,
-                # A person installed the app: this is them connecting their
-                # platform, which is exactly what onboarding measures.
-                preconfigured=False,
-            )
+            try:
+                bridge = await self._lifecycle.register(
+                    bridge_type=platform,
+                    display_name=grant.workspace_name,
+                    connection_config=connection_config,
+                    # Off, though the granted scopes would allow it. Nobody was
+                    # asked: an install has no registration form, and letting
+                    # an app create channels in a customer's workspace is a
+                    # decision someone should make rather than inherit.
+                    channel_creation_enabled=False,
+                    # A person installed the app: this is them connecting their
+                    # platform, which is exactly what onboarding measures.
+                    preconfigured=False,
+                )
+            except Exception as exc:
+                # An active install with no bridge would hold the workspace,
+                # refusing every reinstall until someone disconnected it by
+                # hand — a platform blip during the credential check would be
+                # enough. Ending it releases the workspace for the retry.
+                async with tenant_session(
+                    self._session_factory, state.tenant_id
+                ) as session:
+                    await self._store.end(
+                        session, install_id=install_id, status=INSTALL_DISCONNECTED
+                    )
+                    await session.commit()
+                logger.warning(
+                    "Ended %s install %s for workspace %s: its bridge could not "
+                    "be registered (%s)",
+                    platform,
+                    install_id,
+                    grant.external_workspace_id,
+                    exc,
+                )
+                if isinstance(exc, BridgeCredentialError):
+                    raise MessagingInstallError(
+                        f"{exc} Start the install again from Switch."
+                    ) from exc
+                raise
 
             async with tenant_session(
                 self._session_factory, state.tenant_id

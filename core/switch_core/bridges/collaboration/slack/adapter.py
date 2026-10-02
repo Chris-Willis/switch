@@ -11,6 +11,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, ClassVar, Literal, NoReturn
 
+import aiohttp
 import httpx
 from pydantic import BaseModel, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
@@ -357,6 +358,11 @@ class SlackAdapter(CollaborationAdapter):
         except SlackApiError as exc:
             raise BridgeCredentialError(
                 f"Slack refused the bot token: {exc.response.get('error', exc)}"
+            ) from exc
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            raise BridgeCredentialError(
+                f"Could not reach Slack to check the bot token: "
+                f"{exc or type(exc).__name__}. Try again."
             ) from exc
         authenticated = {
             str(auth.get("team_id") or ""),
