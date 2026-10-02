@@ -461,6 +461,11 @@ export class HostedSession {
     return this.decisionPending;
   }
 
+  /** Work the provider is doing outside any turn, such as background subagents. */
+  get backgroundWorkRunning(): boolean {
+    return this.adapter.hasBackgroundWork?.(this.config.session.sessionId) ?? false;
+  }
+
   snapshot(): Snapshot {
     return this.replica.snapshot();
   }

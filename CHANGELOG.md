@@ -1357,6 +1357,18 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+- **A Claude Code session is no longer parked while its background subagents
+  are still working.** The idle timer only looked at turns, so a session whose
+  turn had ended with subagents still running in the background was stopped
+  after the idle timeout, taking the subagents with it. Those subagents now
+  count as activity, and the idle wait starts again when the last one stops.
+
+#### Changed
+- **An idle session now parks after a day rather than 30 minutes.** Set
+  `SWITCH_SESSION_PARK_AFTER_MS` on the session host to choose another
+  timeout, or `off` to never park.
+
 ### [0.38.1] - 2026-10-01
 
 #### Fixed
