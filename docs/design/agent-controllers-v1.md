@@ -195,3 +195,84 @@ These are the codes from the contract, plus `forbidden`, `invalid_credential`, `
   - Providers: installed via a PATH lookup, auth via the bundle's `--probe`, cached for 10 min. `provider.recheck` forces a probe.
   - Agents: read from each watcher's `health.json` and `supervisor/failure.json`, mapped to the contract's process states and reason codes.
 - **Operations:** `agent.restart` runs `--restart`. `provider.recheck` forces a probe and reports.
+
+---
+
+## Step 10, option B: controller-backed agents on one stream per controller
+
+Decided after v1. This **replaces** the v1 per-agent key workaround and the nudge-only
+stream. The flag and everything else above stay as they are.
+
+### Model
+- **Controller-backed agent:** an agent whose `agent_definitions.controller_id` is set.
+  Core treats it differently from a directly connected agent:
+  - It has **no per-agent connection** in `ConnectionRegistry`, no placements and no room claims.
+  - **Presence** comes from its controller. The agent is live while its controller's stream is
+    attached and its heartbeat is fresh. It can start sessions on demand when
+    `definition.auto_session` is set and it is a member of the room.
+- **Directly connected agent:** an agent with no controller. Nothing changes for it.
+- **Its per-agent API key cannot open an event stream** while the agent is controller-backed
+  (`409 managed_by_controller`). The key-fetch route
+  (`POST /v1/management/controllers/{id}/agents/{agent_id}/credentials`) is removed, and so
+  are the controller's credential files.
+
+### The Core / Management boundary
+- Core owns an in-memory `ControllerPresence`, in `bridges/agent/protocol/`. It records which
+  controller each agent is bound to, with `auto_session`, and whether each controller's
+  stream is attached and when it last beat.
+- Management fills it at startup (all bindings) and on every binding change, through
+  a narrow API. Core never imports Management and never reads its tables.
+- Every presence reader in Core asks `ControllerPresence` for controller-backed agents and the
+  `ConnectionRegistry` for the others:
+  - statuses (LIVE / DORMANT / NO_SESSION)
+  - the agent client's reachability replies and its "Starting a session…" promise
+  - the bridges' `agent_online`
+  - role leases (a lease held by a controller-backed agent lives while the agent is live)
+  - probes and snapshots
+
+### Acting as an agent
+- A controller access token is accepted on **every agent route**:
+  - `/agents/{agent_id}/...`, including `ops`, media, typing and history
+  - `/agent-sessions/...`, where the agent comes from an `X-Switch-Agent-Id` header
+- A central check in the middleware requires the agent to be **bound to that controller now**.
+  Otherwise the request fails with `403 not_assigned`. It then sets `scope["agent"]`, so the handlers stay
+  unchanged.
+- **Room context for operations:** a controller sends `X-Switch-Room-Id`, meaning the room the
+  calling session works in, which the controller tracks locally. Core checks that the agent is a
+  member and uses it where a session selector would have resolved a room.
+- `connect_to_room` for a controller-backed agent only checks membership and returns the room
+  context. It claims nothing.
+
+### The controller stream (`GET /v1/controllers/{id}/events`)
+- **Open:** `POST /v1/controllers/{id}/connection` with `{cursors: {agent_id: seq | "head"}}`.
+  It returns `{connection_id, generation, heartbeat_interval_s, agents}`.
+- **Takeover:** reopening takes over, with `generation` fencing like today's agent connections.
+- **Beat:** `POST /v1/controllers/{id}/connection/beat {connection_id, generation, cursors}`,
+  every 2 s, with a 6 s TTL. A lapse makes all its agents not live.
+- **Frames.** Every frame carries `agent_id`, plus the agent's own sequence where it has one:
+  - `agent.event`: today's domain event payload and `sequence`, plus `missed` counts computed as
+    today, with one counting reader per controller stream and agent.
+  - `agent.gap`: today's gap fields.
+  - `agent.session_command`: in-room commands such as `!reset` and `!compact`, with `room_id`.
+    The controller routes it to the session working in that room.
+  - `agent.approval_outcome`
+  - `agent.attached {from_seq, rooms}`, `agent.detached {reason}` and `agent.rooms {rooms}`
+    (membership changed).
+  - Plus the management nudges: `assignment.changed`, `operation.pending`,
+    `credential.revoked`.
+- **Reading:** a read-side merge over the existing per-agent `EventBuffer`, from each agent's cursor,
+  `filter=all` (the controller filters locally). There is no buffer per controller. Bindings
+  changing mid-stream attach or detach agents live.
+
+### The controller's local relay
+- One upstream stream. A loopback HTTP relay (`127.0.0.1`, random port, a per-agent bearer token
+  minted locally) is what each agent's watcher and session hosts use as `SWITCH_API_ENDPOINT`.
+- **Answered locally**, reproducing today's per-agent protocol exactly:
+  - `GET /agents/{id}/events` (SSE, demultiplexed from the upstream stream, with the frames,
+    ids, `connection_state`, `gap`, `evicted`, `subscription_changed`, `session_command`,
+    `approval_outcome` and `room_released` semantics the watcher relies on)
+  - `connection/beat`, `connection/placements`, `connection/subscribe` and `unsubscribe`
+- **Forwarded upstream**, everything else, with the controller access token, the
+  `X-Switch-Agent-Id` header, and `X-Switch-Room-Id` resolved from the local placements.
+- The watcher and session-host code does not change. The credentials file it reads names the
+  relay and its local token, never a Switch credential.
