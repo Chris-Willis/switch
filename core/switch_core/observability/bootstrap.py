@@ -26,6 +26,7 @@ from switch_core.observability.catalogue import (
     DB_POOL_IN_USE,
     DB_POOL_OVERFLOW,
     DB_POOL_SIZE,
+    RUNTIME_STARTS,
 )
 from switch_core.observability.db_server import DbServerSampler
 from switch_core.observability.exporter import MetricsExporter
@@ -196,6 +197,7 @@ def start_observability(
 
     registry = MetricsRegistry()
     install(registry)
+    registry.increment(RUNTIME_STARTS, {})
 
     monitor.install(registry)
     RuntimeMetrics(lag).install(registry)
