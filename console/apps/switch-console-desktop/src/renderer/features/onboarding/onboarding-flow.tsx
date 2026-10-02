@@ -133,7 +133,12 @@ export const OnboardingFlow = observer(function OnboardingFlow() {
    * only thing the window can draw. Before that, stepping back off the welcome
    * page is the way out.
    */
-  const exit = server === null ? null : { label: 'Finish later', onExit: () => finish(server.id) };
+  const exit =
+    server !== null
+      ? { label: 'Finish later', onExit: () => finish(server.id) }
+      : onboardingStore.rehearsal
+        ? { label: 'Back to the app', onExit: () => finish(null) }
+        : null;
 
   const cloud = useSwitchCloud();
   const [cloudAttempt, setCloudAttempt] = useState<{ connecting: boolean; error: string | null }>({
@@ -219,6 +224,7 @@ function currentPage(
           cloud={welcomeCloud}
           onContinue={() => goTo('whoRuns')}
           onInvite={() => goTo('invite')}
+          onLeave={onboardingStore.rehearsal ? () => finish(null) : null}
         />
       );
     case 'invite':

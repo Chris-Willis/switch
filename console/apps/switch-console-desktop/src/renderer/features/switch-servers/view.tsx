@@ -16,6 +16,8 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { HostUnreachablePanel } from '@renderer/features/remote-hosts/host-unreachable-panel';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
+import { WorkspaceAvatar } from '@renderer/features/workspaces/workspace-avatar';
+import { workspaceTitle } from '@renderer/features/workspaces/workspace-title';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
@@ -40,7 +42,6 @@ import { remoteServerStore } from './remote-server-store';
 import { RemoteServerControls } from './RemoteServerControls';
 import { serverIcon } from './server-icon';
 import {
-  ServerAvatar,
   serverDeployedTelemetry,
   serverDrift,
   serverPlacementLabel,
@@ -53,6 +54,7 @@ import { ServerSignInFields, useServerSignIn } from './server-sign-in';
 import { ServerStatTiles } from './server-stat-tiles';
 import { useSharedActionConfirm } from './shared-action-confirm';
 import { SharedConsolesSection } from './shared-consoles-section';
+import { isSwitchCloudServer } from './switch-cloud-store';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
 import { TelemetryConsentNotice } from './TelemetryConsentNotice';
@@ -200,6 +202,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   const unreachable = store.isUnreachable(serverId);
   const PlacementIcon = serverIcon(server);
   const drift = serverDrift(server);
+  const title = workspaceTitle(server);
   const stackTransitioning =
     server.managementKind === 'remote' && server.sshHost
       ? remoteServerStore.isTransitioning(server.sshHost) ||
@@ -211,14 +214,25 @@ const ServerMainPanel = observer(function ServerMainPanel() {
       <div className="mx-auto w-full max-w-4xl space-y-6 p-6">
         <header className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
-            <ServerAvatar server={server} size="lg" />
-            <h2 className="truncate text-2xl font-semibold text-foreground">{server.name}</h2>
-            {/* Where the server lives, as the icon the switcher and the sidebar
-              already use for it rather than as a second vocabulary in words. */}
-            <PlacementIcon
-              aria-label={serverPlacementLabel(server) ?? 'Reached over the network'}
-              className="size-4 shrink-0 text-foreground-muted"
-            />
+            <WorkspaceAvatar name={title} size="lg" active />
+            <div className="min-w-0">
+              <h2 className="truncate text-2xl font-semibold text-foreground">{title}</h2>
+              {/* The server it is on, said only where the title does not
+                  already: the placeholder before sign-in is named after it. */}
+              <div className="flex min-w-0 items-center gap-1.5 text-xs text-foreground-muted">
+                {/* Where the server lives, as the icon the switcher and the
+                  sidebar already use for it rather than as a second vocabulary
+                  in words. */}
+                <PlacementIcon
+                  aria-label={
+                    serverPlacementLabel(server) ??
+                    (isSwitchCloudServer(server) ? 'Switch Cloud' : 'Reached over the network')
+                  }
+                  className="size-3.5 shrink-0"
+                />
+                {title !== server.name && <span className="truncate">{server.name}</span>}
+              </div>
+            </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {detailsVisible && (
