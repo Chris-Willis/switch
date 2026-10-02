@@ -145,6 +145,32 @@ class TestWhatAWorkspaceIs:
             == "Mattermost team eng on https://chat.example.invalid"
         )
 
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "chat.example.invalid",
+            "http://chat.example.invalid",
+            "chat.example.invalid:8065/",
+            "HTTP://chat.example.invalid:8065",
+        ],
+    )
+    def test_a_url_with_no_scheme_is_the_server_the_driver_reaches(
+        self, url: str
+    ) -> None:
+        """The driver reads no scheme as http, and http with no port as 8065."""
+        config = {**_MATTERMOST, "url": url, "team_name": "eng"}
+        assert (
+            MattermostAdapter.claimed_workspace(config)
+            == "Mattermost team eng on http://chat.example.invalid"
+        )
+
+    def test_port_80_is_not_the_drivers_http_default(self) -> None:
+        plain = {**_MATTERMOST, "url": "http://chat.example.invalid"}
+        on_80 = {**_MATTERMOST, "url": "http://chat.example.invalid:80"}
+        assert MattermostAdapter.claimed_workspace(
+            plain
+        ) != MattermostAdapter.claimed_workspace(on_80)
+
     def test_a_mattermost_team_on_another_port_is_another_team(self) -> None:
         config = {**_MATTERMOST, "url": "https://chat.example.invalid:8065"}
         assert MattermostAdapter.claimed_workspace(config) != (
@@ -346,8 +372,8 @@ class TestMattermostUrlIsCheckedUpFront:
         [
             "https://chat.example.invalid:99999",
             "https://chat.example.invalid:abc",
-            "chat.example.invalid",
             "ftp://chat.example.invalid",
+            "https://",
         ],
     )
     async def test_an_edit_with_a_bad_url_is_a_validation_error(
@@ -361,3 +387,9 @@ class TestMattermostUrlIsCheckedUpFront:
                     bridge_type="mattermost",
                     connection_config={**_MATTERMOST, "url": url},
                 )
+
+    def test_a_url_with_no_scheme_is_still_valid(self) -> None:
+        """Bridges configured before the check, the way the driver accepts."""
+        MattermostConnectionConfig.model_validate(
+            {**_MATTERMOST, "url": "chat.example.invalid:8065"}
+        )

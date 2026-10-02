@@ -14,7 +14,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, ClassVar
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 import httpx
 import requests as sync_requests
@@ -214,6 +214,17 @@ class _Rendered:
     plain: str
 
 
+def _server_url(value: str) -> SplitResult:
+    """`url` as the driver reads it (`_create_driver`): no scheme means http."""
+    value = value.strip()
+    return urlsplit(value if "://" in value else f"http://{value}")
+
+
+# The port `_create_driver` connects to when the URL names none — not 80 for
+# http, but Mattermost's own.
+_DRIVER_DEFAULT_PORTS = {"http": 8065, "https": 443}
+
+
 class MattermostConnectionConfig(BridgeConnectionConfig):
     url: str
     admin_user: str
@@ -249,7 +260,7 @@ class MattermostConnectionConfig(BridgeConnectionConfig):
     def _url_names_a_server(cls, value: str) -> str:
         """`url` is what the bridge's claim on a team is worked out from, so
         it is checked here rather than failing deep inside that."""
-        parts = urlsplit(value)
+        parts = _server_url(value)
         if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
             raise ValueError("url must be an http(s) URL naming the server")
         try:
@@ -330,12 +341,14 @@ class MattermostAdapter(CollaborationAdapter):
     @classmethod
     def claimed_workspace(cls, connection_config: dict[str, object]) -> str | None:
         """The team on its server, compared in canonical form so a trailing
-        slash, letter case or an explicit default port does not make the same
-        team look like a different one."""
-        url = urlsplit(str(connection_config["url"]))
+        slash, letter case, a missing scheme or an explicit default port does
+        not make the same team look like a different one. Defaults are the
+        driver's, so `http://mm` and `mm:8065` are one server and `mm:80`
+        another."""
+        url = _server_url(str(connection_config["url"]))
         scheme = url.scheme.lower()
         port = url.port
-        default_port = {"http": 80, "https": 443}.get(scheme)
+        default_port = _DRIVER_DEFAULT_PORTS.get(scheme)
         host = (url.hostname or "").lower()
         if port is not None and port != default_port:
             host = f"{host}:{port}"
