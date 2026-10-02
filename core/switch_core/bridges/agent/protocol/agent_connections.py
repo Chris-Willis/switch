@@ -712,10 +712,14 @@ class AgentConnectionRegistry:
             self._drop_placements(conn)
         self.relays.fail_connection(conn.id, None)
         conn.wake.set()
-        self._remember_closed(
-            connection_id,
-            "after_lapse" if closure is HEARTBEAT_LAPSED else "after_close",
-        )
+        lapsed = closure is HEARTBEAT_LAPSED
+        self._remember_closed(connection_id, "after_lapse" if lapsed else "after_close")
+        if lapsed:
+            # Counted here rather than in the sweep: a lapse is also noticed
+            # when the dead connection is next used (`require`) and by its own
+            # event stream, and counting only the sweep under-reported lapses
+            # against the reconnects that follow them.
+            metrics().increment(AGENT_CONNECTIONS_EXPIRED, {})
         # `beats` and the age separate the two ways a connection dies, which
         # otherwise look identical in the log: a client that never beat at all
         # (beats=0 — it is not running the heartbeat, or cannot reach us) versus
@@ -785,10 +789,6 @@ class AgentConnectionRegistry:
             gone = self.close(conn.id, HEARTBEAT_LAPSED)
             if gone is not None:
                 closed.append(gone)
-        if closed:
-            # A gauge of live connections cannot show churn: agents
-            # reconnecting as fast as they expire hold it perfectly flat.
-            metrics().increment(AGENT_CONNECTIONS_EXPIRED, {}, float(len(closed)))
         return closed
 
     # ------------------------------------------------------------------
