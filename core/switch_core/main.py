@@ -141,6 +141,7 @@ from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
 from switch_core.gateway.invite_mail import SmtpInviteMailer
 from switch_core.logging_config import configure_logging
+from switch_core.management.wiring import create_management
 from switch_core.messages.notify import MessageListener
 from switch_core.observability.bootstrap import (
     Observability,
@@ -581,6 +582,12 @@ async def run(config: SwitchConfig) -> None:
         frontend_base_url=config.frontend_base_url,
     )
 
+    # ── Agent management (off unless AGENT_MANAGEMENT_ENABLED) ───────────────
+    # Built before the agent bridge app because its authenticator is the bearer
+    # middleware's controller branch; its routes are installed once both apps
+    # exist, below.
+    management = create_management(config, session_factory)
+
     # ── FastAPI apps ─────────────────────────────────────────────────────────
     agent_bridge_app, protocol = create_agent_bridge_app(
         agent_store=agent_store,
@@ -600,6 +607,7 @@ async def run(config: SwitchConfig) -> None:
         approval_outcomes=ApprovalOutcomes(
             session_activity_listener, AgentSessionActivityService(session_factory)
         ),
+        controller_auth=management.authenticator if management is not None else None,
         connections=connections,
         telemetry=telemetry,
     )
@@ -735,6 +743,13 @@ async def run(config: SwitchConfig) -> None:
         agent_bridge_app.include_router(
             create_messaging_install_router(install_service),
             tags=["messaging-installs"],
+        )
+
+    if management is not None:
+        management.install(
+            agent_bridge_app=agent_bridge_app,
+            gateway_app=gateway_app,
+            protocol=protocol,
         )
 
     agent_bridge_app.mount("/gateway", gateway_app)

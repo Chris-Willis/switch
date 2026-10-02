@@ -67,6 +67,12 @@ _ALLOWED_MODULES = {
     "switch_core.bridges.agent.protocol.agent_core",
     # Bearer and OIDC authentication: the credential's tenant, before its row.
     "switch_core.bridges.agent.auth",
+    # Agent-controller enrollment and token exchange carry their secret (a
+    # one-time code, a controller credential) in the body rather than as a
+    # bearer token, and both are `api_keys` rows: the same credential-
+    # resolution shape as the line above, through the same `tenant_of_api_key`,
+    # with the row then read scoped to the tenant it produced.
+    "switch_core.management.auth",
     # The gateway's JWT subject resolves to its membership, and
     # `tenant_members` is scoped, so nothing else can answer it. In the
     # authentication module itself rather than on an injected store: a store

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from dataclasses import dataclass
+from typing import Protocol
 
 import jwt
 from fastapi import HTTPException, Request
 from jwt import PyJWKClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
@@ -81,6 +83,40 @@ class OIDCTokenValidator:
         )
 
 
+@dataclass(frozen=True)
+class ControllerPrincipal:
+    """An authenticated agent controller, as ``scope["controller"]`` carries it."""
+
+    controller_id: str
+    owner_id: str
+    tenant_id: str
+
+
+class ControllerAuthError(Exception):
+    """A controller credential was refused; ``code`` is a contract reason code."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class ControllerAuthenticator(Protocol):
+    """The agent-management side of bearer authentication.
+
+    Supplied only when agent management is enabled. The middleware asks it
+    which paths it owns and hands it their tokens, and knows nothing else
+    about controllers: what a controller token is, and which of its routes
+    authenticate by their body instead, belong to the management module.
+    """
+
+    def handles(self, path: str) -> bool: ...
+
+    def is_public(self, path: str) -> bool: ...
+
+    async def authenticate(self, token: str) -> ControllerPrincipal: ...
+
+
 class BearerAuthMiddleware:
     """Authenticate requests carrying a Bearer token.
 
@@ -99,6 +135,11 @@ class BearerAuthMiddleware:
     Public paths (see ``PUBLIC_PATH_PREFIXES``) bypass authentication
     entirely. The MCP path also requires an agent — registration tokens
     are not enough to open an MCP session.
+
+    With agent management enabled, a ``ControllerAuthenticator`` owns the
+    controller paths outright: their tokens are controller access tokens and
+    nothing else, the principal lands in ``scope["controller"]``, and a refusal
+    is answered in the controller contract's error envelope.
 
     This is where a request's tenant gets bound (see
     ``switch_core.tenant_context``), for all three credentials — registration
@@ -127,6 +168,7 @@ class BearerAuthMiddleware:
         api_key_cache: ApiKeyCache,
         session_factory: async_sessionmaker[AsyncSession],
         oidc_validator: OIDCTokenValidator | None = None,
+        controller_auth: ControllerAuthenticator | None = None,
     ) -> None:
         self.app = app
         self._agent_store = agent_store
@@ -134,6 +176,7 @@ class BearerAuthMiddleware:
         self._api_key_cache = api_key_cache
         self._session_factory = session_factory
         self._oidc_validator = oidc_validator
+        self._controller_auth = controller_auth
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
@@ -147,6 +190,12 @@ class BearerAuthMiddleware:
 
         headers = dict(scope.get("headers", []))
         auth_header = headers.get(b"authorization", b"").decode()
+
+        if self._controller_auth is not None and self._controller_auth.handles(path):
+            await self._serve_controller(
+                self._controller_auth, path, auth_header, scope, receive, send
+            )
+            return
 
         if not auth_header.startswith("Bearer "):
             response = Response(
@@ -203,6 +252,35 @@ class BearerAuthMiddleware:
 
         response = Response("Invalid credentials", status_code=401)
         await response(scope, receive, send)
+
+    async def _serve_controller(
+        self,
+        controller_auth: ControllerAuthenticator,
+        path: str,
+        auth_header: str,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        if controller_auth.is_public(path):
+            await self.app(scope, receive, send)
+            return
+        if not auth_header.startswith("Bearer "):
+            await _controller_refusal(
+                "invalid_credential", "Missing or invalid Authorization header"
+            )(scope, receive, send)
+            return
+        try:
+            principal = await controller_auth.authenticate(auth_header[7:])
+        except ControllerAuthError as exc:
+            await _controller_refusal(exc.code, exc.message)(scope, receive, send)
+            return
+        scope["controller"] = principal
+        with (
+            tenant_scope(principal.tenant_id),
+            log_context(tenant_id=principal.tenant_id, user_id=principal.owner_id),
+        ):
+            await self.app(scope, receive, send)
 
     async def _resolve_api_key(self, token: str) -> tuple[ApiKey | None, Agent | None]:
         """Look up the token in api_keys once; return (api_key_row, agent_or_None).
@@ -276,6 +354,13 @@ class BearerAuthMiddleware:
             return None
         async with tenant_session(self._session_factory, tenant_id) as session:
             return await self._agent_store.get_by_oauth_client_id(session, client_id)
+
+
+def _controller_refusal(code: str, message: str) -> Response:
+    return JSONResponse(
+        {"error": {"code": code, "message": message, "retryable": False}},
+        status_code=401,
+    )
 
 
 def _is_public_path(path: str) -> bool:

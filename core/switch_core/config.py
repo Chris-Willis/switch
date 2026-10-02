@@ -443,6 +443,20 @@ class SwitchConfig(BaseSettings):
     # evicted past this, so a flood of tokens cannot grow the process.
     agent_auth_cache_max_entries: int = 4096
 
+    # Agent management: managed agent definitions, the agent controllers that
+    # run them, and the controller-facing routes under /v1/management and
+    # /v1/controllers. Off by default; with it off none of those routes are
+    # mounted and the bearer middleware never treats a token as a controller's.
+    agent_management_enabled: bool = False
+    # Signs controller access tokens. Required (at least 32 characters) when
+    # agent management is on, and deliberately separate from JWT_SECRET_KEY so
+    # rotating one never invalidates the other.
+    controller_token_secret: str | None = None
+    # How often a controller must report status. Sent to controllers as
+    # `report_within_s`; a controller that has not reported for three of these
+    # is shown as unknown and refused new placements.
+    controller_status_interval_seconds: int = 60
+
     # Postgres terminates a connection that sits inside an open transaction
     # without executing anything for longer than this (a Postgres interval such
     # as "15s"), turning a slot that never comes back into a loud, attributable
@@ -513,6 +527,27 @@ class SwitchConfig(BaseSettings):
             raise ValueError(
                 "AGENT_AUTH_CACHE_MAX_ENTRIES must be at least 1, got "
                 f"{self.agent_auth_cache_max_entries!r}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_agent_management(self) -> "SwitchConfig":
+        if self.controller_status_interval_seconds < 1:
+            raise ValueError(
+                "CONTROLLER_STATUS_INTERVAL_SECONDS must be at least 1, got "
+                f"{self.controller_status_interval_seconds!r}."
+            )
+        if not self.agent_management_enabled:
+            return self
+        if not self.controller_token_secret:
+            raise ValueError(
+                "CONTROLLER_TOKEN_SECRET is required when AGENT_MANAGEMENT_ENABLED "
+                "is true: it signs the access tokens agent controllers use."
+            )
+        if len(self.controller_token_secret) < 32:
+            raise ValueError(
+                "CONTROLLER_TOKEN_SECRET must be at least 32 characters, got "
+                f"{len(self.controller_token_secret)}."
             )
         return self
 

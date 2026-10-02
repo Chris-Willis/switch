@@ -5,7 +5,7 @@ import logging
 import re
 import secrets
 import uuid
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -265,6 +265,10 @@ class AgentCore:
     # None only for the minimal instances tests assemble; the server always
     # supplies it, and a stream without it simply carries no approval outcomes.
     approval_outcomes: ApprovalOutcomes | None = None
+    # Told (tenant_id, agent_id) just before an agent is deleted, while its row
+    # still exists. Set by the process wiring when something outside Core keeps
+    # state about agents that a cascade alone would drop without telling anyone.
+    _agent_removal_listener: Callable[[str, str], Awaitable[None]] | None = None
 
     def __init__(
         self,
@@ -796,6 +800,42 @@ class AgentCore:
         self.api_key_cache.invalidate_agent(existing.id)
         return existing.id
 
+    def set_agent_removal_listener(
+        self, listener: Callable[[str, str], Awaitable[None]]
+    ) -> None:
+        self._agent_removal_listener = listener
+
+    async def rotate_agent_api_key(self, agent_id: str) -> str:
+        """Issue the agent a new API key and invalidate the one it had.
+
+        The same swap re-registration performs, without touching anything else
+        about the agent: a new `agent` key, the agent pointed at it, the old key
+        deleted, and the auth cache dropped so the old key stops authenticating
+        on every door at once. Returns the new key's plaintext.
+
+        Raises:
+            ValueError: no agent with this id exists in the bound tenant.
+        """
+        api_key = secrets.token_urlsafe(32)
+        async with self.session_factory() as session:
+            agent = await self.agent_store.get(session, agent_id)
+            if agent is None:
+                raise ValueError(f"No such agent: {agent_id}")
+            new_key = ApiKey(
+                type="agent",
+                key_hash=hashlib.sha256(api_key.encode()).hexdigest(),
+                encrypted_key=encrypt_token(api_key, self.config.jwt_secret_key),
+                label=agent.name,
+                user_id=agent.owner_id or "",
+            )
+            await self.api_key_store.create(session, new_key)
+            old_api_key_id = agent.api_key_id
+            await self.agent_store.update(session, agent_id, api_key_id=new_key.id)
+            await self.api_key_store.delete(session, old_api_key_id)
+            await session.commit()
+        self.api_key_cache.invalidate_agent(agent_id)
+        return api_key
+
     async def _create_bridge_identities(
         self, tenant_id: str, agent_name: str, description: str
     ) -> None:
@@ -982,6 +1022,8 @@ class AgentCore:
             "had_parent": agent.parent_agent_id is not None,
         }
         removed["room_count"] = await self._room_count_for(resolved_id)
+        if self._agent_removal_listener is not None:
+            await self._agent_removal_listener(tenant_id, resolved_id)
         await self.client_lifecycle.stop(client_id)
         self.event_buffer.remove(resolved_id)
 

@@ -1,0 +1,20 @@
+[
+  {
+    "event": "connection_state",
+    "data": {
+      "controller_id": "00000000-0000-4000-8000-0000000000c1",
+      "assignment_revision": 3,
+      "report_within_s": 60
+    }
+  },
+  { "event": "assignment.changed", "data": { "revision": 4 } },
+  {
+    "event": "operation.pending",
+    "data": {
+      "operation_id": "00000000-0000-4000-8000-0000000000d2",
+      "kind": "provider.recheck",
+      "agent_id": null
+    }
+  },
+  { "event": "credential.revoked", "data": {} }
+]

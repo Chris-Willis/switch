@@ -529,7 +529,7 @@ pnpm run lint
     `.gitignore` stops `git add` and not an archive, a sync or `git add -f`.
     Moving it out is tracked separately; it is deliberately not solved by
     writing it to a second location as well.
-- SDK host environment passthrough must use the allowlist in `src/main/core/sdk-host/agent-env.ts`.
+- SDK host environment passthrough must use the allowlist in `packages/agent-providers/src/host/agent-env.ts`.
 - Treat shell escaping and provider process spawning as security-sensitive.
 - Do not bypass path-safety, shell escaping, or validation helpers.
 - Use `pnpm-lock.yaml` for dependency integrity and review dependency changes.

@@ -1,0 +1,685 @@
+"""The controller-facing routes, end to end against Postgres.
+
+Enrollment by one-time code, token exchange, credential rotation, the
+assignment and its ETag, status reports and the state derived from them,
+the operation lifecycle, and the per-agent credential fetch that fences a
+moved agent's old controller out.
+"""
+
+from __future__ import annotations
+
+import hashlib
+
+import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from switch_core.bridges.agent.auth import BearerAuthMiddleware
+from switch_core.db.models import AgentControllerEnrollmentCode, ApiKey
+from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.api_key_store import ApiKeyStore
+from tests.switch_core.management.harness import (
+    EnrolledController,
+    Harness,
+    add_member,
+    bearer,
+    build_harness,
+    cookies_for,
+    create_managed_agent,
+    definition,
+    enroll_console,
+    fixture,
+    provider,
+    report_status,
+)
+
+
+@pytest.fixture
+def harness(session_factory: async_sessionmaker[AsyncSession]) -> Harness:
+    return build_harness(session_factory)
+
+
+async def _code(harness: Harness, owner_cookies: dict[str, str]) -> str:
+    async with harness.client() as client:
+        response = await client.post(
+            "/gateway/management/enrollment-codes", cookies=owner_cookies
+        )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["code"].startswith("swce_")
+    return str(body["code"])
+
+
+def _enroll_body(code: str) -> dict:
+    body = fixture("enroll_request.json")
+    body["proof"]["code"] = code
+    return body
+
+
+class TestEnrollmentByCode:
+    async def test_a_code_enrolls_once(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        code = await _code(harness, cookies_for(owner))
+
+        async with harness.client() as client:
+            first = await client.post(
+                "/v1/management/controllers/enroll", json=_enroll_body(code)
+            )
+            second = await client.post(
+                "/v1/management/controllers/enroll", json=_enroll_body(code)
+            )
+
+        assert first.status_code == 201, first.text
+        assert first.json()["credential"].startswith("swcc_")
+        assert second.status_code == 401
+        assert second.json()["error"]["code"] == "enrollment_code_invalid"
+
+    async def test_the_enrolled_controller_belongs_to_the_codes_owner(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        code = await _code(harness, cookies_for(owner))
+        async with harness.client() as client:
+            enrolled = await client.post(
+                "/v1/management/controllers/enroll", json=_enroll_body(code)
+            )
+            listed = await client.get(
+                "/gateway/management/controllers", cookies=cookies_for(owner)
+            )
+        assert [c["id"] for c in listed.json()] == [enrolled.json()["controller_id"]]
+        assert listed.json()[0]["kind"] == "daemon"
+        assert listed.json()[0]["state"] == "unknown"
+
+    async def test_a_used_code_leaves_no_credential_behind(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        code = await _code(harness, cookies_for(owner))
+        async with harness.client() as client:
+            await client.post(
+                "/v1/management/controllers/enroll", json=_enroll_body(code)
+            )
+        code_hash = hashlib.sha256(code.encode()).hexdigest()
+        async with harness.session_factory() as session:
+            assert await ApiKeyStore().get_by_hash(session, code_hash) is None
+            row = (
+                await session.execute(select(AgentControllerEnrollmentCode))
+            ).scalar_one()
+            assert row.used_at is not None
+            assert row.controller_id is not None
+            assert row.api_key_id is None
+
+    async def test_an_expired_code_is_refused(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        code = await _code(harness, cookies_for(owner))
+        harness.clock.advance(minutes=11)
+        async with harness.client() as client:
+            response = await client.post(
+                "/v1/management/controllers/enroll", json=_enroll_body(code)
+            )
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "enrollment_code_invalid"
+
+    async def test_an_unknown_code_is_refused(self, harness: Harness) -> None:
+        async with harness.client() as client:
+            response = await client.post(
+                "/v1/management/controllers/enroll",
+                json=_enroll_body("swce_not_issued_by_anyone"),
+            )
+        assert response.status_code == 401
+        assert response.json() == {
+            "error": {
+                "code": "enrollment_code_invalid",
+                "message": "The enrollment code is invalid, already used, or expired.",
+                "retryable": False,
+            }
+        }
+
+    async def test_a_malformed_body_is_a_validation_error(
+        self, harness: Harness
+    ) -> None:
+        async with harness.client() as client:
+            response = await client.post(
+                "/v1/management/controllers/enroll", json={"proof": {}}
+            )
+        assert response.status_code == 422
+        assert response.json()["error"]["code"] == "validation_error"
+
+
+class TestTokenExchange:
+    async def test_the_credential_buys_an_access_token(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+        assert controller.access_token.startswith("swct_")
+
+    async def test_a_wrong_credential_is_refused(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            response = await client.post(
+                f"/v1/management/controllers/{controller.controller_id}/token",
+                json={"credential": "swcc_wrong"},
+            )
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "invalid_credential"
+
+    async def test_a_credential_for_another_controller_is_refused(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            first = await enroll_console(harness, client, owner, "one")
+            second = await enroll_console(harness, client, owner, "two")
+            response = await client.post(
+                f"/v1/management/controllers/{second.controller_id}/token",
+                json={"credential": first.credential},
+            )
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "invalid_credential"
+
+    async def test_a_revoked_controllers_credential_no_longer_exchanges(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await client.delete(
+                f"/gateway/management/controllers/{controller.controller_id}",
+                cookies=cookies_for(owner),
+            )
+            response = await client.post(
+                f"/v1/management/controllers/{controller.controller_id}/token",
+                json={"credential": controller.credential},
+            )
+        # Revocation deletes the credential, so it no longer resolves at all.
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "invalid_credential"
+
+
+class TestCredentialRotation:
+    async def test_rotation_replaces_the_credential(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            rotated = await client.post(
+                f"/v1/management/controllers/{controller.controller_id}/credential/rotate",
+                headers=controller.headers,
+            )
+            old = await client.post(
+                f"/v1/management/controllers/{controller.controller_id}/token",
+                json={"credential": controller.credential},
+            )
+            new = await client.post(
+                f"/v1/management/controllers/{controller.controller_id}/token",
+                json={"credential": rotated.json()["credential"]},
+            )
+        assert rotated.status_code == 200
+        assert old.status_code == 401
+        assert new.status_code == 200
+
+
+class TestAssignment:
+    async def test_etag_and_not_modified(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            path = f"/v1/management/controllers/{controller.controller_id}/assignment"
+            first = await client.get(path, headers=controller.headers)
+            etag = first.headers["ETag"]
+            unchanged = await client.get(
+                path, headers={**controller.headers, "If-None-Match": etag}
+            )
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client, owner, name="reviewer", controller_id=controller.controller_id
+            )
+            changed = await client.get(
+                path, headers={**controller.headers, "If-None-Match": etag}
+            )
+
+        assert first.status_code == 200
+        assert first.json() == {"revision": 0, "agents": []}
+        assert etag == '"0"'
+        assert unchanged.status_code == 304
+        assert unchanged.headers["ETag"] == '"0"'
+        assert created.status_code == 201, created.text
+        assert changed.status_code == 200
+        assert changed.headers["ETag"] == '"1"'
+        [entry] = changed.json()["agents"]
+        assert entry["agent_id"] == created.json()["agent_id"]
+        assert entry["revision"] == 1
+        assert entry["definition"]["name"] == "reviewer"
+
+    async def test_another_controllers_assignment_is_forbidden(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            first = await enroll_console(harness, client, owner, "one")
+            second = await enroll_console(harness, client, owner, "two")
+            response = await client.get(
+                f"/v1/management/controllers/{second.controller_id}/assignment",
+                headers=first.headers,
+            )
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "forbidden"
+
+
+class TestStatus:
+    async def test_a_report_makes_the_controller_online_until_it_goes_stale(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            response = await report_status(client, controller, 5)
+            online = await client.get(
+                "/gateway/management/controllers", cookies=cookies_for(owner)
+            )
+            harness.clock.advance(seconds=3 * 60 + 1)
+            stale = await client.get(
+                "/gateway/management/controllers", cookies=cookies_for(owner)
+            )
+        assert response.status_code == 200, response.text
+        assert response.json() == {"assignment_revision": 0, "report_within_s": 60}
+        assert online.json()[0]["state"] == "online"
+        assert online.json()[0]["status"]["seq"] == 5
+        assert stale.json()[0]["state"] == "unknown"
+
+    async def test_an_older_seq_is_ignored_but_answered(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(client, controller, 7, providers=[provider("claude")])
+            older = await report_status(
+                client, controller, 6, providers=[provider("codex")]
+            )
+            same = await report_status(
+                client, controller, 7, providers=[provider("codex")]
+            )
+            listed = await client.get(
+                "/gateway/management/controllers", cookies=cookies_for(owner)
+            )
+        assert older.status_code == 200
+        assert same.status_code == 200
+        status = listed.json()[0]["status"]
+        assert status["seq"] == 7
+        assert [p["provider"] for p in status["providers"]] == ["claude"]
+
+    async def test_a_failed_agent_without_a_reason_is_refused(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        report = fixture("status_request.json")
+        del report["agents"][1]["reason"]
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            response = await client.put(
+                f"/v1/management/controllers/{controller.controller_id}/status",
+                json=report,
+                headers=controller.headers,
+            )
+        assert response.status_code == 422
+        assert response.json()["error"]["code"] == "validation_error"
+
+    async def test_an_oversized_report_is_refused(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        report = fixture("status_request.json")
+        report["agents"][0]["detail"] = "x" * (64 * 1024)
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            response = await client.put(
+                f"/v1/management/controllers/{controller.controller_id}/status",
+                json=report,
+                headers=controller.headers,
+            )
+        assert response.status_code == 413
+        assert response.json()["error"]["code"] == "validation_error"
+
+    async def test_an_unsupported_protocol_version_is_refused(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            response = await client.put(
+                f"/v1/management/controllers/{controller.controller_id}/status",
+                json=fixture("status_request.json"),
+                headers={**controller.headers, "Switch-Controller-Protocol": "2"},
+            )
+            accepted = await client.put(
+                f"/v1/management/controllers/{controller.controller_id}/status",
+                json=fixture("status_request.json"),
+                headers={**controller.headers, "Switch-Controller-Protocol": "1"},
+            )
+        assert response.status_code == 426
+        assert response.json()["error"]["code"] == "protocol_unsupported"
+        assert response.headers["Switch-Controller-Protocol-Accepts"] == "1-1"
+        assert accepted.status_code == 200
+        assert accepted.headers["Switch-Controller-Protocol-Accepts"] == "1-1"
+
+
+async def _placed_agent(
+    harness: Harness, client, controller: EnrolledController, name: str = "reviewer"
+) -> str:
+    await report_status(client, controller, 1, providers=[provider("claude")])
+    created = await create_managed_agent(
+        client, controller.owner, name=name, controller_id=controller.controller_id
+    )
+    assert created.status_code == 201, created.text
+    return str(created.json()["agent_id"])
+
+
+async def _operation(client, controller: EnrolledController, **body) -> dict:
+    response = await client.post(
+        "/gateway/management/operations",
+        json={"controller_id": controller.controller_id, **body},
+        cookies=cookies_for(controller.owner),
+    )
+    assert response.status_code == 201, response.text
+    return dict(response.json())
+
+
+class TestOperations:
+    async def test_the_lifecycle(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await _placed_agent(harness, client, controller)
+            created = await _operation(
+                client, controller, kind="agent.restart", agent_id=agent_id
+            )
+            listed = await client.get(
+                f"/v1/management/controllers/{controller.controller_id}/operations",
+                params={"state": "pending"},
+                headers=controller.headers,
+            )
+            claim_path = f"/v1/management/operations/{created['id']}/claim"
+            claimed = await client.post(claim_path, headers=controller.headers)
+            again = await client.post(claim_path, headers=controller.headers)
+            relisted = await client.get(
+                f"/v1/management/controllers/{controller.controller_id}/operations",
+                headers=controller.headers,
+            )
+            progress = await client.post(
+                f"/v1/management/operations/{created['id']}/progress",
+                json={"message": "restarting"},
+                headers=controller.headers,
+            )
+            result_path = f"/v1/management/operations/{created['id']}/result"
+            done = await client.post(
+                result_path,
+                json=fixture("operation_result_succeeded.json"),
+                headers=controller.headers,
+            )
+            repeat = await client.post(
+                result_path,
+                json=fixture("operation_result_failed.json"),
+                headers=controller.headers,
+            )
+            claim_after = await client.post(claim_path, headers=controller.headers)
+            history = await client.get(
+                "/gateway/management/operations",
+                params={"controller_id": controller.controller_id},
+                cookies=cookies_for(owner),
+            )
+
+        assert created["state"] == "pending"
+        assert [op["id"] for op in listed.json()["operations"]] == [created["id"]]
+        assert "lease_expires_at" not in listed.json()["operations"][0]
+        assert claimed.status_code == 200
+        assert "lease_expires_at" in claimed.json()
+        assert again.status_code == 200
+        assert again.json() == claimed.json()
+        assert relisted.json()["operations"] == []
+        assert progress.status_code == 204
+        assert done.status_code == 204
+        assert repeat.status_code == 204
+        assert claim_after.status_code == 409
+        assert claim_after.json()["error"]["code"] == "already_claimed"
+        [op] = history.json()
+        assert op["state"] == "succeeded"
+        assert op["result"] == fixture("operation_result_succeeded.json")
+
+    async def test_an_expired_lease_is_offered_again(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            created = await _operation(
+                client,
+                controller,
+                kind="provider.recheck",
+                params={"provider": "claude"},
+            )
+            await client.post(
+                f"/v1/management/operations/{created['id']}/claim",
+                headers=controller.headers,
+            )
+            harness.clock.advance(minutes=5, seconds=1)
+            listed = await client.get(
+                f"/v1/management/controllers/{controller.controller_id}/operations",
+                headers=controller.headers,
+            )
+            reclaimed = await client.post(
+                f"/v1/management/operations/{created['id']}/claim",
+                headers=controller.headers,
+            )
+        assert [op["id"] for op in listed.json()["operations"]] == [created["id"]]
+        assert reclaimed.status_code == 200
+
+    async def test_an_operation_left_open_expires(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            created = await _operation(
+                client,
+                controller,
+                kind="provider.recheck",
+                params={"provider": "claude"},
+            )
+            harness.clock.advance(hours=2)
+            # Created at the database's clock; the test clock moving past the
+            # TTL is what makes it overdue.
+            listed = await client.get(
+                f"/v1/management/controllers/{controller.controller_id}/operations",
+                headers=controller.headers,
+            )
+            claimed = await client.post(
+                f"/v1/management/operations/{created['id']}/claim",
+                headers=controller.headers,
+            )
+        assert listed.json()["operations"] == []
+        assert claimed.status_code == 410
+        assert claimed.json()["error"]["code"] == "lease_expired"
+
+    async def test_a_cancelled_operation_cannot_be_claimed(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await _placed_agent(harness, client, controller)
+            created = await _operation(
+                client, controller, kind="agent.restart", agent_id=agent_id
+            )
+            # Unmanaging the agent cancels its open operations.
+            await client.delete(
+                f"/gateway/management/agents/{agent_id}", cookies=cookies_for(owner)
+            )
+            claimed = await client.post(
+                f"/v1/management/operations/{created['id']}/claim",
+                headers=controller.headers,
+            )
+        assert claimed.status_code == 410
+        assert claimed.json()["error"]["code"] == "cancelled"
+
+    async def test_a_result_before_a_claim_is_refused(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            created = await _operation(
+                client,
+                controller,
+                kind="provider.recheck",
+                params={"provider": "claude"},
+            )
+            response = await client.post(
+                f"/v1/management/operations/{created['id']}/result",
+                json=fixture("operation_result_succeeded.json"),
+                headers=controller.headers,
+            )
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "lease_expired"
+
+    async def test_another_controllers_operation_is_not_found(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            first = await enroll_console(harness, client, owner, "one")
+            second = await enroll_console(harness, client, owner, "two")
+            created = await _operation(
+                client, first, kind="provider.recheck", params={"provider": "claude"}
+            )
+            response = await client.post(
+                f"/v1/management/operations/{created['id']}/claim",
+                headers=second.headers,
+            )
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "not_found"
+
+    @pytest.mark.parametrize("kind", ["agent.start", "session.open", "rm -rf"])
+    async def test_an_unsupported_kind_is_refused(
+        self, harness: Harness, kind: str
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            response = await client.post(
+                "/gateway/management/operations",
+                json={"controller_id": controller.controller_id, "kind": kind},
+                cookies=cookies_for(owner),
+            )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "operation_unsupported"
+
+
+class TestAgentCredentials:
+    async def test_a_fetch_rotates_the_key_and_the_old_one_stops_resolving(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await _placed_agent(harness, client, controller)
+            path = (
+                f"/v1/management/controllers/{controller.controller_id}"
+                f"/agents/{agent_id}/credentials"
+            )
+            first = await client.post(path, headers=controller.headers)
+            second = await client.post(path, headers=controller.headers)
+
+        assert first.status_code == 200, first.text
+        assert first.json()["agent_id"] == agent_id
+        first_key = first.json()["api_key"]
+        second_key = second.json()["api_key"]
+        assert first_key != second_key
+
+        mw = BearerAuthMiddleware(
+            _noop,
+            agent_store=AgentStore(),
+            api_key_store=ApiKeyStore(),
+            api_key_cache=harness.cache,
+            session_factory=harness.session_factory,
+        )
+        assert await mw._resolve_api_key(first_key) == (None, None)
+        _, agent = await mw._resolve_api_key(second_key)
+        assert agent is not None and agent.id == agent_id
+
+    async def test_an_agent_on_another_controller_is_not_assigned(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            first = await enroll_console(harness, client, owner, "one")
+            second = await enroll_console(harness, client, owner, "two")
+            agent_id = await _placed_agent(harness, client, first)
+            response = await client.post(
+                f"/v1/management/controllers/{second.controller_id}"
+                f"/agents/{agent_id}/credentials",
+                headers=second.headers,
+            )
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "not_assigned"
+
+    async def test_moving_an_agent_fences_the_old_controller(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            first = await enroll_console(harness, client, owner, "one")
+            second = await enroll_console(harness, client, owner, "two")
+            agent_id = await _placed_agent(harness, client, first)
+            await report_status(client, second, 1, providers=[provider("claude")])
+            old = await client.post(
+                f"/v1/management/controllers/{first.controller_id}"
+                f"/agents/{agent_id}/credentials",
+                headers=first.headers,
+            )
+            moved = await client.patch(
+                f"/gateway/management/agents/{agent_id}",
+                json={"controller_id": second.controller_id},
+                cookies=cookies_for(owner),
+            )
+            new = await client.post(
+                f"/v1/management/controllers/{second.controller_id}"
+                f"/agents/{agent_id}/credentials",
+                headers=second.headers,
+            )
+            refused = await client.post(
+                f"/v1/management/controllers/{first.controller_id}"
+                f"/agents/{agent_id}/credentials",
+                headers=first.headers,
+            )
+            first_assignment = await client.get(
+                f"/v1/management/controllers/{first.controller_id}/assignment",
+                headers=first.headers,
+            )
+            second_assignment = await client.get(
+                f"/v1/management/controllers/{second.controller_id}/assignment",
+                headers=second.headers,
+            )
+
+        assert moved.status_code == 200, moved.text
+        assert moved.json()["revision"] == 2
+        assert refused.status_code == 403
+        assert first_assignment.json() == {"revision": 2, "agents": []}
+        assert second_assignment.json()["revision"] == 1
+        assert [a["agent_id"] for a in second_assignment.json()["agents"]] == [agent_id]
+        async with harness.session_factory() as session:
+            hashes = {
+                key.key_hash
+                for key in (await session.execute(select(ApiKey))).scalars()
+            }
+        assert hashlib.sha256(old.json()["api_key"].encode()).hexdigest() not in hashes
+        assert hashlib.sha256(new.json()["api_key"].encode()).hexdigest() in hashes
+
+
+async def _noop(scope, receive, send) -> None:
+    return None
+
+
+def test_bearer_helper() -> None:
+    assert bearer("x") == {"Authorization": "Bearer x"}
+
+
+def test_definition_helper_is_the_v1_shape() -> None:
+    assert set(definition()) == {
+        "provider",
+        "model",
+        "instructions",
+        "auto_session",
+        "auto_approve",
+        "directory",
+    }
