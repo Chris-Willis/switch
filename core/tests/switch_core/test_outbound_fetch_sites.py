@@ -114,6 +114,27 @@ class TestBridgeConfigs:
             connection_config=_mattermost_config("http://localhost:8065"),
         )
 
+    async def test_a_url_with_no_scheme_is_checked_as_the_driver_reads_it(
+        self,
+    ) -> None:
+        """The driver takes a scheme-less URL as http, and bridges configured
+        that way keep starting; the host is still what is checked."""
+        allowed = _bridge_lifecycle(OutboundPolicy.parse("localhost"))
+        await allowed.check_start_guards(
+            bridge_id="bridge-1",
+            tenant_id="tenant-1",
+            bridge_type="mattermost",
+            connection_config=_mattermost_config("localhost:8065"),
+        )
+        refused = _bridge_lifecycle(OutboundPolicy.parse(""))
+        with pytest.raises(BridgeStartRefused, match="10.1.2.3"):
+            await refused.check_start_guards(
+                bridge_id="bridge-1",
+                tenant_id="tenant-1",
+                bridge_type="mattermost",
+                connection_config=_mattermost_config("10.1.2.3:8065"),
+            )
+
 
 class TestConnectorConfigs:
     async def test_registering_a_private_server_url_is_refused(self) -> None:

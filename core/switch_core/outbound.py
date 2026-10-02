@@ -45,11 +45,20 @@ _ALWAYS_BLOCKED_NETWORKS: tuple[IPNetwork, ...] = (
 )
 _ALWAYS_BLOCKED_HOSTNAMES = frozenset({"metadata.google.internal"})
 
+# Underscores are not legal in DNS hostnames but are in Compose service and
+# Docker network aliases, which is what most private hosts listed here are.
 _HOSTNAME_RE = re.compile(
-    r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$"
+    r"^[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?(\.[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?)*$"
 )
 
 _DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
+
+# httpx's own defaults, which its pool gets and a bare httpcore pool does not:
+# httpcore's are 10 connections with idle ones kept forever, and an OpenCode
+# session holds a connection for minutes at a time.
+_POOL_LIMITS = httpx.Limits(
+    max_connections=100, max_keepalive_connections=20, keepalive_expiry=5.0
+)
 
 
 class OutboundURLRefused(ValueError):
@@ -217,8 +226,12 @@ def guarded_async_client(
     # built is replaced with an equivalent one that has ours.
     # `test_outbound.py` makes a real request through this client and would
     # fail if httpx stopped routing connections through `_pool`.
+    limits = _POOL_LIMITS
     transport._pool = httpcore.AsyncConnectionPool(
         ssl_context=httpx.create_ssl_context(verify=verify, trust_env=False),
+        max_connections=limits.max_connections,
+        max_keepalive_connections=limits.max_keepalive_connections,
+        keepalive_expiry=limits.keepalive_expiry,
         network_backend=_GuardedNetworkBackend(policy),
     )
     return httpx.AsyncClient(transport=transport, trust_env=False, **client_kwargs)

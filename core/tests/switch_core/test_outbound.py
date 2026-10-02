@@ -27,6 +27,10 @@ class TestParsing:
         assert policy.allowed_hostnames == frozenset({"mattermost"})
         assert [str(n) for n in policy.allowed_networks] == ["10.0.0.0/8", "fd00::/8"]
 
+    def test_a_compose_service_name_with_an_underscore(self) -> None:
+        policy = OutboundPolicy.parse("my_mattermost")
+        assert policy.allowed_hostnames == frozenset({"my_mattermost"})
+
     @pytest.mark.parametrize("entry", ["http://mattermost", "bad host", "-x"])
     def test_anything_else_is_refused(self, entry: str) -> None:
         with pytest.raises(ValueError, match="OUTBOUND_ALLOWED_PRIVATE_HOSTS"):
@@ -165,6 +169,14 @@ async def local_server() -> AsyncIterator[int]:
 
 
 class TestTheGuardedClient:
+    async def test_it_keeps_httpxs_pool_limits(self) -> None:
+        """Not httpcore's bare defaults of 10 connections kept idle forever."""
+        async with guarded_async_client(_NOTHING_ALLOWED) as client:
+            pool = client._transport._pool  # type: ignore[attr-defined]
+            assert pool._max_connections == 100
+            assert pool._max_keepalive_connections == 20
+            assert pool._keepalive_expiry == 5.0
+
     async def test_a_refused_address_is_never_connected_to(
         self, local_server: int
     ) -> None:

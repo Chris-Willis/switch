@@ -315,8 +315,11 @@ class MattermostAdapter(CollaborationAdapter):
     @classmethod
     def outbound_urls(cls, connection_config: dict[str, object]) -> list[str]:
         # The driver connects without our pinning, so this check at
-        # registration, edit and start is the guard for the server URL.
-        return [str(connection_config["url"])]
+        # registration, edit and start is the guard for the server URL. The
+        # driver takes a URL with no scheme as http (`_create_driver`), and so
+        # does the check.
+        url = str(connection_config["url"]).strip()
+        return [url if "://" in url else f"http://{url}"]
 
     def __init__(self, *, config: MattermostConnectionConfig) -> None:
         super().__init__()
