@@ -41,6 +41,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.keys import Keyring
 from switch_core.tenant_context import current_tenant_id, tenant_scope
 from tests.conftest import RLSHarness
 
@@ -54,7 +55,7 @@ def _service(
     config.gateway_public_url = "https://gw.example"
     config.collaboration_callback_host = "127.0.0.1"
     config.collaboration_callback_port = callback_port
-    config.jwt_secret_key = "server-secret-for-tests"
+    config.keyring = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
     return CollaborationBridgeLifecycleService(
         bridge_store=CollaborationBridgeStore(),
         external_user_store=MagicMock(),

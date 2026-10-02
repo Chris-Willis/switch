@@ -1295,7 +1295,7 @@ class MessagingInstall(TenantScoped, Base):
     install is recorded and not yet serving.
 
     `encrypted_bot_token` uses the same key as every other credential this
-    schema stores (`crypto.encrypt_token` over the configured secret), so it
+    schema stores (`Keyring.encrypt`, the at-rest key), so it
     is protected against a stolen dump and not against a compromised process.
     A per-tenant key is a stronger boundary and a later decision. It is
     nullable so that an install which has ended can keep its record without

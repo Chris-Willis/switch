@@ -390,7 +390,7 @@ class CollaborationBridgeLifecycleService:
         self._callback_ingress = CallbackIngress(
             host=config.collaboration_callback_host,
             port=config.collaboration_callback_port,
-            secret=config.jwt_secret_key,
+            keyring=config.keyring,
         )
         self._callback_endpoints: dict[str, CallbackEndpoint] = {}
         # Serialises registration. The exclusivity check reads the stored

@@ -1,12 +1,15 @@
 import re
 import ssl
 import uuid
+from functools import cached_property
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from switch_core.keys import Keyring
 
 # A Postgres time value: a bare count of milliseconds, or a count with a unit.
 _PG_INTERVAL_RE = re.compile(r"^\d+\s*(us|ms|s|min|h|d)?$")
@@ -73,8 +76,16 @@ class SwitchConfig(BaseSettings):
     matrix_server_name: str
     agent_registration_token: str
 
-    # JWT auth
-    jwt_secret_key: str
+    # The server's master keys, `<id>:<secret>` comma-separated, current
+    # first. Every signing and encryption key is derived from these, one per
+    # purpose; older entries only open what they encrypted or signed. See
+    # `keys.py` and docs/old/key-rotation.md.
+    secret_keys: str
+    # Legacy: the one secret everything used before SECRET_KEYS. Set, it opens
+    # stored values and verifies sessions and signatures made with it; boot
+    # re-encrypts those values under the current key. Remove it once that has
+    # run and whatever it signed may stop working.
+    jwt_secret_key: str | None = None
 
     # Gateway admin seed
     gateway_admin_email: str
@@ -718,6 +729,15 @@ class SwitchConfig(BaseSettings):
                 f"{self.gateway_max_workspaces_per_user!r}."
             )
         return self
+
+    @model_validator(mode="after")
+    def _validate_secret_keys(self) -> "SwitchConfig":
+        Keyring.parse(self.secret_keys, legacy_secret=self.jwt_secret_key)
+        return self
+
+    @cached_property
+    def keyring(self) -> Keyring:
+        return Keyring.parse(self.secret_keys, legacy_secret=self.jwt_secret_key)
 
     @model_validator(mode="after")
     def _validate_db_user(self) -> "SwitchConfig":

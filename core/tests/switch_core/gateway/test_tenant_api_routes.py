@@ -55,8 +55,10 @@ from switch_core.gateway.invite_mail import (
     InviteMailer,
 )
 from switch_core.gateway.tenants import router as tenants_router
+from switch_core.keys import Keyring
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
+_KEYRING = Keyring.parse("test:" + _SECRET, legacy_secret=None)
 TENANT_A = "tenant-api-routes-a"
 TENANT_B = "tenant-api-routes-b"
 
@@ -140,7 +142,7 @@ def _app(
         client_lifecycle or _FakeClientLifecycle(session_factory)
     )
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
-        jwt_secret_key=_SECRET,
+        keyring=_KEYRING,
         gateway_cookie_secure=False,
         gateway_tenant_choice_enabled=False,
         gateway_max_workspaces_per_user=max_workspaces_per_user,
@@ -192,13 +194,13 @@ async def _make_member(
 
 
 def _token(user_id: str, email: str, tenant_id: str | None) -> str:
-    return create_jwt(user_id, email, "user", _SECRET, tenant_id)
+    return create_jwt(user_id, email, "user", _KEYRING, tenant_id)
 
 
 def _tenant_claim(response: httpx.Response) -> str | None:
     token = response.cookies.get("switch_auth")
     assert token is not None, "no session cookie was minted"
-    claim: str | None = decode_jwt(token, _SECRET).get("tenant_id")
+    claim: str | None = decode_jwt(token, _KEYRING).get("tenant_id")
     return claim
 
 
@@ -401,7 +403,7 @@ class TestCreateTenant:
         user_id = await _make_unaffiliated_user(
             session_factory, name="operator", role="admin"
         )
-        token = create_jwt(user_id, "operator@example.invalid", "admin", _SECRET, None)
+        token = create_jwt(user_id, "operator@example.invalid", "admin", _KEYRING, None)
 
         app = _app(session_factory, signup_mode="invite_only")
         async with _client(app, token) as client:
@@ -648,7 +650,7 @@ class TestWorkspaceCreationLimit:
             session_factory, name="demoted", tenant_id=TENANT_A, role="member"
         )
         stale_operator_token = create_jwt(
-            user_id, "demoted@example.invalid", "admin", _SECRET, TENANT_A
+            user_id, "demoted@example.invalid", "admin", _KEYRING, TENANT_A
         )
 
         async with _client(

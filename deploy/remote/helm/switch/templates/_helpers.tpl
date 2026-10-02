@@ -52,7 +52,10 @@ POSTGRES_PASSWORD: {{ required "secrets.postgresPassword is required (unless pos
 DB_OWNER_PASSWORD: {{ required "secrets.dbOwnerPassword is required when postgresql.owner.username is set (unless postgresql.owner.existingSecret is set)" .Values.secrets.dbOwnerPassword | b64enc | quote }}
 {{- end }}
 AGENT_REGISTRATION_TOKEN: {{ required "secrets.agentRegistrationToken is required" .Values.secrets.agentRegistrationToken | b64enc | quote }}
-JWT_SECRET_KEY: {{ required "secrets.jwtSecretKey is required" .Values.secrets.jwtSecretKey | b64enc | quote }}
+SECRET_KEYS: {{ required "secrets.secretKeys is required (\"<id>:<secret>\", see values.yaml)" .Values.secrets.secretKeys | b64enc | quote }}
+{{- with .Values.secrets.jwtSecretKey }}
+JWT_SECRET_KEY: {{ . | b64enc | quote }}
+{{- end }}
 GATEWAY_ADMIN_EMAIL: {{ required "secrets.gatewayAdminEmail is required" .Values.secrets.gatewayAdminEmail | b64enc | quote }}
 GATEWAY_ADMIN_PASSWORD: {{ required "secrets.gatewayAdminPassword is required" .Values.secrets.gatewayAdminPassword | b64enc | quote }}
 {{- if .Values.mattermost.enabled }}
@@ -571,11 +574,17 @@ Include with `nindent 12`.
     secretKeyRef:
       name: {{ include "switch.secretName" . }}
       key: AGENT_REGISTRATION_TOKEN
+- name: SECRET_KEYS
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: SECRET_KEYS
 - name: JWT_SECRET_KEY
   valueFrom:
     secretKeyRef:
       name: {{ include "switch.secretName" . }}
       key: JWT_SECRET_KEY
+      optional: true
 - name: GATEWAY_ADMIN_EMAIL
   valueFrom:
     secretKeyRef:

@@ -86,7 +86,6 @@ from switch_core.clients.client_base import ClientBase
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
-from switch_core.crypto import encrypt_token
 from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
 from switch_core.db.engine import (
@@ -94,11 +93,10 @@ from switch_core.db.engine import (
     create_session_factory,
     create_unpooled_engine,
 )
+from switch_core.db.key_rotation import reencrypt_stored_secrets
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     ApiKey,
-    CollaborationBridge,
-    ServerConnector,
     User,
 )
 from switch_core.db.runtime_role import (
@@ -349,7 +347,7 @@ async def run(config: SwitchConfig) -> None:
     # — see `main._migrate_and_grant`, which `main()` awaits first. Both use
     # the schema owner's connection where one is configured, and neither
     # belongs on the pooled application engine built below.
-    encrypted_json.configure(config.jwt_secret_key)
+    encrypted_json.configure(config.keyring)
     engine = create_engine_from_config(config)
     await _check_tenant_isolation(config, engine)
     session_factory = create_session_factory(engine)
@@ -466,9 +464,7 @@ async def run(config: SwitchConfig) -> None:
     for tenant_id in tenant_ids:
         async with tenant_session(session_factory, tenant_id) as session:
             await resource_service.log_builtin_shadowing(session)
-    await encrypted_json.encrypt_legacy_connection_configs(
-        session_factory, tenant_ids, [CollaborationBridge, ServerConnector]
-    )
+    await reencrypt_stored_secrets(session_factory, config.keyring, tenant_ids)
 
     # ── Provisioning ─────────────────────────────────────────────────────────
     matrix_admin: Provisioning = PostgresProvisioning(
@@ -609,7 +605,7 @@ async def run(config: SwitchConfig) -> None:
         api_key_store=api_key_store,
         protocol=protocol,
         session_factory=session_factory,
-        encryption_secret=config.jwt_secret_key,
+        keyring=config.keyring,
         telemetry=telemetry,
     )
     connector_lifecycle.register_connector_type(
@@ -654,7 +650,7 @@ async def run(config: SwitchConfig) -> None:
             installers=installers,
             lifecycle=collab_lifecycle,
             public_origin=config.messaging_public_url,
-            secret=config.jwt_secret_key,
+            keyring=config.keyring,
         )
 
     # ── Gateway app ───────────────────────────────────────────────────────────
@@ -1051,9 +1047,7 @@ async def _seed_agent_registration_bootstrap_key(
         token_hash = hashlib.sha256(
             config.agent_registration_token.encode()
         ).hexdigest()
-        encrypted_key = encrypt_token(
-            config.agent_registration_token, config.jwt_secret_key
-        )
+        encrypted_key = config.keyring.encrypt(config.agent_registration_token)
 
         # Filtered on this tenant as well as on the type, for the same reason
         # every other fan-out in this change is: `get_by_type` carries no

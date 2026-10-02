@@ -504,7 +504,7 @@ class MattermostAdapter(CollaborationAdapter):
         """
         if self._callback is None:
             raise CallbackRefused("This bridge takes no callbacks.", status=404)
-        press = read_press(self._callback.key, body)
+        press = read_press(self._callback.verification_keys, body)
         if press is None:
             raise CallbackRefused("Not a press this bridge will act on.", status=401)
         if isinstance(press, ActivityPress):

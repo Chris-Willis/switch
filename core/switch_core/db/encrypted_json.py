@@ -6,11 +6,13 @@ password) next to ordinary settings. Encrypting the whole value rather than
 named fields means a credential field an adapter adds later is covered without
 anyone remembering to list it.
 
-The stored shape is ``{"_enc": "<fernet token>"}``; the application only ever
-sees the decrypted dict. A value without that shape predates encryption: it is
-returned as it is, and `encrypt_legacy_values` rewrites such rows at boot.
+The stored shape is ``{"_enc": "<encrypted value>"}``, encrypted by the
+server's `Keyring`; the application only ever sees the decrypted dict. A value
+without that shape predates encryption: it is returned as it is, and
+`reencrypt_stale_values` rewrites such rows at boot, along with any encrypted
+under a key that is no longer current.
 
-The key is process-wide because a column type is: SQLAlchemy builds it once
+The keyring is process-wide because a column type is: SQLAlchemy builds it once
 with the model, long before any configuration exists. `configure` must run
 before the first read or write, and either raises if it has not.
 """
@@ -21,41 +23,38 @@ import json
 import logging
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Dialect
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import attributes
 from sqlalchemy.types import TypeDecorator
 
-from switch_core.crypto import decrypt_token, encrypt_token
-from switch_core.db.session_scope import tenant_session
+from switch_core.keys import Keyring
 
 logger = logging.getLogger(__name__)
 
 _ENVELOPE_KEY = "_enc"
-_secret: str | None = None
+_keyring: Keyring | None = None
 
 
 class EncryptionNotConfiguredError(RuntimeError):
     pass
 
 
-def configure(secret: str) -> None:
-    """Set the secret encrypted columns are encrypted with."""
-    global _secret
-    if not secret:
-        raise EncryptionNotConfiguredError("The column encryption secret is empty.")
-    _secret = secret
+def configure(keyring: Keyring) -> None:
+    """Set the keyring encrypted columns are encrypted with."""
+    global _keyring
+    _keyring = keyring
 
 
-def _require_secret() -> str:
-    if _secret is None:
+def _require_keyring() -> Keyring:
+    if _keyring is None:
         raise EncryptionNotConfiguredError(
             "An encrypted column was read or written before "
             "switch_core.db.encrypted_json.configure() was called."
         )
-    return _secret
+    return _keyring
 
 
 def is_encrypted(value: Any) -> bool:
@@ -76,7 +75,7 @@ class EncryptedJSONB(TypeDecorator[dict[str, Any]]):
     ) -> dict[str, str] | None:
         if value is None:
             return None
-        return {_ENVELOPE_KEY: encrypt_token(json.dumps(value), _require_secret())}
+        return {_ENVELOPE_KEY: _require_keyring().encrypt(json.dumps(value))}
 
     def process_result_value(
         self, value: Any, dialect: Dialect
@@ -85,7 +84,7 @@ class EncryptedJSONB(TypeDecorator[dict[str, Any]]):
             return None
         if is_encrypted(value):
             decrypted: dict[str, Any] = json.loads(
-                decrypt_token(value[_ENVELOPE_KEY], _require_secret())
+                _require_keyring().decrypt(value[_ENVELOPE_KEY])
             )
             return decrypted
         logger.warning(
@@ -96,20 +95,25 @@ class EncryptedJSONB(TypeDecorator[dict[str, Any]]):
         return plain
 
 
-async def encrypt_legacy_values(
+async def reencrypt_stale_values(
     session: AsyncSession, model: type[Any], column: str
 ) -> int:
-    """Rewrite every row of `model` whose `column` is still plaintext.
+    """Rewrite every row of `model` whose `column` is not encrypted under the
+    current key: still plaintext, or encrypted with an older or legacy key.
 
     Runs on the caller's session, so under whatever tenant it is bound to —
     the boot fan-out calls it once per tenant. Returns how many rows it
     rewrote; the caller commits.
     """
     stored = model.__table__.c[column]
+    current = _require_keyring().current_prefix()
     rows = await session.execute(
         select(model.id).where(
             func.jsonb_typeof(stored) == "object",
-            ~func.jsonb_exists(stored, _ENVELOPE_KEY),
+            or_(
+                ~func.jsonb_exists(stored, _ENVELOPE_KEY),
+                ~stored[_ENVELOPE_KEY].astext.startswith(current, autoescape=True),
+            ),
         )
     )
     ids = list(rows.scalars())
@@ -120,24 +124,3 @@ async def encrypt_legacy_values(
         attributes.flag_modified(instance, column)
     await session.flush()
     return len(ids)
-
-
-async def encrypt_legacy_connection_configs(
-    session_factory: async_sessionmaker[AsyncSession],
-    tenant_ids: list[str],
-    models: list[type[Any]],
-) -> None:
-    """Encrypt every tenant's plaintext connection configs, once, at boot."""
-    total = 0
-    for tenant_id in tenant_ids:
-        async with tenant_session(session_factory, tenant_id) as session:
-            for model in models:
-                total += await encrypt_legacy_values(
-                    session, model, "connection_config"
-                )
-            await session.commit()
-    if total:
-        logger.warning(
-            "Encrypted %d connection config(s) that were stored in plaintext.",
-            total,
-        )

@@ -448,7 +448,7 @@ async def create_tenant(
     await user_store.record_last_tenant(session, user, tenant.id)
     await session.commit()
     set_session_cookie(
-        response, user, config.jwt_secret_key, config.gateway_cookie_secure, tenant.id
+        response, user, config.keyring, config.gateway_cookie_secure, tenant.id
     )
     return TenantMembershipResponse(
         id=tenant.id, slug=tenant.slug, name=tenant.name, role="owner"
@@ -487,7 +487,7 @@ async def switch_tenant(
     await user_store.record_last_tenant(session, user, tenant_id)
     await session.commit()
     set_session_cookie(
-        response, user, config.jwt_secret_key, config.gateway_cookie_secure, tenant_id
+        response, user, config.keyring, config.gateway_cookie_secure, tenant_id
     )
     return _session_response(user)
 
@@ -853,7 +853,7 @@ async def accept_invitation(
         )
 
     set_session_cookie(
-        response, user, config.jwt_secret_key, config.gateway_cookie_secure, tenant_id
+        response, user, config.keyring, config.gateway_cookie_secure, tenant_id
     )
     return TenantMembershipResponse(
         id=tenant.id, slug=tenant.slug, name=tenant.name, role=role
@@ -1018,7 +1018,7 @@ async def accept_my_invitation(
     set_session_cookie(
         response,
         user,
-        config.jwt_secret_key,
+        config.keyring,
         config.gateway_cookie_secure,
         req.tenant_id,
     )
@@ -1184,7 +1184,7 @@ async def join_tenant_by_domain(
         tenant, user = await _enter(session, tenant_id, caller, user_store)
 
     set_session_cookie(
-        response, user, config.jwt_secret_key, config.gateway_cookie_secure, tenant_id
+        response, user, config.keyring, config.gateway_cookie_secure, tenant_id
     )
     return TenantMembershipResponse(
         id=tenant.id, slug=tenant.slug, name=tenant.name, role=role

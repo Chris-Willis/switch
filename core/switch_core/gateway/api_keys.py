@@ -9,7 +9,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.config import SwitchConfig
-from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import ApiKey, User
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.gateway.auth import get_current_user
@@ -77,7 +76,7 @@ async def create_api_key(
     key = ApiKey(
         user_id=user.id,
         key_hash=key_hash,
-        encrypted_key=encrypt_token(plaintext, config.jwt_secret_key),
+        encrypted_key=config.keyring.encrypt(plaintext),
         label=req.label,
         type="registration",
     )
@@ -110,7 +109,7 @@ async def reveal_api_key(
     if key.user_id != user.id:
         raise HTTPException(status_code=403, detail="Not authorized to reveal this key")
 
-    plaintext = decrypt_token(key.encrypted_key, config.jwt_secret_key)
+    plaintext = config.keyring.decrypt(key.encrypted_key)
     return RevealKeyResponse(key=plaintext)
 
 

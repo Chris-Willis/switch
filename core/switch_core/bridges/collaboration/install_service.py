@@ -75,7 +75,6 @@ from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
 from switch_core.bridges.collaboration.models import BridgeStartRefused
-from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import MessagingInstall
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
@@ -86,6 +85,7 @@ from switch_core.db.stores.messaging_install_store import (
     MessagingInstallStore,
 )
 from switch_core.db.tenant_lookup import tenant_of_messaging_install
+from switch_core.keys import Keyring
 from switch_core.tenant_context import no_tenant, tenant_scope
 
 logger = logging.getLogger(__name__)
@@ -156,7 +156,7 @@ class MessagingInstallService:
         installers: MessagingInstallerRegistry,
         lifecycle: CollaborationBridgeLifecycleService,
         public_origin: str,
-        secret: str,
+        keyring: Keyring,
     ) -> None:
         self._session_factory = session_factory
         self._store = store
@@ -164,7 +164,7 @@ class MessagingInstallService:
         self._installers = installers
         self._lifecycle = lifecycle
         self._public_origin = public_origin
-        self._secret = secret
+        self._keyring = keyring
 
     def _redirect_uri(self, platform: str) -> str:
         """Where the platform sends the browser back to.
@@ -198,7 +198,7 @@ class MessagingInstallService:
             InstallState(
                 tenant_id=state.tenant_id, state_id=state.id, platform=platform
             ),
-            secret=self._secret,
+            keyring=self._keyring,
         )
         return installer.authorize_url(
             state=token, redirect_uri=self._redirect_uri(platform)
@@ -213,7 +213,7 @@ class MessagingInstallService:
         signature on `state_token` or out of the platform's own response.
         """
         installer = self._installers.get(platform)
-        state = verify(state_token, secret=self._secret)
+        state = verify(state_token, keyring=self._keyring)
         if state.platform != platform:
             raise InstallPlatformMismatch(
                 f"an install state for {state.platform} was presented to the "
@@ -244,7 +244,7 @@ class MessagingInstallService:
                     # deployment-level (Discord), not per-install; there is
                     # nothing to encrypt and the column is nullable for it.
                     encrypted_bot_token=(
-                        encrypt_token(grant.bot_token, self._secret)
+                        self._keyring.encrypt(grant.bot_token)
                         if grant.bot_token is not None
                         else None
                     ),
@@ -368,7 +368,7 @@ class MessagingInstallService:
         with tenant_scope(tenant_id):
             if token is not None:
                 await self._installers.get(platform).revoke(
-                    bot_token=decrypt_token(token, self._secret)
+                    bot_token=self._keyring.decrypt(token)
                 )
 
             async with tenant_session(self._session_factory, tenant_id) as session:

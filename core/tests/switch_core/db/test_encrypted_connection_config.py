@@ -20,9 +20,10 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db import encrypted_json
-from switch_core.db.models import Client, CollaborationBridge, ServerConnector, Tenant
+from switch_core.db.key_rotation import reencrypt_stored_secrets
+from switch_core.db.models import Client, CollaborationBridge, Tenant
 from switch_core.db.session_scope import tenant_session
-from tests.conftest import RLSHarness
+from tests.conftest import TEST_KEYRING, RLSHarness
 
 pytestmark = pytest.mark.no_ambient_tenant
 
@@ -121,10 +122,8 @@ async def test_boot_encrypts_every_tenants_plaintext_configs(
         await session.commit()
     assert await _read_config(rls_harness.restricted, tenant_a, bridge_a) == config_a
 
-    await encrypted_json.encrypt_legacy_connection_configs(
-        rls_harness.restricted,
-        [tenant_a, tenant_b],
-        [CollaborationBridge, ServerConnector],
+    await reencrypt_stored_secrets(
+        rls_harness.restricted, TEST_KEYRING, [tenant_a, tenant_b]
     )
 
     for tenant, bridge_id, config in (
@@ -164,7 +163,7 @@ async def test_boot_conversion_leaves_encrypted_and_empty_configs_alone(
         empty_id = empty.id
 
     async with tenant_session(rls_harness.restricted, tenant) as session:
-        rewritten = await encrypted_json.encrypt_legacy_values(
+        rewritten = await encrypted_json.reencrypt_stale_values(
             session, CollaborationBridge, "connection_config"
         )
         await session.commit()

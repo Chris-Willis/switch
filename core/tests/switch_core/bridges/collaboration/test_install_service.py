@@ -38,7 +38,6 @@ from switch_core.bridges.collaboration.install_state import (
     InstallStateError,
     mint,
 )
-from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
     Client,
     CollaborationBridge,
@@ -57,11 +56,12 @@ from switch_core.db.stores.messaging_install_store import (
     MessagingInstallStateError,
     MessagingInstallStore,
 )
+from switch_core.keys import Keyring
 from tests.conftest import RLSHarness
 
 pytestmark = pytest.mark.no_ambient_tenant
 
-_SECRET = "test-secret"
+_KEYRING = Keyring.parse("test:" + "s" * 40, legacy_secret=None)
 _ORIGIN = "https://switch.example"
 
 
@@ -219,7 +219,7 @@ async def _fixture(harness: RLSHarness, *, tokenless: bool = False) -> _Fixture:
         installers=installers,
         lifecycle=fixture.lifecycle,  # type: ignore[arg-type]
         public_origin=_ORIGIN,
-        secret=_SECRET,
+        keyring=_KEYRING,
     )
     return fixture
 
@@ -277,7 +277,7 @@ class TestTheRoundTrip:
         )
 
         assert "xoxb-granted" not in install.encrypted_bot_token
-        assert decrypt_token(install.encrypted_bot_token, _SECRET) == "xoxb-granted"
+        assert _KEYRING.decrypt(install.encrypted_bot_token) == "xoxb-granted"
 
     async def test_it_ends_with_a_bridge_the_install_points_at(
         self, rls_harness: RLSHarness
@@ -363,7 +363,7 @@ class TestWhatTheCallbackWillNotDo:
             InstallState(
                 tenant_id=fixture.tenant_b, state_id=state_id, platform="slack"
             ),
-            secret=_SECRET,
+            keyring=_KEYRING,
         )
         with pytest.raises(MessagingInstallStateError):
             await fixture.service.complete(
@@ -389,7 +389,7 @@ class TestWhatTheCallbackWillNotDo:
             InstallState(
                 tenant_id=fixture.tenant_a, state_id="whatever", platform="teams"
             ),
-            secret=_SECRET,
+            keyring=_KEYRING,
         )
         with pytest.raises(InstallPlatformMismatch):
             await fixture.service.complete(

@@ -82,8 +82,9 @@ ingress:
 #      POSTGRES_PASSWORD (unless postgresql.existingSecret is set),
 #      DB_OWNER_PASSWORD (only if postgresql.owner.username is set, and unless
 #        postgresql.owner.existingSecret is set),
-#      AGENT_REGISTRATION_TOKEN, JWT_SECRET_KEY, GATEWAY_ADMIN_EMAIL,
+#      AGENT_REGISTRATION_TOKEN, SECRET_KEYS, GATEWAY_ADMIN_EMAIL,
 #      GATEWAY_ADMIN_PASSWORD,
+#      JWT_SECRET_KEY (optional, legacy — see secrets.jwtSecretKey),
 #      MATTERMOST_ADMIN_PASSWORD + MATTERMOST_USER_PASSWORD (if mattermost.enabled),
 #      GATEWAY_OIDC_CLIENT_SECRET (if switchCore.oidc.enabled).
 secrets:
@@ -95,6 +96,16 @@ secrets:
   # postgresql.owner.existingSecret names a Secret that already carries it.
   dbOwnerPassword: ""
   agentRegistrationToken: ""
+  # The server's master keys, "<id>:<secret>" comma-separated, current first;
+  # each secret at least 32 characters. Every signing and encryption key is
+  # derived from these. To rotate, put a new entry first and keep the old one
+  # until a boot has re-encrypted stored values (docs/old/key-rotation.md).
+  # Generate one with: echo "$(date +%Y%m):$(openssl rand -hex 32)"
+  secretKeys: ""
+  # Legacy: the single secret used before secretKeys. Keep it set through the
+  # first upgrade so existing sessions, Mattermost buttons and stored
+  # credentials keep working; the first boot re-encrypts stored credentials
+  # under secretKeys. Remove it afterwards.
   jwtSecretKey: ""
   gatewayAdminEmail: ""
   gatewayAdminPassword: ""

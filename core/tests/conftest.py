@@ -27,11 +27,15 @@ from switch_core.db.base import Base
 from switch_core.db.engine import create_session_factory
 from switch_core.db.models import TENANT_ZERO_ID, Tenant
 from switch_core.db.runtime_role import grant_runtime_role
+from switch_core.keys import Keyring
 from switch_core.tenant_context import tenant_scope
 
 # Production configures this in `main.run()`; every test that touches a
 # connection config needs the same, and none needs a particular key.
-encrypted_json.configure("test-column-encryption-secret")
+TEST_KEYRING = Keyring.parse(
+    "test:" + "column-encryption-secret" * 2, legacy_secret=None
+)
+encrypted_json.configure(TEST_KEYRING)
 
 
 async def _seed_tenant_zero(conn: AsyncConnection) -> None:

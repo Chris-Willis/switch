@@ -208,7 +208,10 @@ services:
       DB_NAME: ${DB_NAME}
       MATRIX_SERVER_NAME: localhost
       AGENT_REGISTRATION_TOKEN: ${AGENT_REGISTRATION_TOKEN}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      SECRET_KEYS: ${SECRET_KEYS:?required, set it in .env (just init-env generates one)}
+      # Legacy, optional: keeps what it signed and encrypted working until the
+      # first boot has re-encrypted stored credentials under SECRET_KEYS.
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
       GATEWAY_ADMIN_EMAIL: ${GATEWAY_ADMIN_EMAIL}
       GATEWAY_ADMIN_PASSWORD: ${GATEWAY_ADMIN_PASSWORD}
       FRONTEND_BASE_URL: ${FRONTEND_BASE_URL}

@@ -26,9 +26,10 @@ just gateway-install     # install gateway frontend deps (first time only)
 
 `just init-env` copies `.env.example` to `.env` and fills every secret field
 that ships blank — `DB_PASSWORD`, `DB_OWNER_PASSWORD`,
-`AGENT_REGISTRATION_TOKEN`, `JWT_SECRET_KEY`, `GATEWAY_ADMIN_PASSWORD`,
+`AGENT_REGISTRATION_TOKEN`, `GATEWAY_ADMIN_PASSWORD`,
 `MATTERMOST_ADMIN_PASSWORD`, `MATTERMOST_USER_PASSWORD` — with a freshly
-generated `openssl rand -hex 24` value, then prints the gateway admin login
+generated `openssl rand -hex 24` value, sets `SECRET_KEYS` to one generated
+key (`local:<64 hex characters>`), then prints the gateway admin login
 it just set. The fields ship blank on purpose: it means no default
 credential (the old `admin`/`admin`) can ever reach a running stack by
 accident. The recipe refuses to touch an existing `.env`, so re-running it
@@ -36,6 +37,12 @@ never rotates secrets out from under a stack that's already up — delete
 `.env` first if you actually want to regenerate everything. `just` loads
 `.env` automatically for every recipe below (`set dotenv-load := true` in
 the justfile), so nothing else needs to source it.
+
+An `.env` from before `SECRET_KEYS` existed makes `just run` fail at startup
+naming the missing setting. Add `SECRET_KEYS=local:$(openssl rand -hex 32)`
+(the generated value, not the command) and leave `JWT_SECRET_KEY` as it is:
+the first boot re-encrypts what it encrypted, and it keeps your current login
+valid. [key-rotation.md](key-rotation.md) explains both.
 
 ### Two database roles, not one
 

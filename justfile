@@ -27,11 +27,12 @@ init-env:
     fi
     cp .env.example .env
     for key in DB_PASSWORD DB_OWNER_PASSWORD \
-               AGENT_REGISTRATION_TOKEN JWT_SECRET_KEY GATEWAY_ADMIN_PASSWORD \
+               AGENT_REGISTRATION_TOKEN GATEWAY_ADMIN_PASSWORD \
                MATTERMOST_ADMIN_PASSWORD MATTERMOST_USER_PASSWORD; do
       secret="$(openssl rand -hex 24)"
       sed -i.bak "s|^${key}=.*|${key}=${secret}|" .env
     done
+    sed -i.bak "s|^SECRET_KEYS=.*|SECRET_KEYS=local:$(openssl rand -hex 32)|" .env
     rm -f .env.bak
     echo "✅ Wrote .env with freshly generated secrets."
     echo "   Gateway admin login: $(grep '^GATEWAY_ADMIN_EMAIL=' .env | cut -d= -f2-) / $(grep '^GATEWAY_ADMIN_PASSWORD=' .env | cut -d= -f2-)"
