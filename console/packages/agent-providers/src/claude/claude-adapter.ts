@@ -58,6 +58,7 @@ import {
   toolTitle,
   truncate,
 } from './claude-mapping';
+import { guardrailsGateway } from './guardrails-gateway';
 
 const PROVIDER = 'claude';
 const ASK_USER_QUESTION = 'AskUserQuestion';
@@ -380,18 +381,26 @@ export class ClaudeAdapter implements ProviderAdapter {
 
     filterShadowedWarningOnce();
 
+    // The routing is also passed as flag settings, because an `env` block in
+    // the user's own Claude Code settings outranks the process environment.
+    const gateway = guardrailsGateway(input.env);
+    const settings = {
+      // The connector plugin Switch used to ship would add a second Switch
+      // server with its own connection; kept off for installs that still have it.
+      ...(mcpServers.switch
+        ? { enabledPlugins: { 'switch-connector@switch-plugins': false } }
+        : {}),
+      ...(gateway ? { env: gateway.routing } : {}),
+    };
+
     // SDK 0.3.260 otherwise inserts --permission-mode default before spawning the CLI.
     const options: Options & { resolvePermissionModeInCli: boolean } = {
       resolvePermissionModeInCli: true,
       cwd: input.cwd,
-      env: input.env,
+      env: { ...input.env, ...gateway?.routing, ...gateway?.credentials },
       ...(permissionMode ? { permissionMode } : {}),
       strictMcpConfig: false,
-      // The connector plugin Switch used to ship would add a second Switch
-      // server with its own connection; kept off for installs that still have it.
-      ...(mcpServers.switch
-        ? { settings: { enabledPlugins: { 'switch-connector@switch-plugins': false } } }
-        : {}),
+      ...(Object.keys(settings).length > 0 ? { settings } : {}),
       canUseTool: this.makeCanUseTool(input.sessionId),
       ...(permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),

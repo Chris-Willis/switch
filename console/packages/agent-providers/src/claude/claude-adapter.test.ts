@@ -212,6 +212,33 @@ describe('ClaudeAdapter session lifecycle', () => {
     expect(native.options().settings).toBeUndefined();
   });
 
+  it('pins a guardrails gateway over a user’s Vertex setting, the key kept off the command line', async () => {
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+    await adapter.startSession(
+      startInput({
+        env: {
+          PATH: '/usr/bin',
+          CLAUDE_CODE_USE_VERTEX: '1',
+          FLINTAI_GATEWAY_URL: 'https://gateway.example.com',
+          FLINTAI_API_KEY: 'gateway-key',
+          FLINTAI_GUARDRAILS_POLICY_ID: 'policy-1',
+        },
+      })
+    );
+    const routing = {
+      ANTHROPIC_BASE_URL: 'https://gateway.example.com/anthropic',
+      CLAUDE_CODE_USE_BEDROCK: '0',
+      CLAUDE_CODE_USE_VERTEX: '0',
+    };
+    // Flag settings reach the command line, so the key stays in the environment.
+    expect(sdk.options().settings).toEqual({ env: routing });
+    expect(sdk.options().env).toMatchObject({
+      ...routing,
+      ANTHROPIC_CUSTOM_HEADERS: 'X-FlintAI-API-Key: gateway-key\nX-Guardrails-Policy-Id: policy-1',
+    });
+  });
+
   it('runs as a named agent definition, and as none when the caller names none', async () => {
     const sdk = createFakeSdk();
     const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
