@@ -177,9 +177,6 @@ type OperationKind =
   | "agent.start" | "agent.stop" | "agent.restart"          // params: {}
   | "provider.recheck"                                      // params: { provider }
   | "provider.login"                                        // params: { provider, method: "device_code" | "sealed" }
-  | "session.open"                                          // params: { session_id?, room_id? }
-  | "session.send"                                          // params: { session_id, text, attachments?: string[] }
-  | "session.interrupt"                                     // params: { session_id }
   | "machine.collect_diagnostics"                           // params: {}
 
 type OperationResult =
@@ -247,8 +244,6 @@ type StreamEvent =
   | { type: "agent.detached";     agent_id: string; reason: "unassigned" | "superseded" | "deleted" }
   | { type: "assignment.changed"; revision: number }
   | { type: "operation.pending";  operation_id: string; kind: OperationKind; agent_id: string | null }
-  | { type: "relay.request";      request_id: string; agent_id: string; session_id: string;
-                                  kind: "subscribe" | "unsubscribe" }      // the Console wants to view a session
   | { type: "credential.revoked" }
 ```
 
@@ -266,12 +261,7 @@ Cursors are **per agent**, because each agent keeps its own sequence in Core's b
 - **Not used by controllers:** the per-agent `GET /agents/{agent_id}/events` stream. §6 replaces it.
 - **CLIs never call these routes directly.** The controller serves the Switch tools to its CLIs and makes the calls itself.
 
-**Session relay**, for a Console viewing a session on a remote controller:
-```
-POST /v1/controllers/{id}/relay/{request_id}/frames
-  { frames: { seq: number, kind: "activity" | "transcript" | "end", data: unknown }[] }
-  → 204 | 410 { code: "relay_closed" }               // the viewer left. Stop sending
-```
+**Sessions are not managed through this contract.** A session and its transcript live with the host that runs it, and Core keeps no server-side session state. In-room session commands (`!reset`, `!compact`, `!interrupt`) keep reaching the session through the agent's own watcher stream, as `session_command` frames. How the Console reaches a session on a machine it cannot connect to directly (a cloud VM) is an open question, outside this contract.
 
 ---
 
@@ -335,7 +325,6 @@ The personal agent relays that reason to the user as is.
 | `out_of_memory` | status | Killed by the memory limit |
 | `disk_full` / `capacity_exceeded` | status, placement | No disk / no session slots |
 | `controller_offline` | placement | Target is `unknown` |
-| `relay_closed` | relay | The viewer is gone |
 | `internal` | any | Server or controller bug, with `retryable` set honestly |
 
 ---
@@ -351,4 +340,3 @@ The personal agent relays that reason to the user as is.
 | §5 tokens | #556 `/github-credential` | Generalise to connectors. Sealed provider logins are new |
 | §6 stream | Per-agent `GET /agents/{id}/events` with connection, generation, beat and takeover | One stream per controller, as a read-side merge of the per-agent buffers |
 | §7 act as | Per-agent API keys on `/agents/{id}/...` | Add the controller principal and the binding check |
-| §7 relay | #556 hosted relay | Same role, expressed on the controller stream |
