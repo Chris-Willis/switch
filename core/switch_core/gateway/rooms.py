@@ -7,7 +7,7 @@ from typing import Annotated, cast
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.authz import Action, Principal, can, require
+from switch_core.authz import Action, Principal, can, require, require_manage
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
@@ -520,7 +520,16 @@ async def patch_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
+    target = await _require_room(session, room_store, room_id, user, "write", is_admin)
+    # Changing a room's access permission (read/write visibility) is reserved
+    # for the room's owner and tenant admins — plain write access (which a
+    # publicly-writable room grants to everyone) is not enough. Otherwise any
+    # user could re-permission any room and lock out its owner.
+    if req.read_visibility is not None or req.write_visibility is not None:
+        try:
+            require_manage(Principal(user.id, is_admin), target.owner_id)
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail=str(e)) from e
     try:
         await room_service.update_room(
             room_id,
