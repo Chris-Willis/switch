@@ -1,16 +1,21 @@
 #!/usr/bin/env node
-import { existsSync } from 'node:fs';
 import { hostname } from 'node:os';
-import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import packageJson from '../package.json' with { type: 'json' };
 import { ControllerApiError, enroll, normalizeServerUrl } from './api';
 import { DEFAULT_TIMING, runController } from './controller';
+import {
+  adoptIdentity,
+  CREDENTIAL_STDIN_TIMEOUT_MS,
+  readCredential,
+  resolveSharedHostBundle,
+  workspaceSharedHostBundle,
+} from './handover';
 import { createLogger, errorMessage } from './log';
 import { dataLayout, ensureDataDir, resolveDataDir } from './paths';
 import { definitionProblem } from './reconcile';
 import { emptyObservation, SharedHostRuntime } from './runtime';
-import { CONTROLLER_CREDENTIAL, FileSecretStore } from './secrets';
+import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore } from './secrets';
 import { contractPlatform, mapAgentProcess, PathProviderLocator } from './status';
 import { ControllerStore } from './store';
 
@@ -27,26 +32,26 @@ const USAGE = `Usage: switch-agent-controller <command> [options]
 Commands:
   enroll --server <agent-bridge-url> --code <code> [--name <name>] [--data-dir <dir>]
       Enroll this machine with a one-time code from Switch.
-  run [--data-dir <dir>]
+  run [--data-dir <dir>] [--shared-host-bundle <path>]
+      [--controller-id <id> --server <agent-bridge-url> [--name <name>]]
+      [--credential-stdin]
       Run the agents assigned to this machine and report their status.
-  status [--data-dir <dir>]
+      --controller-id and --server adopt an identity enrolled elsewhere when
+      the data directory holds none. --credential-stdin reads the controller
+      credential from stdin and keeps it in memory only.
+  status [--data-dir <dir>] [--shared-host-bundle <path>]
       Show this controller's identity and its agents, from local state only.
 
 The data directory defaults to SWITCH_CONTROLLER_DATA_DIR, then the OS default.
+The shared host bundle defaults to SWITCH_CONTROLLER_SHARED_HOST_BUNDLE, then
+the one built in the workspace.
 Log level: SWITCH_CONTROLLER_LOG_LEVEL (debug, info, warn, error; default info).
 `;
 
 class UsageError extends Error {}
 
-function bundlePath(): string {
-  const path = fileURLToPath(
-    import.meta.resolve('@switch-console/agent-providers/shared-host-daemon')
-  );
-  if (!existsSync(path))
-    throw new Error(
-      `The shared host bundle is missing at ${path}. Build the workspace packages first (pnpm -r --filter './packages/**' run build).`
-    );
-  return path;
+function bundlePath(flag: string | undefined): string {
+  return resolveSharedHostBundle(flag, process.env, workspaceSharedHostBundle);
 }
 
 async function openState(dataDirFlag: string | undefined) {
@@ -107,14 +112,34 @@ async function enrollCommand(args: string[]): Promise<number> {
 async function runCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
-    options: { 'data-dir': { type: 'string' } },
+    options: {
+      'data-dir': { type: 'string' },
+      'shared-host-bundle': { type: 'string' },
+      'controller-id': { type: 'string' },
+      server: { type: 'string' },
+      name: { type: 'string' },
+      'credential-stdin': { type: 'boolean' },
+    },
     strict: true,
   });
+  const controllerId = values['controller-id'];
+  if ((controllerId === undefined) !== (values.server === undefined))
+    throw new UsageError('--controller-id and --server adopt an identity together; pass both.');
+  if (values.name !== undefined && controllerId === undefined)
+    throw new UsageError('--name names an identity adopted with --controller-id and --server.');
   const log = createLogger({
     level: process.env.SWITCH_CONTROLLER_LOG_LEVEL,
     write: (line) => process.stderr.write(line),
   });
-  const { dataDir, layout, store, secrets } = await openState(values['data-dir']);
+  const credential = values['credential-stdin']
+    ? await readCredential(process.stdin, CREDENTIAL_STDIN_TIMEOUT_MS)
+    : null;
+  const sharedHostBundle = bundlePath(values['shared-host-bundle']);
+  const { dataDir, layout, store, secrets: fileSecrets } = await openState(values['data-dir']);
+  const secrets =
+    credential === null
+      ? fileSecrets
+      : new MemorySecretStore({ [CONTROLLER_CREDENTIAL]: credential }, 'handed over on stdin');
   const stop = new AbortController();
   for (const signal of ['SIGINT', 'SIGTERM'] as const)
     process.once(signal, () => {
@@ -124,11 +149,25 @@ async function runCommand(args: string[]): Promise<number> {
       stop.abort();
     });
   try {
+    if (controllerId !== undefined && values.server !== undefined) {
+      const adopted = adoptIdentity(
+        store,
+        {
+          controllerId,
+          server: values.server,
+          name: values.name ?? hostname(),
+          now: new Date(),
+        },
+        dataDir
+      );
+      if (adopted === 'adopted')
+        log.info('Adopted an identity enrolled elsewhere', { controllerId, dataDir });
+    }
     const exit = await runController(
       {
         store,
         secrets,
-        runtime: new SharedHostRuntime({ layout, bundlePath: bundlePath() }),
+        runtime: new SharedHostRuntime({ layout, bundlePath: sharedHostBundle }),
         locator: new PathProviderLocator(process.env.PATH),
         fetch,
         log,
@@ -149,7 +188,7 @@ async function runCommand(args: string[]): Promise<number> {
 async function statusCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
-    options: { 'data-dir': { type: 'string' } },
+    options: { 'data-dir': { type: 'string' }, 'shared-host-bundle': { type: 'string' } },
     strict: true,
   });
   const { dataDir, layout, store, secrets } = await openState(values['data-dir']);
@@ -173,7 +212,8 @@ async function statusCommand(args: string[]): Promise<number> {
     );
     const revokedAt = store.revokedAt();
     if (revokedAt) out.push(`Revoked at:     ${revokedAt}`);
-    else if (!(await secrets.get(CONTROLLER_CREDENTIAL))) out.push('Credential:     MISSING');
+    else if (!(await secrets.get(CONTROLLER_CREDENTIAL)))
+      out.push('Credential:     not in this data directory (missing, or handed over at run time)');
     const cached = store.cachedAssignment();
     if (!cached) {
       out.push('Assignment:     not pulled yet');
@@ -183,7 +223,10 @@ async function statusCommand(args: string[]): Promise<number> {
     out.push(
       `Assignment:     revision ${cached.assignment.revision}, ${cached.assignment.agents.length} agent(s)`
     );
-    const runtime = new SharedHostRuntime({ layout, bundlePath: bundlePath() });
+    const runtime = new SharedHostRuntime({
+      layout,
+      bundlePath: bundlePath(values['shared-host-bundle']),
+    });
     for (const entry of cached.assignment.agents) {
       const row = store.agent(entry.agent_id);
       const observation = definitionProblem(entry)

@@ -6,8 +6,10 @@ import { join } from 'node:path';
 export const CONTROLLER_CREDENTIAL = 'controller-credential';
 
 /**
- * Where the controller keeps secrets. v1 ships only a file backend; an OS
- * keychain backend slots in behind the same interface.
+ * Where the controller keeps secrets: a file backend for a controller run on
+ * its own, and a memory backend for one whose parent process holds the
+ * credential and hands it over at start. An OS keychain backend slots in
+ * behind the same interface.
  */
 export interface SecretStore {
   /** Names the backend in logs and `status`. */
@@ -80,5 +82,41 @@ export class FileSecretStore implements SecretStore {
   private path(name: string): string {
     if (!NAME.test(name)) throw new Error(`Invalid secret name '${name}'.`);
     return join(this.dir, name);
+  }
+}
+
+/**
+ * Secrets held only in this process's memory, for a controller started by a
+ * process that keeps the credential in a store of its own (Switch Console,
+ * which encrypts it with the OS keychain) and hands it over on stdin. Nothing
+ * is written to disk: `set` and `delete` change what this process holds, and
+ * the parent is told of a revocation by the exit code.
+ */
+export class MemorySecretStore implements SecretStore {
+  readonly description: string;
+  private readonly values: Map<string, string>;
+
+  constructor(values: Record<string, string>, source: string) {
+    this.values = new Map(Object.entries(values));
+    for (const name of this.values.keys())
+      if (!NAME.test(name)) throw new Error(`Invalid secret name '${name}'.`);
+    this.description = `memory only (${source})`;
+  }
+
+  startupWarning(): null {
+    return null;
+  }
+
+  async get(name: string): Promise<string | null> {
+    return this.values.get(name) ?? null;
+  }
+
+  async set(name: string, value: string): Promise<void> {
+    if (!NAME.test(name)) throw new Error(`Invalid secret name '${name}'.`);
+    this.values.set(name, value);
+  }
+
+  async delete(name: string): Promise<void> {
+    this.values.delete(name);
   }
 }

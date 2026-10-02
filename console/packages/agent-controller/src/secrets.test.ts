@@ -2,7 +2,7 @@ import { chmodSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { CONTROLLER_CREDENTIAL, FileSecretStore } from './secrets';
+import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore } from './secrets';
 
 let dir: string;
 
@@ -43,5 +43,26 @@ describe('FileSecretStore', () => {
   it('refuses a name that could leave its directory', async () => {
     const store = new FileSecretStore(join(dir, 'secrets'));
     await expect(store.set('../escape', 'x')).rejects.toThrow(/Invalid secret name/);
+  });
+});
+
+describe('MemorySecretStore', () => {
+  it('holds the handed-over credential in memory only, with no startup warning', async () => {
+    const store = new MemorySecretStore(
+      { [CONTROLLER_CREDENTIAL]: 'credential-placeholder' },
+      'handed over on stdin'
+    );
+    expect(store.description).toBe('memory only (handed over on stdin)');
+    expect(store.startupWarning()).toBeNull();
+    expect(await store.get(CONTROLLER_CREDENTIAL)).toBe('credential-placeholder');
+    await store.delete(CONTROLLER_CREDENTIAL);
+    expect(await store.get(CONTROLLER_CREDENTIAL)).toBeNull();
+    await store.set(CONTROLLER_CREDENTIAL, 'again');
+    expect(await store.get(CONTROLLER_CREDENTIAL)).toBe('again');
+  });
+
+  it('refuses a name a file store would refuse', async () => {
+    expect(() => new MemorySecretStore({ '../escape': 'x' }, 'test')).toThrow(/Invalid/);
+    await expect(new MemorySecretStore({}, 'test').set('../x', 'y')).rejects.toThrow(/Invalid/);
   });
 });

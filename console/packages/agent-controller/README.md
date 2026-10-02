@@ -68,6 +68,43 @@ To run it as a service, have your init system run `run` and restart it on exit c
 `1`. Do not restart it on `3`, because a revoked controller must be enrolled again,
 nor on `4`, because two instances would take the stream from each other in turn.
 
+## Run by a parent process
+
+Switch Console runs this controller as a child process for "Run managed agents on
+this computer". It enrolls through its own signed-in session and keeps the
+credential in its encrypted secrets store, so the controller is handed what
+`enroll` would have written, without anything reaching the disk:
+
+```bash
+switch-agent-controller run \
+  --data-dir <dir> \
+  --controller-id <id> --server <agent-bridge-url> [--name <name>] \
+  --credential-stdin \
+  [--shared-host-bundle <path>]
+```
+
+- `--controller-id` and `--server` adopt an identity enrolled elsewhere. A data
+  directory that holds no identity is seeded with it; one that holds the same
+  identity is used as it is; one that holds another controller's is refused, as
+  `enroll` refuses it. `--name` (default: the host name) is recorded only when the
+  identity is seeded.
+- `--credential-stdin` reads the controller credential from stdin, to the end of
+  the pipe, and keeps it in memory only (the memory secret store). The parent
+  writes it and closes the pipe; the controller gives up after 10 s, and refuses a
+  terminal. Nothing is written to `secrets/`, and nothing goes into the
+  environment, so the watchers and sessions the controller starts never inherit
+  it. On revocation the controller forgets it, records the revocation in
+  `controller.db` and exits with code `3`; the parent deletes its own copy.
+- `--shared-host-bundle` (or `SWITCH_CONTROLLER_SHARED_HOST_BUNDLE`) names the
+  agent-providers shared-host bundle. Without it the controller resolves the one
+  built in the workspace, which a bundled controller does not have. `status`
+  takes the same flag.
+
+Under Console the controller runs on Electron's own binary with
+`ELECTRON_RUN_AS_NODE=1`, as Console runs its local hosts. That variable stays in
+the environment the controller passes to the shared host, so the watchers and
+session hosts it launches with `process.execPath` run as Node too.
+
 ## How it works
 
 - Exchanges its long-lived credential for a one-hour access token. It refreshes the
@@ -190,8 +227,9 @@ nor on `4`, because two instances would take the stream from each other in turn.
 - An in-room command for a room with no session placed here, or arriving while the
   watcher is not connected, is dropped with a warning in the log. Switch keeps no
   copy to send again.
-- Only enrollment by one-time code. There is no EC2 machine secret and no OS
-  keychain.
+- Only enrollment by one-time code, or adoption of an identity a parent process
+  enrolled (see "Run by a parent process"). There is no EC2 machine secret, and
+  the controller itself has no OS keychain backend.
 - No session limit is enforced. `sessions_max` is reported as `0`.
 - OOM kills are not detected. `oom_kills` is always `0`.
 - `restarts_10m` counts the relaunches this controller made, not the restarts a
@@ -217,7 +255,7 @@ It holds:
 | Path | What |
 |---|---|
 | `controller.db` | SQLite: identity, cached assignment, per-agent applied revision and local failures, restart times, each agent's stream cursor, the relay's port, status seq. Everything except the identity can be rebuilt from the server. |
-| `secrets/controller-credential` | The controller credential (see below). |
+| `secrets/controller-credential` | The controller credential (see below). Absent when the credential is handed over with `--credential-stdin`. |
 | `agents/<id>/credentials.json` | Each agent's relay endpoint and relay token, in the layout the shared host reads. No Switch credential. |
 | `watchers/<id>/` | Each agent's watcher state root: `watch.json`, `template.json`, `config.json`, `health.json`, `supervisor/` logs and failure record. |
 | `workspaces/<name>/` | The working directory of an agent whose definition sets none. |
@@ -227,7 +265,7 @@ Sessions a watcher starts keep their state where the shared host puts it
 
 ## The file secret store
 
-v1 keeps the controller credential in a plaintext file. The file has mode 0600 and
+Run on its own, v1 keeps the controller credential in a plaintext file. The file has mode 0600 and
 sits in a 0700 directory. No OS keychain backend exists yet, and the controller logs
 a warning saying so every time it starts. Anyone who can read this user's files, or
 a backup of them, can act as this controller until it is revoked. If the file is

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,10 +7,11 @@ import { type AgentBridgeEvent, SwitchEventStream } from '@sandboxaq/switch-agen
 import { callOperation, SESSION_SELECTOR_HEADERS } from '@sandboxaq/switch-agent-runtime/hosted';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type ControllerDeps, type ControllerExit, runController } from './controller';
+import { adoptIdentity } from './handover';
 import { silentLogger } from './log';
 import type { RelayCredentials } from './runtime';
 import type { AgentAssignment, StatusReport } from './schemas';
-import { CONTROLLER_CREDENTIAL, FileSecretStore } from './secrets';
+import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore } from './secrets';
 import { ControllerStore } from './store';
 import { buildWatcherTemplate } from './template';
 import { FakeCore } from './testing/fake-core';
@@ -440,6 +441,46 @@ describe('runController', () => {
     running = runController(deps(), stop.signal);
     expect(await running).toBe('revoked');
     expect(await secrets.get(CONTROLLER_CREDENTIAL)).toBeNull();
+  });
+
+  it('runs on an adopted identity with the credential in memory, and writes it nowhere', async () => {
+    const handedDir = mkdtempSync(join(tmpdir(), 'controller-handed-'));
+    const handed = ControllerStore.open(join(handedDir, 'controller.db'));
+    try {
+      adoptIdentity(
+        handed,
+        {
+          controllerId: core.controllerId,
+          server: core.url,
+          name: 'console-box',
+          now: new Date('2026-01-01T00:00:00Z'),
+        },
+        handedDir
+      );
+      const memory = new MemorySecretStore(
+        { [CONTROLLER_CREDENTIAL]: core.credential },
+        'handed over on stdin'
+      );
+      core.setAssignment({ revision: 1, agents: [agent(1)] });
+      running = runController(
+        { ...deps(), store: handed, secrets: memory, dataDir: handedDir },
+        stop.signal
+      );
+      await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+      core.revoke();
+      expect(await running).toBe('revoked');
+      expect(await memory.get(CONTROLLER_CREDENTIAL)).toBeNull();
+      expect(handed.revokedAt()).not.toBeNull();
+      expect(existsSync(join(handedDir, 'secrets'))).toBe(false);
+      for (const name of readdirSync(handedDir))
+        if (!name.startsWith('controller.db'))
+          throw new Error(`The controller wrote ${name} into its data directory.`);
+      for (const name of readdirSync(handedDir))
+        expect(readFileSync(join(handedDir, name)).includes(core.credential)).toBe(false);
+    } finally {
+      handed.close();
+      rmSync(handedDir, { recursive: true, force: true });
+    }
   });
 
   it('refuses to run without an identity or a credential', async () => {
