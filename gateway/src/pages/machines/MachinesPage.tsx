@@ -193,16 +193,28 @@ export default function MachinesPage() {
         flex: 1.5,
         minWidth: 240,
         sortable: false,
-        renderCell: ({ row }) =>
-          row.status && row.status.providers.length > 0 ? (
-            <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap", py: 1 }} useFlexGap>
-              {row.status.providers.map(providerChip)}
+        renderCell: ({ row }) => {
+          if (!row.status || row.status.providers.length === 0)
+            return (
+              <Typography variant="body2" color="text.secondary">
+                Not reported yet
+              </Typography>
+            );
+          const installed = row.status.providers.filter((p) => p.installed);
+          const missing = row.status.providers.filter((p) => !p.installed);
+          return (
+            <Stack direction="row" spacing={0.5} alignItems="center" sx={{ height: "100%", overflow: "hidden" }}>
+              {installed.map(providerChip)}
+              {missing.length > 0 && (
+                <Tooltip title={`Not installed: ${missing.map((p) => providerLabel(p.provider)).join(", ")}`}>
+                  <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: "nowrap" }}>
+                    +{missing.length} not installed
+                  </Typography>
+                </Tooltip>
+              )}
             </Stack>
-          ) : (
-            <Typography variant="body2" color="text.secondary">
-              Not reported yet
-            </Typography>
-          ),
+          );
+        },
       },
       {
         field: "agents",
@@ -334,7 +346,7 @@ export default function MachinesPage() {
           const stale = row.status.applied_revision !== row.revision;
           const detail = [row.status.reason, row.status.detail].filter(Boolean).join(": ");
           return (
-            <Stack direction="row" spacing={0.5} alignItems="center">
+            <Stack direction="row" spacing={0.5} alignItems="center" sx={{ height: "100%" }}>
               <Tooltip title={detail || `Since ${absoluteTitle(row.status.since)}`}>
                 <Chip
                   size="small"
