@@ -59,6 +59,7 @@ from switch_core.observability.catalogue import (
 from switch_core.observability.metrics import metrics
 from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomCreateConfig
+from switch_core.room_wide_mention import is_room_wide_mention
 from switch_core.session_activity.bridge_answers import ApprovalAnswers
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.publisher import (
@@ -280,6 +281,14 @@ class CollaborationCore:
     @property
     def adapter(self) -> PlatformAdapter:
         return self._adapter
+
+    def relays_room(self, room_id: str) -> bool:
+        """Whether a message in this Switch room reaches the platform now.
+
+        A bridge is registered before `start` has loaded its channel map, and a
+        room it has no channel for is dropped by `handle_outbound_message`, so
+        being registered is not the same as relaying."""
+        return self._find_channel(room_id=room_id) is not None
 
     @property
     def tenant_id(self) -> str:
@@ -1977,11 +1986,19 @@ class CollaborationCore:
             )
         else:
             assert sender_name is not None  # guarded above
+            # Only the marker pages a channel. An `@channel` an agent wrote
+            # itself is defused by `translate_outbound` like any other text.
+            room_wide = is_room_wide_mention(event_content)
             message_ref = await self._adapter.send_message(
                 channel_id,
                 sender_name,
-                self._adapter.translate_outbound(event.body),
+                (
+                    self._adapter.render_room_wide_mention(event.body)
+                    if room_wide
+                    else self._adapter.translate_outbound(event.body)
+                ),
                 thread_root_id=thread_root_ref,
+                room_wide_mention=room_wide,
             )
 
         if message_ref is not None:
