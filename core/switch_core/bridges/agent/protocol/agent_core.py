@@ -821,12 +821,16 @@ class AgentCore:
             agent = await self.agent_store.get(session, agent_id)
             if agent is None:
                 raise ValueError(f"No such agent: {agent_id}")
+            if agent.owner_id is None:
+                raise ValueError(
+                    f"Agent {agent_id} has no owner, so it has no one to issue a key to."
+                )
             new_key = ApiKey(
                 type="agent",
                 key_hash=hashlib.sha256(api_key.encode()).hexdigest(),
                 encrypted_key=encrypt_token(api_key, self.config.jwt_secret_key),
                 label=agent.name,
-                user_id=agent.owner_id or "",
+                user_id=agent.owner_id,
             )
             await self.api_key_store.create(session, new_key)
             old_api_key_id = agent.api_key_id

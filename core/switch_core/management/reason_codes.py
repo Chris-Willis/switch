@@ -30,7 +30,6 @@ OUT_OF_MEMORY = "out_of_memory"
 DISK_FULL = "disk_full"
 CAPACITY_EXCEEDED = "capacity_exceeded"
 CONTROLLER_OFFLINE = "controller_offline"
-RELAY_CLOSED = "relay_closed"
 INTERNAL = "internal"
 
 FORBIDDEN = "forbidden"
@@ -65,7 +64,6 @@ ALL_REASON_CODES = frozenset(
         DISK_FULL,
         CAPACITY_EXCEEDED,
         CONTROLLER_OFFLINE,
-        RELAY_CLOSED,
         INTERNAL,
         FORBIDDEN,
         INVALID_CREDENTIAL,

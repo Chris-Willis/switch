@@ -45,7 +45,6 @@ export const REASON_CODES = [
   'disk_full',
   'capacity_exceeded',
   'controller_offline',
-  'relay_closed',
   'internal',
   'forbidden',
   'invalid_credential',
