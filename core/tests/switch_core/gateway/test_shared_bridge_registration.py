@@ -16,6 +16,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.collaboration.lifecycle_service import BridgeClaimConflict
 from switch_core.bridges.collaboration.models import BridgeStartRefused
 from switch_core.db.models import Client, CollaborationBridge, User
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -29,17 +30,18 @@ _BRIDGE_STORE = CollaborationBridgeStore()
 class _Lifecycle:
     """Records what reached it; refuses any start when told to."""
 
-    def __init__(self, *, refuse: bool = False) -> None:
+    def __init__(self, *, refuse: bool = False, claimed: bool = False) -> None:
         self.refuse = refuse
+        self.claimed = claimed
         self.registered: list[dict[str, object]] = []
         self.checked: list[dict[str, Any]] = []
 
     async def register(self, **kwargs: object) -> None:
         self.registered.append(kwargs)
 
-    def validate_connection_config(
-        self, bridge_type: str, connection_config: dict[str, object]
-    ) -> None: ...
+    async def check_edited_connection_config(self, **kwargs: Any) -> None:
+        if self.claimed:
+            raise BridgeClaimConflict("Discord server 999 is already claimed")
 
     def supports_channel_creation(self, bridge_type: str) -> bool:
         return False
@@ -158,3 +160,18 @@ async def test_how_a_bridge_receives_events_cannot_be_changed(
     assert (await _stored_config(session_factory, bridge_id))[
         "event_delivery"
     ] == "shared"
+
+
+async def test_an_edit_cannot_claim_a_workspace_another_bridge_holds(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        bridge_id = await _shared_bridge(session)
+        await session.commit()
+    lifecycle = _Lifecycle(claimed=True)
+
+    refused = await _update(session_factory, bridge_id, lifecycle, {"guild_id": "999"})
+
+    assert refused.status_code == 400
+    assert "already claimed" in str(refused.detail)
+    assert (await _stored_config(session_factory, bridge_id))["guild_id"] == "111"

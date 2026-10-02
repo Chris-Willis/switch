@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.collaboration.adapter import DirectorySearchBusy
 from switch_core.bridges.collaboration.lifecycle_service import (
+    BridgeClaimConflict,
     CollaborationBridgeLifecycleService,
 )
 from switch_core.bridges.collaboration.models import (
@@ -319,7 +320,9 @@ async def update_bridge(
                 detail="event_delivery cannot be changed on an existing connection.",
             )
         try:
-            collab_lifecycle.validate_connection_config(bridge.type, merged)
+            await collab_lifecycle.check_edited_connection_config(
+                bridge_id=bridge_id, bridge_type=bridge.type, connection_config=merged
+            )
             # Asked now rather than at the restart below, so an edit that would
             # point a shared bridge at a workspace this tenant never installed
             # into is refused instead of stored and then failing to start.
@@ -333,6 +336,8 @@ async def update_bridge(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except BridgeStartRefused as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (BridgeClaimConflict, BridgeCredentialError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         bridge = await bridge_store.merge_connection_config(
             session, bridge_id, dict(payload.connection_config)
         )

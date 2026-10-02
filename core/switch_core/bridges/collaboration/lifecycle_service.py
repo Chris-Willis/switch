@@ -555,6 +555,29 @@ class CollaborationBridgeLifecycleService:
             raise ValueError(f"Unknown bridge type: {bridge_type}")
         config_cls.model_validate(connection_config)
 
+    async def check_edited_connection_config(
+        self,
+        *,
+        bridge_id: str,
+        bridge_type: str,
+        connection_config: dict[str, object],
+    ) -> None:
+        """Hold an edited config to what registration holds a new one to.
+
+        An edit can change what registration checked — which workspace the
+        bridge claims, or the credentials proving it — so it is checked the
+        same way before it is stored: valid for the type, no claim another
+        bridge holds, and credentials the platform accepts. Raises
+        `ValidationError`, `BridgeClaimConflict` or `BridgeCredentialError`.
+        """
+        self.validate_connection_config(bridge_type, connection_config)
+        await self.reject_claim_conflict(
+            bridge_type, connection_config, exclude_bridge_id=bridge_id
+        )
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is not None:
+            await adapter_cls.verify_credentials(connection_config)
+
     async def start_all(self) -> None:
         # Every tenant's active bridges, read one tenant at a time. Which
         # tenants there are comes from the exemption (`db/tenant_lookup.py`);

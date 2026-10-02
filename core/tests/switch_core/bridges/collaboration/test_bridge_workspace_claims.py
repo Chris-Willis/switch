@@ -230,6 +230,64 @@ class TestRegistrationRefusesASecondClaim:
             await _service(session_factory).reject_claim_conflict("slack", dict(_SLACK))
 
 
+class TestAnEditIsHeldToTheSameRules:
+    async def test_an_edit_to_another_tenants_workspace_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        incumbent = await _tenant(session_factory)
+        newcomer = await _tenant(session_factory)
+        await _bridge(
+            session_factory,
+            tenant_id=incumbent,
+            bridge_type="discord",
+            connection_config=_DISCORD,
+        )
+
+        with tenant_scope(newcomer):
+            with pytest.raises(BridgeClaimConflict, match="already claimed"):
+                await _service(session_factory).check_edited_connection_config(
+                    bridge_id="the-edited-bridge",
+                    bridge_type="discord",
+                    connection_config=dict(_DISCORD),
+                )
+
+    async def test_editing_a_bridge_does_not_clash_with_itself(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        tenant = await _tenant(session_factory)
+        await _bridge(
+            session_factory,
+            tenant_id=tenant,
+            bridge_type="discord",
+            connection_config=_DISCORD,
+        )
+        async with session_factory() as session:
+            [bridge] = [
+                b
+                for b in await CollaborationBridgeStore().get_all(session)
+                if b.tenant_id == tenant
+            ]
+
+        with tenant_scope(tenant):
+            await _service(session_factory).check_edited_connection_config(
+                bridge_id=bridge.id,
+                bridge_type="discord",
+                connection_config={**_DISCORD, "agent_roles": False},
+            )
+
+    async def test_an_edited_slack_workspace_id_must_be_the_tokens(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        tenant = await _tenant(session_factory)
+        with tenant_scope(tenant), _auth_test(ok=True, team_id="T1"):
+            with pytest.raises(BridgeCredentialError, match="T1, not T2"):
+                await _service(session_factory).check_edited_connection_config(
+                    bridge_id="the-edited-bridge",
+                    bridge_type="slack",
+                    connection_config={**_SLACK, "workspace_id": "T2"},
+                )
+
+
 def _auth_test(**response: Any) -> Any:
     return patch(
         "switch_core.bridges.collaboration.slack.adapter.AsyncWebClient.auth_test",
