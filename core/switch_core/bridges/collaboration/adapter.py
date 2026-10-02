@@ -534,6 +534,20 @@ class CollaborationAdapter(ABC):
         return connection_config
 
     @classmethod
+    def claimed_workspace(cls, connection_config: dict[str, object]) -> str | None:
+        """Name the platform workspace this bridge connects, if it has one.
+
+        One workspace is connected at most once on an instance, across every
+        tenant: two bridges into it would each deliver its events to a
+        different tenant, and the hosted install path already holds a
+        workspace to one tenant. Registration refuses a second claim.
+
+        Quoted verbatim in that refusal, so it must not embed credential
+        material. Return None for a platform with no such notion.
+        """
+        return None
+
+    @classmethod
     def exclusive_resource(cls, connection_config: dict[str, object]) -> str | None:
         """Name a host resource this bridge needs to itself, if any.
 

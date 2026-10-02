@@ -72,6 +72,7 @@ from switch_core.bridges.collaboration.install_state import (
     verify,
 )
 from switch_core.bridges.collaboration.lifecycle_service import (
+    BridgeClaimConflict,
     CollaborationBridgeLifecycleService,
 )
 from switch_core.bridges.collaboration.models import BridgeStartRefused
@@ -83,6 +84,7 @@ from switch_core.db.stores.messaging_install_store import (
     INSTALL_ACTIVE,
     INSTALL_DISCONNECTED,
     INSTALL_REVOKED,
+    MessagingInstallClaimedError,
     MessagingInstallStore,
 )
 from switch_core.db.tenant_lookup import tenant_of_messaging_install
@@ -232,6 +234,15 @@ class MessagingInstallService:
             grant = await installer.redeem(
                 code=code, redirect_uri=self._redirect_uri(platform)
             )
+            connection_config = installer.connection_config(grant)
+
+            # Before the install is recorded: registering the bridge re-checks
+            # this, but a refusal there would leave an active install with no
+            # bridge, holding the workspace for nothing.
+            try:
+                await self._lifecycle.reject_claim_conflict(platform, connection_config)
+            except BridgeClaimConflict as exc:
+                raise MessagingInstallClaimedError(str(exc)) from exc
 
             async with tenant_session(
                 self._session_factory, state.tenant_id
@@ -257,7 +268,7 @@ class MessagingInstallService:
             bridge = await self._lifecycle.register(
                 bridge_type=platform,
                 display_name=grant.workspace_name,
-                connection_config=installer.connection_config(grant),
+                connection_config=connection_config,
                 # Off, though the granted scopes would allow it. Nobody was
                 # asked: an install has no registration form, and letting an
                 # app create channels in a customer's workspace is a decision

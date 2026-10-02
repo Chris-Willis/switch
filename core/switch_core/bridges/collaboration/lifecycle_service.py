@@ -284,6 +284,10 @@ def _bridge_client_localpart(bridge_type: str, display_name: str) -> str:
     return f"switch-bridge-{bridge_type}-{safe_name}-{uuid4().hex[:8]}"
 
 
+class BridgeClaimConflict(ValueError):
+    """A bridge would claim a host resource or platform workspace another holds."""
+
+
 class BridgeStartGuard(Protocol):
     """Asked before a bridge starts whether it may; raises `BridgeStartRefused`."""
 
@@ -372,6 +376,11 @@ class CollaborationBridgeLifecycleService:
         # (see CollaborationAdapter.exclusive_resource). Lets a second
         # claimant be refused by name instead of failing on the resource.
         self._held_resources: dict[str, str] = {}
+        # bridge_id -> the platform workspace it connects while running (see
+        # CollaborationAdapter.claimed_workspace). Only for the warning below:
+        # registration refuses a second claim, but rows predating that check
+        # still start.
+        self._running_workspaces: dict[str, str] = {}
         # Started and not deliberately stopped. A crash removes a bridge from
         # `_bridges` and leaves it here, which is what makes "configured but no
         # longer running" answerable.
@@ -584,41 +593,48 @@ class CollaborationBridgeLifecycleService:
             except Exception:
                 logger.exception("Failed to start bridge %s", bridge.id)
 
-    async def _reject_resource_conflict(
+    async def reject_claim_conflict(
         self,
         bridge_type: str,
         connection_config: dict[str, object],
         *,
         exclude_bridge_id: str | None = None,
     ) -> None:
-        """Refuse a bridge that would contend for a resource another one holds.
+        """Refuse a bridge that would claim what another bridge already holds.
 
-        Checked against every stored bridge rather than the running set, so the
-        answer does not depend on whether the incumbent happens to be up.
+        Two kinds of claim: a host resource the process can hold once (see
+        `CollaborationAdapter.exclusive_resource`), and a platform workspace
+        connected at most once on the instance (see
+        `CollaborationAdapter.claimed_workspace`). Checked against every stored
+        bridge rather than the running set, so the answer does not depend on
+        whether the incumbent happens to be up.
+
+        Raises `BridgeClaimConflict`.
         """
         adapter_cls = self._adapter_registry.get(bridge_type)
         if adapter_cls is None:
             return
-        wanted = adapter_cls.exclusive_resource(connection_config)
-        if wanted is None:
+        wanted_resource = adapter_cls.exclusive_resource(connection_config)
+        wanted_workspace = adapter_cls.claimed_workspace(connection_config)
+        if wanted_resource is None and wanted_workspace is None:
             return
 
         # Captured before the loop below rebinds per tenant. This method is
-        # only ever reached from an authenticated request, so what is bound
-        # going in *is* the caller's tenant — the loop then replaces it, once
-        # per tenant, for the scoped read of that tenant's bridges. A call
-        # with nothing bound (no request behind it, if one ever exists) is
-        # treated as belonging to no tenant at all rather than guessed at: it
-        # can never match `other.tenant_id`, so it falls straight into the
-        # cross-tenant branch below and gets the non-disclosing message. Fail
-        # closed, not open.
+        # only ever reached from an authenticated request or an install the
+        # state token binds, so what is bound going in *is* the caller's
+        # tenant — the loop then replaces it, once per tenant, for the scoped
+        # read of that tenant's bridges. A call with nothing bound is treated
+        # as belonging to no tenant at all rather than guessed at: it can never
+        # match `other.tenant_id`, so it falls straight into the cross-tenant
+        # branch below and gets the non-disclosing message. Fail closed, not
+        # open.
         caller_tenant_id = current_tenant_id()
 
         # Deliberately across every tenant. Two tenants binding the same Slack
         # workspace, or the same Teams listen port, is precisely the collision
-        # this exists to refuse — the resource is a property of the host and
-        # the platform, not of a tenant — so narrowing to the caller's tenant
-        # would make it miss the case it was written for.
+        # this exists to refuse — the claim is a property of the host and the
+        # platform, not of a tenant — so narrowing to the caller's tenant would
+        # make it miss the case it was written for.
         existing: list[CollaborationBridge] = []
         for tenant_id in await all_tenant_ids(self._session_factory):
             async with tenant_session(self._session_factory, tenant_id) as session:
@@ -634,7 +650,7 @@ class CollaborationBridgeLifecycleService:
         for other in existing:
             # Guard the None case explicitly: an unflushed row has no id yet, and
             # `other.id == exclude_bridge_id` would then be None == None and skip
-            # a bridge that genuinely holds the resource.
+            # a bridge that genuinely holds the claim.
             if exclude_bridge_id is not None and other.id == exclude_bridge_id:
                 continue
             if other.type != bridge_type:
@@ -642,33 +658,46 @@ class CollaborationBridgeLifecycleService:
             other_cls = self._adapter_registry.get(other.type)
             if other_cls is None:
                 continue
+            other_config = other.connection_config or {}
             try:
-                held = other_cls.exclusive_resource(other.connection_config or {})
+                held_resource = other_cls.exclusive_resource(other_config)
+                held_workspace = other_cls.claimed_workspace(other_config)
             except Exception:
                 # A stored config we can no longer parse should not block a new
                 # bridge — it is its own problem, and it is already logged when
                 # that bridge tries to start.
                 logger.warning(
-                    "Could not read the exclusive resource of bridge %s (%s)",
+                    "Could not read the claims of bridge %s (%s)",
                     other.id,
                     other.type,
                     exc_info=True,
                 )
                 continue
-            if held != wanted:
+            if wanted_resource is not None and held_resource == wanted_resource:
+                wanted = wanted_resource
+                same_tenant_advice = (
+                    f"two {bridge_type} bridges cannot share it. Delete that "
+                    "bridge first, or give this one a different listen_port in "
+                    "its connection_config — noting the Helm chart publishes "
+                    "only one Teams port, so a second one needs its own Service "
+                    "port and route."
+                )
+            elif wanted_workspace is not None and held_workspace == wanted_workspace:
+                wanted = wanted_workspace
+                same_tenant_advice = (
+                    "a workspace can be connected only once. Delete that bridge "
+                    "first if this one is meant to replace it."
+                )
+            else:
                 continue
             if caller_tenant_id is not None and other.tenant_id == caller_tenant_id:
                 # The incumbent is the caller's own bridge, so naming it tells
                 # the caller nothing they cannot already see on their own
                 # bridge list — and the name is what turns this from "refused"
                 # into "refused, and here is the one to delete or move".
-                raise ValueError(
+                raise BridgeClaimConflict(
                     f"'{other.display_name}' already uses {wanted} on this "
-                    f"instance, and two {bridge_type} bridges cannot share it. "
-                    "Delete that bridge first, or give this one a different "
-                    "listen_port in its connection_config — noting the Helm "
-                    "chart publishes only one Teams port, so a second one needs "
-                    "its own Service port and route."
+                    f"instance, and {same_tenant_advice}"
                 )
             # The incumbent belongs to a different tenant (or the caller's
             # tenant could not be determined at all — see the fail-closed note
@@ -681,7 +710,7 @@ class CollaborationBridgeLifecycleService:
             # information about the incumbent.
             #
             # "already claimed on this instance" is still a narrow leak: it
-            # tells the caller *someone* holds this resource, which they would
+            # tells the caller *someone* holds this claim, which they would
             # not otherwise know. That is unavoidable if the collision is to be
             # refused at all rather than silently misconfigured, and it is a
             # great deal less than a bridge name and a tenant identity.
@@ -694,11 +723,11 @@ class CollaborationBridgeLifecycleService:
                 other.id,
                 other.tenant_id,
             )
-            raise ValueError(
+            raise BridgeClaimConflict(
                 f"{wanted} is already claimed by a {bridge_type} bridge on "
-                "this instance and cannot be shared. This is a host- and "
-                "platform-level limit, not specific to your workspace; an "
-                "operator can see which bridge holds it."
+                "this instance and cannot be shared. This is an instance-wide "
+                "limit, not specific to your workspace; an operator can see "
+                "which bridge holds it."
             )
 
     async def register(
@@ -747,7 +776,7 @@ class CollaborationBridgeLifecycleService:
         validated = config_cls.model_validate(connection_config)
         connection_config = validated.model_dump(mode="json")
 
-        await self._reject_resource_conflict(bridge_type, connection_config)
+        await self.reject_claim_conflict(bridge_type, connection_config)
 
         # Before anything is written. The adapter runs in a background task
         # whose failures are logged and swallowed, so credentials that are wrong
@@ -865,6 +894,19 @@ class CollaborationBridgeLifecycleService:
                             "Only one of them can run; delete one, or give it "
                             "a different listen_port."
                         )
+            workspace = adapter_cls.claimed_workspace(bridge.connection_config or {})
+            if workspace is not None:
+                for other_id, held in self._running_workspaces.items():
+                    if held == workspace and other_id != bridge_id:
+                        logger.warning(
+                            "Bridge %s (%s) connects %s, which bridge %s also "
+                            "connects. Its events may reach either bridge's "
+                            "tenant; delete one of them.",
+                            bridge_id,
+                            bridge.type,
+                            workspace,
+                            other_id,
+                        )
 
             typed_config = config_cls.model_validate(bridge.connection_config or {})
             await self.check_start_guards(
@@ -962,6 +1004,8 @@ class CollaborationBridgeLifecycleService:
             self._platforms_seen.add(normalise_platform(bridge.type))
             if wanted is not None:
                 self._held_resources[bridge_id] = wanted
+            if workspace is not None:
+                self._running_workspaces[bridge_id] = workspace
 
             logger.info("Started collaboration bridge %s (%s)", bridge_id, bridge.type)
         except Exception as exc:
@@ -1078,6 +1122,7 @@ class CollaborationBridgeLifecycleService:
                 self._bridges.pop(bridge_id, None)
                 self._tasks.pop(bridge_id, None)
                 self._held_resources.pop(bridge_id, None)
+                self._running_workspaces.pop(bridge_id, None)
                 # The adapter may already have asked to be served before the
                 # failure, so a crash that leaves the endpoint registered
                 # leaves presses being handled by a bridge that is not running.
@@ -1248,6 +1293,7 @@ class CollaborationBridgeLifecycleService:
 
         self._bridges.pop(bridge_id, None)
         self._held_resources.pop(bridge_id, None)
+        self._running_workspaces.pop(bridge_id, None)
         self._started.discard(bridge_id)
         # A bridge cancelled before it connected never reaches an outcome, and
         # `_run_bridge`'s handler does not catch `CancelledError`, so its

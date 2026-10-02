@@ -38,6 +38,7 @@ from switch_core.bridges.collaboration.install_state import (
     InstallStateError,
     mint,
 )
+from switch_core.bridges.collaboration.lifecycle_service import BridgeClaimConflict
 from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
     Client,
@@ -142,6 +143,15 @@ class _FakeLifecycle:
         self._suffix = suffix
         self.registered: list[dict[str, object]] = []
         self.removed: list[str] = []
+        # Set to make the claim check refuse, as the real one does when another
+        # bridge already connects the workspace.
+        self.claim_conflict: str | None = None
+
+    async def reject_claim_conflict(
+        self, bridge_type: str, connection_config: dict[str, object]
+    ) -> None:
+        if self.claim_conflict is not None:
+            raise BridgeClaimConflict(self.claim_conflict)
 
     async def register(self, **kwargs: object) -> CollaborationBridge:
         self.registered.append(kwargs)
@@ -425,6 +435,26 @@ class TestWhatTheCallbackWillNotDo:
                 platform="slack", code="the-code", state_token=state
             )
         assert fixture.lifecycle.registered == []
+
+    async def test_a_workspace_a_manual_bridge_connects_is_refused_before_recording(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Refused before the install is written, not when its bridge is
+        registered: an install left with no bridge would hold the workspace
+        for nothing, and the next attempt would be refused by it."""
+        fixture = await _fixture(rls_harness)
+        fixture.lifecycle.claim_conflict = (
+            f"Slack workspace {fixture.workspace} is already claimed"
+        )
+
+        state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
+        with pytest.raises(MessagingInstallClaimedError, match="already claimed"):
+            await fixture.service.complete(
+                platform="slack", code="the-code", state_token=state
+            )
+        assert fixture.lifecycle.registered == []
+        async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+            assert await fixture.service.list_installs(session) == []
 
 
 class TestDisconnecting:

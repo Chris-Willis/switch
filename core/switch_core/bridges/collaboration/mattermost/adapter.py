@@ -14,6 +14,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, ClassVar
+from urllib.parse import urlsplit
 
 import httpx
 import requests as sync_requests
@@ -310,6 +311,22 @@ class MattermostAdapter(CollaborationAdapter):
     #: the channel open. A settled card reads better than that tombstone and
     #: keeps the channel a record of what was asked and what was decided.
     removes_answered_cards: ClassVar[bool] = False
+
+    @classmethod
+    def claimed_workspace(cls, connection_config: dict[str, object]) -> str | None:
+        """The team on its server, compared in canonical form so a trailing
+        slash, letter case or an explicit default port does not make the same
+        team look like a different one."""
+        url = urlsplit(str(connection_config["url"]))
+        scheme = url.scheme.lower()
+        port = url.port
+        default_port = {"http": 80, "https": 443}.get(scheme)
+        host = (url.hostname or "").lower()
+        if port is not None and port != default_port:
+            host = f"{host}:{port}"
+        path = url.path.rstrip("/")
+        team = str(connection_config["team_name"]).lower()
+        return f"Mattermost team {team} on {scheme}://{host}{path}"
 
     def __init__(self, *, config: MattermostConnectionConfig) -> None:
         super().__init__()

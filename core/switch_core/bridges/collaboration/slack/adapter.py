@@ -36,6 +36,7 @@ from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
     BridgeConnectionConfig,
+    BridgeCredentialError,
     ChannelType,
     DirectoryUser,
     InboundAgentJoin,
@@ -337,6 +338,36 @@ class SlackAdapter(CollaborationAdapter):
     agent_group_directory: ClassVar[SlackAgentGroupDirectory] = (
         SlackAgentGroupDirectory()
     )
+
+    @classmethod
+    def claimed_workspace(cls, connection_config: dict[str, object]) -> str | None:
+        return f"Slack workspace {connection_config['workspace_id']}"
+
+    @classmethod
+    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+        """Check the bot token works and belongs to the configured workspace.
+
+        `workspace_id` is what a workspace is claimed by, so it has to be the
+        token's workspace and not merely a value someone typed. On an
+        Enterprise Grid org it may name the org rather than the workspace.
+        """
+        config = SlackConnectionConfig.model_validate(connection_config)
+        try:
+            auth = await AsyncWebClient(token=config.bot_token).auth_test()
+        except SlackApiError as exc:
+            raise BridgeCredentialError(
+                f"Slack refused the bot token: {exc.response.get('error', exc)}"
+            ) from exc
+        authenticated = {
+            str(auth.get("team_id") or ""),
+            str(auth.get("enterprise_id") or ""),
+        } - {""}
+        if config.workspace_id not in authenticated:
+            raise BridgeCredentialError(
+                f"The bot token belongs to Slack workspace "
+                f"{auth.get('team_id')}, not {config.workspace_id}. Set "
+                "workspace_id to the workspace the app is installed in."
+            )
 
     def __init__(self, *, config: SlackConnectionConfig) -> None:
         super().__init__()

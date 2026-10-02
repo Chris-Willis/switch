@@ -376,7 +376,7 @@ async def test_a_host_resource_conflict_is_looked_for_across_every_tenant(
 
     with tenant_scope(newcomer_tenant):
         with pytest.raises(ValueError, match="port:3979 is already claimed"):
-            await service._reject_resource_conflict("teams", {"listen_port": 3979})
+            await service.reject_claim_conflict("teams", {"listen_port": 3979})
 
     assert sorted(seen) == sorted(
         [TENANT_ZERO_ID, incumbent_tenant, newcomer_tenant]
@@ -393,7 +393,7 @@ async def test_a_tenant_scoped_read_of_the_same_data_would_have_missed_the_confl
 ) -> None:
     """The row-visibility half of the test above, made real: the same
     incumbent bridge, read through `CollaborationBridgeStore.get_all` — the
-    exact method `_reject_resource_conflict` calls — but scoped to the
+    exact method `reject_claim_conflict` calls — but scoped to the
     newcomer's tenant instead of left unscoped. It comes back empty, which is
     what would have let a second Teams listener claim the same port undetected
     had the application code above been scoped instead of deliberately
@@ -477,7 +477,7 @@ async def test_a_same_tenant_conflict_names_the_incumbent_bridge(
 
     with tenant_scope(tenant):
         with pytest.raises(ValueError) as excinfo:
-            await service._reject_resource_conflict("teams", {"listen_port": 3979})
+            await service.reject_claim_conflict("teams", {"listen_port": 3979})
 
     assert "Our Existing Teams" in str(excinfo.value)
 
@@ -523,7 +523,7 @@ async def test_a_cross_tenant_conflict_does_not_name_the_incumbent_or_its_tenant
 
     with tenant_scope(newcomer_tenant):
         with pytest.raises(ValueError) as excinfo:
-            await service._reject_resource_conflict("teams", {"listen_port": 3979})
+            await service.reject_claim_conflict("teams", {"listen_port": 3979})
 
     message = str(excinfo.value)
     assert "Their Secret Teams" not in message
@@ -572,7 +572,7 @@ async def test_a_conflict_with_nothing_bound_fails_closed_to_the_non_disclosing_
 
     assert current_tenant_id() is None
     with pytest.raises(ValueError) as excinfo:
-        await service._reject_resource_conflict("teams", {"listen_port": 3979})
+        await service.reject_claim_conflict("teams", {"listen_port": 3979})
 
     message = str(excinfo.value)
     assert "Their Secret Teams" not in message
