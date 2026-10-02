@@ -38,7 +38,7 @@ export function resolveDataDir(flag: string | undefined): string {
 /**
  * Creates the data directory owner-only (0700), and tightens one that already
  * exists with looser permissions: it holds the controller credential and every
- * agent's API key.
+ * agent's relay token.
  */
 export async function ensureDataDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true, mode: 0o700 });

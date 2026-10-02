@@ -77,22 +77,25 @@ async function fakeWatcher(root: string): Promise<ChildProcess> {
 describe('SharedHostRuntime', () => {
   it('writes credentials the shared host reads, owner-only, outside the working directory', async () => {
     await runtime.writeCredentials('agent-1', {
-      endpoint: 'https://switch.example.com',
-      apiKey: 'agent-key-placeholder',
+      endpoint: 'http://127.0.0.1:43210',
+      token: 'swlr_relay-token-placeholder',
     });
     const path = runtime.credentialsPath('agent-1');
     expect(path).toBe(join(dir, 'data', 'agents', 'agent-1', 'credentials.json'));
     expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(statSync(join(dir, 'data', 'agents', 'agent-1')).mode & 0o777).toBe(0o700);
     expect(await readSharedCredentials(template())).toEqual({
-      SWITCH_API_ENDPOINT: 'https://switch.example.com',
-      SWITCH_API_TOKEN: 'agent-key-placeholder',
+      SWITCH_API_ENDPOINT: 'http://127.0.0.1:43210',
+      SWITCH_API_TOKEN: 'swlr_relay-token-placeholder',
       SWITCH_AGENT_ID: 'agent-1',
     });
-    expect(await runtime.hasCredentials('agent-1')).toBe(true);
+    expect(await runtime.readCredentials('agent-1')).toEqual({
+      endpoint: 'http://127.0.0.1:43210',
+      token: 'swlr_relay-token-placeholder',
+    });
     await runtime.deleteCredentials('agent-1');
     await runtime.deleteCredentials('agent-1');
-    expect(await runtime.hasCredentials('agent-1')).toBe(false);
+    expect(await runtime.readCredentials('agent-1')).toBeNull();
   });
 
   it('launches the watcher with --ensure-watch from a template beside watch.json', async () => {

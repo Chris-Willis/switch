@@ -3,8 +3,11 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
-  agentCredentialsSchema,
   assignmentSchema,
+  controllerBeatRequestSchema,
+  controllerBeatResponseSchema,
+  controllerConnectionRequestSchema,
+  controllerConnectionResponseSchema,
   credentialRotateResponseSchema,
   enrollRequestSchema,
   enrollResponseSchema,
@@ -42,8 +45,11 @@ const FIXTURES = join(
  * fails the test, so a message added on one side is noticed on the other.
  */
 const SCHEMA_FOR: Record<string, z.ZodType> = {
-  'agent_credentials_response.json': agentCredentialsSchema,
   'assignment_response.json': assignmentSchema,
+  'controller_beat_request.json': controllerBeatRequestSchema,
+  'controller_beat_response.json': controllerBeatResponseSchema,
+  'controller_connection_request.json': controllerConnectionRequestSchema,
+  'controller_connection_response.json': controllerConnectionResponseSchema,
   'credential_rotate_response.json': credentialRotateResponseSchema,
   'enroll_request.json': enrollRequestSchema,
   'enroll_response.json': enrollResponseSchema,
@@ -61,7 +67,7 @@ const SCHEMA_FOR: Record<string, z.ZodType> = {
 /** `stream_frames.json` is a list of `{event, data}`; each is read as the stream reads it. */
 const streamFramesSchema = z.array(
   z.object({ event: z.string(), data: z.unknown() }).superRefine((frame, context) => {
-    const schema = STREAM_FRAME_SCHEMAS[frame.event];
+    const schema = (STREAM_FRAME_SCHEMAS as Record<string, z.ZodType>)[frame.event];
     if (!schema) {
       context.addIssue({ code: 'custom', message: `No schema for stream event '${frame.event}'.` });
       return;

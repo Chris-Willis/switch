@@ -8,7 +8,11 @@ import {
   PROTOCOL_HEADER,
 } from './api';
 import { silentLogger } from './log';
-import type { Assignment } from './schemas';
+import {
+  type Assignment,
+  controllerBeatRequestSchema,
+  controllerConnectionRequestSchema,
+} from './schemas';
 import { FakeCore } from './testing/fake-core';
 
 let core: FakeCore;
@@ -39,6 +43,7 @@ function client(credential = core.credential) {
       fetch,
       server: core.url,
       controllerId: core.controllerId,
+      version: '0.1.0',
       tokens,
     }),
   };
@@ -245,37 +250,56 @@ describe('errors', () => {
   });
 });
 
-describe('agent credentials', () => {
-  it('fetches a key for an assigned agent, rotating it each time', async () => {
+describe('the controller stream routes', () => {
+  it('opens a connection declaring itself and its cursors, beats it, and attaches the stream', async () => {
     core.setAssignment(assignment);
     const { client: api } = client();
-    const first = await api.agentCredentials('agent-1');
-    const second = await api.agentCredentials('agent-1');
-    expect(first.agent_id).toBe('agent-1');
-    expect(second.api_key).not.toBe(first.api_key);
-    expect(core.credentialFetches).toEqual(['agent-1', 'agent-1']);
-  });
-
-  it('is refused for an agent not assigned here', async () => {
-    const { client: api } = client();
-    await expect(api.agentCredentials('agent-9')).rejects.toMatchObject({
-      status: 403,
-      code: 'not_assigned',
+    const signal = new AbortController().signal;
+    const opened = await api.openConnection({ 'agent-1': 41, 'agent-2': 'head' }, signal);
+    expect(opened.agents).toEqual(['agent-1']);
+    const sent = core.requests.at(-1)!;
+    expect(controllerConnectionRequestSchema.parse(sent.body)).toEqual({
+      client: 'switch-agent-controller',
+      client_version: '0.1.0',
+      cursors: { 'agent-1': 41, 'agent-2': 'head' },
     });
+    const connection = { connectionId: opened.connection_id, generation: opened.generation };
+    const stream = new AbortController();
+    const response = await api.openEvents(connection, stream.signal);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    await api.beat(connection, { 'agent-1': 42 }, signal);
+    expect(controllerBeatRequestSchema.parse(core.requests.at(-1)!.body)).toEqual({
+      connection_id: opened.connection_id,
+      generation: opened.generation,
+      cursors: { 'agent-1': 42 },
+    });
+    stream.abort();
   });
 
-  it('refuses a key issued for a different agent', async () => {
-    core.setAssignment(assignment);
+  it('reads the refusals that decide between reopening and stopping', async () => {
+    const { client: api } = client();
+    const signal = new AbortController().signal;
+    await expect(
+      api.beat({ connectionId: 'nobody', generation: 1 }, {}, signal)
+    ).rejects.toMatchObject({ status: 404, code: 'unknown_connection' });
+    const first = await api.openConnection({}, signal);
+    await api.openConnection({}, signal);
+    await expect(
+      api.beat({ connectionId: first.connection_id, generation: first.generation }, {}, signal)
+    ).rejects.toMatchObject({ status: 409, code: 'taken_over' });
+  });
+
+  it('reads a refusal in the agent bridge’s own envelope', async () => {
     const { client: api } = client();
     core.scripted.push({
       method: 'POST',
-      path: `/v1/management/controllers/${core.controllerId}/agents/agent-1/credentials`,
-      status: 200,
-      body: { agent_id: 'agent-2', api_key: 'placeholder' },
+      path: `/v1/controllers/${core.controllerId}/connection/beat`,
+      status: 409,
+      body: { detail: { code: 'no_stream', message: 'open the stream' } },
     });
-    await expect(api.agentCredentials('agent-1')).rejects.toMatchObject({
-      code: 'invalid_response',
-    });
+    await expect(
+      api.beat({ connectionId: 'c', generation: 1 }, {}, new AbortController().signal)
+    ).rejects.toMatchObject({ status: 409, code: 'no_stream', message: 'open the stream' });
   });
 });
 

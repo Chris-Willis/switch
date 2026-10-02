@@ -18,6 +18,8 @@ export const VERSION: string = packageJson.version;
 
 /** The process ends with this when the server revoked the controller. */
 export const EXIT_REVOKED = 3;
+/** The process ends with this when another instance of the controller took its stream over. */
+export const EXIT_TAKEN_OVER = 4;
 const EXIT_USAGE = 2;
 
 const USAGE = `Usage: switch-agent-controller <command> [options]
@@ -138,7 +140,7 @@ async function runCommand(args: string[]): Promise<number> {
       },
       stop.signal
     );
-    return exit === 'revoked' ? EXIT_REVOKED : 0;
+    return exit === 'revoked' ? EXIT_REVOKED : exit === 'taken_over' ? EXIT_TAKEN_OVER : 0;
   } finally {
     store.close();
   }
@@ -165,6 +167,10 @@ async function statusCommand(args: string[]): Promise<number> {
       `Enrolled at:    ${identity.enrolledAt}`,
       `Secret store:   ${secrets.description}`
     );
+    const relayPort = store.relayPort();
+    out.push(
+      `Relay:          ${relayPort === null ? 'never started' : `http://127.0.0.1:${relayPort} (where agents were last pointed)`}`
+    );
     const revokedAt = store.revokedAt();
     if (revokedAt) out.push(`Revoked at:     ${revokedAt}`);
     else if (!(await secrets.get(CONTROLLER_CREDENTIAL))) out.push('Credential:     MISSING');
@@ -183,7 +189,14 @@ async function statusCommand(args: string[]): Promise<number> {
       const observation = definitionProblem(entry)
         ? emptyObservation()
         : await runtime.observe(entry.agent_id);
-      const mapped = mapAgentProcess({ assignment: entry, row, observation, nowMs: Date.now() });
+      // Whether events flow is the running controller's to know; this reads only disk.
+      const mapped = mapAgentProcess({
+        assignment: entry,
+        row,
+        observation,
+        relayAttached: false,
+        nowMs: Date.now(),
+      });
       out.push(
         '',
         `  ${entry.definition.name} (${entry.agent_id})`,

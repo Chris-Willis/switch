@@ -3,18 +3,24 @@ import { errorMessage, type Logger } from './log';
 import { processPendingOperations } from './operations';
 import { isSafeSegment } from './paths';
 import { definitionProblem, reconcile, type ReconcileDeps, startAgent } from './reconcile';
+import { DEFAULT_RELAY_TIMING, LocalRelay, RELAY_TOKEN_PREFIX, type RelayTiming } from './relay';
+import { UpstreamForwarder } from './relay-forward';
 import type { AgentRuntime } from './runtime';
-import { type Assignment, type StatusReport, statusReportSchema } from './schemas';
+import {
+  type AgentCursor,
+  type Assignment,
+  type StatusReport,
+  statusReportSchema,
+} from './schemas';
 import { CONTROLLER_CREDENTIAL, type SecretStore } from './secrets';
 import {
-  isCredentialFailure,
   type ProviderLocator,
   ProviderStatuses,
   StatusCollector,
   statusFingerprint,
 } from './status';
 import type { ControllerStore } from './store';
-import { nudgeStream } from './stream';
+import { type ControllerFrame, runControllerStream } from './stream';
 
 export type ControllerTiming = {
   /** The full resync safety net. */
@@ -28,6 +34,11 @@ export type ControllerTiming = {
   streamIdleMs: number;
   streamInitialBackoffMs: number;
   streamMaxBackoffMs: number;
+  /** A controller stream that lasts this long resets the reconnect backoff. */
+  streamStableMs: number;
+  relay: RelayTiming;
+  /** The most events the relay holds per agent for its watcher to resume from. */
+  relayBufferLimit: number;
 };
 
 export const DEFAULT_TIMING: ControllerTiming = {
@@ -39,6 +50,9 @@ export const DEFAULT_TIMING: ControllerTiming = {
   streamIdleMs: 45_000,
   streamInitialBackoffMs: 1_000,
   streamMaxBackoffMs: 60_000,
+  streamStableMs: 30_000,
+  relay: DEFAULT_RELAY_TIMING,
+  relayBufferLimit: 5_000,
 };
 
 export type ControllerDeps = {
@@ -56,7 +70,39 @@ export type ControllerDeps = {
   timing: ControllerTiming;
 };
 
-export type ControllerExit = 'stopped' | 'revoked';
+/**
+ * `taken_over`: another instance of this controller opened the controller
+ * stream after this one. Restarting would take it straight back, so this one
+ * ends instead.
+ */
+export type ControllerExit = 'stopped' | 'revoked' | 'taken_over';
+
+/**
+ * Makes an agent's credentials file name the relay and a token it accepts:
+ * the token already in the file when it names the relay as it listens now
+ * (so a watcher that outlived a controller restart keeps working), a new one
+ * otherwise. Resolves true when the file was (re)written, which a running
+ * watcher only reads when it starts.
+ */
+export async function ensureRelayCredentials(
+  agentId: string,
+  deps: { runtime: AgentRuntime; relay: LocalRelay; log: Logger }
+): Promise<boolean> {
+  const current = await deps.runtime.readCredentials(agentId);
+  const endpoint = deps.relay.endpoint;
+  if (current && current.endpoint === endpoint && current.token.startsWith(RELAY_TOKEN_PREFIX)) {
+    if (!deps.relay.isRegistered(agentId, current.token))
+      deps.relay.register(agentId, current.token);
+    return false;
+  }
+  const token = deps.relay.mint(agentId);
+  await deps.runtime.writeCredentials(agentId, { endpoint, token });
+  deps.log.info('Wrote the agent’s relay credentials', {
+    agentId,
+    why: current ? 'they named another endpoint or a Switch key' : 'it had none',
+  });
+  return true;
+}
 
 /** Runs one task at a time, in order; a failed task does not stop the next. */
 class SerialQueue {
@@ -77,16 +123,18 @@ class SerialQueue {
 }
 
 /**
- * The controller's run loop, until `signal` fires or the server revokes it.
+ * The controller's run loop, until `signal` fires, the server revokes it, or
+ * another instance takes its stream over.
  *
- * It exchanges its credential for an access token, then holds the nudge
- * stream open: each connect and each `assignment.changed` pulls the
- * assignment (with its ETag) and reconciles, each `operation.pending` runs
- * the pending operations, and `credential.revoked` — or any request refused
- * as `controller_revoked` — stops every agent, wipes the credential and ends
- * the loop with `'revoked'`. A full resync runs every ten minutes regardless.
- * Status goes out when something changes, and at least every
- * `report_within_s`.
+ * It starts the local relay its agents reach Switch through, exchanges its
+ * credential for an access token, and holds the controller stream open:
+ * agent frames go to the relay, each connect and each `assignment.changed`
+ * pulls the assignment (with its ETag) and reconciles, each
+ * `operation.pending` runs the pending operations, and `credential.revoked`
+ * — or any request refused as `controller_revoked` — stops every agent,
+ * wipes the credential and ends the loop with `'revoked'`. A full resync runs
+ * every ten minutes regardless. Status goes out when something changes, and
+ * at least every `report_within_s`.
  *
  * Before any of that, the cached assignment is reconciled, so agents come back
  * after a reboot even while the server is unreachable.
@@ -135,6 +183,7 @@ export async function runController(
     fetch: deps.fetch,
     server: identity.server,
     controllerId: identity.controllerId,
+    version: deps.version,
     tokens,
   });
   const queue = new SerialQueue();
@@ -143,6 +192,31 @@ export async function runController(
   let etag: string | null = cached?.etag ?? null;
   let reportWithinS = timing.defaultReportWithinS;
   let revocation: Promise<void> | null = null;
+  let reporter: StatusReporter | null = null;
+
+  const relay = new LocalRelay({
+    log,
+    version: deps.version,
+    now: deps.now,
+    timing: timing.relay,
+    bufferLimit: timing.relayBufferLimit,
+    forwarder: new UpstreamForwarder({
+      server: identity.server,
+      auth: {
+        token: () => tokens.get(),
+        invalidate: (token) => tokens.invalidate(token),
+        revoked: () => void revoke(),
+      },
+      log,
+    }),
+    onCursor: (agentId, cursor) =>
+      store.saveCursor(agentId, cursor, new Date(deps.now()).toISOString()),
+    onChange: () => reporter?.request(),
+  });
+  for (const [agentId, cursor] of store.cursors()) relay.setCursor(agentId, cursor);
+  const port = await relay.start(store.relayPort());
+  store.saveRelayPort(port);
+  log.info('Relay listening for this machine’s agents', { endpoint: relay.endpoint });
 
   const revoke = (): Promise<void> => {
     revocation ??= (async () => {
@@ -155,6 +229,7 @@ export async function runController(
       ]);
       for (const agentId of agentIds) {
         if (!isSafeSegment(agentId)) continue;
+        relay.unregister(agentId);
         try {
           await deps.runtime.stop(agentId, { wait: false });
           await deps.runtime.deleteCredentials(agentId);
@@ -188,12 +263,13 @@ export async function runController(
     probeCwd: deps.dataDir,
     now: deps.now,
     log,
-    onChange: () => reporter.request(),
+    onChange: () => reporter?.request(),
   });
   const collector = new StatusCollector({
     store,
     runtime: deps.runtime,
     providers,
+    attached: (agentId) => relay.attached(agentId),
     dataDir: deps.dataDir,
     version: deps.version,
     now: deps.now,
@@ -201,8 +277,9 @@ export async function runController(
   const reconcileDeps: ReconcileDeps = {
     store,
     runtime: deps.runtime,
-    fetchCredentials: (agentId) => client.agentCredentials(agentId),
-    server: identity.server,
+    ensureCredentials: (agentId) =>
+      ensureRelayCredentials(agentId, { runtime: deps.runtime, relay, log }),
+    forgetAgent: (agentId) => relay.unregister(agentId),
     binaryPath: (provider) => providers.binaryPath(provider),
     now: deps.now,
     log,
@@ -224,7 +301,7 @@ export async function runController(
           log.info('Pulled assignment', { revision: assignment.revision, why });
         }
         if (assignment) await reconcile(assignment, reconcileDeps);
-        reporter.request();
+        reporter?.request();
       } catch (error) {
         failed('Assignment sync', error);
       }
@@ -245,8 +322,6 @@ export async function runController(
           restartAgent: async (entry) => {
             const problem = definitionProblem(entry);
             if (problem) return { reason: 'definition_invalid', detail: problem };
-            const observation = await deps.runtime.observe(entry.agent_id);
-            const row = store.agent(entry.agent_id);
             return startAgent(
               {
                 kind: 'start',
@@ -254,11 +329,6 @@ export async function runController(
                 entry,
                 restart: true,
                 replaceIdentity: false,
-                fetchCredentials:
-                  !(await deps.runtime.hasCredentials(entry.agent_id)) ||
-                  (row?.credentialsStale ?? false) ||
-                  (observation.failure !== null && isCredentialFailure(observation.failure)),
-                automaticRefetch: false,
                 clearTakenOver: true,
                 relaunch: true,
                 why: 'restart requested',
@@ -268,19 +338,19 @@ export async function runController(
           },
           recheckProvider: async (provider) => {
             const status = await providers.check(provider);
-            await reporter.sendNow();
+            await reporter?.sendNow();
             return status;
           },
           log,
         });
-        if (ran) reporter.request();
+        if (ran) reporter?.request();
       } catch (error) {
         failed('Running operations', error);
       }
     });
   };
 
-  const reporter = new StatusReporter({
+  reporter = new StatusReporter({
     collect: () => collector.collect(assignment),
     send: async (report) => {
       const answer = await client.putStatus(report);
@@ -298,8 +368,7 @@ export async function runController(
   /**
    * Reconciles the assignment already held, without asking the server: at
    * startup, and whenever an agent's observed state changes, so a watcher
-   * that died or had its key refused is dealt with now rather than at the
-   * next nudge or resync.
+   * that died is dealt with now rather than at the next nudge or resync.
    */
   const reconcileLocally = (): Promise<void> => {
     if (localQueued) return Promise.resolve();
@@ -315,7 +384,54 @@ export async function runController(
     });
   };
 
+  const onFrame = async (frame: ControllerFrame): Promise<void> => {
+    switch (frame.type) {
+      case 'connection_state':
+        reportWithinS = frame.data.report_within_s;
+        if (assignment === null || frame.data.assignment_revision > assignment.revision)
+          void sync('the stream says the assignment moved on');
+        return;
+      case 'evicted':
+        return;
+      case 'agent.event':
+        relay.ingest(frame.data);
+        return;
+      case 'agent.gap':
+        log.warn('Switch reports events an agent missed', {
+          agentId: frame.data.agent_id,
+          reason: frame.data.reason,
+        });
+        relay.gap(frame.data);
+        return;
+      case 'agent.session_command':
+        relay.sessionCommand(frame.data);
+        return;
+      case 'agent.approval_outcome':
+        relay.approvalOutcome(frame.data);
+        return;
+      case 'agent.attached':
+        relay.attach(frame.data.agent_id, frame.data.from_seq, frame.data.rooms);
+        return;
+      case 'agent.detached':
+        relay.detach(frame.data.agent_id, frame.data.reason);
+        return;
+      case 'agent.rooms':
+        relay.setRooms(frame.data.agent_id, frame.data.rooms);
+        return;
+      case 'assignment.changed':
+        void sync(`assignment.changed to revision ${frame.data.revision}`);
+        return;
+      case 'operation.pending':
+        void runOperations();
+        return;
+      case 'credential.revoked':
+        await revoke();
+        return;
+    }
+  };
+
   await reconcileLocally();
+  relay.setReady();
 
   void providers.refreshStale().catch((error: unknown) => failed('Checking providers', error));
 
@@ -328,51 +444,61 @@ export async function runController(
   const poll = setInterval(() => {
     if (deps.now() - lastPeriodic >= reportWithinS * 1000) {
       lastPeriodic = deps.now();
-      reporter.request();
+      reporter?.request();
       return;
     }
-    void reporter.requestIfChanged();
+    void reporter?.requestIfChanged();
   }, timing.statusPollMs);
 
+  let ending: ControllerExit = 'stopped';
   try {
-    for await (const event of nudgeStream({
-      open: (streamSignal) => client.openEvents(streamSignal),
+    ending = await runControllerStream({
+      client,
+      cursors: () => {
+        const cursors: Record<string, AgentCursor> = {};
+        for (const entry of assignment?.agents ?? []) cursors[entry.agent_id] = 'head';
+        return { ...cursors, ...relay.cursors() };
+      },
+      confirmed: () => relay.cursors(),
+      onOpened: (connection) =>
+        log.info('Switch has these agents bound to this controller', {
+          agents: connection.agents,
+        }),
+      onConnected: () => {
+        log.info('Connected to Switch');
+        relay.streamAttached();
+        void sync('connected');
+        void runOperations();
+      },
+      onDisconnected: () => relay.setUpstream(false),
+      onFrame,
       signal: stop.signal,
       log,
       idleTimeoutMs: timing.streamIdleMs,
       initialBackoffMs: timing.streamInitialBackoffMs,
       maxBackoffMs: timing.streamMaxBackoffMs,
+      stableMs: timing.streamStableMs,
       random: deps.random,
-    })) {
-      switch (event.type) {
-        case 'connected':
-          log.info('Connected to Switch', {
-            assignmentRevision: event.state.assignment_revision,
-          });
-          reportWithinS = event.state.report_within_s;
-          void sync('connected');
-          void runOperations();
-          break;
-        case 'assignment.changed':
-          void sync(`assignment.changed to revision ${event.revision}`);
-          break;
-        case 'operation.pending':
-          void runOperations();
-          break;
-        case 'credential.revoked':
-          await revoke();
-          break;
-      }
-    }
+    });
+    if (ending === 'revoked') await revoke();
+    if (ending === 'taken_over')
+      log.error(
+        'Another instance of this controller took over its connection to Switch; this one exits and leaves the agents to it.'
+      );
   } finally {
     clearInterval(resync);
     clearInterval(poll);
     signal.removeEventListener('abort', forward);
+    stop.abort();
+    try {
+      if (revocation) await revocation;
+      await queue.drain();
+      await reporter.idle();
+    } finally {
+      await relay.close();
+    }
   }
-  if (revocation) await revocation;
-  await queue.drain();
-  await reporter.idle();
-  return revocation ? 'revoked' : 'stopped';
+  return revocation ? 'revoked' : ending;
 }
 
 /**

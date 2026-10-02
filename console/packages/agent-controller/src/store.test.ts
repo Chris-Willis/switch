@@ -114,21 +114,50 @@ describe('ControllerStore', () => {
     store.close();
   });
 
-  it('tracks a refused key until a new one is fetched', () => {
+  it('keeps each agent’s stream cursor and the relay port across a reopen', () => {
     const store = ControllerStore.open(path);
-    store.recordApplied('agent-1', 1, '2026-01-01T00:00:00.000Z');
-    store.markCredentialsStale('agent-1', '2026-01-01T00:00:01.000Z');
-    expect(store.agent('agent-1')).toMatchObject({
-      credentialsStale: true,
-      credentialsRefetchedAt: null,
+    expect(store.cursors()).toEqual(new Map());
+    expect(store.relayPort()).toBeNull();
+    store.saveCursor('agent-1', 7, '2026-01-01T00:00:00.000Z');
+    store.saveCursor('agent-1', 9, '2026-01-01T00:00:01.000Z');
+    store.saveCursor('agent-2', 3, '2026-01-01T00:00:01.000Z');
+    store.saveRelayPort(43210);
+    store.close();
+    const reopened = ControllerStore.open(path);
+    expect(reopened.cursors()).toEqual(
+      new Map([
+        ['agent-1', 9],
+        ['agent-2', 3],
+      ])
+    );
+    expect(reopened.relayPort()).toBe(43210);
+    reopened.close();
+  });
+
+  it('migrates a v1 store: drops the key bookkeeping and keeps what was applied', () => {
+    const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof Sqlite;
+    const v1 = new DatabaseSync(path);
+    v1.exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE assignment (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL,
+        etag TEXT, body TEXT NOT NULL, fetched_at TEXT NOT NULL);
+      CREATE TABLE agents (agent_id TEXT PRIMARY KEY, applied_revision INTEGER,
+        changed_at TEXT NOT NULL, failure_revision INTEGER, failure_reason TEXT,
+        failure_detail TEXT, credentials_stale INTEGER NOT NULL DEFAULT 0,
+        credentials_refetched_at TEXT);
+      CREATE TABLE restarts (agent_id TEXT NOT NULL, at INTEGER NOT NULL);
+      CREATE INDEX restarts_by_agent ON restarts (agent_id, at);
+      INSERT INTO agents (agent_id, applied_revision, changed_at, credentials_stale)
+        VALUES ('agent-1', 4, '2026-01-01T00:00:00.000Z', 1);
+      PRAGMA user_version = 1;`);
+    v1.close();
+    const store = ControllerStore.open(path);
+    expect(store.schemaVersion()).toBe(STORE_SCHEMA_VERSION);
+    expect(store.agent('agent-1')).toEqual({
+      agentId: 'agent-1',
+      appliedRevision: 4,
+      changedAt: '2026-01-01T00:00:00.000Z',
+      failure: null,
     });
-    store.recordCredentialsFetched('agent-1', '2026-01-01T00:00:02.000Z', true);
-    expect(store.agent('agent-1')).toMatchObject({
-      credentialsStale: false,
-      credentialsRefetchedAt: '2026-01-01T00:00:02.000Z',
-    });
-    store.recordCredentialsFetched('agent-1', '2026-01-01T00:00:03.000Z', false);
-    expect(store.agent('agent-1')?.credentialsRefetchedAt).toBe('2026-01-01T00:00:02.000Z');
     store.close();
   });
 

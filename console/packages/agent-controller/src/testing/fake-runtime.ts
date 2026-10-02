@@ -5,6 +5,7 @@ import {
   type AgentRuntime,
   emptyObservation,
   type LaunchOptions,
+  type RelayCredentials,
 } from '../runtime';
 import type { Provider } from '../schemas';
 import type { LocatedProvider, ProviderLocator } from '../status';
@@ -12,14 +13,14 @@ import type { LocatedProvider, ProviderLocator } from '../status';
 export type RuntimeCall =
   | { kind: 'launch'; agentId: string; template: SharedHostConfig; options: LaunchOptions }
   | { kind: 'stop'; agentId: string; wait: boolean }
-  | { kind: 'writeCredentials'; agentId: string; endpoint: string; apiKey: string }
+  | { kind: 'writeCredentials'; agentId: string; endpoint: string; token: string }
   | { kind: 'deleteCredentials'; agentId: string };
 
 /** An `AgentRuntime` that keeps every agent in memory and records what it was asked to do. */
 export class FakeRuntime implements AgentRuntime {
   readonly calls: RuntimeCall[] = [];
   readonly agents = new Map<string, AgentObservation>();
-  readonly credentials = new Map<string, { endpoint: string; apiKey: string }>();
+  readonly credentials = new Map<string, RelayCredentials>();
   readiness: ProviderReadiness = { status: 'authenticated', message: 'Signed in.', models: [] };
   probes = 0;
   /** Thrown from the next launch, once. */
@@ -42,11 +43,11 @@ export class FakeRuntime implements AgentRuntime {
     return `/data/agents/${agentId}/credentials.json`;
   }
 
-  async hasCredentials(agentId: string): Promise<boolean> {
-    return this.credentials.has(agentId);
+  async readCredentials(agentId: string): Promise<RelayCredentials | null> {
+    return this.credentials.get(agentId) ?? null;
   }
 
-  async writeCredentials(agentId: string, credentials: { endpoint: string; apiKey: string }) {
+  async writeCredentials(agentId: string, credentials: RelayCredentials) {
     this.calls.push({ kind: 'writeCredentials', agentId, ...credentials });
     this.credentials.set(agentId, credentials);
   }

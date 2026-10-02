@@ -27,7 +27,7 @@ export const PROVIDER_TTL_MS = 10 * 60 * 1000;
 const VERSION_TIMEOUT_MS = 10_000;
 const DETAIL_LIMIT = 1000;
 /** A launch this recent with nothing alive yet is still starting, not crashed. */
-const LAUNCH_GRACE_MS = 15_000;
+export const LAUNCH_GRACE_MS = 15_000;
 
 export function contractPlatform(): Platform {
   const os = platform();
@@ -197,7 +197,7 @@ function fingerprintProvider(status: ProviderStatus): string {
   return JSON.stringify([status.installed, status.version, status.auth, status.reason ?? null]);
 }
 
-/** A watcher that stopped because Switch refused the agent's key. */
+/** A watcher that stopped because its token was refused (by the relay, now). */
 export function isCredentialFailure(message: string): boolean {
   return /rejected the agent credentials|credentials belong to a different agent/i.test(message);
 }
@@ -220,6 +220,8 @@ export function mapAgentProcess(input: {
   assignment: AgentAssignment;
   row: AgentRow | null;
   observation: AgentObservation;
+  /** The agent's events flow on the controller stream and its watcher is connected to the relay. */
+  relayAttached: boolean;
   nowMs: number;
 }): Mapped {
   const { assignment, row, observation } = input;
@@ -238,7 +240,7 @@ export function mapAgentProcess(input: {
     if (!health) return { process: 'starting', attached: false };
     switch (health.state) {
       case 'connected':
-        return { process: 'running', attached: true, since: health.since };
+        return { process: 'running', attached: input.relayAttached, since: health.since };
       case 'connecting':
         return { process: 'starting', attached: false, since: health.since };
       case 'disconnected':
@@ -246,7 +248,9 @@ export function mapAgentProcess(input: {
           process: 'running',
           attached: false,
           since: health.since,
-          detail: truncate(`Reconnecting to Switch${health.detail ? `: ${health.detail}` : ''}`),
+          detail: truncate(
+            `Reconnecting to the controller's relay${health.detail ? `: ${health.detail}` : ''}`
+          ),
         };
       default:
         return { process: 'stopping', attached: false };
@@ -296,6 +300,8 @@ export class StatusCollector {
       store: ControllerStore;
       runtime: AgentRuntime;
       providers: ProviderStatuses;
+      /** Whether the relay has the agent attached; see `mapAgentProcess`. */
+      attached: (agentId: string) => boolean;
       dataDir: string;
       version: string;
       now: () => number;
@@ -311,7 +317,13 @@ export class StatusCollector {
       seen.add(entry.agent_id);
       const row = this.deps.store.agent(entry.agent_id);
       const observation = await this.deps.runtime.observe(entry.agent_id);
-      const mapped = mapAgentProcess({ assignment: entry, row, observation, nowMs });
+      const mapped = mapAgentProcess({
+        assignment: entry,
+        row,
+        observation,
+        relayAttached: this.deps.attached(entry.agent_id),
+        nowMs,
+      });
       const before = this.previous.get(entry.agent_id);
       const since =
         before && before.process === mapped.process ? before.since : (mapped.since ?? now);

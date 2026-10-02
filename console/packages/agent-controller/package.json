@@ -29,6 +29,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@sandboxaq/switch-agent-runtime": "workspace:*",
     "@types/node": "^24.13.3",
     "@typescript/native-preview": "7.0.0-dev.20260609.1",
     "tsdown": "^0.22.2",

@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto';
 import type { z } from 'zod';
 import type { Logger } from './log';
 import {
-  type AgentCredentials,
-  agentCredentialsSchema,
+  type AgentCursor,
   type Assignment,
   assignmentSchema,
+  type ControllerConnection,
+  controllerBeatResponseSchema,
+  controllerConnectionResponseSchema,
   credentialRotateResponseSchema,
   type EnrollRequest,
   type EnrollResponse,
@@ -24,6 +26,8 @@ import {
 } from './schemas';
 
 export const PROTOCOL_HEADER = 'Switch-Controller-Protocol';
+/** What this controller declares itself as when it opens the controller stream. */
+export const CONTROLLER_CLIENT = 'switch-agent-controller';
 
 export type Fetch = typeof fetch;
 
@@ -49,11 +53,16 @@ export function isRevoked(error: unknown): boolean {
   return error instanceof ControllerApiError && error.code === 'controller_revoked';
 }
 
+/** Another instance of this controller took its stream connection over: terminal for this one. */
+export function isTakenOver(error: unknown): boolean {
+  return error instanceof ControllerApiError && error.code === 'taken_over';
+}
+
 /**
  * The agent bridge URL as given to `enroll`, checked and without a trailing
- * slash. It is also every managed agent's `SWITCH_API_ENDPOINT`, and the
- * session host refuses anything but HTTPS or a loopback server, so the same
- * rule is applied here, before a credential is spent on it.
+ * slash. The controller's relay forwards every agent's calls to it with the
+ * controller's own token, so it gets the rule the session host applies to
+ * its endpoint: HTTPS, or plain HTTP to a loopback server only.
  */
 export function normalizeServerUrl(raw: string): string {
   let url: URL;
@@ -88,6 +97,20 @@ async function failure(response: Response): Promise<ControllerApiError> {
     return new ControllerApiError(response.status, code, message, retryable, retry_after_s ?? null);
   }
   const retryable = response.status >= 500 || response.status === 429;
+  // The agent bridge's own refusals: `{"detail": {code, message}}`, as its
+  // connection routes answer.
+  const detail = (body as { detail?: unknown } | null)?.detail;
+  if (typeof detail === 'object' && detail !== null) {
+    const { code, message } = detail as { code?: unknown; message?: unknown };
+    if (typeof code === 'string' && code)
+      return new ControllerApiError(
+        response.status,
+        code,
+        typeof message === 'string' ? message : text.slice(0, 300),
+        retryable,
+        null
+      );
+  }
   return new ControllerApiError(
     response.status,
     retryable ? 'internal' : 'unexpected_response',
@@ -231,6 +254,8 @@ export class ControllerClient {
       fetch: Fetch;
       server: string;
       controllerId: string;
+      /** This controller's version, declared when the stream connection opens. */
+      version: string;
       tokens: AccessTokens;
     }
   ) {}
@@ -340,30 +365,58 @@ export class ControllerClient {
     });
   }
 
-  /** v1 only. Every call rotates the agent's key, which fences out any earlier holder. */
-  async agentCredentials(agentId: string): Promise<AgentCredentials> {
-    const response = await this.request(
-      `${this.controllerPath}/agents/${encodeURIComponent(agentId)}/credentials`,
-      { method: 'POST', headers: { 'Idempotency-Key': randomUUID() } }
-    );
-    const credentials = await parsed(response, agentCredentialsSchema);
-    if (credentials.agent_id !== agentId)
-      throw new ControllerApiError(
-        response.status,
-        'invalid_response',
-        `Asked for agent ${agentId}'s credentials and was given agent ${credentials.agent_id}'s.`,
-        false,
-        null
-      );
-    return credentials;
+  private get streamPath(): string {
+    return `${this.deps.server}/v1/controllers/${encodeURIComponent(this.deps.controllerId)}`;
   }
 
-  /** Opens the nudge stream; the caller reads the body. */
-  async openEvents(signal: AbortSignal): Promise<Response> {
-    const response = await this.request(
-      `${this.deps.server}/v1/controllers/${encodeURIComponent(this.deps.controllerId)}/events`,
-      { method: 'GET', headers: { Accept: 'text/event-stream' }, signal }
-    );
+  /**
+   * Opens a connection for the controller stream, resuming each agent from its
+   * cursor. Opening takes over any connection this controller held before.
+   */
+  async openConnection(
+    cursors: Record<string, AgentCursor>,
+    signal: AbortSignal
+  ): Promise<ControllerConnection> {
+    const response = await this.request(`${this.streamPath}/connection`, {
+      method: 'POST',
+      body: { client: CONTROLLER_CLIENT, client_version: this.deps.version, cursors },
+      signal,
+    });
+    return parsed(response, controllerConnectionResponseSchema);
+  }
+
+  /** Proves the connection alive and confirms how far each agent's watcher has read. */
+  async beat(
+    connection: { connectionId: string; generation: number },
+    cursors: Record<string, number>,
+    signal: AbortSignal
+  ): Promise<void> {
+    const response = await this.request(`${this.streamPath}/connection/beat`, {
+      method: 'POST',
+      body: {
+        connection_id: connection.connectionId,
+        generation: connection.generation,
+        cursors,
+      },
+      signal,
+    });
+    await parsed(response, controllerBeatResponseSchema);
+  }
+
+  /** Attaches the controller stream to an open connection; the caller reads the body. */
+  async openEvents(
+    connection: { connectionId: string; generation: number },
+    signal: AbortSignal
+  ): Promise<Response> {
+    const query = new URLSearchParams({
+      connection_id: connection.connectionId,
+      generation: String(connection.generation),
+    });
+    const response = await this.request(`${this.streamPath}/events?${query}`, {
+      method: 'GET',
+      headers: { Accept: 'text/event-stream' },
+      signal,
+    });
     if (!response.body)
       throw new ControllerApiError(
         response.status,

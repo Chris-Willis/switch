@@ -2,20 +2,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ControllerApiError } from './api';
 import { silentLogger } from './log';
-import {
-  CREDENTIAL_REFETCH_INTERVAL_MS,
-  planReconcile,
-  reconcile,
-  type ReconcileDeps,
-} from './reconcile';
+import { planReconcile, reconcile, type ReconcileDeps } from './reconcile';
 import { emptyObservation } from './runtime';
-import type { AgentAssignment, AgentCredentials, Assignment } from './schemas';
+import type { AgentAssignment, Assignment } from './schemas';
+import { LAUNCH_GRACE_MS } from './status';
 import { ControllerStore } from './store';
 import { FakeRuntime } from './testing/fake-runtime';
 
-const SERVER = 'https://switch.example.com';
+const RELAY = 'http://127.0.0.1:43210';
 
 function agent(overrides: Partial<AgentAssignment> = {}, definition = {}): AgentAssignment {
   return {
@@ -45,8 +40,10 @@ function assignment(...agents: AgentAssignment[]): Assignment {
 let dir: string;
 let store: ControllerStore;
 let runtime: FakeRuntime;
-let fetched: string[];
-let credentialError: Error | null;
+let minted: string[];
+let forgotten: string[];
+/** The relay's endpoint as the credentials are checked against it. */
+let endpoint: string;
 let clock: number;
 let missingProvider: boolean;
 
@@ -54,12 +51,13 @@ function deps(): ReconcileDeps {
   return {
     store,
     runtime,
-    fetchCredentials: async (agentId): Promise<AgentCredentials> => {
-      if (credentialError) throw credentialError;
-      fetched.push(agentId);
-      return { agent_id: agentId, api_key: `key-${fetched.length}` };
+    ensureCredentials: async (agentId) => {
+      if (runtime.credentials.get(agentId)?.endpoint === endpoint) return false;
+      minted.push(agentId);
+      await runtime.writeCredentials(agentId, { endpoint, token: `swlr_${minted.length}` });
+      return true;
     },
-    server: SERVER,
+    forgetAgent: (agentId) => void forgotten.push(agentId),
     binaryPath: async (provider) => (missingProvider ? null : `/usr/bin/${provider}`),
     now: () => clock,
     log: silentLogger,
@@ -70,8 +68,9 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'controller-reconcile-'));
   store = ControllerStore.open(join(dir, 'controller.db'));
   runtime = new FakeRuntime();
-  fetched = [];
-  credentialError = null;
+  minted = [];
+  forgotten = [];
+  endpoint = RELAY;
   clock = Date.parse('2026-01-01T00:00:00Z');
   missingProvider = false;
 });
@@ -82,10 +81,10 @@ afterEach(() => {
 });
 
 describe('reconcile', () => {
-  it('starts a running agent: fetches its key, writes it, launches its watcher', async () => {
+  it('starts a running agent: points it at the relay, launches its watcher', async () => {
     await reconcile(assignment(agent()), deps());
-    expect(fetched).toEqual(['agent-1']);
-    expect(runtime.credentials.get('agent-1')).toEqual({ endpoint: SERVER, apiKey: 'key-1' });
+    expect(minted).toEqual(['agent-1']);
+    expect(runtime.credentials.get('agent-1')).toEqual({ endpoint: RELAY, token: 'swlr_1' });
     const [launch] = runtime.launches();
     expect(launch!.options).toEqual({
       spawn: true,
@@ -110,7 +109,7 @@ describe('reconcile', () => {
     expect(runtime.calls).toEqual([]);
   });
 
-  it('restarts on a revision bump, keeping the key it already has', async () => {
+  it('restarts on a revision bump, keeping the relay token it already has', async () => {
     await reconcile(assignment(agent()), deps());
     await reconcile(
       assignment(agent({ revision: 2 }, { model: 'opus', auto_session: false })),
@@ -124,7 +123,7 @@ describe('reconcile', () => {
       replaceIdentity: false,
     });
     expect(launches[1]!.template.start.input.model).toEqual({ id: 'opus' });
-    expect(fetched).toEqual(['agent-1']);
+    expect(minted).toEqual(['agent-1']);
     expect(store.agent('agent-1')?.appliedRevision).toBe(2);
     expect(store.restartsSince('agent-1', 0)).toBe(1);
   });
@@ -158,20 +157,24 @@ describe('reconcile', () => {
     expect(store.agent('agent-1')?.appliedRevision).toBe(1);
   });
 
-  it('stops a removed agent, deletes its key and forgets it', async () => {
+  it('stops a removed agent, deletes its relay token and forgets it', async () => {
     await reconcile(assignment(agent()), deps());
+    store.saveCursor('agent-1', 12, '2026-01-01T00:00:00Z');
     await reconcile({ revision: 9, agents: [] }, deps());
     expect(runtime.calls.slice(-2)).toEqual([
       { kind: 'stop', agentId: 'agent-1', wait: false },
       { kind: 'deleteCredentials', agentId: 'agent-1' },
     ]);
     expect(runtime.credentials.has('agent-1')).toBe(false);
+    expect(forgotten).toEqual(['agent-1']);
     expect(store.agent('agent-1')).toBeNull();
+    expect(store.cursors().has('agent-1')).toBe(false);
   });
 
   it('starts again a watcher that is gone without a failure, as after a reboot', async () => {
     await reconcile(assignment(agent()), deps());
     runtime.kill('agent-1', null);
+    clock += LAUNCH_GRACE_MS;
     await reconcile(assignment(agent()), deps());
     expect(runtime.launches()).toHaveLength(2);
     expect(runtime.launches()[1]!.options).toMatchObject({ restart: false, clearTakenOver: false });
@@ -197,21 +200,40 @@ describe('reconcile', () => {
     expect(runtime.launches()).toHaveLength(1);
   });
 
-  it('replaces a refused key and relaunches, but not twice in ten minutes', async () => {
+  it('does not launch again a watcher still coming up after its launch', async () => {
+    await reconcile(assignment(agent()), deps());
+    // Launched, but not yet showing as alive: its owner records are not written yet.
+    runtime.kill('agent-1', null);
+    clock += 500;
+    await reconcile(assignment(agent()), deps());
+    expect(runtime.launches()).toHaveLength(1);
+    clock += LAUNCH_GRACE_MS;
+    await reconcile(assignment(agent()), deps());
+    expect(runtime.launches()).toHaveLength(2);
+  });
+
+  it('restarts a running watcher whose relay credentials had to be rewritten', async () => {
+    await reconcile(assignment(agent()), deps());
+    runtime.calls.length = 0;
+    endpoint = 'http://127.0.0.1:50000';
+    await reconcile(assignment(agent()), deps());
+    expect(runtime.credentials.get('agent-1')?.endpoint).toBe('http://127.0.0.1:50000');
+    expect(runtime.launches()).toHaveLength(1);
+    expect(runtime.launches()[0]!.options).toMatchObject({ restart: true, clearTakenOver: false });
+    expect(store.restartsSince('agent-1', 0)).toBe(1);
+  });
+
+  it('relaunches a watcher that failed on its relay token only once it has a new one', async () => {
     await reconcile(assignment(agent()), deps());
     const refused =
       'Shared SDK watcher was evicted: Switch rejected the agent credentials (HTTP 401)';
     runtime.kill('agent-1', refused);
+    clock += LAUNCH_GRACE_MS;
     await reconcile(assignment(agent()), deps());
-    expect(fetched).toEqual(['agent-1', 'agent-1']);
+    expect(runtime.launches()).toHaveLength(1);
+    endpoint = 'http://127.0.0.1:50000';
+    await reconcile(assignment(agent()), deps());
     expect(runtime.launches()).toHaveLength(2);
-    runtime.kill('agent-1', refused);
-    clock += CREDENTIAL_REFETCH_INTERVAL_MS - 1;
-    await reconcile(assignment(agent()), deps());
-    expect(runtime.launches()).toHaveLength(2);
-    clock += 1;
-    await reconcile(assignment(agent()), deps());
-    expect(runtime.launches()).toHaveLength(3);
   });
 
   it('refuses to apply a revision older than the one applied', async () => {
@@ -248,13 +270,6 @@ describe('reconcile', () => {
     expect(store.agent('agent-1')).toMatchObject({ appliedRevision: 1, failure: null });
   });
 
-  it('records a key Management will not issue as not_assigned', async () => {
-    credentialError = new ControllerApiError(403, 'not_assigned', 'not yours', false, null);
-    await reconcile(assignment(agent()), deps());
-    expect(store.agent('agent-1')?.failure).toMatchObject({ reason: 'not_assigned' });
-    expect(runtime.launches()).toEqual([]);
-  });
-
   it('records a launch that fails as internal, and carries on with the next agent', async () => {
     runtime.failNextLaunch = new Error('launcher exploded');
     await reconcile(assignment(agent(), agent({ agent_id: 'agent-2' }, { name: 'other' })), deps());
@@ -264,13 +279,6 @@ describe('reconcile', () => {
     });
     expect(store.agent('agent-2')?.appliedRevision).toBe(1);
   });
-
-  it('propagates a revoked controller instead of recording it on the agent', async () => {
-    credentialError = new ControllerApiError(401, 'controller_revoked', 'revoked', false, null);
-    await expect(reconcile(assignment(agent()), deps())).rejects.toMatchObject({
-      code: 'controller_revoked',
-    });
-  });
 });
 
 describe('planReconcile', () => {
@@ -279,7 +287,7 @@ describe('planReconcile', () => {
       assignment: assignment(agent({ desired_state: 'unknown' })),
       rows: [],
       observations: new Map([['agent-1', emptyObservation()]]),
-      credentialsPresent: new Set(),
+      credentialsChanged: new Set(),
       nowMs: 0,
     });
     expect(actions).toEqual([expect.objectContaining({ kind: 'hold', agentId: 'agent-1' })]);
@@ -294,8 +302,6 @@ describe('planReconcile', () => {
           appliedRevision: 1,
           changedAt: '2026-01-01T00:00:00Z',
           failure: null,
-          credentialsStale: false,
-          credentialsRefetchedAt: null,
         },
       ],
       observations: new Map([
@@ -304,11 +310,9 @@ describe('planReconcile', () => {
           { ...emptyObservation(), alive: true, flags: { enabled: false, spawn: false } },
         ],
       ]),
-      credentialsPresent: new Set(['agent-1']),
+      credentialsChanged: new Set(),
       nowMs: 0,
     });
-    expect(actions).toEqual([
-      expect.objectContaining({ kind: 'start', restart: true, fetchCredentials: false }),
-    ]);
+    expect(actions).toEqual([expect.objectContaining({ kind: 'start', restart: true })]);
   });
 });

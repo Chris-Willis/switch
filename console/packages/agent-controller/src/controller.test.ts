@@ -1,13 +1,18 @@
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { type AgentBridgeEvent, SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
+import { callOperation, SESSION_SELECTOR_HEADERS } from '@sandboxaq/switch-agent-runtime/hosted';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type ControllerDeps, type ControllerExit, runController } from './controller';
 import { silentLogger } from './log';
-import type { AgentAssignment, Assignment, StatusReport } from './schemas';
+import type { RelayCredentials } from './runtime';
+import type { AgentAssignment, StatusReport } from './schemas';
 import { CONTROLLER_CREDENTIAL, FileSecretStore } from './secrets';
 import { ControllerStore } from './store';
+import { buildWatcherTemplate } from './template';
 import { FakeCore } from './testing/fake-core';
 import { FakeLocator, FakeRuntime } from './testing/fake-runtime';
 
@@ -46,6 +51,8 @@ let secrets: FileSecretStore;
 let runtime: FakeRuntime;
 let stop: AbortController;
 let running: Promise<ControllerExit> | null;
+let watchers: AbortController[];
+let blockers: Server[];
 
 function deps(server = core.url): ControllerDeps {
   store.saveIdentity({
@@ -73,8 +80,74 @@ function deps(server = core.url): ControllerDeps {
       streamIdleMs: 2_000,
       streamInitialBackoffMs: 10,
       streamMaxBackoffMs: 50,
+      streamStableMs: 10_000,
+      relay: { heartbeatTtlMs: 6_000, heartbeatIntervalS: 2, sweepMs: 50, keepaliveMs: 15_000 },
+      relayBufferLimit: 100,
     },
   };
+}
+
+const quiet = { debug: () => {}, warn: () => {}, error: () => {} };
+
+/** The agent's watcher, as the shared host runs it: the runtime's client, on the credentials the controller wrote. */
+function watcher(credentials: RelayCredentials, agentId = 'agent-1') {
+  const events: AgentBridgeEvent[] = [];
+  const controller = new AbortController();
+  watchers.push(controller);
+  const stream = new SwitchEventStream({
+    creds: { agentId, apiEndpoint: credentials.endpoint, token: credentials.token },
+    connectionId: `controller-${agentId}`,
+    worker: null,
+    scope: 'all',
+    filter: 'addressed',
+    spawnCapable: true,
+    rooms: [],
+    onEvent: (event) => void events.push(event),
+    onGap: () => {},
+    onEvicted: () => {},
+    log: quiet,
+    signal: controller.signal,
+  });
+  stream.start();
+  return { stream, events };
+}
+
+function addressed(sequence: number) {
+  return {
+    type: 'message',
+    room_id: 'room-a',
+    bridge_id: null,
+    channel_type: null,
+    payload: {
+      addressed: true,
+      sender: '@person:example.org',
+      sender_name: 'Person',
+      message_id: `$m${sequence}`,
+      body: 'hi',
+      timestamp: sequence,
+    },
+    missed: { count: 0, reason: null },
+  };
+}
+
+/** What the watcher of `agent(1)` was launched from. */
+function runtimeTemplate() {
+  return buildWatcherTemplate({
+    agentId: 'agent-1',
+    provider: 'claude',
+    definition: agent(1).definition,
+    cwd: '/data/workspaces/scout',
+    credentialsPath: '/data/agents/agent-1/credentials.json',
+    binaryPath: '/usr/bin/claude',
+  });
+}
+
+async function freePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return port;
 }
 
 function reportsFor(agentId: string): StatusReport['agents'] {
@@ -93,9 +166,14 @@ beforeEach(async () => {
   runtime = new FakeRuntime();
   stop = new AbortController();
   running = null;
+  watchers = [];
+  blockers = [];
+  core.rooms.set('agent-1', ['room-a']);
 });
 
 afterEach(async () => {
+  for (const controller of watchers) controller.abort();
+  for (const blocker of blockers) blocker.close();
   stop.abort();
   await running?.catch(() => {});
   await core.stop();
@@ -104,40 +182,49 @@ afterEach(async () => {
 });
 
 describe('runController', () => {
-  it('pulls the assignment, starts the agent, reports it, follows changes, and exits when revoked', async () => {
-    const first: Assignment = { revision: 1, agents: [agent(1)] };
-    core.setAssignment(first);
+  it('starts the agent pointed at its relay, relays its events, confirms them upstream, and exits when revoked', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
     running = runController(deps(), stop.signal);
 
-    await waitFor(
-      () => reportsFor('agent-1').some((entry) => entry.process === 'running'),
-      'a status report with the agent running'
-    );
-    expect(runtime.launches('agent-1')).toHaveLength(1);
-    expect(core.credentialFetches).toEqual(['agent-1']);
-    expect(runtime.credentials.get('agent-1')?.endpoint).toBe(core.url);
-    const report = core.statusReports.at(-1)!;
-    expect(report.controller.assignment_revision).toBe(1);
-    expect(report.providers.map((provider) => provider.provider)).toEqual(
-      expect.arrayContaining(['claude', 'codex'])
-    );
-    expect(new Set(core.statusReports.map((r) => r.seq)).size).toBe(core.statusReports.length);
-    expect(store.cachedAssignment()?.etag).toBe('"1"');
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    const credentials = runtime.credentials.get('agent-1')!;
+    expect(credentials.endpoint).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(credentials.token).toMatch(/^swlr_/);
+    expect(store.relayPort()).toBe(Number(new URL(credentials.endpoint).port));
+    // Nothing assigned yet when the stream first opened: every agent starts at head.
+    expect(core.opens[0]).toEqual({});
 
-    core.setAssignment({ revision: 2, agents: [agent(2, {})] });
-    core.assignment.agents[0]!.definition.model = 'opus';
-    core.push('assignment.changed', { revision: 2 });
-    await waitFor(() => runtime.launches('agent-1').length === 2, 'a restart on the new revision');
-    expect(runtime.launches('agent-1')[1]!.options.restart).toBe(true);
-    expect(runtime.launches('agent-1')[1]!.template.start.input.model).toEqual({ id: 'opus' });
+    const { events } = watcher(credentials);
     await waitFor(
-      () => reportsFor('agent-1').some((entry) => entry.applied_revision === 2),
-      'a status report with revision 2 applied'
+      () => reportsFor('agent-1').some((entry) => entry.process === 'running' && entry.attached),
+      'a status report with the agent attached'
     );
-    const assignmentPulls = core.requests.filter((r) => r.path.endsWith('/assignment'));
-    expect(assignmentPulls.map((r) => r.headers['if-none-match'])).toEqual(
-      expect.arrayContaining([undefined, '"1"'])
+    core.pushEvent('agent-1', 1, addressed(1));
+    await waitFor(() => events.length === 1, 'the event at the watcher');
+    expect(events[0]).toMatchObject({ type: 'message', room_id: 'room-a', sequence: 1 });
+    await waitFor(
+      () => core.beats.some((beat) => beat['agent-1'] === 1),
+      'the watcher’s confirmation beaten upstream'
     );
+    expect(store.cursors().get('agent-1')).toBe(1);
+
+    const forwarded = await callOperation(
+      {
+        identity: { endpoint: credentials.endpoint, agentId: 'agent-1', token: credentials.token },
+        connectionId: 'controller-agent-1',
+        selector: { [SESSION_SELECTOR_HEADERS.sessionId]: 'session-1' },
+        room: null,
+        mediaDir: dir,
+        cwd: dir,
+        deadConnection: () => 'dead',
+      },
+      'post_message',
+      { body: 'hello' }
+    );
+    expect(forwarded.isError).toBeFalsy();
+    const op = core.requests.findLast((r) => r.path === '/agents/agent-1/ops/post_message')!;
+    expect(op.headers['x-switch-agent-id']).toBe('agent-1');
+    expect(op.headers.authorization).toMatch(/^Bearer access-token-/);
 
     core.revoke();
     expect(await running).toBe('revoked');
@@ -149,6 +236,120 @@ describe('runController', () => {
     );
     expect(await secrets.get(CONTROLLER_CREDENTIAL)).toBeNull();
     expect(store.revokedAt()).not.toBeNull();
+    await expect(fetch(`${credentials.endpoint}/version`)).rejects.toThrow();
+  }, 20_000);
+
+  it('reopens the stream with the confirmed cursors, and follows attach and detach live', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(deps(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    const { events } = watcher(runtime.credentials.get('agent-1')!);
+    await waitFor(() => reportsFor('agent-1').at(-1)?.attached === true, 'the watcher attached');
+    core.pushEvent('agent-1', 5, addressed(5));
+    await waitFor(() => events.length === 1, 'the event');
+    await waitFor(() => store.cursors().get('agent-1') === 5, 'the cursor confirmed');
+
+    core.forgetConnection();
+    await waitFor(() => core.opens.length === 2, 'a new connection');
+    expect(core.opens[1]).toEqual({ 'agent-1': 5 });
+    await waitFor(() => core.streamCount === 1, 'the new stream attached');
+    core.pushEvent('agent-1', 6, addressed(6));
+    await waitFor(() => events.length === 2, 'the next event, once');
+    expect(events.map((event) => event.sequence)).toEqual([5, 6]);
+
+    await waitFor(() => reportsFor('agent-1').at(-1)?.attached === true, 'attached');
+    core.push('agent.detached', { agent_id: 'agent-1', reason: 'unassigned' });
+    await waitFor(() => reportsFor('agent-1').at(-1)?.attached === false, 'detached');
+    core.push('agent.attached', { agent_id: 'agent-1', from_seq: 6, rooms: ['room-a'] });
+    await waitFor(() => reportsFor('agent-1').at(-1)?.attached === true, 'attached again');
+
+    core.setAssignment({ revision: 2, agents: [agent(2)] });
+    core.assignment.agents[0]!.definition.model = 'opus';
+    core.push('assignment.changed', { revision: 2 });
+    await waitFor(() => runtime.launches('agent-1').length === 2, 'a restart on the new revision');
+    expect(runtime.launches('agent-1')[1]!.options.restart).toBe(true);
+    expect(runtime.launches('agent-1')[1]!.template.start.input.model).toEqual({ id: 'opus' });
+    stop.abort();
+    expect(await running).toBe('stopped');
+  }, 20_000);
+
+  it('keeps a watcher that outlived the controller, when the relay gets its port back', async () => {
+    const port = await freePort();
+    const kept: RelayCredentials = { endpoint: `http://127.0.0.1:${port}`, token: 'swlr_kept' };
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    store.saveRelayPort(port);
+    store.saveAssignment(core.assignment, '"1"', '2026-01-01T00:00:00Z');
+    store.recordApplied('agent-1', 1, '2026-01-01T00:00:00Z');
+    await runtime.launch('agent-1', runtimeTemplate(), {
+      spawn: true,
+      restart: false,
+      replaceIdentity: false,
+      clearTakenOver: false,
+    });
+    await runtime.writeCredentials('agent-1', kept);
+    runtime.calls.length = 0;
+    running = runController(deps(), stop.signal);
+    await waitFor(() => core.statusReports.length > 0, 'a status report');
+    expect(runtime.launches()).toEqual([]);
+    expect(runtime.credentials.get('agent-1')).toEqual(kept);
+    const response = await fetch(`${kept.endpoint}/agents/agent-1/ops`, {
+      headers: { Authorization: `Bearer ${kept.token}` },
+    });
+    expect(response.status).toBe(200);
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
+  it('points a running watcher at the new port, and restarts it, when its old one is taken', async () => {
+    const port = await freePort();
+    const blocker = createServer();
+    blockers.push(blocker);
+    await new Promise<void>((resolve) => blocker.listen(port, '127.0.0.1', resolve));
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    store.saveRelayPort(port);
+    store.saveAssignment(core.assignment, '"1"', '2026-01-01T00:00:00Z');
+    store.recordApplied('agent-1', 1, '2026-01-01T00:00:00Z');
+    await runtime.launch('agent-1', runtimeTemplate(), {
+      spawn: true,
+      restart: false,
+      replaceIdentity: false,
+      clearTakenOver: false,
+    });
+    await runtime.writeCredentials('agent-1', {
+      endpoint: `http://127.0.0.1:${port}`,
+      token: 'swlr_old',
+    });
+    runtime.calls.length = 0;
+    running = runController(deps(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'a restart');
+    expect(runtime.launches('agent-1')[0]!.options.restart).toBe(true);
+    expect(runtime.credentials.get('agent-1')!.endpoint).not.toBe(`http://127.0.0.1:${port}`);
+    expect(store.relayPort()).not.toBe(port);
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
+  it('exits as taken over when another instance opens the controller stream', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(deps(), stop.signal);
+    await waitFor(() => core.streamCount === 1, 'the controller stream');
+    const token = await (
+      await fetch(`${core.url}/v1/management/controllers/${core.controllerId}/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credential: core.credential }),
+      })
+    ).json();
+    await fetch(`${core.url}/v1/controllers/${core.controllerId}/connection`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token.access_token}`,
+      },
+      body: JSON.stringify({ client: 'other', client_version: '0', cursors: {} }),
+    });
+    expect(await running).toBe('taken_over');
+    expect(runtime.calls.filter((call) => call.kind === 'stop')).toEqual([]);
   });
 
   it('runs pending operations when nudged', async () => {
@@ -199,23 +400,6 @@ describe('runController', () => {
     expect(await running).toBe('stopped');
   });
 
-  it('replaces a refused agent key as soon as the watcher reports it, without a nudge', async () => {
-    core.setAssignment({ revision: 1, agents: [agent(1)] });
-    running = runController(deps(), stop.signal);
-    await waitFor(
-      () => reportsFor('agent-1').some((entry) => entry.process === 'running'),
-      'the agent running'
-    );
-    runtime.kill(
-      'agent-1',
-      'Shared SDK watcher was evicted: Switch rejected the agent credentials (HTTP 401)'
-    );
-    await waitFor(() => runtime.launches('agent-1').length === 2, 'a relaunch with a new key');
-    expect(core.credentialFetches).toEqual(['agent-1', 'agent-1']);
-    stop.abort();
-    expect(await running).toBe('stopped');
-  });
-
   it('resyncs after the stream drops and reconnects', async () => {
     core.setAssignment({ revision: 1, agents: [agent(1)] });
     running = runController(deps(), stop.signal);
@@ -231,14 +415,15 @@ describe('runController', () => {
     store.saveAssignment({ revision: 1, agents: [agent(1)] }, '"1"', '2026-01-01T00:00:00Z');
     store.recordApplied('agent-1', 1, '2026-01-01T00:00:00Z');
     await runtime.writeCredentials('agent-1', {
-      endpoint: 'https://switch.example.com',
-      apiKey: 'k',
+      endpoint: 'http://127.0.0.1:1',
+      token: 'swlr_k',
     });
     runtime.calls.length = 0;
     await core.stop();
     running = runController(deps('http://127.0.0.1:1'), stop.signal);
     await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent restored from cache');
     expect(runtime.launches('agent-1')[0]!.options.restart).toBe(false);
+    expect(runtime.credentials.get('agent-1')!.endpoint).not.toBe('http://127.0.0.1:1');
     stop.abort();
     expect(await running).toBe('stopped');
   });

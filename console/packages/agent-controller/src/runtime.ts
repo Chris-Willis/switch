@@ -66,14 +66,15 @@ export type LaunchOptions = {
  * How the controller runs agents. `SharedHostRuntime` is the real one; tests
  * substitute a fake.
  */
+/** What an agent's watcher reads to reach Switch: the controller's relay, and a token for it. */
+export type RelayCredentials = { endpoint: string; token: string };
+
 export interface AgentRuntime {
   observe(agentId: string): Promise<AgentObservation>;
   credentialsPath(agentId: string): string;
-  hasCredentials(agentId: string): Promise<boolean>;
-  writeCredentials(
-    agentId: string,
-    credentials: { endpoint: string; apiKey: string }
-  ): Promise<void>;
+  /** The credentials file as written, or null when there is none or it cannot be read. */
+  readCredentials(agentId: string): Promise<RelayCredentials | null>;
+  writeCredentials(agentId: string, credentials: RelayCredentials): Promise<void>;
   deleteCredentials(agentId: string): Promise<void>;
   /** `directory` from the definition, or a workspace under the data directory. */
   workingDirectory(name: string, directory: string | null): Promise<string>;
@@ -175,21 +176,28 @@ export class SharedHostRuntime implements AgentRuntime {
     return this.deps.layout.agentCredentials(agentId);
   }
 
-  async hasCredentials(agentId: string): Promise<boolean> {
-    return (await readOptional(this.credentialsPath(agentId))) !== null;
+  async readCredentials(agentId: string): Promise<RelayCredentials | null> {
+    const text = await readOptional(this.credentialsPath(agentId));
+    if (text === null) return null;
+    try {
+      const env = (JSON.parse(text) as { env?: Record<string, unknown> }).env ?? {};
+      const endpoint = env.SWITCH_API_ENDPOINT;
+      const token = env.SWITCH_API_TOKEN;
+      if (env.SWITCH_AGENT_ID !== agentId) return null;
+      return typeof endpoint === 'string' && typeof token === 'string' ? { endpoint, token } : null;
+    } catch {
+      return null;
+    }
   }
 
-  async writeCredentials(
-    agentId: string,
-    credentials: { endpoint: string; apiKey: string }
-  ): Promise<void> {
+  async writeCredentials(agentId: string, credentials: RelayCredentials): Promise<void> {
     await mkdir(this.deps.layout.agentDir(agentId), { recursive: true, mode: 0o700 });
     await writeAtomic(
       this.credentialsPath(agentId),
       JSON.stringify({
         env: {
           SWITCH_API_ENDPOINT: credentials.endpoint,
-          SWITCH_API_TOKEN: credentials.apiKey,
+          SWITCH_API_TOKEN: credentials.token,
           SWITCH_AGENT_ID: agentId,
         },
       })

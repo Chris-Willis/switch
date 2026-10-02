@@ -45,8 +45,6 @@ function row(overrides: Partial<AgentRow> = {}): AgentRow {
     appliedRevision: 2,
     changedAt: '2026-01-01T11:00:00Z',
     failure: null,
-    credentialsStale: false,
-    credentialsRefetchedAt: null,
     ...overrides,
   };
 }
@@ -67,11 +65,28 @@ function observed(overrides: Partial<AgentObservation>): AgentObservation {
   return { ...emptyObservation(), ...overrides };
 }
 
-function map(observation: AgentObservation, rowValue: AgentRow | null = row(), assigned = entry()) {
-  return mapAgentProcess({ assignment: assigned, row: rowValue, observation, nowMs: NOW });
+function map(
+  observation: AgentObservation,
+  rowValue: AgentRow | null = row(),
+  assigned = entry(),
+  relayAttached = true
+) {
+  return mapAgentProcess({
+    assignment: assigned,
+    row: rowValue,
+    observation,
+    relayAttached,
+    nowMs: NOW,
+  });
 }
 
 describe('mapAgentProcess', () => {
+  it('reports attached only while the agent’s events flow through the relay to its watcher', () => {
+    const live = observed({ alive: true, health: health('connected') });
+    expect(map(live, row(), entry(), false)).toMatchObject({ process: 'running', attached: false });
+    expect(map(live, row(), entry(), true)).toMatchObject({ process: 'running', attached: true });
+  });
+
   it('maps a live watcher’s health to the contract’s process states', () => {
     expect(map(observed({ alive: true, health: health('connected') }))).toEqual({
       process: 'running',
@@ -87,7 +102,7 @@ describe('mapAgentProcess', () => {
     ).toMatchObject({
       process: 'running',
       attached: false,
-      detail: 'Reconnecting to Switch: HTTP 502',
+      detail: "Reconnecting to the controller's relay: HTTP 502",
     });
     expect(map(observed({ alive: true, health: health('disabled') }))).toMatchObject({
       process: 'stopping',
@@ -287,6 +302,7 @@ describe('StatusCollector', () => {
       store,
       runtime,
       providers,
+      attached: () => true,
       dataDir: dir,
       version: '0.1.0',
       now: () => clock,

@@ -3,8 +3,8 @@ import { z } from 'zod';
 /**
  * The wire messages between this controller and Management, as v1 uses them.
  * Field names and types follow `docs/design/controller-contract-v1.md`; where
- * v1 deliberately differs (the definition's shape, the stream carrying only
- * nudges) it follows `docs/design/agent-controllers-v1.md`.
+ * v1 deliberately differs (the definition's shape, the controller stream) it
+ * follows `docs/design/agent-controllers-v1.md`.
  *
  * Received messages are parsed with `z.object`, which drops fields it does not
  * know: the contract has receivers ignore unknown fields. A value outside a
@@ -247,19 +247,117 @@ export const operationResultSchema = z.discriminatedUnion('outcome', [
 ]);
 export type OperationResult = z.infer<typeof operationResultSchema>;
 
-// v1 only: the per-agent API key a controller fetches for each bound agent.
+// §6 The controller stream (step 10, option B): one stream per controller,
+// carrying every bound agent's events beside the management nudges.
 
-export const agentCredentialsSchema = z.object({ agent_id: id, api_key: id });
-export type AgentCredentials = z.infer<typeof agentCredentialsSchema>;
+const sequence = z.number().int().nonnegative();
+const rooms = z.array(z.string().min(1));
 
-// §6 The nudge stream (v1 carries nudges only)
+/** Where to resume one agent: after this sequence, or from Core's head. */
+export const agentCursorSchema = z.union([sequence, z.literal('head')]);
+export type AgentCursor = z.infer<typeof agentCursorSchema>;
 
+export const controllerConnectionRequestSchema = z.object({
+  client: z.string().min(1),
+  client_version: z.string().min(1),
+  cursors: z.record(z.string().min(1), agentCursorSchema),
+});
+export type ControllerConnectionRequest = z.infer<typeof controllerConnectionRequestSchema>;
+
+export const controllerConnectionResponseSchema = z.object({
+  connection_id: id,
+  generation: z.number().int(),
+  heartbeat_interval_s: z.number().positive(),
+  /** The agents bound to this controller; each is attached on the stream with `agent.attached`. */
+  agents: z.array(id),
+});
+export type ControllerConnection = z.infer<typeof controllerConnectionResponseSchema>;
+
+export const controllerBeatRequestSchema = z.object({
+  connection_id: id,
+  generation: z.number().int(),
+  cursors: z.record(z.string().min(1), sequence),
+});
+export type ControllerBeatRequest = z.infer<typeof controllerBeatRequestSchema>;
+
+export const controllerBeatResponseSchema = z.object({ agents: z.array(id) });
+
+/** The stream's first frame. */
 export const connectionStateSchema = z.object({
   controller_id: id,
   assignment_revision: revision,
   report_within_s: z.number().int().positive(),
+  connection_id: id,
+  generation: z.number().int(),
+  heartbeat_interval_s: z.number().positive(),
 });
 export type ConnectionState = z.infer<typeof connectionStateSchema>;
+
+/** The stream ends; `taken_over` is terminal, anything else is recovered by opening again. */
+export const evictedSchema = z.object({ code: z.string().min(1), reason: z.string() });
+export type Evicted = z.infer<typeof evictedSchema>;
+
+/**
+ * The agent-protocol payloads (`event`, `command`, `outcome`) are relayed to
+ * the agent's own watcher as they came, so fields this build does not know
+ * are kept (`looseObject`) rather than dropped: the watcher is their
+ * receiver, not the controller.
+ */
+export const agentEventFrameSchema = z.object({
+  agent_id: id,
+  seq: sequence.positive(),
+  event: z.looseObject({
+    type: z.string().min(1),
+    room_id: id,
+    payload: z.record(z.string(), z.unknown()),
+  }),
+});
+export type AgentEventFrame = z.infer<typeof agentEventFrameSchema>;
+
+export const agentGapFrameSchema = z.looseObject({
+  agent_id: id,
+  from_sequence: sequence,
+  resumed_at: sequence.optional(),
+  rooms: rooms.optional(),
+  all_rooms: z.boolean().optional(),
+  reason: z.string(),
+});
+export type AgentGapFrame = z.infer<typeof agentGapFrameSchema>;
+
+/**
+ * A room control (`!reset`, `!compact`, `!interrupt`, a Stop press) for
+ * whichever session works in `room_id`. Core no longer knows the session
+ * (`command.sessionId` is null); the controller does, from the placements
+ * its watcher states.
+ */
+export const agentSessionCommandFrameSchema = z.object({
+  agent_id: id,
+  room_id: id.nullable(),
+  command: z.looseObject({ commandId: z.string().min(1) }),
+});
+export type AgentSessionCommandFrame = z.infer<typeof agentSessionCommandFrameSchema>;
+
+export const agentApprovalOutcomeFrameSchema = z.object({
+  agent_id: id,
+  outcome: z.looseObject({
+    session_id: id,
+    request_id: id,
+    state: z.enum(['answered', 'expired']),
+  }),
+});
+export type AgentApprovalOutcomeFrame = z.infer<typeof agentApprovalOutcomeFrameSchema>;
+
+export const agentAttachedFrameSchema = z.object({ agent_id: id, from_seq: sequence, rooms });
+export type AgentAttachedFrame = z.infer<typeof agentAttachedFrameSchema>;
+
+export const agentDetachedFrameSchema = z.object({
+  agent_id: id,
+  reason: receivedEnum(['unassigned', 'deleted']),
+});
+export type AgentDetachedFrame = z.infer<typeof agentDetachedFrameSchema>;
+
+export const agentRoomsFrameSchema = z.object({ agent_id: id, rooms });
+export type AgentRoomsFrame = z.infer<typeof agentRoomsFrameSchema>;
 
 export const assignmentChangedSchema = z.object({ revision });
 

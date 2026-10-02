@@ -4,9 +4,10 @@ import { type Assignment, assignmentSchema, type ReasonCode } from './schemas';
 
 /**
  * The controller's local state, in one SQLite file: who it is, the last
- * assignment it pulled, what it applied for each agent, and the status
- * sequence. Everything except the identity can be rebuilt from the server;
- * the credential itself is in the secret store, never here.
+ * assignment it pulled, what it applied for each agent, where each agent's
+ * events resume, the relay's port, and the status sequence. Everything except
+ * the identity can be rebuilt from the server; the credential itself is in
+ * the secret store, never here.
  */
 
 export type Identity = {
@@ -23,10 +24,6 @@ export type AgentRow = {
   changedAt: string;
   /** A failure applying a revision locally, before any process ran. */
   failure: { revision: number; reason: ReasonCode; detail: string } | null;
-  /** The agent's key was refused; the next start fetches a new one. */
-  credentialsStale: boolean;
-  /** When a refused key was last replaced automatically. */
-  credentialsRefetchedAt: string | null;
 };
 
 const MIGRATIONS: readonly string[] = [
@@ -50,6 +47,15 @@ const MIGRATIONS: readonly string[] = [
    );
    CREATE TABLE restarts (agent_id TEXT NOT NULL, at INTEGER NOT NULL);
    CREATE INDEX restarts_by_agent ON restarts (agent_id, at);`,
+  // Agents hold no Switch key, so nothing tracks fetching one; where each
+  // agent's events resume is kept instead.
+  `ALTER TABLE agents DROP COLUMN credentials_stale;
+   ALTER TABLE agents DROP COLUMN credentials_refetched_at;
+   CREATE TABLE agent_cursors (
+     agent_id TEXT PRIMARY KEY,
+     cursor INTEGER NOT NULL,
+     updated_at TEXT NOT NULL
+   );`,
 ];
 
 export const STORE_SCHEMA_VERSION = MIGRATIONS.length;
@@ -192,33 +198,41 @@ export class ControllerStore {
       .run(agentId, at, failure.revision, failure.reason, failure.detail);
   }
 
-  markCredentialsStale(agentId: string, at: string): void {
-    this.db
-      .prepare(
-        `INSERT INTO agents (agent_id, applied_revision, changed_at, credentials_stale)
-         VALUES (?, NULL, ?, 1)
-         ON CONFLICT (agent_id) DO UPDATE SET credentials_stale = 1`
-      )
-      .run(agentId, at);
-  }
-
-  recordCredentialsFetched(agentId: string, at: string, automatic: boolean): void {
-    this.db
-      .prepare(
-        `INSERT INTO agents (agent_id, applied_revision, changed_at, credentials_refetched_at)
-         VALUES (?, NULL, ?, ?)
-         ON CONFLICT (agent_id) DO UPDATE SET credentials_stale = 0,
-           credentials_refetched_at = COALESCE(excluded.credentials_refetched_at,
-             agents.credentials_refetched_at)`
-      )
-      .run(agentId, at, automatic ? at : null);
-  }
-
   deleteAgent(agentId: string): void {
     this.transaction(() => {
       this.db.prepare('DELETE FROM agents WHERE agent_id = ?').run(agentId);
       this.db.prepare('DELETE FROM restarts WHERE agent_id = ?').run(agentId);
+      this.db.prepare('DELETE FROM agent_cursors WHERE agent_id = ?').run(agentId);
     });
+  }
+
+  /**
+   * Where each agent's events resume on the controller stream: the last
+   * sequence its watcher confirmed reading.
+   */
+  cursors(): Map<string, number> {
+    const rows = this.db.prepare('SELECT agent_id, cursor FROM agent_cursors').all() as Row[];
+    return new Map(rows.map((row) => [String(row.agent_id), Number(row.cursor)]));
+  }
+
+  saveCursor(agentId: string, cursor: number, at: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO agent_cursors (agent_id, cursor, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT (agent_id) DO UPDATE SET cursor = excluded.cursor,
+           updated_at = excluded.updated_at`
+      )
+      .run(agentId, cursor, at);
+  }
+
+  /** The loopback port the relay last listened on, which running watchers were given. */
+  relayPort(): number | null {
+    const value = this.meta('relay_port');
+    return value === null ? null : Number(value);
+  }
+
+  saveRelayPort(port: number): void {
+    this.setMeta('relay_port', String(port));
   }
 
   recordRestart(agentId: string, atMs: number): void {
@@ -314,8 +328,5 @@ function toAgentRow(row: Row): AgentRow {
             reason: String(row.failure_reason) as ReasonCode,
             detail: String(row.failure_detail ?? ''),
           },
-    credentialsStale: Number(row.credentials_stale) === 1,
-    credentialsRefetchedAt:
-      row.credentials_refetched_at === null ? null : String(row.credentials_refetched_at),
   };
 }
