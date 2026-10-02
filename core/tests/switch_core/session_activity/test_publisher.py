@@ -15,10 +15,10 @@ from switch_core.db.models import (
     BridgeMessageMap,
     TurnStatusPost,
 )
-from switch_core.session_activity.bridge_publisher import (
-    SessionActivityBridgePublisher,
+from switch_core.session_activity.listener import AgentSessionActivityListener
+from switch_core.session_activity.publisher import (
+    AgentSessionActivityPublisher,
 )
-from switch_core.session_activity.listener import SessionActivityListener
 from switch_core.session_activity.service import (
     ApprovalOption,
     PlatformPerson,
@@ -64,8 +64,8 @@ async def bridged(session_factory, people) -> BridgedRoom:
 
 
 @pytest.fixture
-async def listener(postgres_url) -> AsyncIterator[SessionActivityListener]:
-    listener = SessionActivityListener(
+async def listener(postgres_url) -> AsyncIterator[AgentSessionActivityListener]:
+    listener = AgentSessionActivityListener(
         lambda: create_async_engine(postgres_url, poolclass=NullPool)
     )
     await listener.start()
@@ -89,7 +89,7 @@ def online() -> Online:
 def _publisher(session_factory, bridged, listener, platform, online):
     tenant = current_tenant_id()
     assert tenant is not None
-    return SessionActivityBridgePublisher(
+    return AgentSessionActivityPublisher(
         adapter=platform,  # type: ignore[arg-type]
         bridge_id=bridged.bridge_id,
         bridge_type="slack",
@@ -104,7 +104,7 @@ def _publisher(session_factory, bridged, listener, platform, online):
 @pytest.fixture
 async def publisher(
     session_factory, bridged, listener, platform, online
-) -> AsyncIterator[SessionActivityBridgePublisher]:
+) -> AsyncIterator[AgentSessionActivityPublisher]:
     publisher = _publisher(session_factory, bridged, listener, platform, online)
     publisher.start()
     try:

@@ -331,7 +331,7 @@ class SupportsSharedConnection(Protocol):
     def set_on_attached(self, callback: Callable[[], None]) -> None: ...
 
 
-class CollaborationAdapter(ABC):
+class PlatformAdapter(ABC):
     #: Whether this platform draws agents' session activity: each turn step by
     #: step, and the approval and question cards a session waits on.
     draws_session_activity: ClassVar[bool] = False
@@ -546,7 +546,7 @@ class CollaborationAdapter(ABC):
         invalidate whatever the last one signed or encrypted.
 
         Async because generating key material is CPU-bound and this runs on
-        the event loop that carries every live Matrix session.
+        the event loop that carries every live client in switch-core.
         """
         return connection_config
 
@@ -666,7 +666,7 @@ class CollaborationAdapter(ABC):
 
         **`content` is Switch Markdown, and this method renders it.** Unlike
         `send_message`, whose caller translates, every caller here passes an
-        unrendered body — the notices in `bridge_core`, the adapters' own
+        unrendered body — the notices in `collaboration_core`, the adapters' own
         notices, and the relayed admin events alike. An override must therefore
         run `translate_outbound` itself. Splitting that responsibility between
         callers is what once sent a body through the conversion twice, and the
@@ -699,7 +699,7 @@ class CollaborationAdapter(ABC):
 
         Switch files a person under the name it first sees, and some platforms
         do not always supply one — Teams omits it from a 1:1 chat activity. The
-        id then becomes that person's name everywhere: their Matrix account,
+        id then becomes that person's name everywhere: their client,
         the title of any room auto-created for them, and every agent reply that
         addresses them. Fixing the resolution stops it happening to the next
         person and does nothing for the ones already recorded, so an adapter

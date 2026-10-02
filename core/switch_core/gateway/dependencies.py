@@ -5,8 +5,8 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.server_connectors.lifecycle import (
     ServerSideConnectorLifecycleService,
 )
@@ -63,7 +63,7 @@ def init_dependencies(
     usage_store: UsageStore,
     budget_store: BudgetStore,
     resource_service: ResourceService,
-    protocol: ProtocolService,
+    protocol: AgentCore,
     install_service: MessagingInstallService | None,
     invite_mailer: InviteMailer | None,
     config: SwitchConfig,
@@ -154,7 +154,7 @@ def get_session_factory() -> Any:
 
 
 def get_room_yaml_service() -> RoomYamlService:
-    protocol: ProtocolService = _state["protocol"]
+    protocol: AgentCore = _state["protocol"]
     return protocol.room_yaml_service()
 
 
@@ -234,7 +234,7 @@ def get_config() -> SwitchConfig:
     return _state["config"]  # type: ignore[no-any-return]
 
 
-def get_protocol() -> ProtocolService:
+def get_protocol() -> AgentCore:
     return _state["protocol"]  # type: ignore[no-any-return]
 
 

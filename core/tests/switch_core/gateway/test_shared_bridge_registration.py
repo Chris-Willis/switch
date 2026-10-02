@@ -56,7 +56,7 @@ def _admin() -> User:
 
 async def _shared_bridge(session: AsyncSession) -> str:
     client = Client(
-        matrix_user_id=f"@bridge-{uuid.uuid4().hex[:12]}:test",
+        transport_user_id=f"@bridge-{uuid.uuid4().hex[:12]}:test",
         display_name="bridge client",
         type="bridge",
     )

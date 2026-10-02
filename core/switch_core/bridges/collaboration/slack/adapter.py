@@ -22,7 +22,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
-    CollaborationAdapter,
+    PlatformAdapter,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -326,7 +326,7 @@ class _ActivityStream:
     blocks: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
-class SlackAdapter(CollaborationAdapter):
+class SlackAdapter(PlatformAdapter):
     draws_session_activity: ClassVar[bool] = True
     separate_attention_slot: ClassVar[bool] = True
     channel_mention: ClassVar[str | None] = "<!channel>"
@@ -569,7 +569,7 @@ class SlackAdapter(CollaborationAdapter):
     ) -> str | None:
         """Post a Block Kit message, for what plain text cannot carry.
 
-        Slack-only and deliberately not on `CollaborationAdapter`: blocks are
+        Slack-only and deliberately not on `PlatformAdapter`: blocks are
         Slack's own shape, and the platforms that need something like them need
         something different. `text` is what a notification and a client that
         will not render the blocks are left with, so it has to stand alone.
@@ -1634,7 +1634,7 @@ class SlackAdapter(CollaborationAdapter):
         their name in the comment. The upload's shared-message ts is pulled
         from the response when Slack provides it (v2 completes the share
         asynchronously, so it may be absent — then no ref is returned and
-        replies to the file won't thread back to Matrix).
+        replies to the file won't thread back to the room).
         """
         if not self._web_client:
             logger.error("Cannot send attachment: Slack client not connected")
@@ -2823,7 +2823,7 @@ class SlackAdapter(CollaborationAdapter):
         self._last_user_message_ts[channel_id] = message_ts
 
         # App/bot posts (e.g. Datadog) carry no `user`; their identity lives in
-        # bot_id + bot_profile/username. Key the puppet on the stable bot_id and
+        # bot_id + bot_profile/username. Key the human actor on the stable bot_id and
         # name it from the app's profile.
         bot_id = str(event.get("bot_id", ""))
         if not user_id and bot_id:

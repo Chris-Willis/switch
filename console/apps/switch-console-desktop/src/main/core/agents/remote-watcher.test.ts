@@ -19,8 +19,8 @@ vi.mock('./getAgents', () => ({
   getAgents: async () => [{ id: 'existing', switchAgentId: 'registered' }],
 }));
 vi.mock('./getAgentById', () => ({ getAgentById: vi.fn() }));
-vi.mock('@main/core/sdk-host/shared-watcher', () => ({
-  configureSharedWatcher: vi.fn(),
+vi.mock('@main/core/sdk-host/agent-host', () => ({
+  configureAgentHost: vi.fn(),
   applyControllerState: mocks.applyControllerState,
 }));
 vi.mock('@main/core/switch-rooms/auto-session-store', () => ({ listAutoSessionAgentIds: vi.fn() }));

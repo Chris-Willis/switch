@@ -5,7 +5,8 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.clients.client_base import ClientBase, ClientConfig
+from switch_core.clients.actor import Actor, ClientConfig
+from switch_core.clients.consumer import Consumer
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Client
 from switch_core.db.stores.client_store import ClientStore
@@ -48,24 +49,39 @@ class ClientFactory:
         self._invites = invites
         self._ephemeral = ephemeral
         self._registry: dict[
-            str, tuple[type[ClientBase[ClientConfig]], dict[str, object]]
+            str,
+            tuple[
+                type[Actor[ClientConfig]],
+                type[Consumer[Any]] | None,
+                dict[str, object],
+            ],
         ] = {}
 
     def register(
         self,
         client_type: str,
-        cls: type[ClientBase[ClientConfig]],
-        **extra_kwargs: object,
+        actor_cls: type[Actor[ClientConfig]],
+        consumer_cls: type[Consumer[Any]] | None = None,
+        **consumer_kwargs: object,
     ) -> None:
-        self._registry[client_type] = (cls, extra_kwargs)
+        """What a `clients` row of `client_type` becomes when it runs.
 
-    def create(self, record: Client) -> ClientBase[ClientConfig]:
+        Every row is an actor. A type that reads rooms also names a consumer,
+        built around that actor with `consumer_kwargs`; a type that only
+        writes (a person on another platform, a bridge's own identity) names
+        none, and runs no read loop.
+        """
+        self._registry[client_type] = (actor_cls, consumer_cls, consumer_kwargs)
+
+    def create(
+        self, record: Client
+    ) -> tuple[Actor[ClientConfig], Consumer[Any] | None]:
         entry = self._registry.get(record.type)
         if entry is None:
             raise ValueError(f"Unknown client type: {record.type!r}")
-        cls, extra_kwargs = entry
-        config = cls.config_class.model_validate(record.config or {})
-        return cls(
+        actor_cls, consumer_cls, consumer_kwargs = entry
+        config = actor_cls.config_class.model_validate(record.config or {})
+        actor = actor_cls(
             client_id=record.id,
             # Straight off the row this client *is*. `create_client` writes
             # that row inside a session with the tenant bound and the factory
@@ -73,16 +89,18 @@ class ClientFactory:
             # flushed carries its tenant here as surely as one read back at
             # boot does.
             tenant_id=record.tenant_id,
-            matrix_user_id=record.matrix_user_id,
+            transport_user_id=record.transport_user_id,
             display_name=record.display_name,
             session_factory=self._session_factory,
             client_store=self._client_store,
             config=config,
             transport_factory=self.transport_for,
-            **extra_kwargs,
         )
+        if consumer_cls is None:
+            return actor, None
+        return actor, consumer_cls(actor=actor, **consumer_kwargs)
 
-    def transport_for(self, client: ClientBase[Any]) -> MessageTransport:
+    def transport_for(self, client: Actor[Any]) -> MessageTransport:
         """The transport every client in the process runs on.
 
         Public because not every client is built by `create`: a collaboration
@@ -91,10 +109,11 @@ class ClientFactory:
         so that every client in the process is built the same way.
         """
         return PostgresTransport(
-            user_id=client.matrix_user_id,
+            user_id=client.transport_user_id,
             client_id=client.client_id,
             tenant_id=client.tenant_id,
             display_name=client.display_name,
+            actor_role=client.role,
             session_factory=self._session_factory,
             room_store=self._room_store,
             message_store=self._message_store,

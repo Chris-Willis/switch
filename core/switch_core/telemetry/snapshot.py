@@ -59,7 +59,7 @@ from switch_core.db.tenant_lookup import all_tenant_ids
 
 logger = logging.getLogger(__name__)
 
-# `clients.type` for a human: one puppet per external user per bridge, and the
+# `clients.type` for a human: one human actor per external user per bridge, and the
 # only row in the schema that stands for "a person did something".
 HUMAN_CLIENT_TYPE = "user"
 AGENT_CLIENT_TYPE = "agent"

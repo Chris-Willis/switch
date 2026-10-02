@@ -18,12 +18,12 @@ from starlette.responses import StreamingResponse
 from switch_core.bridges.agent.api import session_reporter
 from switch_core.bridges.agent.api.handlers import _resolve_start_cursor, poll_events
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_LAPSED,
     PROTOCOL_ACCEPTS,
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.telemetry.service import TelemetryService
@@ -35,7 +35,7 @@ AGENT_ID = "agent-1"
 class _Protocol:
     def __init__(self) -> None:
         self.event_buffer = EventBuffer()
-        self.connections = ConnectionRegistry()
+        self.connections = AgentConnectionRegistry()
         # No approval outcomes: these tests are about opening the stream.
         self.approval_outcomes = None
         # Opening and closing a stream reports a session; a reporter with no
@@ -113,6 +113,7 @@ async def test_with_the_sse_accept_header_it_opens_a_connection() -> None:
     assert resp.media_type == "text/event-stream"
     # Buffering proxies would defeat the point of a push channel.
     assert resp.headers["x-accel-buffering"] == "no"
+    assert resp.headers["connection"] == "keep-alive"
     assert not protocol.polled
 
     conn = protocol.connections.get("c1")

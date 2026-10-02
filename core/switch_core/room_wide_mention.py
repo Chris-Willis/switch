@@ -32,7 +32,7 @@ ROOM_WIDE_TARGET = "everyone"
 RESERVED_MENTION_NAMES = frozenset({ROOM_WIDE_TARGET, "channel", "here", "all"})
 
 # Stamped on the content of a message the server sent as a room-wide mention.
-# Only `ProtocolService.send_targeted_message` writes it; a bridge reads it to
+# Only `AgentCore.send_targeted_message` writes it; a bridge reads it to
 # decide whether to render the platform's channel-wide mention.
 ROOM_WIDE_MENTION_MARKER = "com.switch.room_wide_mention"
 

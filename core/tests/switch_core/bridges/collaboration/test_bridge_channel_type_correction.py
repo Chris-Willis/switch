@@ -10,8 +10,8 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.tenant_context import current_tenant_id, tenant_scope
 
 
@@ -107,7 +107,7 @@ async def test_a_learned_type_corrects_this_bridges_rooms(
     bridge = _bridge(store, _Adapter())
 
     with caplog.at_level(logging.WARNING):
-        await BridgeCore._record_channel_type(
+        await CollaborationCore._record_channel_type(
             bridge,  # type: ignore[arg-type]
             "19:p@thread.tacv2",
             channel_type,  # type: ignore[arg-type]
@@ -152,7 +152,7 @@ async def test_startup_rereads_every_live_channel_room(
     adapter = _Adapter()
     store = _RoomStore(rooms, [])
 
-    await BridgeCore._refresh_channel_types(_bridge(store, adapter))  # type: ignore[arg-type]
+    await CollaborationCore._refresh_channel_types(_bridge(store, adapter))  # type: ignore[arg-type]
 
     assert adapter.refreshed == refreshed
     assert store.tenants == ["tenant-1"]
@@ -160,7 +160,7 @@ async def test_startup_rereads_every_live_channel_room(
 
 async def test_adapters_have_nothing_to_refresh_by_default() -> None:
     adapter: Any = SimpleNamespace()
-    await CollaborationAdapter.refresh_channel_types(adapter, ["C1"])
+    await PlatformAdapter.refresh_channel_types(adapter, ["C1"])
 
 
 # ── Wiring in start() and stop() ─────────────────────────────────────────────
@@ -187,8 +187,8 @@ class _StartableAdapter:
         return None
 
 
-def _startable_core(refresh: Any) -> tuple[BridgeCore, _StartableAdapter]:
-    core = object.__new__(BridgeCore)
+def _startable_core(refresh: Any) -> tuple[CollaborationCore, _StartableAdapter]:
+    core = object.__new__(CollaborationCore)
     adapter = _StartableAdapter()
 
     async def _noop() -> None:
@@ -200,7 +200,7 @@ def _startable_core(refresh: Any) -> tuple[BridgeCore, _StartableAdapter]:
         "_identity_task": None,
         "_channel_type_refresh_task": None,
         "_load_channel_map": _noop,
-        "_load_existing_puppets": _noop,
+        "_load_existing_human_actors": _noop,
         "_ensure_channel_captures": _noop,
         "_create_agent_identities": _noop,
         "_refresh_channel_types": refresh,

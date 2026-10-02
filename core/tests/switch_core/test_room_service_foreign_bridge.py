@@ -33,7 +33,7 @@ from tests.conftest import RLSHarness
 pytestmark = pytest.mark.no_ambient_tenant
 
 
-class _FakeMatrix:
+class _FakeProvisioning:
     def __init__(self) -> None:
         self._n = 0
 
@@ -77,11 +77,11 @@ class _RecordingAdapter:
         self._calls.append("ensure_channel_subscriptions")
 
 
-class _RecordingBridgeCore:
+class _RecordingCollaborationCore:
     def __init__(self, tenant_id: str) -> None:
         self.calls: list[str] = []
         self.tenant_id = tenant_id
-        self._bridge_client_matrix_user_id = "@bot:switch.local"
+        self._workspace_consumer_transport_user_id = "@bot:switch.local"
         self.adapter = _RecordingAdapter(self.calls)
 
     async def resolve_external_user_id_map(self, names: list[str]) -> dict[str, str]:
@@ -102,7 +102,7 @@ class _RecordingBridgeCore:
 
 
 class _FakeLifecycle:
-    def __init__(self, bridges: dict[str, _RecordingBridgeCore]) -> None:
+    def __init__(self, bridges: dict[str, _RecordingCollaborationCore]) -> None:
         self._bridges = bridges
 
     def get(self, bridge_id: str) -> Any:
@@ -133,7 +133,7 @@ async def _make_bridge(
 ) -> str:
     async with tenant_session(session_factory, tenant_id) as session:
         client = Client(
-            matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:switch.local",
+            transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:switch.local",
             display_name="bridge client",
             type="bridge",
         )
@@ -154,7 +154,7 @@ async def _make_bridge(
 
 def _service(
     session_factory: async_sessionmaker[AsyncSession],
-    bridges: dict[str, _RecordingBridgeCore],
+    bridges: dict[str, _RecordingCollaborationCore],
 ) -> RoomService:
     svc = object.__new__(RoomService)
     svc._session_factory = session_factory  # type: ignore[assignment]
@@ -163,20 +163,20 @@ def _service(
     svc._client_lifecycle = _NoRunningClients()  # type: ignore[assignment]
     svc._collab_lifecycle = _FakeLifecycle(bridges)  # type: ignore[assignment]
     svc._collab_bridge_store = CollaborationBridgeStore()  # type: ignore[assignment]
-    svc._matrix_admin = _FakeMatrix()  # type: ignore[assignment]
+    svc._provisioning = _FakeProvisioning()  # type: ignore[assignment]
     return svc
 
 
 @pytest.fixture
 async def setup(
     rls_harness: RLSHarness,
-) -> tuple[RoomService, str, str, _RecordingBridgeCore]:
+) -> tuple[RoomService, str, str, _RecordingCollaborationCore]:
     """Tenant A owns a running bridge; returns a service, tenant B, A's bridge
     id, and A's bridge so a test can check nothing ran on it."""
     tenant_a = await _make_tenant(rls_harness.owner)
     tenant_b = await _make_tenant(rls_harness.owner)
     bridge_a = await _make_bridge(rls_harness.owner, tenant_id=tenant_a)
-    core_a = _RecordingBridgeCore(tenant_a)
+    core_a = _RecordingCollaborationCore(tenant_a)
     svc = _service(rls_harness.restricted, {bridge_a: core_a})
     return svc, tenant_b, bridge_a, core_a
 

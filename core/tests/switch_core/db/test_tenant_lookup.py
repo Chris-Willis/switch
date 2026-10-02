@@ -202,13 +202,13 @@ async def _two_populated_tenants(harness: RLSHarness) -> _Fixture:
         for tenant_id, tag in ((fixture.tenant_a, "a"), (fixture.tenant_b, "b")):
             client = Client(
                 tenant_id=tenant_id,
-                matrix_user_id=f"@client-{tag}-{suffix}:test",
+                transport_user_id=f"@client-{tag}-{suffix}:test",
                 display_name=f"client {tag}",
                 type="agent",
             )
             room = Room(
                 tenant_id=tenant_id,
-                matrix_room_id=f"!room-{tag}-{suffix}:test",
+                transport_room_id=f"!room-{tag}-{suffix}:test",
                 name=f"room {tag}",
                 description="",
             )

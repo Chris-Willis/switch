@@ -128,7 +128,7 @@ export async function applyControllerState(
   autoApprove: AutoApproveSource
 ): Promise<void> {
   const connected = !(await listStoppedControllerAgentIds()).includes(agentId);
-  await configureSharedWatcherFor(agentId, { connected, spawning: connected }, intent, {
+  await configureAgentHostFor(agentId, { connected, spawning: connected }, intent, {
     name: undefined,
     autoApprove,
   });
@@ -159,17 +159,17 @@ export async function discardControllerState(agentId: string): Promise<void> {
  * auto-approve comes from. */
 export type WatcherTarget = { name: string | undefined; autoApprove: AutoApproveSource };
 
-/** {@link configureSharedWatcherFor}, taking auto-approve from the host. */
-export function configureSharedWatcher(
+/** {@link configureAgentHostFor}, taking auto-approve from the host. */
+export function configureAgentHost(
   agentId: string,
   state: ControllerState,
   intent: WatcherIntent,
   name?: string
 ): Promise<void> {
-  return configureSharedWatcherFor(agentId, state, intent, { name, autoApprove: 'host' });
+  return configureAgentHostFor(agentId, state, intent, { name, autoApprove: 'host' });
 }
 
-export async function configureSharedWatcherFor(
+export async function configureAgentHostFor(
   agentId: string,
   state: ControllerState,
   intent: WatcherIntent,
@@ -253,7 +253,7 @@ export async function configureSharedWatcherFor(
       stopped: brought.legacyStopped,
     });
   if (brought.runtimeMode !== null) {
-    log.info('shared-watcher: taking auto-approve from the host, where another Console set it', {
+    log.info('agent-host: taking auto-approve from the host, where another Console set it', {
       agentId,
       runtimeMode: brought.runtimeMode,
     });

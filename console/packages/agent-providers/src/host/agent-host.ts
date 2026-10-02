@@ -254,11 +254,11 @@ export async function stopSupersededSessions(
  * assignment and the routing that follows it are on disk before the stream is
  * allowed past the event.
  */
-export class SharedWatchAssignments {
+export class AgentHostAssignments {
   private constructor(private readonly journal: Journal<WatchRecord>) {}
 
-  static async open(root: string): Promise<SharedWatchAssignments> {
-    return new SharedWatchAssignments(
+  static async open(root: string): Promise<AgentHostAssignments> {
+    return new AgentHostAssignments(
       await Journal.load(join(root, 'assignments.jsonl'), (value) => recordSchema.parse(value))
     );
   }
@@ -452,7 +452,7 @@ export class SharedWatchAssignments {
   }
 }
 
-export async function runSharedWatcher(
+export async function runAgentHost(
   root: string,
   template: SharedHostConfig,
   signal: AbortSignal,
@@ -517,7 +517,7 @@ export async function runSharedWatcher(
       return;
     }
     const credentials = await readSharedCredentials(template);
-    const assignments = await SharedWatchAssignments.open(root);
+    const assignments = await AgentHostAssignments.open(root);
     const links = supervision.links;
     if (!links)
       throw new Error(

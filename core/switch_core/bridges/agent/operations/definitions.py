@@ -32,12 +32,12 @@ from switch_core.bridges.agent.operations.context import (
     sole_connected_room,
 )
 from switch_core.bridges.agent.operations.registry import operation
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     ConnectionError_,
     evicted_session_warning,
 )
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
-from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
 from switch_core.db.models import CollaborationBridge, User
 from switch_core.db.stores.template_store import TemplateStore
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 
 def claim_room_on_caller_connection(
-    protocol: ProtocolService, agent_id: str, connection_id: str, room_id: str
+    protocol: AgentCore, agent_id: str, connection_id: str, room_id: str
 ) -> str | None:
     """Bind the room to the connection that asked to connect.
 
@@ -111,7 +111,7 @@ def claim_room_on_caller_connection(
 
 
 def rooms_on_caller_connection(
-    protocol: ProtocolService, agent_id: str, connection_id: str
+    protocol: AgentCore, agent_id: str, connection_id: str
 ) -> set[str]:
     """The rooms claimed by the connection underneath this caller.
 
@@ -126,7 +126,7 @@ def rooms_on_caller_connection(
 
 
 def release_room_on_caller_connection(
-    protocol: ProtocolService, agent_id: str, connection_id: str, room_id: str
+    protocol: AgentCore, agent_id: str, connection_id: str, room_id: str
 ) -> None:
     """Drop a room the caller has left from the connection underneath it.
 
@@ -143,7 +143,7 @@ def release_room_on_caller_connection(
 
 
 async def bind_room_for_connectionless_caller(
-    protocol: ProtocolService,
+    protocol: AgentCore,
     *,
     agent_id: str,
     connection_id: str,
@@ -225,8 +225,8 @@ async def connect_to_room(
 
     Args:
         room_id: The Switch room id (UUID string) to connect to. Get valid
-            ids from list_rooms. This is the Switch room id, not the Matrix
-            room id. Calling again switches the active room for this session.
+            ids from list_rooms. This is the Switch room id, not the
+            transport room id. Calling again switches the active room for this session.
         include_general_instructions: When true (default) the `instructions`
             field carries the full room-onboarding text (interaction modes,
             task protocol, agent statuses, room setup) followed by any
@@ -395,7 +395,7 @@ def _eviction_warning(
 
 
 async def _decorate_linked_rooms(
-    protocol: ProtocolService,
+    protocol: AgentCore,
     agent_id: str,
     linked_rooms: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -644,8 +644,9 @@ async def read_context(
 
     Args:
         limit: Maximum number of timeline entries to return (default 50),
-            grouped into threads. History is paged from the homeserver until
-            this many are collected or the room's start is reached.
+            grouped into threads. History is read from the room's stored
+            messages until this many are collected or the room's start is
+            reached.
         since: ISO-8601 timestamp string (e.g. "2026-05-20T20:55:00Z"). Only
             entries at or after this time are returned. Use this when an event
             arrives to fetch just the recent context — pass a timestamp a few
@@ -740,7 +741,7 @@ async def post_message(body: str, thread_id: str | None = None) -> dict[str, str
             thread_id.
 
     Returns:
-        {"event_id": "<matrix event id>"} for the posted message.
+        {"event_id": "<event id>"} for the posted message.
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()
@@ -788,7 +789,7 @@ async def send_targeted_message(
     At least one of target_names / target_roles is required.
 
     Returns:
-        {"event_id": "<matrix event id>", "target_statuses": {name: status}}.
+        {"event_id": "<event id>", "target_statuses": {name: status}}.
         `target_statuses` reports each addressed *agent*'s reachability at send
         time — for a role target, that is each of its live holders: `live`
         (will receive immediately), `awaiting_manual_poll` (must read context
@@ -1170,9 +1171,9 @@ async def create_room(
     return {
         "id": result.room.id,
         "name": result.room.name,
-        "transport_room_id": result.room.matrix_room_id,
+        "transport_room_id": result.room.transport_room_id,
         # Deprecated alias, carried for the connector compatibility window.
-        "matrix_room_id": result.room.matrix_room_id,
+        "matrix_room_id": result.room.transport_room_id,
         "failed_attachments": result.failed_attachments,
     }
 
@@ -2270,7 +2271,7 @@ async def archive_room(room_id: str) -> dict[str, Any]:
     """Archive a room you are a member of, hiding it from the default active
     room lists once its work is complete.
 
-    Archiving is metadata-only and fully reversible: the Matrix room, its
+    Archiving is metadata-only and fully reversible: the room, its
     members, and any bridge channel are left intact, and the room can still
     be connected to and read. It simply stops appearing in `list_rooms` /
     `list_all_rooms` (and the management UI) unless archived rooms are

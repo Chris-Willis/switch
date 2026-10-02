@@ -7,7 +7,7 @@ import {
   clearTakenOver,
   ensureSharedProcess,
   type HostStartSource,
-  runSharedWatcher,
+  runAgentHost,
   sharedConfigSchema,
   type SharedHostConfig,
   sharedSessionRoot,
@@ -298,7 +298,7 @@ export async function startLocalWatcher(
           watchers,
           prepared,
           (signal) =>
-            runSharedWatcher(
+            runAgentHost(
               prepared,
               written,
               signal,

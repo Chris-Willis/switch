@@ -1,6 +1,6 @@
 """Puts session activity and requests on one bridge's platform.
 
-Pushed, not scanned: `SessionActivityListener` hands every change for the
+Pushed, not scanned: `AgentSessionActivityListener` hands every change for the
 bridge's tenant to `_on_change`, which only queues a key. A task of this
 bridge's own drains the queue and does the platform work, so a slow or rate
 limited platform never holds up the listener's other subscribers.
@@ -50,7 +50,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     ActivitySnapshot,
-    CollaborationAdapter,
+    PlatformAdapter,
     RemovalFailed,
     RichContentFailed,
     RichContentThrottled,
@@ -60,12 +60,12 @@ from switch_core.bridges.collaboration.adapter import (
 )
 from switch_core.db.models import (
     Agent,
+    AgentSessionActivityItem,
     ApprovalRequest,
     ApprovalRequestPost,
     BridgeMessageMap,
     Message,
     Room,
-    SessionActivityItem,
     TurnStatusPost,
 )
 from switch_core.db.session_scope import tenant_session
@@ -76,8 +76,8 @@ from switch_core.db.stores.session_activity_post_store import (
 )
 from switch_core.db.stores.session_activity_store import (
     TURN_ITEM_ID,
+    AgentSessionActivityStore,
     ApprovalRequestStore,
-    SessionActivityStore,
 )
 from switch_core.deeplinks import deeplink_for_platform
 from switch_core.session_activity.bridge_turns import (
@@ -90,7 +90,7 @@ from switch_core.session_activity.cards import (
     approval_card,
     approval_request,
 )
-from switch_core.session_activity.listener import Change, SessionActivityListener
+from switch_core.session_activity.listener import AgentSessionActivityListener, Change
 from switch_core.sessions.contract import DecidedBy, decided
 from switch_core.sessions.presentation import (
     activity_error_summary,
@@ -192,15 +192,15 @@ _Key = tuple[str, ...]
 _RESYNC: _Key = ("resync",)
 
 
-class SessionActivityBridgePublisher:
+class AgentSessionActivityPublisher:
     def __init__(
         self,
         *,
-        adapter: CollaborationAdapter,
+        adapter: PlatformAdapter,
         bridge_id: str,
         bridge_type: str,
         tenant_id: str,
-        listener: SessionActivityListener,
+        listener: AgentSessionActivityListener,
         session_factory: async_sessionmaker[AsyncSession],
         agent_online: Callable[[str], bool],
         gateway_public_url: str | None,
@@ -215,7 +215,7 @@ class SessionActivityBridgePublisher:
         self._gateway_public_url = gateway_public_url
         self._approvals = ApprovalRequestStore()
         self._rooms = RoomStore()
-        self._activity = SessionActivityStore()
+        self._activity = AgentSessionActivityStore()
         self._card_posts = ApprovalRequestPostStore()
         self._turn_posts = TurnStatusPostStore()
         self._queue: asyncio.Queue[_Key] = asyncio.Queue()
@@ -236,7 +236,7 @@ class SessionActivityBridgePublisher:
 
     def start(self) -> None:
         if self._tasks:
-            raise RuntimeError("SessionActivityBridgePublisher is already started")
+            raise RuntimeError("AgentSessionActivityPublisher is already started")
         self._unsubscribe = self._listener.subscribe(
             self._tenant_id, self._on_change, self._on_resync
         )
@@ -369,37 +369,39 @@ class SessionActivityBridgePublisher:
                 )
             ).all()
             unended = and_(
-                SessionActivityItem.item_id == TURN_ITEM_ID,
-                SessionActivityItem.status.in_(("queued", "running")),
+                AgentSessionActivityItem.item_id == TURN_ITEM_ID,
+                AgentSessionActivityItem.status.in_(("queued", "running")),
             )
             turns = (
                 await db.execute(
                     select(
-                        SessionActivityItem.agent_id,
-                        SessionActivityItem.session_id,
-                        SessionActivityItem.turn_id,
-                        func.max(SessionActivityItem.updated_at),
+                        AgentSessionActivityItem.agent_id,
+                        AgentSessionActivityItem.session_id,
+                        AgentSessionActivityItem.turn_id,
+                        func.max(AgentSessionActivityItem.updated_at),
                         func.bool_or(unended),
                         TurnStatusPost.updated_at,
                     )
-                    .join(Room, Room.id == SessionActivityItem.room_id)
+                    .join(Room, Room.id == AgentSessionActivityItem.room_id)
                     .outerjoin(
                         TurnStatusPost,
                         and_(
                             TurnStatusPost.bridge_id == self._bridge_id,
-                            TurnStatusPost.agent_id == SessionActivityItem.agent_id,
-                            TurnStatusPost.session_id == SessionActivityItem.session_id,
-                            TurnStatusPost.turn_id == SessionActivityItem.turn_id,
+                            TurnStatusPost.agent_id
+                            == AgentSessionActivityItem.agent_id,
+                            TurnStatusPost.session_id
+                            == AgentSessionActivityItem.session_id,
+                            TurnStatusPost.turn_id == AgentSessionActivityItem.turn_id,
                         ),
                     )
                     .where(
                         Room.bridge_id == self._bridge_id,
-                        or_(SessionActivityItem.updated_at >= since, unended),
+                        or_(AgentSessionActivityItem.updated_at >= since, unended),
                     )
                     .group_by(
-                        SessionActivityItem.agent_id,
-                        SessionActivityItem.session_id,
-                        SessionActivityItem.turn_id,
+                        AgentSessionActivityItem.agent_id,
+                        AgentSessionActivityItem.session_id,
+                        AgentSessionActivityItem.turn_id,
                         TurnStatusPost.updated_at,
                     )
                 )
@@ -508,7 +510,7 @@ class SessionActivityBridgePublisher:
         db: AsyncSession,
         room_id: str,
         agent: Agent,
-        turn_row: SessionActivityItem | None,
+        turn_row: AgentSessionActivityItem | None,
         thread_ref: str | None,
     ) -> str | None:
         """Who a post asking someone to act names: whoever asked, else the owner."""
@@ -531,9 +533,9 @@ class SessionActivityBridgePublisher:
 
     async def _turn_row(
         self, db: AsyncSession, agent_id: str, session_id: str, turn_id: str
-    ) -> SessionActivityItem | None:
+    ) -> AgentSessionActivityItem | None:
         return await db.get(
-            SessionActivityItem,
+            AgentSessionActivityItem,
             (self._tenant_id, agent_id, session_id, turn_id, TURN_ITEM_ID),
         )
 
@@ -1485,7 +1487,7 @@ class SessionActivityBridgePublisher:
         return view, await self._running_turn(db, post.agent_id, post.session_id)
 
 
-def _asked_at_root(turn_row: SessionActivityItem | None) -> bool:
+def _asked_at_root(turn_row: AgentSessionActivityItem | None) -> bool:
     """Whether the turn a request belongs to was asked at the channel root.
 
     Only then may its card go to the root when its thread cannot be found. A

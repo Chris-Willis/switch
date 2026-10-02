@@ -16,7 +16,7 @@ CHAT = "19:g@thread.v2"
 
 async def _make_bridge(session: AsyncSession) -> str:
     client = Client(
-        matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+        transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
         display_name="teams client",
         type="bridge",
     )
@@ -43,7 +43,7 @@ async def _make_room(
     room = await RoomStore().create(
         session,
         Room(
-            matrix_room_id=f"!{uuid.uuid4().hex[:8]}:test",
+            transport_room_id=f"!{uuid.uuid4().hex[:8]}:test",
             name="room",
             description="room desc",
             bridge_id=bridge_id,

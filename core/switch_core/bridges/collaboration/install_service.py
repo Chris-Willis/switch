@@ -57,7 +57,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.install import (
     InboundWebhook,
     MessagingAppInstaller,
@@ -132,7 +132,7 @@ class WebhookTarget:
     tenant_id: str
     platform: str
     bridge_id: str
-    adapter: CollaborationAdapter
+    adapter: PlatformAdapter
 
 
 class InstallPlatformMismatch(RuntimeError):
@@ -464,7 +464,7 @@ class MessagingInstallService:
     #
     # The split is what lets the route acknowledge in time. Slack gives three
     # seconds and retries what it does not get an answer to, so a handler that
-    # posts to Matrix before replying turns one slow room into duplicate
+    # posts to the room before replying turns one slow room into duplicate
     # messages. Everything up to and including `resolve` is fast enough to
     # answer inside, and `deliver` runs after the response has gone.
 

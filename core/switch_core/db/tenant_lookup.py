@@ -91,7 +91,7 @@ was one more, `tenant_of_client`, and it was the one called most: every
 client's transport asked it, once per transport, and so did every agent
 client's `start`. Both were built from a `clients` row that names the tenant
 in a column, so the question was asked of the database with the answer already
-in hand. `ClientBase` and `PostgresTransport` now take a `tenant_id` the way
+in hand. `Actor` and `PostgresTransport` now take a `tenant_id` the way
 they take a `client_id`, and revision `b1d7c4f0a92e` drops the function. The
 test that keeps the list honest is the one that would have let this stand: a
 function nobody needs is still a function every role could call, so the shorter

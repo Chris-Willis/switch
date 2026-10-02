@@ -20,10 +20,10 @@ import pytest
 
 from switch_core.bridges.agent.api.handlers import connection_subscribe
 from switch_core.bridges.agent.api.schemas import ConnectionSubscribeRequest
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer, Reader
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
@@ -36,7 +36,7 @@ ROOM_B = "!room-b"
 
 class _Protocol:
     def __init__(self) -> None:
-        self.connections = ConnectionRegistry()
+        self.connections = AgentConnectionRegistry()
         self.event_buffer = EventBuffer()
 
     async def require_room_member(self, agent_id: str, room_id: str) -> None:

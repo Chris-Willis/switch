@@ -27,7 +27,7 @@ OTHER_TENANT = "11111111-1111-1111-1111-111111111111"
 
 
 async def _client(session: AsyncSession, name: str) -> str:
-    client = Client(matrix_user_id=f"@{name}:test", display_name=name, type="agent")
+    client = Client(transport_user_id=f"@{name}:test", display_name=name, type="agent")
     session.add(client)
     await session.flush()
     return client.id

@@ -11,8 +11,8 @@ vi.mock('@main/core/agents/agent-location', () => ({ getRemoteAgentLocation: moc
 vi.mock('@main/core/switch-rooms/auto-session-store', () => ({
   setControllerStopped: mocks.setStopped,
 }));
-vi.mock('./shared-watcher', () => ({
-  configureSharedWatcher: mocks.configure,
+vi.mock('./agent-host', () => ({
+  configureAgentHost: mocks.configure,
   applyControllerState: mocks.apply,
 }));
 const { manageAgentSidecar } = await import('./sidecar-management');

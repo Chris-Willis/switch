@@ -2,7 +2,7 @@
 
 This is the promise the feature exists to keep, so it is tested end to end
 against a real database rather than stubbed stores: the message is produced by
-`ProtocolService.send_targeted_message`, carried in the content the transport
+`AgentCore.send_targeted_message`, carried in the content the transport
 would store, and judged by `AddressingResolver.addresses` — the one decision
 the agent client turns into `MessagePayload.addressed`, which is what the event
 buffer's `is_notifiable` delivers on. Every way an agent can be addressed is
@@ -22,8 +22,8 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.types import (
     AgentStatus,
     RoomWideMentionStatus,
@@ -56,7 +56,7 @@ async def _make_agent(session: AsyncSession, name: str) -> Agent:
         label=name,
         type="agent",
     )
-    client = Client(matrix_user_id=f"@{name}:test", display_name=name, type="agent")
+    client = Client(transport_user_id=f"@{name}:test", display_name=name, type="agent")
     session.add_all([api_key, client])
     await session.flush()
     agent = Agent(
@@ -95,7 +95,7 @@ class _Room:
 async def room(session_factory: async_sessionmaker[AsyncSession]) -> _Room:
     room_store, role_store = RoomStore(), RoomRoleStore()
     async with session_factory() as session:
-        row = Room(matrix_room_id="!wide:test", name="wide", description="wide")
+        row = Room(transport_room_id="!wide:test", name="wide", description="wide")
         session.add(row)
         await session.flush()
         agents = [
@@ -119,7 +119,7 @@ class _Sent:
 
 def _service(
     session_factory: async_sessionmaker[AsyncSession], room: _Room
-) -> tuple[ProtocolService, list[_Sent]]:
+) -> tuple[AgentCore, list[_Sent]]:
     """The real `send_targeted_message`, over real stores.
 
     Only the two edges that leave the process are replaced: the participant
@@ -127,8 +127,8 @@ def _service(
     what would have gone onto the bus.
     """
     sent: list[_Sent] = []
-    svc = object.__new__(ProtocolService)
-    svc.connections = ConnectionRegistry()
+    svc = object.__new__(AgentCore)
+    svc.connections = AgentConnectionRegistry()
     svc.session_factory = session_factory
     svc.room_store = RoomStore()
     svc.room_role_store = RoomRoleStore()
@@ -186,7 +186,7 @@ async def _woken(
             if await resolver.addresses(
                 session,
                 agent=agent,
-                agent_matrix_id=f"@{agent.name}:test",
+                agent_user_id=f"@{agent.name}:test",
                 room_id=room.id,
                 channel_type="channel_public",
                 message=message,

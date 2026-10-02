@@ -94,28 +94,28 @@ class _FakeAdapter:
         self._events.append(("ensure_capture", list(channels)))
 
 
-class _FakeBridgeCore:
+class _FakeCollaborationCore:
     def __init__(
         self,
         events: list[Any],
         *,
-        matrix_user_id: str,
+        transport_user_id: str,
         new_channel_id: str = "",
     ) -> None:
         self._events = events
-        self._bridge_client_matrix_user_id = matrix_user_id
+        self._workspace_consumer_transport_user_id = transport_user_id
         self.adapter = _FakeAdapter(events, new_channel_id)
 
     def add_room_mapping(
         self,
         room_id: str,
-        matrix_room_id: str,
+        transport_room_id: str,
         external_channel_id: str,
         tenant_id: str,
     ) -> None:
         self._events.append(("add_room_mapping", room_id, external_channel_id))
 
-    def remove_room_mapping(self, room_id: str, matrix_room_id: str) -> None:
+    def remove_room_mapping(self, room_id: str, transport_room_id: str) -> None:
         self._events.append(("remove_room_mapping", room_id))
 
     def begin_provisioning(self, external_channel_id: str) -> None:
@@ -133,15 +133,17 @@ class _FakeLifecycle:
         return self._bridges.get(bridge_id)
 
 
-class _FakeMatrix:
+class _FakeProvisioning:
     def __init__(self, events: list[Any]) -> None:
         self._events = events
 
-    async def invite_to_room(self, matrix_room_id: str, matrix_user_id: str) -> None:
-        self._events.append(("invite", matrix_user_id))
+    async def invite_to_room(
+        self, transport_room_id: str, transport_user_id: str
+    ) -> None:
+        self._events.append(("invite", transport_user_id))
 
-    async def kick_user(self, matrix_room_id: str, matrix_user_id: str) -> None:
-        self._events.append(("kick", matrix_user_id))
+    async def kick_user(self, transport_room_id: str, transport_user_id: str) -> None:
+        self._events.append(("kick", transport_user_id))
 
 
 class _FakeBridgeStore:
@@ -176,7 +178,7 @@ def _build_service(
     svc._room_store = room_store  # type: ignore[assignment]
     svc._agent_store = _FakeAgentStore(agent_names)  # type: ignore[assignment]
     svc._collab_lifecycle = _FakeLifecycle(bridges)  # type: ignore[assignment]
-    svc._matrix_admin = _FakeMatrix(events)  # type: ignore[assignment]
+    svc._provisioning = _FakeProvisioning(events)  # type: ignore[assignment]
     svc._collab_bridge_store = _FakeBridgeStore(  # type: ignore[assignment]
         channel_creation_enabled=channel_creation_enabled
     )
@@ -191,15 +193,17 @@ class TestChangeBridge:
             tenant_id="room-tenant",
             name="Work",
             description="A room",
-            matrix_room_id="!mx:switch.local",
+            transport_room_id="!mx:switch.local",
             bridge_id="bridge-old",
             channel_type="channel_public",
             external_channel_id="chan-old",
         )
-        new_bridge = _FakeBridgeCore(
-            events, matrix_user_id="@bot-new:switch.local", new_channel_id="chan-new"
+        new_bridge = _FakeCollaborationCore(
+            events, transport_user_id="@bot-new:switch.local", new_channel_id="chan-new"
         )
-        old_bridge = _FakeBridgeCore(events, matrix_user_id="@bot-old:switch.local")
+        old_bridge = _FakeCollaborationCore(
+            events, transport_user_id="@bot-old:switch.local"
+        )
         svc, room_store = _build_service(
             room=room,
             agent_ids=["a1", "a2"],
@@ -248,15 +252,17 @@ class TestChangeBridge:
             tenant_id="room-tenant",
             name="Secret",
             description="d",
-            matrix_room_id="!mx:switch.local",
+            transport_room_id="!mx:switch.local",
             bridge_id="bridge-old",
             channel_type="channel_private",
             external_channel_id="chan-old",
         )
-        new_bridge = _FakeBridgeCore(
-            events, matrix_user_id="@bot-new:switch.local", new_channel_id="chan-new"
+        new_bridge = _FakeCollaborationCore(
+            events, transport_user_id="@bot-new:switch.local", new_channel_id="chan-new"
         )
-        old_bridge = _FakeBridgeCore(events, matrix_user_id="@bot-old:switch.local")
+        old_bridge = _FakeCollaborationCore(
+            events, transport_user_id="@bot-old:switch.local"
+        )
         svc, room_store = _build_service(
             room=room,
             agent_ids=[],
@@ -277,13 +283,13 @@ class TestChangeBridge:
             tenant_id="room-tenant",
             name="Internal",
             description="d",
-            matrix_room_id="!mx:switch.local",
+            transport_room_id="!mx:switch.local",
             bridge_id=None,
             channel_type=None,
             external_channel_id=None,
         )
-        new_bridge = _FakeBridgeCore(
-            events, matrix_user_id="@bot-new:switch.local", new_channel_id="chan-new"
+        new_bridge = _FakeCollaborationCore(
+            events, transport_user_id="@bot-new:switch.local", new_channel_id="chan-new"
         )
         svc, _ = _build_service(
             room=room,
@@ -308,15 +314,17 @@ class TestChangeBridge:
             tenant_id="room-tenant",
             name="Work",
             description="A room",
-            matrix_room_id="!mx:switch.local",
+            transport_room_id="!mx:switch.local",
             bridge_id="bridge-old",
             channel_type="channel_public",
             external_channel_id="chan-old",
         )
-        new_bridge = _FakeBridgeCore(
-            events, matrix_user_id="@bot-new:switch.local", new_channel_id="chan-new"
+        new_bridge = _FakeCollaborationCore(
+            events, transport_user_id="@bot-new:switch.local", new_channel_id="chan-new"
         )
-        old_bridge = _FakeBridgeCore(events, matrix_user_id="@bot-old:switch.local")
+        old_bridge = _FakeCollaborationCore(
+            events, transport_user_id="@bot-old:switch.local"
+        )
         svc, room_store = _build_service(
             room=room,
             agent_ids=["a1"],
@@ -353,14 +361,18 @@ class TestChangeBridge:
             tenant_id="room-tenant",
             name="Work",
             description="A room",
-            matrix_room_id="!mx:switch.local",
+            transport_room_id="!mx:switch.local",
             bridge_id="bridge-old",
             channel_type="channel_public",
             external_channel_id="chan-old",
         )
-        new_bridge = _FakeBridgeCore(events, matrix_user_id="@bot-new:switch.local")
+        new_bridge = _FakeCollaborationCore(
+            events, transport_user_id="@bot-new:switch.local"
+        )
         new_bridge.adapter.not_bindable.add("chan-elsewhere")
-        old_bridge = _FakeBridgeCore(events, matrix_user_id="@bot-old:switch.local")
+        old_bridge = _FakeCollaborationCore(
+            events, transport_user_id="@bot-old:switch.local"
+        )
         svc, room_store = _build_service(
             room=room,
             agent_ids=["a1"],
@@ -389,13 +401,13 @@ class TestChangeBridge:
             tenant_id="room-tenant",
             name="Work",
             description="d",
-            matrix_room_id="!mx:switch.local",
+            transport_room_id="!mx:switch.local",
             bridge_id=None,
             channel_type=None,
             external_channel_id=None,
         )
-        new_bridge = _FakeBridgeCore(
-            events, matrix_user_id="@bot-new:switch.local", new_channel_id="chan-new"
+        new_bridge = _FakeCollaborationCore(
+            events, transport_user_id="@bot-new:switch.local", new_channel_id="chan-new"
         )
         svc, _ = _build_service(
             room=room,
@@ -416,7 +428,7 @@ class TestChangeBridge:
             tenant_id="room-tenant",
             name="Work",
             description="d",
-            matrix_room_id="!mx:switch.local",
+            transport_room_id="!mx:switch.local",
             bridge_id="bridge-old",
             channel_type="channel_public",
             external_channel_id="chan-old",
@@ -439,7 +451,7 @@ class TestChangeBridge:
             tenant_id="room-tenant",
             name="Work",
             description="d",
-            matrix_room_id="!mx:switch.local",
+            transport_room_id="!mx:switch.local",
             bridge_id="bridge-x",
             channel_type="channel_public",
             external_channel_id="chan-x",
@@ -448,7 +460,9 @@ class TestChangeBridge:
             room=room,
             agent_ids=[],
             agent_names={},
-            bridges={"bridge-x": _FakeBridgeCore(events, matrix_user_id="@b:s")},
+            bridges={
+                "bridge-x": _FakeCollaborationCore(events, transport_user_id="@b:s")
+            },
             events=events,
         )
 
@@ -465,13 +479,13 @@ class TestChangeBridge:
             tenant_id="room-tenant",
             name="Work",
             description="d",
-            matrix_room_id="!mx:switch.local",
+            transport_room_id="!mx:switch.local",
             bridge_id="bridge-old",
             channel_type="channel_public",
             external_channel_id="chan-old",
         )
-        new_bridge = _FakeBridgeCore(
-            events, matrix_user_id="@bot-new:switch.local", new_channel_id="chan-new"
+        new_bridge = _FakeCollaborationCore(
+            events, transport_user_id="@bot-new:switch.local", new_channel_id="chan-new"
         )
         svc, room_store = _build_service(
             room=room,
@@ -479,7 +493,9 @@ class TestChangeBridge:
             agent_names={},
             bridges={
                 "bridge-new": new_bridge,
-                "bridge-old": _FakeBridgeCore(events, matrix_user_id="@bot-old:s"),
+                "bridge-old": _FakeCollaborationCore(
+                    events, transport_user_id="@bot-old:s"
+                ),
             },
             events=events,
             channel_creation_enabled=False,
@@ -504,7 +520,7 @@ class TestLinkBridgeToRoom:
             tenant_id="room-tenant",
             name="Work",
             description="d",
-            matrix_room_id="!mx:switch.local",
+            transport_room_id="!mx:switch.local",
             bridge_id=None,
             channel_type=None,
             external_channel_id=None,
@@ -512,7 +528,7 @@ class TestLinkBridgeToRoom:
 
     async def test_binding_an_existing_channel_establishes_capture(self) -> None:
         events: list[Any] = []
-        bridge = _FakeBridgeCore(events, matrix_user_id="@bot:switch.local")
+        bridge = _FakeCollaborationCore(events, transport_user_id="@bot:switch.local")
         svc, room_store = _build_service(
             room=self._room(),
             agent_ids=[],
@@ -538,7 +554,7 @@ class TestLinkBridgeToRoom:
         # Capture must not be established before the room↔channel mapping is
         # registered: a notification arriving in the gap has nowhere to land.
         events: list[Any] = []
-        bridge = _FakeBridgeCore(events, matrix_user_id="@bot:switch.local")
+        bridge = _FakeCollaborationCore(events, transport_user_id="@bot:switch.local")
         svc, _ = _build_service(
             room=self._room(),
             agent_ids=[],

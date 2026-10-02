@@ -21,8 +21,8 @@ from switch_core.logging_context import LogContextFilter
 from switch_core.observability.catalogue import (
     AGENTS_CONNECTED,
     BRIDGES_RUNNING,
-    CLIENTS_RUNNING,
     CONNECTORS_RUNNING,
+    CONSUMERS_RUNNING,
     DB_POOL_IN_USE,
     DB_POOL_OVERFLOW,
     DB_POOL_SIZE,
@@ -80,7 +80,7 @@ class RuntimeProbes:
     bridges_running: Callable[[], int]
     bridges_running_by_platform: Callable[[], Mapping[str, int]]
     bridges_configured: Callable[[], int]
-    clients_running: Callable[[], int]
+    consumers_running: Callable[[], int]
     connectors_running: Callable[[], int]
     connectors_configured: Callable[[], int]
     agents_connected: Callable[[], int]
@@ -121,9 +121,13 @@ class Observability:
 def _state_readings(probes: RuntimeProbes) -> Callable[[], Iterator[GaugeReading]]:
     def readings() -> Iterator[GaugeReading]:
         yield GaugeReading(AGENTS_CONNECTED, float(probes.agents_connected()), {})
-        yield GaugeReading(CLIENTS_RUNNING, float(probes.clients_running()), {})
+        yield GaugeReading(CONSUMERS_RUNNING, float(probes.consumers_running()), {})
         for platform, running in probes.bridges_running_by_platform().items():
-            yield GaugeReading(BRIDGES_RUNNING, float(running), {"platform": platform})
+            yield GaugeReading(
+                BRIDGES_RUNNING,
+                float(running),
+                {"bridge": "collaboration", "platform": platform},
+            )
         yield GaugeReading(CONNECTORS_RUNNING, float(probes.connectors_running()), {})
 
         stats = probes.pool_stats()

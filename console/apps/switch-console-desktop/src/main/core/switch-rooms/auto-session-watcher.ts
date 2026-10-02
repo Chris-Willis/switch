@@ -4,8 +4,8 @@ import { getAgents } from '@main/core/agents/getAgents';
 import { onManagedServerUpgraded } from '@main/core/managed-switch-server/session-readiness';
 import type { HostReachabilityChange } from '@main/core/remote-hosts/host-reachability-service';
 import { hostReachabilityService } from '@main/core/remote-hosts/production-host-reachability';
+import { applyControllerState, configureAgentHost } from '@main/core/sdk-host/agent-host';
 import { disposeLocalHosts, type WatcherIntent } from '@main/core/sdk-host/local-host';
-import { applyControllerState, configureSharedWatcher } from '@main/core/sdk-host/shared-watcher';
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import { listAutoSessionSubagents, setAutoSessionSubagent } from './auto-session-store';
@@ -256,13 +256,13 @@ class AutoSessionWatcher {
 
   stopForAgent(agentId: string): Promise<void> {
     this.cancelRetry(agentId);
-    return configureSharedWatcher(agentId, { connected: false, spawning: false }, 'restore');
+    return configureAgentHost(agentId, { connected: false, spawning: false }, 'restore');
   }
   startForSubagent(agentId: string, name: string): Promise<void> {
-    return configureSharedWatcher(agentId, { connected: true, spawning: true }, 'restore', name);
+    return configureAgentHost(agentId, { connected: true, spawning: true }, 'restore', name);
   }
   stopForSubagent(agentId: string, name: string): Promise<void> {
-    return configureSharedWatcher(agentId, { connected: false, spawning: false }, 'restore', name);
+    return configureAgentHost(agentId, { connected: false, spawning: false }, 'restore', name);
   }
   /** Stops every locally hosted watcher and session, so none outlives Console. */
   dispose(): Promise<void> {

@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { getPlugin } from '@main/core/providers/plugin-registry';
-import { discardControllerState } from '@main/core/sdk-host/shared-watcher';
+import { discardControllerState } from '@main/core/sdk-host/agent-host';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { setControllerStopped } from '@main/core/switch-rooms/auto-session-store';
 import { autoSessionWatcher } from '@main/core/switch-rooms/auto-session-watcher';

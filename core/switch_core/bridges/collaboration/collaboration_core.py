@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -18,7 +18,7 @@ from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.commands import stop_control_frame
 from switch_core.bridges.collaboration.adapter import (
     AgentPresentation,
-    CollaborationAdapter,
+    PlatformAdapter,
     SupportsSharedConnection,
 )
 from switch_core.bridges.collaboration.models import (
@@ -33,13 +33,13 @@ from switch_core.bridges.collaboration.models import (
 )
 from switch_core.bridges.collaboration.session.refusal import InboundActor, Refused
 from switch_core.bridges.collaboration.session.renderers import INTERRUPT_ACTION
+from switch_core.clients.actor import Actor, ClientConfig
 from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
     PLATFORM_MARKER,
     AdminMessageType,
     platform_on_behalf_of,
 )
-from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.mentions import mention_regex, strip_emphasis
 from switch_core.db.models import BridgeMessageMap, ExternalUser
 from switch_core.db.session_scope import tenant_session
@@ -61,13 +61,13 @@ from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomCreateConfig
 from switch_core.room_wide_mention import is_room_wide_mention
 from switch_core.session_activity.bridge_answers import ApprovalAnswers
-from switch_core.session_activity.bridge_publisher import (
-    SessionActivityBridgePublisher,
+from switch_core.session_activity.listener import AgentSessionActivityListener
+from switch_core.session_activity.publisher import (
+    AgentSessionActivityPublisher,
 )
-from switch_core.session_activity.listener import SessionActivityListener
 from switch_core.session_activity.service import (
+    AgentSessionActivityService,
     PlatformPerson,
-    SessionActivityService,
 )
 from switch_core.sessions.attachments import normalise_mime_type
 from switch_core.sessions.errors import SessionError
@@ -84,8 +84,11 @@ from switch_core.transport import (
 )
 
 if TYPE_CHECKING:
-    from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+    from switch_core.bridges.agent.protocol.agent_connections import (
+        AgentConnectionRegistry,
+    )
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
+    from switch_core.clients.workspace_consumer import WorkspaceConsumer
     from switch_core.room_service import RoomService
 
 
@@ -101,9 +104,9 @@ _InboundEventT = TypeVar(
     InboundAppJoin,
 )
 
-# How long to wait for a freshly-invited external-user puppet to actually join a
+# How long to wait for a freshly-invited external-user human actor to actually join a
 # room before giving up on relaying its message.
-PUPPET_JOIN_TIMEOUT = 30.0
+HUMAN_JOIN_TIMEOUT = 30.0
 
 # How long to hold an incomplete outbound attachment group before relaying the
 # parts that arrived, flagged as incomplete (see _schedule_outbound_group_flush).
@@ -151,9 +154,9 @@ def _no_agents_notice(slash_hint: str | None) -> str:
     )
 
 
-class BridgeCore:
-    # Tests assemble a BridgeCore with `__new__`; these read as "not wired".
-    _activity_publisher: SessionActivityBridgePublisher | None = None
+class CollaborationCore:
+    # Tests assemble a CollaborationCore with `__new__`; these read as "not wired".
+    _activity_publisher: AgentSessionActivityPublisher | None = None
     _approval_answers: ApprovalAnswers | None = None
 
     def __init__(
@@ -163,7 +166,7 @@ class BridgeCore:
         bridge_tenant_id: str,
         bridge_type: str,
         bridge_display_name: str,
-        adapter: CollaborationAdapter,
+        adapter: PlatformAdapter,
         room_store: RoomStore,
         external_user_store: ExternalUserStore,
         bridge_message_map_store: BridgeMessageMapStore,
@@ -171,14 +174,14 @@ class BridgeCore:
         client_store: ClientStore,
         room_service: RoomService,
         client_lifecycle: ClientLifecycleService,
-        matrix_admin: Provisioning,
+        provisioning: Provisioning,
         session_factory: async_sessionmaker[AsyncSession],
-        matrix_server_name: str,
-        bridge_client_matrix_user_id: str,
+        id_server_name: str,
+        workspace_consumer_transport_user_id: str,
         max_attachment_bytes: int,
-        session_activity_listener: SessionActivityListener,
-        session_activity_service: SessionActivityService,
-        connections: ConnectionRegistry,
+        session_activity_listener: AgentSessionActivityListener,
+        session_activity_service: AgentSessionActivityService,
+        connections: AgentConnectionRegistry,
         gateway_public_url: str | None = None,
     ) -> None:
         self._bridge_id = bridge_id
@@ -200,10 +203,12 @@ class BridgeCore:
         self._client_store = client_store
         self._room_service = room_service
         self._client_lifecycle = client_lifecycle
-        self._matrix_admin = matrix_admin
+        self._provisioning = provisioning
         self._session_factory = session_factory
-        self._matrix_server_name = matrix_server_name
-        self._bridge_client_matrix_user_id = bridge_client_matrix_user_id
+        self._id_server_name = id_server_name
+        self._workspace_consumer_transport_user_id = (
+            workspace_consumer_transport_user_id
+        )
         self._max_attachment_bytes = max_attachment_bytes
 
         self._channel_to_room: dict[str, tuple[str, str]] = {}
@@ -213,15 +218,15 @@ class BridgeCore:
         # has a channel mapping always has a tenant here — including rooms
         # created long after this bridge started. See `_room_tenant`.
         self._room_tenants: dict[str, str] = {}
-        self._user_puppets: dict[str, str] = {}
+        self._human_actors: dict[str, str] = {}
         # External user ids whose stored name is known not to be a platform id,
         # so the placeholder repair does not re-ask the database once per
         # message. One-way, so a cached answer cannot go stale — see
         # _repair_placeholder_username.
         self._names_known_good: set[str] = set()
-        self._puppet_matrix_ids: set[str] = set()
+        self._human_user_ids: set[str] = set()
         self._channel_locks: dict[str, asyncio.Lock] = {}
-        self._puppet_locks: dict[str, asyncio.Lock] = {}
+        self._human_actor_locks: dict[str, asyncio.Lock] = {}
         # Channels Switch is itself provisioning right now (outbound room
         # creation / bridge change). The bot auto-joins a channel the instant
         # it is created, which fires an inbound join before the room↔channel
@@ -234,7 +239,7 @@ class BridgeCore:
         # never completes cannot leak.
         self._outbound_groups: dict[str, _PendingOutboundGroup] = {}
         self._outbound_group_timers: dict[str, asyncio.TimerHandle] = {}
-        # Matrix-event -> external-post anchors written synchronously right after
+        # Room-event -> external-post anchors written synchronously right after
         # room_send, before the durable _record_message_map commit, so a fast
         # command reply relayed during that DB await still resolves the command's
         # thread root instead of dropping to the channel root. Popped on commit.
@@ -248,7 +253,7 @@ class BridgeCore:
         self._connections = connections
         self._session_activity_service = session_activity_service
         self._activity_publisher = (
-            SessionActivityBridgePublisher(
+            AgentSessionActivityPublisher(
                 adapter=adapter,
                 bridge_id=bridge_id,
                 bridge_type=bridge_type,
@@ -274,7 +279,7 @@ class BridgeCore:
         )
 
     @property
-    def adapter(self) -> CollaborationAdapter:
+    def adapter(self) -> PlatformAdapter:
         return self._adapter
 
     def relays_room(self, room_id: str) -> bool:
@@ -299,7 +304,7 @@ class BridgeCore:
         """Count one relay out to the platform, time it, and count its failure.
 
         Placed around the relay call rather than at the top of the handler: a
-        handler returns early for a puppet's own echo and for a room with no
+        handler returns early for a human actor's own echo and for a room with no
         channel mapping, and neither of those is a message anybody sent
         outwards.
 
@@ -314,19 +319,25 @@ class BridgeCore:
         under the same name; `switch.bridge.errors` is where that shows.
         """
         metrics().increment(
-            BRIDGE_EVENTS_OUT, {"platform": self._bridge_type, "kind": kind}
+            BRIDGE_EVENTS_OUT,
+            {"bridge": "collaboration", "platform": self._bridge_type, "kind": kind},
         )
         started = time.perf_counter()
         try:
             yield
         except Exception:
             metrics().increment(
-                BRIDGE_ERRORS, {"platform": self._bridge_type, "direction": "outbound"}
+                BRIDGE_ERRORS,
+                {
+                    "bridge": "collaboration",
+                    "platform": self._bridge_type,
+                    "direction": "outbound",
+                },
             )
             raise
         metrics().observe(
             BRIDGE_CALL_DURATION,
-            {"platform": self._bridge_type, "kind": kind},
+            {"bridge": "collaboration", "platform": self._bridge_type, "kind": kind},
             (time.perf_counter() - started) * 1000.0,
         )
 
@@ -361,9 +372,18 @@ class BridgeCore:
 
         async def traced(event: _InboundEventT) -> None:
             event_id = uuid.uuid4().hex[:16]
-            with log_context(request_id=f"{self._bridge_type}-{event_id}"):
+            with log_context(
+                request_id=f"{self._bridge_type}-{event_id}",
+                bridge="collaboration",
+                platform=self._bridge_type,
+            ):
                 metrics().increment(
-                    BRIDGE_EVENTS_IN, {"platform": self._bridge_type, "event": kind}
+                    BRIDGE_EVENTS_IN,
+                    {
+                        "bridge": "collaboration",
+                        "platform": self._bridge_type,
+                        "event": kind,
+                    },
                 )
                 room_ids = self._channel_to_room.get(event.channel_id)
                 tenant_id = (
@@ -386,7 +406,11 @@ class BridgeCore:
                         # invisible from the platform's side.
                         metrics().increment(
                             BRIDGE_ERRORS,
-                            {"platform": self._bridge_type, "direction": "inbound"},
+                            {
+                                "bridge": "collaboration",
+                                "platform": self._bridge_type,
+                                "direction": "inbound",
+                            },
                         )
                         raise
 
@@ -394,7 +418,7 @@ class BridgeCore:
 
     async def start(self) -> None:
         await self._load_channel_map()
-        await self._load_existing_puppets()
+        await self._load_existing_human_actors()
         self._adapter.set_channel_migration_handler(self._handle_channel_migrated)
         self._adapter.set_channel_type_handler(self._record_channel_type)
         self._adapter.set_agent_presentation_resolver(self._agent_presentation)
@@ -463,7 +487,7 @@ class BridgeCore:
             if room.external_channel_id:
                 self.add_room_mapping(
                     room.id,
-                    room.matrix_room_id,
+                    room.transport_room_id,
                     room.external_channel_id,
                     room.tenant_id,
                 )
@@ -498,7 +522,7 @@ class BridgeCore:
         self._room_tenants[room_id] = tenant_id
         return tenant_id
 
-    async def _load_existing_puppets(self) -> None:
+    async def _load_existing_human_actors(self) -> None:
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
@@ -515,7 +539,7 @@ class BridgeCore:
         )
 
         for user in users:
-            self._user_puppets[user.external_user_id] = user.client_id
+            self._human_actors[user.external_user_id] = user.client_id
 
             client = self._client_lifecycle.get(user.client_id)
             if client is None:
@@ -524,7 +548,7 @@ class BridgeCore:
                     client = self._client_lifecycle.start_client(record)
 
             if client:
-                self._puppet_matrix_ids.add(client.matrix_user_id)
+                self._human_user_ids.add(client.transport_user_id)
 
     def _provision_identities_on_attach(self) -> None:
         """Re-run identity provisioning when a shared connection attaches.
@@ -827,8 +851,8 @@ class BridgeCore:
         )
         if await self._is_registered_agent(msg.sender_name):
             # A bridged Switch agent's own message echoed back from the platform.
-            # The agent posts natively on Matrix (that is where agents see each
-            # other), so re-importing the echo would double-post it and spawn a
+            # The agent posts natively in the Switch room (that is where agents
+            # see each other), so re-importing the echo would double-post it and spawn a
             # duplicate "user" identity for the agent. Drop it. Note
             # this is by *name*, so genuine third-party bots and humans still
             # bridge in normally.
@@ -862,7 +886,7 @@ class BridgeCore:
             if room_ids is None:
                 return
 
-        room_id, matrix_room_id = room_ids
+        room_id, transport_room_id = room_ids
 
         # A bot @mention carries no agent name in its text (the platform tags the
         # bot, not the agent). Resolve which agent it addresses so we can inject
@@ -875,13 +899,13 @@ class BridgeCore:
                 await self._maybe_guide_self_mention(msg, room_id)
 
         await self._repair_placeholder_username(msg.sender_id, msg.sender_name)
-        puppet = await self._ensure_user_in_matrix_room(
+        human_actor = await self._ensure_human_in_room(
             external_user_id=msg.sender_id,
             external_username=msg.sender_name,
             room_id=room_id,
-            matrix_room_id=matrix_room_id,
+            transport_room_id=transport_room_id,
         )
-        if puppet is None:
+        if human_actor is None:
             return
 
         content = self._adapter.translate_inbound(msg.content)
@@ -890,23 +914,23 @@ class BridgeCore:
         ):
             content = f"@{mention_target} {content}"
         logger.debug(
-            "[BRIDGE-IN] sending to matrix room=%s via puppet=%s attachments=%d",
-            matrix_room_id,
-            puppet.matrix_user_id,
+            "[BRIDGE-IN] writing to room=%s as human=%s attachments=%d",
+            transport_room_id,
+            human_actor.transport_user_id,
             len(msg.attachments),
         )
 
         # Bridge threads inbound: if the external post replied into a thread,
-        # resolve that external root to the Matrix event we bridged for it.
+        # resolve that external root to the room event we bridged for it.
         thread_root_id: str | None = None
         if msg.root_id is not None:
-            thread_root_id = await self._matrix_event_for_external_post(msg.root_id)
+            thread_root_id = await self._event_for_external_post(msg.root_id)
             if thread_root_id is None:
                 logger.warning(
-                    "[BRIDGE-IN] no Matrix event mapped for external root %s; "
+                    "[BRIDGE-IN] no room message mapped for external root %s; "
                     "posting top-level in room %s",
                     msg.root_id,
-                    matrix_room_id,
+                    transport_room_id,
                 )
 
         # An attachment the platform offered but we could not relay must be
@@ -920,8 +944,8 @@ class BridgeCore:
             content = f"{content}\n{notes}" if content.strip() else notes
 
         if not msg.attachments:
-            event_id = await puppet.send_message(
-                matrix_room_id,
+            event_id = await human_actor.send_message(
+                transport_room_id,
                 content,
                 format="markdown",
                 thread_root_id=thread_root_id,
@@ -932,7 +956,7 @@ class BridgeCore:
                     "[BRIDGE-IN] failed to relay message from %s into room %s — "
                     "it will not reach the room",
                     msg.sender_name,
-                    matrix_room_id,
+                    transport_room_id,
                 )
                 return
             # Record the correlation so a later reply (either direction) threads.
@@ -952,18 +976,18 @@ class BridgeCore:
         total = len(msg.attachments)
         # A platform post hands us all its files at once, so the group is known
         # up front — no waiting on the receiving side to learn how many to
-        # expect. Matrix carries them as `total` events sharing this id.
+        # expect. The room carries them as `total` events sharing this id.
         group_id = str(uuid.uuid4()) if total > 1 else None
         for index, attachment in enumerate(msg.attachments):
-            mxc = await puppet.upload_media(
+            media_uri = await human_actor.upload_media(
                 attachment.data, attachment.mimetype, attachment.filename
             )
             msgtype = (
                 "m.image" if attachment.mimetype.startswith("image/") else "m.file"
             )
-            event_id = await puppet.send_media(
-                matrix_room_id,
-                mxc,
+            event_id = await human_actor.send_media(
+                transport_room_id,
+                media_uri,
                 attachment.filename,
                 attachment.mimetype,
                 len(attachment.data),
@@ -982,7 +1006,7 @@ class BridgeCore:
                     "[BRIDGE-IN] failed to relay attachment %s from %s into room %s",
                     attachment.filename,
                     msg.sender_name,
-                    matrix_room_id,
+                    transport_room_id,
                 )
             if index == 0:
                 first_event_id = event_id
@@ -1010,15 +1034,15 @@ class BridgeCore:
                     )
             if room_ids is None:
                 return
-        room_id, matrix_room_id = room_ids
+        room_id, transport_room_id = room_ids
 
-        puppet = await self._ensure_user_in_matrix_room(
+        human_actor = await self._ensure_human_in_room(
             external_user_id=cmd.sender_id,
             external_username=cmd.sender_name,
             room_id=room_id,
-            matrix_room_id=matrix_room_id,
+            transport_room_id=transport_room_id,
         )
-        if puppet is None:
+        if human_actor is None:
             return
 
         # Where the command's result should thread. A command typed inside an
@@ -1027,46 +1051,44 @@ class BridgeCore:
         # Mattermost RootId. A top-level command starts its own thread, rooted
         # at the command post (message_ref).
         thread_root_post = cmd.root_id or cmd.message_ref
-        existing_matrix_root: str | None = None
+        existing_root: str | None = None
         if thread_root_post is not None:
-            existing_matrix_root = await self._matrix_event_for_external_post(
-                thread_root_post
-            )
+            existing_root = await self._event_for_external_post(thread_root_post)
 
         content: dict[str, object] = {
             "command": cmd.command,
             "args": self._adapter.translate_inbound(cmd.args),
-            "user_id": puppet.matrix_user_id,
+            "user_id": human_actor.transport_user_id,
             "user_name": cmd.sender_name,
         }
         # If the thread root is already bridged, relate the command event to it
-        # so the result threads onto the existing Matrix root (which resolves
+        # so the result threads onto the existing room root (which resolves
         # back to a valid Mattermost root post). Otherwise the command event
         # itself anchors the thread (mapping recorded below).
-        if existing_matrix_root is not None:
+        if existing_root is not None:
             content["m.relates_to"] = {
                 "rel_type": "m.thread",
-                "event_id": existing_matrix_root,
+                "event_id": existing_root,
             }
 
         try:
-            event_id = await puppet.send_event(
-                matrix_room_id, "com.switch.command", content
+            event_id = await human_actor.send_event(
+                transport_room_id, "com.switch.command", content
             )
         except TransportError as exc:
             logger.error(
                 "Failed to bridge command %s into %s: %s",
                 cmd.command,
-                matrix_room_id,
+                transport_room_id,
                 exc,
             )
             return
 
-        # No bridged Matrix event for the thread root yet: map the command event
+        # No bridged room event for the thread root yet: map the command event
         # to it so a result threaded under the command resolves back to a valid
         # Mattermost root post (the command post for a top-level command, or the
         # thread root for an in-thread command whose root we hadn't recorded).
-        if existing_matrix_root is None and thread_root_post is not None:
+        if existing_root is None and thread_root_post is not None:
             # Anchor in memory before the DB write: the write awaits a query that
             # yields the loop, and a fast reply (e.g. !help) relayed in that gap
             # would miss the row and land at the channel root. Popped on commit.
@@ -1183,7 +1205,9 @@ class BridgeCore:
                 await session.commit()
 
             self._channel_to_room.pop(old_id, None)
-            self.add_room_mapping(room.id, room.matrix_room_id, new_id, room.tenant_id)
+            self.add_room_mapping(
+                room.id, room.transport_room_id, new_id, room.tenant_id
+            )
             logger.warning(
                 "Re-pointed room %s from channel %s to %s after the platform "
                 "reissued the id",
@@ -1203,7 +1227,7 @@ class BridgeCore:
     async def _adopt_existing_room(self, channel_id: str) -> tuple[str, str] | None:
         """If a room already exists in the DB for this channel on this bridge,
         register it in the in-memory map and return its (room_id,
-        matrix_room_id). Returns None if no such room exists. Idempotent."""
+        transport_room_id). Returns None if no such room exists. Idempotent."""
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
@@ -1212,9 +1236,11 @@ class BridgeCore:
             )
         if room is None:
             return None
-        self.add_room_mapping(room.id, room.matrix_room_id, channel_id, room.tenant_id)
+        self.add_room_mapping(
+            room.id, room.transport_room_id, channel_id, room.tenant_id
+        )
         logger.debug("Adopted existing room %s for channel %s", room.id, channel_id)
-        return (room.id, room.matrix_room_id)
+        return (room.id, room.transport_room_id)
 
     async def _create_room_for_channel(
         self,
@@ -1291,11 +1317,13 @@ class BridgeCore:
             return None
         room = result.room
 
-        self.add_room_mapping(room.id, room.matrix_room_id, channel_id, room.tenant_id)
+        self.add_room_mapping(
+            room.id, room.transport_room_id, channel_id, room.tenant_id
+        )
         logger.info(
             "Auto-created %s room %s for %s channel %s",
             channel_type,
-            room.matrix_room_id,
+            room.transport_room_id,
             bridge_name,
             channel_id,
         )
@@ -1303,7 +1331,7 @@ class BridgeCore:
         if not agent_ids:
             # create_room invited the bridge client before returning, so posting
             # now cannot predate its join. admin_message goes straight to the
-            # channel via the platform API (not through Matrix), so it surfaces
+            # channel via the platform API (not through the room), so it surfaces
             # regardless — but the ordering keeps the room consistent.
             logger.warning(
                 "Auto-created room %s for channel %s has no agents", room.id, channel_id
@@ -1314,7 +1342,7 @@ class BridgeCore:
                 message_type=AdminMessageType.NO_AGENTS,
             )
 
-        return (room.id, room.matrix_room_id)
+        return (room.id, room.transport_room_id)
 
     async def _resolve_agents_for_channel(
         self, channel_id: str, channel_type: ChannelType
@@ -1344,7 +1372,7 @@ class BridgeCore:
         When the DB lookup misses, falls back to an exact match in the
         platform directory, so a person who has never messaged through Switch
         still resolves. A hit is persisted (an ``ExternalUser`` row and its
-        puppet), so room membership, addressing and export all see the same
+        human actor), so room membership, addressing and export all see the same
         person this resolution found.
         """
         async with self._session_factory() as session:
@@ -1395,11 +1423,11 @@ class BridgeCore:
     async def ensure_users_in_room(
         self,
         room_id: str,
-        matrix_room_id: str,
+        transport_room_id: str,
         user_names: list[str],
     ) -> None:
-        """For each resolvable name in `user_names`, ensure a running puppet
-        client exists and is joined to the Matrix room.
+        """For each resolvable name in `user_names`, ensure a running human actor
+        client exists and is joined to the room.
 
         Resolution goes through `resolve_external_user_id_map`, the same
         answer the channel-invite path uses, so a person the platform
@@ -1419,59 +1447,62 @@ class BridgeCore:
                     self._bridge_id,
                 )
                 continue
-            await self._ensure_user_in_matrix_room(
+            await self._ensure_human_in_room(
                 external_user_id=ext_user.external_user_id,
                 external_username=ext_user.external_username,
                 room_id=room_id,
-                matrix_room_id=matrix_room_id,
+                transport_room_id=transport_room_id,
             )
 
-    async def _ensure_user_in_matrix_room(
+    async def _ensure_human_in_room(
         self,
         *,
         external_user_id: str,
         external_username: str,
         room_id: str,
-        matrix_room_id: str,
-    ) -> ClientBase[ClientConfig] | None:
-        """Get-or-create the puppet for this external user and ensure it has
-        actually joined the room. Returns the running puppet, or None if it
+        transport_room_id: str,
+    ) -> Actor[ClientConfig] | None:
+        """Get-or-create the human actor for this external user and ensure it has
+        actually joined the room. Returns the running human actor, or None if it
         couldn't be brought up or didn't join in time. Idempotent."""
-        client_id = self._user_puppets.get(external_user_id)
+        client_id = self._human_actors.get(external_user_id)
         if client_id is None:
-            client_id = await self._create_puppet(external_user_id, external_username)
-        puppet = self._client_lifecycle.get(client_id)
-        if puppet is None:
+            client_id = await self._create_human_actor(
+                external_user_id, external_username
+            )
+        human_actor = self._client_lifecycle.get(client_id)
+        if human_actor is None:
             logger.error(
-                "Puppet client %s not running for external user %s",
+                "Human actor %s not running for external user %s",
                 client_id,
                 external_user_id,
             )
             return None
-        await puppet.wait_ready()
+        await human_actor.wait_ready()
         try:
             await self._room_service.ensure_client_in_room(room_id, client_id)
         except Exception:
             logger.exception(
-                "Failed to add puppet client %s to room %s", client_id, room_id
+                "Failed to add human actor %s to room %s", client_id, room_id
             )
             return None
 
-        # ensure_client_in_room only *invites*; the puppet joins asynchronously
-        # from its own sync loop. Sending before that join lands gets rejected by
-        # the homeserver, so the message that triggered the provisioning would be
-        # lost. Block until the join is observed.
-        if not await puppet.wait_joined(matrix_room_id, PUPPET_JOIN_TIMEOUT):
+        # A human actor runs no consumer, so nothing of its own accepts the
+        # invitation: provisioning records the membership itself. A message
+        # written before that row lands predates the join and is filtered by
+        # the room's readers, so the message that triggered the provisioning
+        # would be lost. Block until the membership is observed.
+        if not await human_actor.wait_joined(transport_room_id, HUMAN_JOIN_TIMEOUT):
             logger.error(
-                "Puppet %s (external user %s) did not join room %s within %ss — "
+                "Human actor %s (external user %s) did not join room %s within %ss — "
                 "cannot relay its message",
-                puppet.matrix_user_id,
+                human_actor.transport_user_id,
                 external_user_id,
-                matrix_room_id,
-                PUPPET_JOIN_TIMEOUT,
+                transport_room_id,
+                HUMAN_JOIN_TIMEOUT,
             )
             return None
-        return puppet
+        return human_actor
 
     async def _handle_inbound_interaction(
         self, interaction: InboundInteraction
@@ -1616,7 +1647,7 @@ class BridgeCore:
     async def _identify_actor(self, actor: InboundActor) -> str | None:
         """The Switch identity behind the platform account that acted.
 
-        None where the channel maps to no room, or the puppet cannot be brought
+        None where the channel maps to no room, or the human actor cannot be brought
         into it. Both are refusals: an answer carries who gave it, and there is
         no default actor to fall back on.
         """
@@ -1627,21 +1658,21 @@ class BridgeCore:
                 actor.channel_id,
             )
             return None
-        room_id, matrix_room_id = room_ids
-        puppet = await self._ensure_user_in_matrix_room(
+        room_id, transport_room_id = room_ids
+        human_actor = await self._ensure_human_in_room(
             external_user_id=actor.sender_id,
             external_username=actor.sender_name,
             room_id=room_id,
-            matrix_room_id=matrix_room_id,
+            transport_room_id=transport_room_id,
         )
-        return puppet.matrix_user_id if puppet is not None else None
+        return human_actor.transport_user_id if human_actor is not None else None
 
     async def _handle_user_joined_channel(self, join: InboundUserJoin) -> None:
         """Called by the adapter when an external user joins a bridged
         channel (e.g. someone adds louisa to a Mattermost channel via the
         Mattermost UI). Auto-creates the Switch room if the channel isn't
         mapped yet (same as the lazy inbound-message path), then ensures
-        the puppet exists and is joined to the Matrix room."""
+        the human actor exists and is joined to the room."""
         if await self._is_registered_agent(join.external_username):
             # The account that joined is actually a bridged Switch agent (its
             # bot account), not an external user. Route it through the agent-join
@@ -1670,15 +1701,15 @@ class BridgeCore:
                     )
             if room_ids is None:
                 return
-        room_id, matrix_room_id = room_ids
-        await self._ensure_user_in_matrix_room(
+        room_id, transport_room_id = room_ids
+        await self._ensure_human_in_room(
             external_user_id=join.external_user_id,
             external_username=join.external_username,
             room_id=room_id,
-            matrix_room_id=matrix_room_id,
+            transport_room_id=transport_room_id,
         )
 
-    # ── Puppet lifecycle ─────────────────────────────────────────────────────
+    # ── Human actor lifecycle ─────────────────────────────────────────────────────
 
     async def _repair_placeholder_username(
         self, external_user_id: str, resolved_username: str
@@ -1687,7 +1718,7 @@ class BridgeCore:
 
         Switch files someone under the name it first saw, and a platform that
         supplied none left its own id there — which then reads as that person's
-        name in the room title, on their Matrix account and in every agent
+        name in the room title, on their client and in every agent
         reply that addresses them. Repairing on the way past needs no migration
         for the rows already written.
 
@@ -1733,17 +1764,17 @@ class BridgeCore:
             )
             await session.commit()
             client_id = existing.client_id
-        # The Matrix account keeps its localpart — that is an address, and
-        # changing it would orphan the history — but its display name is what
+        # The client keeps its localpart, since that is an address and
+        # changing it would orphan the history, but its display name is what
         # people read.
-        puppet = self._client_lifecycle.get(client_id)
-        if puppet is not None:
+        human_actor = self._client_lifecycle.get(client_id)
+        if human_actor is not None:
             try:
-                await puppet.set_display_name(resolved_username)
+                await human_actor.set_display_name(resolved_username)
             except Exception:
                 logger.warning(
                     "Renamed external user %s but could not update the display "
-                    "name of its Matrix account",
+                    "name of its HumanActor",
                     external_user_id,
                     exc_info=True,
                 )
@@ -1757,7 +1788,7 @@ class BridgeCore:
         The inbound path creates these lazily on first message, which leaves
         nobody to claim for a workspace that has only just been connected.
         Claiming an identity (CHOO-2137) needs the record to exist up front, so
-        this provisions the same puppet the inbound path would have.
+        this provisions the same human actor the inbound path would have.
         """
         async with self._session_factory() as session:
             existing = await self._external_user_store.get_by_external_id(
@@ -1766,9 +1797,11 @@ class BridgeCore:
         if existing is not None:
             return existing
 
-        client_id = self._user_puppets.get(external_user_id)
+        client_id = self._human_actors.get(external_user_id)
         if client_id is None:
-            client_id = await self._create_puppet(external_user_id, external_username)
+            client_id = await self._create_human_actor(
+                external_user_id, external_username
+            )
 
         async with self._session_factory() as session:
             created = await self._external_user_store.get_by_client_id(
@@ -1776,47 +1809,47 @@ class BridgeCore:
             )
         if created is None:
             raise RuntimeError(
-                f"Puppet for external user {external_user_id} on bridge "
+                f"Human actor for external user {external_user_id} on bridge "
                 f"{self._bridge_id} was created without an ExternalUser record"
             )
         return created
 
-    async def _create_puppet(
+    async def _create_human_actor(
         self, external_user_id: str, external_username: str
     ) -> str:
-        """Mint the Matrix identity that stands in for a person on the platform.
+        """Mint the client identity that stands in for a person on the platform.
 
         Bound to the **bridge's** tenant, not to whatever room the message
-        that triggered it arrived in. A puppet is per-bridge and outlives that
+        that triggered it arrived in. A human actor is per-bridge and outlives that
         message: the same client is reused for every room this person speaks
         in, so a client row stamped with the first room's tenant would be
         wrong for the second — and the client task it starts must not carry
         that tenant either, which is why `ClientLifecycleService` unbinds
         before running one.
         """
-        lock = self._puppet_locks.setdefault(external_user_id, asyncio.Lock())
+        lock = self._human_actor_locks.setdefault(external_user_id, asyncio.Lock())
         async with lock:
             with tenant_scope(self._bridge_tenant_id):
-                return await self._create_puppet_locked(
+                return await self._create_human_actor_locked(
                     external_user_id, external_username
                 )
 
-    async def _create_puppet_locked(
+    async def _create_human_actor_locked(
         self, external_user_id: str, external_username: str
     ) -> str:
-        existing = self._user_puppets.get(external_user_id)
+        existing = self._human_actors.get(external_user_id)
         if existing is not None:
             return existing
 
-        # Defence in depth against agent/user misdetection: a
-        # bridged agent must never be puppeted as an external user. If the
+        # Defence in depth against agent/user misdetection: a bridged agent
+        # must never get a human actor as if it were an external user. If the
         # name collides with a registered Switch agent, refuse loudly rather
         # than create a duplicate "user" identity for it.
         async with self._session_factory() as session:
             agent = await self._agent_store.get_by_name(session, external_username)
         if agent is not None:
             raise ValueError(
-                f"Refusing to create external-user puppet for '{external_username}'"
+                f"Refusing to create external-user human actor for '{external_username}'"
                 " on bridge "
                 f"{self._bridge_id}: name collides with a registered Switch agent"
                 " (likely a bridged agent bot misclassified as a user)"
@@ -1824,8 +1857,8 @@ class BridgeCore:
 
         sanitized = re.sub(r"[^a-z0-9_-]", "-", external_username.lower()).strip("-")
         # Scope to the bridge: the same username on two bridges of the same
-        # type (e.g. two Slack workspaces) must map to distinct Matrix users,
-        # since matrix_user_id is globally unique but usernames are not.
+        # type (e.g. two Slack workspaces) must map to distinct clients,
+        # since transport_user_id is globally unique but usernames are not.
         localpart = f"switch-{self._bridge_type}-{self._bridge_id}-{sanitized}"
 
         client = await self._client_lifecycle.create_and_start(
@@ -1844,25 +1877,25 @@ class BridgeCore:
             await self._external_user_store.create(session, ext_user)
             await session.commit()
 
-        self._user_puppets[external_user_id] = client.client_id
-        self._puppet_matrix_ids.add(client.matrix_user_id)
+        self._human_actors[external_user_id] = client.client_id
+        self._human_user_ids.add(client.transport_user_id)
         self._adapter.prime_mention_targets({external_username: external_user_id})
 
         logger.info(
-            "Created puppet %s for external user %s on bridge %s",
-            client.matrix_user_id,
+            "Created human actor %s for external user %s on bridge %s",
+            client.transport_user_id,
             external_user_id,
             self._bridge_id,
         )
         return client.client_id
 
     def _find_channel(
-        self, room_id: str | None = None, matrix_room_id: str | None = None
+        self, room_id: str | None = None, transport_room_id: str | None = None
     ) -> str | None:
         for (rid, mrid), channel_id in self._room_to_channel.items():
             if room_id and rid == room_id:
                 return channel_id
-            if matrix_room_id and mrid == matrix_room_id:
+            if transport_room_id and mrid == transport_room_id:
                 return channel_id
         return None
 
@@ -1872,19 +1905,21 @@ class BridgeCore:
         self, room: RoomRef, event: TransportMessage
     ) -> None:
         logger.debug(
-            "[BRIDGE-OUT] matrix event from=%s room=%s body=%s",
+            "[BRIDGE-OUT] room message from=%s room=%s body=%s",
             event.sender,
             room.room_id,
             event.body[:80] if event.body else "",
         )
-        if event.sender in self._puppet_matrix_ids:
-            logger.debug("[BRIDGE-OUT] skipping puppet message from %s", event.sender)
+        if event.sender in self._human_user_ids:
+            logger.debug(
+                "[BRIDGE-OUT] skipping human actor message from %s", event.sender
+            )
             return
-        if event.sender == self._bridge_client_matrix_user_id:
+        if event.sender == self._workspace_consumer_transport_user_id:
             logger.debug("[BRIDGE-OUT] skipping bridge client message")
             return
 
-        channel_id = self._find_channel(matrix_room_id=room.room_id)
+        channel_id = self._find_channel(transport_room_id=room.room_id)
         if channel_id is None:
             logger.debug("[BRIDGE-OUT] no channel mapping for room %s", room.room_id)
             return
@@ -1902,7 +1937,7 @@ class BridgeCore:
         platform_marker = event_content.get(PLATFORM_MARKER)
         sender_name = event.sender_name
         # An admin/system or platform message renders natively per bridge
-        # (admin_message) rather than on behalf of its Matrix sender, so it
+        # (admin_message) rather than on behalf of its room sender, so it
         # needs no sender_name.
         is_system = admin_marker is not None or platform_marker is not None
         if sender_name is None and not is_system:
@@ -1976,7 +2011,7 @@ class BridgeCore:
     async def _outbound_thread_root_ref(
         self, event_content: dict[str, object], channel_id: str
     ) -> str | None:
-        """Bridge threads outbound: if this Matrix message is a threaded reply,
+        """Bridge threads outbound: if this room message is a threaded reply,
         resolve its thread root to the external post that anchors the thread."""
         relates = event_content.get("m.relates_to") or {}
         if not isinstance(relates, dict) or relates.get("rel_type") != "m.thread":
@@ -1984,7 +2019,7 @@ class BridgeCore:
         root_event_id = relates.get("event_id")
         if not root_event_id:
             return None
-        thread_root_ref = await self._external_post_for_matrix_event(str(root_event_id))
+        thread_root_ref = await self._external_post_for_event(str(root_event_id))
         if thread_root_ref is None:
             logger.warning(
                 "[BRIDGE-OUT] no external post mapped for thread root %s; "
@@ -1998,35 +2033,35 @@ class BridgeCore:
         self,
         room: RoomRef,
         event: TransportMedia,
-        client: ClientBase[Any],
+        client: WorkspaceConsumer,
     ) -> None:
-        """Relay a Matrix media event (an agent-sent image/file) out to the
+        """Relay a room media event (an agent-sent image/file) out to the
         external channel.
 
-        Mirrors handle_outbound_message: puppet media is skipped (it originated
+        Mirrors handle_outbound_message: human actor media is skipped (it originated
         on the platform), the caption convention is unpacked (a `filename` key
         means the body is a caption), and the relayed post is recorded in the
         message map so replies thread both ways. Any file type relays natively
         via the adapter; a file whose bytes can't be fetched or that exceeds the
         relay cap gets a disclosed text notice rather than a silent drop.
 
-        A message carrying several files arrives as several Matrix events
+        A message carrying several files arrives as several media events
         sharing a group marker; they are buffered here and relayed as ONE
-        platform post. `client` is the bridge's Matrix client, used to fetch the
+        platform post. `client` is the bridge's own client, used to fetch the
         media bytes.
         """
         logger.debug(
-            "[BRIDGE-OUT] matrix media event from=%s room=%s body=%s",
+            "[BRIDGE-OUT] room media from=%s room=%s body=%s",
             event.sender,
             room.room_id,
             event.body[:80] if event.body else "",
         )
-        if event.sender in self._puppet_matrix_ids:
+        if event.sender in self._human_user_ids:
             return
-        if event.sender == self._bridge_client_matrix_user_id:
+        if event.sender == self._workspace_consumer_transport_user_id:
             return
 
-        channel_id = self._find_channel(matrix_room_id=room.room_id)
+        channel_id = self._find_channel(transport_room_id=room.room_id)
         if channel_id is None:
             logger.debug("[BRIDGE-OUT] no channel mapping for room %s", room.room_id)
             return
@@ -2037,7 +2072,7 @@ class BridgeCore:
                 await self._relay_outbound_media(channel_id, event, client)
 
     async def _relay_outbound_media(
-        self, channel_id: str, event: TransportMedia, client: ClientBase[Any]
+        self, channel_id: str, event: TransportMedia, client: WorkspaceConsumer
     ) -> None:
         event_content = event.content
         sender_name = event.sender_name
@@ -2069,7 +2104,7 @@ class BridgeCore:
         )
 
         message_ref: str | None
-        data = await self._download_matrix_media(client, event.uri, filename)
+        data = await self._download_media(client, event.uri, filename)
         if data is None or len(data) > self._max_attachment_bytes:
             if data is not None:
                 logger.warning(
@@ -2213,23 +2248,24 @@ class BridgeCore:
                 external_post_id=message_ref,
             )
 
-    async def _download_matrix_media(
-        self, client: ClientBase[Any], mxc: str | None, filename: str
+    async def _download_media(
+        self, client: WorkspaceConsumer, media_uri: str | None, filename: str
     ) -> bytes | None:
-        """Fetch an mxc URI's bytes via the bridge client, or None on failure
+        """Fetch a media URI's bytes via the workspace consumer, or None on failure
         (logged — the caller posts a disclosed fallback, never a silent drop)."""
-        if not mxc:
-            logger.error("[BRIDGE-OUT] media event for %s has no mxc URI", filename)
+        if not media_uri:
+            logger.error("[BRIDGE-OUT] media event for %s has no media URI", filename)
             return None
         if client.transport is None:
             logger.error(
-                "[BRIDGE-OUT] bridge client not connected; cannot fetch %s", mxc
+                "[BRIDGE-OUT] workspace consumer not connected; cannot fetch %s",
+                media_uri,
             )
             return None
         try:
-            resp = await client.transport.download_media(mxc)
+            resp = await client.transport.download_media(media_uri)
         except TransportError as exc:
-            logger.error("[BRIDGE-OUT] failed to download media %s: %s", mxc, exc)
+            logger.error("[BRIDGE-OUT] failed to download media %s: %s", media_uri, exc)
             return None
         return resp.body
 
@@ -2273,9 +2309,9 @@ class BridgeCore:
     # ── Message-map helpers ───────────────────────────────────────────────────
 
     def _prerecord_message_map(
-        self, matrix_event_id: str, external_post_id: str
+        self, transport_event_id: str, external_post_id: str
     ) -> None:
-        """Anchor a Matrix-event → external-post mapping in memory, synchronously,
+        """Anchor a room-event → external-post mapping in memory, synchronously,
         so it resolves before the durable _record_message_map write commits.
 
         _record_message_map awaits a DB round-trip that yields the event loop; a
@@ -2285,7 +2321,7 @@ class BridgeCore:
         room_send returns, with NO await in between, and pop it once the row is
         committed. Same discipline as begin_provisioning for the room-mapping
         race."""
-        self._pending_message_maps[matrix_event_id] = external_post_id
+        self._pending_message_maps[transport_event_id] = external_post_id
 
     async def _record_message_map(
         self,
@@ -2294,7 +2330,7 @@ class BridgeCore:
         transport_event_id: str,
         external_post_id: str,
     ) -> None:
-        """Persist a Matrix-event ↔ external-post correlation (idempotent)."""
+        """Persist a room-event ↔ external-post correlation (idempotent)."""
         async with self._session_factory() as session:
             existing = await self._bridge_message_map_store.get_by_transport_event_id(
                 session, self._bridge_id, transport_event_id
@@ -2312,18 +2348,14 @@ class BridgeCore:
             )
             await session.commit()
 
-    async def _matrix_event_for_external_post(
-        self, external_post_id: str
-    ) -> str | None:
+    async def _event_for_external_post(self, external_post_id: str) -> str | None:
         async with self._session_factory() as session:
             mapping = await self._bridge_message_map_store.get_by_external_post_id(
                 session, self._bridge_id, external_post_id
             )
         return mapping.transport_event_id if mapping is not None else None
 
-    async def _external_post_for_matrix_event(
-        self, transport_event_id: str
-    ) -> str | None:
+    async def _external_post_for_event(self, transport_event_id: str) -> str | None:
         pending = self._pending_message_maps.get(transport_event_id)
         if pending is not None:
             return pending
@@ -2351,7 +2383,7 @@ class BridgeCore:
     def add_room_mapping(
         self,
         room_id: str,
-        matrix_room_id: str,
+        transport_room_id: str,
         external_channel_id: str,
         tenant_id: str,
     ) -> None:
@@ -2364,13 +2396,13 @@ class BridgeCore:
         more to the point, without a read that would run under whatever tenant
         happened to be bound at the time.
         """
-        key = (room_id, matrix_room_id)
+        key = (room_id, transport_room_id)
         self._channel_to_room[external_channel_id] = key
         self._room_to_channel[key] = external_channel_id
         self._room_tenants[room_id] = tenant_id
 
-    def remove_room_mapping(self, room_id: str, matrix_room_id: str) -> None:
-        key = (room_id, matrix_room_id)
+    def remove_room_mapping(self, room_id: str, transport_room_id: str) -> None:
+        key = (room_id, transport_room_id)
         channel_id = self._room_to_channel.pop(key, None)
         if channel_id is not None:
             self._channel_to_room.pop(channel_id, None)

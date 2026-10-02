@@ -148,7 +148,7 @@ async def test_define_role_refuses_a_reserved_name(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     async with session_factory() as session:
-        room = Room(matrix_room_id="!r:test", name="r", description="r")
+        room = Room(transport_room_id="!r:test", name="r", description="r")
         session.add(room)
         await session.flush()
         with pytest.raises(ValueError, match="reserved"):

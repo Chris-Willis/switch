@@ -42,7 +42,7 @@ const h = vi.hoisted(() => {
   };
 });
 
-vi.mock('@main/core/sdk-host/shared-watcher', () => ({
+vi.mock('@main/core/sdk-host/agent-host', () => ({
   discardControllerState: h.discardControllerState,
 }));
 

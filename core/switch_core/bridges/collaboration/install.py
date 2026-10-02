@@ -1,6 +1,6 @@
 """Installing *our* app into someone else's workspace.
 
-A `CollaborationAdapter` is what a bridge runs; this is what happens before
+A `PlatformAdapter` is what a bridge runs; this is what happens before
 there is one. The distinction is not organisational — the two have genuinely
 different lifetimes and genuinely different secrets:
 

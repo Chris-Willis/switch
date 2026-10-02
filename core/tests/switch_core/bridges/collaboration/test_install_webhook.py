@@ -36,7 +36,7 @@ from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.install import (
     MessagingInstallerRegistry,
     commands_path,
@@ -86,7 +86,7 @@ def _signed(body: bytes) -> dict[str, str]:
     }
 
 
-class _SocketOnlyAdapter(CollaborationAdapter):
+class _SocketOnlyAdapter(PlatformAdapter):
     """A bridge that takes its events some other way.
 
     Concrete only so one can be built; every platform call is a stub, because
@@ -159,10 +159,10 @@ class _GatedAdapter(_SocketOnlyAdapter):
 class _FakeLifecycle:
     def __init__(self, factory: async_sessionmaker) -> None:
         self._factory = factory
-        self.adapters: dict[str, CollaborationAdapter] = {}
+        self.adapters: dict[str, PlatformAdapter] = {}
         self.removed: list[str] = []
 
-    def get_adapter(self, bridge_id: str) -> CollaborationAdapter | None:
+    def get_adapter(self, bridge_id: str) -> PlatformAdapter | None:
         return self.adapters.get(bridge_id)
 
     async def remove(self, bridge_id: str) -> None:
@@ -202,7 +202,7 @@ class _Fixture:
 async def _make_bridge(factory: async_sessionmaker, tenant_id: str, suffix: str) -> str:
     async with tenant_session(factory, tenant_id) as session:
         client = Client(
-            matrix_user_id=f"@bridge-{tenant_id}:{suffix}",
+            transport_user_id=f"@bridge-{tenant_id}:{suffix}",
             display_name="bridge",
             type="collaboration_bridge",
         )

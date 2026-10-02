@@ -12,8 +12,8 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
@@ -244,7 +244,7 @@ def test_the_defusal_is_not_an_adapters_to_forget(platform: str) -> None:
     # An adapter renders in `_render_outbound`; `translate_outbound` is the
     # base class's, final, and defuses whatever comes back.
     assert "translate_outbound" not in type(ADAPTERS[platform]()).__dict__
-    assert getattr(CollaborationAdapter.translate_outbound, "__final__", False)
+    assert getattr(PlatformAdapter.translate_outbound, "__final__", False)
 
 
 # ── The relay ────────────────────────────────────────────────────────────────
@@ -253,7 +253,7 @@ def test_the_defusal_is_not_an_adapters_to_forget(platform: str) -> None:
 class _Recording:
     """An adapter that records what the relay asked it to send."""
 
-    def __init__(self, platform: CollaborationAdapter) -> None:
+    def __init__(self, platform: PlatformAdapter) -> None:
         self._platform = platform
         self.sent: list[dict[str, Any]] = []
 
@@ -284,12 +284,12 @@ async def _tenant(*_args: Any, **_kwargs: Any) -> str:
     return "tenant-1"
 
 
-def _bridge(adapter: _Recording) -> BridgeCore:
-    core = object.__new__(BridgeCore)
+def _bridge(adapter: _Recording) -> CollaborationCore:
+    core = object.__new__(CollaborationCore)
     core._bridge_type = "slack"  # type: ignore[attr-defined]
     core._adapter = adapter  # type: ignore[assignment]
-    core._puppet_matrix_ids = set()  # type: ignore[assignment]
-    core._bridge_client_matrix_user_id = "@bridge:switch.local"  # type: ignore[assignment]
+    core._human_user_ids = set()  # type: ignore[assignment]
+    core._workspace_consumer_transport_user_id = "@bridge:switch.local"  # type: ignore[assignment]
     core._find_channel = lambda **_kwargs: "C1"  # type: ignore[assignment]
     core._channel_to_room = {"C1": ("room-uuid", "!r:switch.local")}  # type: ignore[assignment]
     core._room_tenant = _tenant  # type: ignore[assignment]

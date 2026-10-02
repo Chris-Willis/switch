@@ -24,12 +24,12 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.agent.app import create_agent_bridge_app
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_TTL_SECONDS,
-    ConnectionRegistry,
+    AgentConnectionRegistry,
 )
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_KEY_LABEL,
     BOOTSTRAP_KEY_TYPE,
@@ -80,12 +80,12 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramConnectionConfig,
 )
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.clients.admin_client import AdminClient
-from switch_core.clients.agent_client import AgentClient
-from switch_core.clients.client_base import ClientBase
+from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
+from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
-from switch_core.config import SwitchConfig
+from switch_core.clients.command_consumer import CommandConsumer
+from switch_core.config import SwitchConfig, deprecated_env_names
 from switch_core.crypto import encrypt_token
 from switch_core.db.boot_lock import boot_lock
 from switch_core.db.engine import (
@@ -145,12 +145,12 @@ from switch_core.observability.runtime import EventLoopLag
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
-from switch_core.session_activity.listener import SessionActivityListener
+from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
     maintenance_loop as session_activity_maintenance_loop,
 )
 from switch_core.session_activity.outcomes import ApprovalOutcomes
-from switch_core.session_activity.service import SessionActivityService
+from switch_core.session_activity.service import AgentSessionActivityService
 from switch_core.telemetry.reporter import SnapshotReporter
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.setup import build_telemetry
@@ -177,7 +177,7 @@ _CONNECTION_SWEEP_INTERVAL = 2.0
 _FORCED_EXIT_GRACE_SECONDS = 3.0
 
 
-async def _runtime_state_sweep_loop(protocol: ProtocolService) -> None:
+async def _runtime_state_sweep_loop(protocol: AgentCore) -> None:
     # `no_tenant` for the reason every other long-lived task does it: a task
     # keeps the context of whoever created it, and nothing in here may depend
     # on that. Boot binds nothing today, so this changes no behaviour — it
@@ -191,7 +191,7 @@ async def _runtime_state_sweep_loop(protocol: ProtocolService) -> None:
                 logger.exception("Runtime-state sweep failed")
 
 
-async def _connection_sweep_loop(protocol: ProtocolService, lag: EventLoopLag) -> None:
+async def _connection_sweep_loop(protocol: AgentCore, lag: EventLoopLag) -> None:
     """Expire connections whose client has stopped beating.
 
     Skips a round after the event loop has been blocked. A stall stops us
@@ -212,7 +212,7 @@ async def _connection_sweep_loop(protocol: ProtocolService, lag: EventLoopLag) -
         lag.record(overslept)
         if overslept > HEARTBEAT_TTL_SECONDS / 2:
             logger.warning(
-                "Connection sweep skipped: the event loop was blocked for %.1fs, "
+                "AgentConnection sweep skipped: the event loop was blocked for %.1fs, "
                 "so heartbeats could not be processed and every connection would "
                 "look lapsed. Something is blocking the loop — that is the bug, "
                 "not the connections.",
@@ -222,14 +222,14 @@ async def _connection_sweep_loop(protocol: ProtocolService, lag: EventLoopLag) -
         try:
             for conn in protocol.connections.sweep():
                 logger.info(
-                    "Connection %s for agent %s expired (heartbeat lapsed, "
+                    "AgentConnection %s for agent %s expired (heartbeat lapsed, "
                     "%d beats received)",
                     conn.id,
                     conn.agent_id,
                     conn.beats,
                 )
         except Exception:
-            logger.exception("Connection sweep failed")
+            logger.exception("AgentConnection sweep failed")
 
 
 # The innermost of three nested budgets: under
@@ -367,7 +367,7 @@ async def run(config: SwitchConfig) -> None:
     message_listener = MessageListener(lambda: create_unpooled_engine(config))
     # The same arrangement for session activity and approval requests: their
     # tables announce each change with the row attached, and this pushes it on.
-    session_activity_listener = SessionActivityListener(
+    session_activity_listener = AgentSessionActivityListener(
         lambda: create_unpooled_engine(config)
     )
 
@@ -460,7 +460,7 @@ async def run(config: SwitchConfig) -> None:
             await resource_service.log_builtin_shadowing(session)
 
     # ── Provisioning ─────────────────────────────────────────────────────────
-    matrix_admin: Provisioning = PostgresProvisioning(
+    provisioning: Provisioning = PostgresProvisioning(
         session_factory=session_factory,
         room_store=room_store,
         client_store=client_store,
@@ -472,7 +472,7 @@ async def run(config: SwitchConfig) -> None:
     # the agent bridge because the room clients are wired first and read
     # presence from it — an agent is reachable if it has a live connection OR a
     # fresh heartbeat row (CHOO-1857 stage B).
-    connections = ConnectionRegistry()
+    connections = AgentConnectionRegistry()
 
     # ── Client factory ───────────────────────────────────────────────────────
     client_factory = ClientFactory(
@@ -489,7 +489,8 @@ async def run(config: SwitchConfig) -> None:
     )
     client_factory.register(
         "agent",
-        AgentClient,
+        AgentActor,
+        AgentConsumer,
         event_buffer=event_buffer,
         agent_store=agent_store,
         room_store=room_store,
@@ -502,12 +503,14 @@ async def run(config: SwitchConfig) -> None:
         connections=connections,
         frontend_base_url=config.frontend_base_url,
     )
-    client_factory.register("user", ClientBase)
-    client_factory.register("bridge", ClientBase)
+    # Members that only write: a person on another platform, and a bridge's own
+    # identity (its reader, the WorkspaceConsumer, is built by the bridge).
+    client_factory.register("user", HumanActor)
+    client_factory.register("bridge", Actor)
 
     # ── Client lifecycle ─────────────────────────────────────────────────────
     client_lifecycle = ClientLifecycleService(
-        matrix_admin=matrix_admin,
+        provisioning=provisioning,
         client_store=client_store,
         tenant_store=tenant_store,
         client_factory=client_factory,
@@ -525,19 +528,19 @@ async def run(config: SwitchConfig) -> None:
         client_store=client_store,
         client_lifecycle=client_lifecycle,
         room_service=None,  # type: ignore[arg-type]  # set after RoomService creation
-        matrix_admin=matrix_admin,
+        provisioning=provisioning,
         session_factory=session_factory,
         config=config,
         client_factory=client_factory,
         session_activity_listener=session_activity_listener,
-        session_activity_service=SessionActivityService(session_factory),
+        session_activity_service=AgentSessionActivityService(session_factory),
         connections=connections,
         telemetry=telemetry,
     )
 
     # ── Room service ─────────────────────────────────────────────────────────
     room_service = RoomService(
-        matrix_admin=matrix_admin,
+        provisioning=provisioning,
         room_store=room_store,
         agent_store=agent_store,
         client_lifecycle=client_lifecycle,
@@ -549,12 +552,13 @@ async def run(config: SwitchConfig) -> None:
     )
     collab_lifecycle._room_service = room_service
 
-    # Registered after RoomService is built: the admin client owns the
+    # Registered after RoomService is built: the command consumer owns the
     # `!invite-agent` command, which reuses RoomService to add agents to the
     # room (and any bridged channel).
     client_factory.register(
         "admin",
-        AdminClient,
+        SystemActor,
+        CommandConsumer,
         agent_store=agent_store,
         room_store=room_store,
         room_role_store=room_role_store,
@@ -583,7 +587,7 @@ async def run(config: SwitchConfig) -> None:
         session_factory=session_factory,
         config=config,
         approval_outcomes=ApprovalOutcomes(
-            session_activity_listener, SessionActivityService(session_factory)
+            session_activity_listener, AgentSessionActivityService(session_factory)
         ),
         connections=connections,
         telemetry=telemetry,
@@ -733,7 +737,7 @@ async def run(config: SwitchConfig) -> None:
         bridges_running=collab_lifecycle.running_count,
         bridges_running_by_platform=collab_lifecycle.running_by_platform,
         bridges_configured=collab_lifecycle.expected_count,
-        clients_running=client_lifecycle.running_count,
+        consumers_running=client_lifecycle.running_count,
         connectors_running=connector_lifecycle.running_count,
         connectors_configured=connector_lifecycle.expected_count,
         agents_connected=lambda: len(connections.live_agent_ids()),
@@ -879,7 +883,7 @@ async def run(config: SwitchConfig) -> None:
                     client_lifecycle,
                     collab_lifecycle,
                     connector_lifecycle,
-                    matrix_admin,
+                    provisioning,
                     discord_gateway,
                     discord_gateway_task,
                 )
@@ -1328,7 +1332,7 @@ async def _shutdown(
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
     connector_lifecycle: ServerSideConnectorLifecycleService,
-    matrix_admin: Provisioning,
+    provisioning: Provisioning,
     discord_gateway: DiscordGatewayClient | None,
     discord_gateway_task: asyncio.Task[None] | None,
 ) -> None:
@@ -1347,7 +1351,7 @@ async def _shutdown(
     if discord_gateway is not None:
         await discord_gateway.stop()
     await client_lifecycle.stop_all()
-    await matrix_admin.close()
+    await provisioning.close()
 
     # `should_exit` starts uvicorn's shutdown, which runs the lifespan's
     # teardown; this sleep is all the time that teardown gets.
@@ -1433,6 +1437,8 @@ def main() -> None:
     configure_logging(config, running_version)
 
     logger.info("Starting switch-core %s", running_version or "(version unknown)")
+    for warning in deprecated_env_names():
+        logger.warning(warning)
 
     asyncio.run(_migrate_and_grant(config))
 

@@ -31,7 +31,7 @@ vi.mock('@main/core/switch-rooms/auto-session-store', () => ({
   listStoppedControllerAgentIds,
 }));
 vi.mock('./remote-watcher', () => ({ pushRemoteAutoApprove }));
-vi.mock('@main/core/sdk-host/shared-watcher', () => ({
+vi.mock('@main/core/sdk-host/agent-host', () => ({
   keepAutoApproveChoice,
   recordAutoApproveOnHost,
 }));

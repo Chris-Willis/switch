@@ -24,7 +24,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -64,7 +64,7 @@ def _service(
         client_store=ClientStore(),
         client_lifecycle=MagicMock(),
         room_service=MagicMock(),
-        matrix_admin=MagicMock(),
+        provisioning=MagicMock(),
         session_factory=session_factory,
         config=config,
         client_factory=MagicMock(),
@@ -74,7 +74,7 @@ def _service(
     )
 
 
-class _StubAdapter(CollaborationAdapter):
+class _StubAdapter(PlatformAdapter):
     """Concrete only so `start` can build one; no platform call is made."""
 
     def __init__(self, *, config: Any) -> None:
@@ -110,7 +110,7 @@ async def _make_bridge(session: AsyncSession, *, tenant_id: str) -> tuple[str, s
     """A bridge row and its client, in `tenant_id`. Returns (bridge, client)."""
     client = Client(
         tenant_id=tenant_id,
-        matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+        transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
         display_name="bridge client",
         type="bridge",
     )
@@ -244,7 +244,7 @@ async def test_the_bridge_task_unbinds_and_then_binds_per_unit_of_work(
         bridge_id, client_id = await _make_bridge(session, tenant_id=bridge_tenant)
         room = Room(
             tenant_id=bridge_tenant,
-            matrix_room_id=f"!room-{uuid.uuid4().hex[:8]}:test",
+            transport_room_id=f"!room-{uuid.uuid4().hex[:8]}:test",
             name="a bridged room",
             description="",
             bridge_id=bridge_id,
@@ -267,8 +267,8 @@ async def test_the_bridge_task_unbinds_and_then_binds_per_unit_of_work(
         async def start(self) -> None:
             seen["client"] = current_tenant_id()
 
-    bridge_client = _Client()
-    bridge_client.client_id = client_id
+    workspace_consumer = _Client()
+    workspace_consumer.client_id = client_id
 
     leaked: list[str | None] = []
     with tenant_scope(caller_tenant):
@@ -276,7 +276,7 @@ async def test_the_bridge_task_unbinds_and_then_binds_per_unit_of_work(
             bridge_id,
             bridge_tenant,
             _Core(),  # type: ignore[arg-type]
-            bridge_client,  # type: ignore[arg-type]
+            workspace_consumer,  # type: ignore[arg-type]
         )
         leaked.append(current_tenant_id())
 
@@ -338,7 +338,7 @@ async def test_a_host_resource_conflict_is_looked_for_across_every_tenant(
         await _make_tenant(session, newcomer_tenant)
         client = Client(
             tenant_id=incumbent_tenant,
-            matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+            transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
             display_name="bridge client",
             type="bridge",
         )
@@ -406,7 +406,7 @@ async def test_a_tenant_scoped_read_of_the_same_data_would_have_missed_the_confl
         await _make_tenant(session, newcomer_tenant)
         client = Client(
             tenant_id=incumbent_tenant,
-            matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+            transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
             display_name="bridge client",
             type="bridge",
         )
@@ -454,7 +454,7 @@ async def test_a_same_tenant_conflict_names_the_incumbent_bridge(
         await _make_tenant(session, tenant)
         client = Client(
             tenant_id=tenant,
-            matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+            transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
             display_name="bridge client",
             type="bridge",
         )
@@ -500,7 +500,7 @@ async def test_a_cross_tenant_conflict_does_not_name_the_incumbent_or_its_tenant
         await _make_tenant(session, newcomer_tenant)
         client = Client(
             tenant_id=incumbent_tenant,
-            matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+            transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
             display_name="Their Secret Teams",
             type="bridge",
         )
@@ -549,7 +549,7 @@ async def test_a_conflict_with_nothing_bound_fails_closed_to_the_non_disclosing_
         await _make_tenant(session, incumbent_tenant)
         client = Client(
             tenant_id=incumbent_tenant,
-            matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+            transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
             display_name="Their Secret Teams",
             type="bridge",
         )

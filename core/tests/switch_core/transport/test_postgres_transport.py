@@ -61,28 +61,28 @@ async def _make_room(session: AsyncSession) -> tuple[str, str, str, str]:
     """
     suffix = uuid.uuid4().hex[:8]
     client = Client(
-        matrix_user_id=f"@agent-{suffix}:test",
+        transport_user_id=f"@agent-{suffix}:test",
         display_name="agent one",
         type="agent",
     )
     session.add(client)
     await session.flush()
-    room = Room(matrix_room_id=f"!room-{suffix}:test", name="a room", description="")
+    room = Room(transport_room_id=f"!room-{suffix}:test", name="a room", description="")
     session.add(room)
     await session.flush()
-    return room.id, room.matrix_room_id, client.id, client.matrix_user_id
+    return room.id, room.transport_room_id, client.id, client.transport_user_id
 
 
 async def _make_client(session: AsyncSession, label: str) -> tuple[str, str]:
     """Insert one more Client. Returns (client id, client mxid)."""
     client = Client(
-        matrix_user_id=f"@{label}-{uuid.uuid4().hex[:8]}:test",
+        transport_user_id=f"@{label}-{uuid.uuid4().hex[:8]}:test",
         display_name=label,
         type="agent",
     )
     session.add(client)
     await session.flush()
-    return client.id, client.matrix_user_id
+    return client.id, client.transport_user_id
 
 
 async def _watched_room(transport: PostgresTransport) -> str:
@@ -176,6 +176,7 @@ def _transport(
     listener: _FakeListener | None = None,
     ephemeral: EphemeralBus | None = None,
     invites: InviteBus | None = None,
+    actor_role: str = "agent",
 ) -> PostgresTransport:
     """A transport for `client_id`, acting in `tenant_id`.
 
@@ -192,6 +193,7 @@ def _transport(
         client_id=client_id,
         tenant_id=tenant_id,
         display_name="agent one",
+        actor_role=actor_role,
         session_factory=session_factory,
         room_store=RoomStore(),
         message_store=MessageStore(),
@@ -581,6 +583,7 @@ class TestMedia:
                 user_id="@a:test",
                 client_id="ghost",
                 display_name="agent one",
+                actor_role="agent",
                 session_factory=session_factory,
                 room_store=RoomStore(),
                 message_store=MessageStore(),
@@ -741,13 +744,13 @@ class TestReceiving:
 
         async with session_factory() as session:
             newcomer = Client(
-                matrix_user_id=f"@later-{uuid.uuid4().hex[:8]}:test",
+                transport_user_id=f"@later-{uuid.uuid4().hex[:8]}:test",
                 display_name="the newcomer",
                 type="agent",
             )
             session.add(newcomer)
             await session.commit()
-            newcomer_id, newcomer_mxid = newcomer.id, newcomer.matrix_user_id
+            newcomer_id, newcomer_mxid = newcomer.id, newcomer.transport_user_id
 
         joiner = _transport(
             session_factory, client_id=newcomer_id, user_id=newcomer_mxid
@@ -1104,21 +1107,21 @@ class TestDeliveryBindsTheRoomsTenant:
             suffix = uuid.uuid4().hex[:8]
             client = Client(
                 tenant_id=tenant_id,
-                matrix_user_id=f"@agent-{suffix}:test",
+                transport_user_id=f"@agent-{suffix}:test",
                 display_name="agent one",
                 type="agent",
             )
             session.add(client)
             room = Room(
                 tenant_id=tenant_id,
-                matrix_room_id=f"!room-{suffix}:test",
+                transport_room_id=f"!room-{suffix}:test",
                 name="a room",
                 description="",
             )
             session.add(room)
             await session.commit()
-            transport_room_id = room.matrix_room_id
-            client_id, user_id = client.id, client.matrix_user_id
+            transport_room_id = room.transport_room_id
+            client_id, user_id = client.id, client.transport_user_id
 
         seen: list[str | None] = []
         original = MessageStore.list_for_room
@@ -1164,7 +1167,7 @@ class TestATransportActsInItsClientsTenant:
     Its task binds nothing: `ClientLifecycleService` unbinds before running a
     client, so anything the transport did under an *inherited* tenant would be
     doing it under the tenant of whoever happened to create the task — boot, a
-    gateway request, or the inbound bridge message that minted a puppet
+    gateway request, or the inbound bridge message that minted a human actor
     mid-conversation. That is still the failure this class exists to prevent.
     What changed with the restricted runtime role is where the right answer
     comes from.
@@ -1221,14 +1224,14 @@ class TestATransportActsInItsClientsTenant:
             suffix = uuid.uuid4().hex[:8]
             client = Client(
                 tenant_id=tenant_id,
-                matrix_user_id=f"@sys-{suffix}:test",
+                transport_user_id=f"@sys-{suffix}:test",
                 display_name="admin",
                 type="admin",
             )
             session.add(client)
             room = Room(
                 tenant_id=tenant_id,
-                matrix_room_id=f"!room-{suffix}:test",
+                transport_room_id=f"!room-{suffix}:test",
                 name="a room",
                 description="",
             )
@@ -1238,8 +1241,8 @@ class TestATransportActsInItsClientsTenant:
                 ClientRoom(tenant_id=tenant_id, client_id=client.id, room_id=room.id)
             )
             await session.commit()
-            client_id, user_id = client.id, client.matrix_user_id
-            transport_room_id = room.matrix_room_id
+            client_id, user_id = client.id, client.transport_user_id
+            transport_room_id = room.transport_room_id
 
         seen: list[str | None] = []
         original = RoomStore.get_for_client
@@ -1257,7 +1260,7 @@ class TestATransportActsInItsClientsTenant:
             tenant_id=tenant_id,
         )
         # Stands in for a task that inherited a tenant it has no business
-        # acting under — a bridge restart, a puppet minted mid-conversation.
+        # acting under — a bridge restart, a human actor minted mid-conversation.
         with tenant_scope("some-other-tenant"):
             rooms = await transport.joined_rooms()
 
@@ -1287,14 +1290,14 @@ class TestATransportActsInItsClientsTenant:
             suffix = uuid.uuid4().hex[:8]
             client = Client(
                 tenant_id=tenant_id,
-                matrix_user_id=f"@sys-{suffix}:test",
+                transport_user_id=f"@sys-{suffix}:test",
                 display_name="admin",
                 type="admin",
             )
             session.add(client)
             room = Room(
                 tenant_id=tenant_id,
-                matrix_room_id=f"!room-{suffix}:test",
+                transport_room_id=f"!room-{suffix}:test",
                 name="a room",
                 description="",
             )
@@ -1324,7 +1327,7 @@ class TestATransportActsInItsClientsTenant:
         client's tenant — with nothing bound around the loop that drives them.
 
         This test used to arrange the two rooms in *different* tenants, on the
-        reading that a reused puppet could speak in both and that the
+        reading that a reused human actor could speak in both and that the
         transport's own tenant must therefore never decide how a room is read.
         That shape is not reachable: `client_rooms` and `messages` both key to
         `rooms` and to `clients` through `tenant_id`, so a client can be
@@ -1339,30 +1342,30 @@ class TestATransportActsInItsClientsTenant:
         async with session_factory() as session:
             session.add(Tenant(id=tenant_id, slug=tenant_id, name=tenant_id))
             await session.flush()
-            puppet = Client(
+            human_actor = Client(
                 tenant_id=tenant_id,
-                matrix_user_id=f"@puppet-{suffix}:test",
-                display_name="puppet",
+                transport_user_id=f"@human-actor-{suffix}:test",
+                display_name="human actor",
                 type="user",
             )
-            session.add(puppet)
+            session.add(human_actor)
             first = Room(
                 tenant_id=tenant_id,
-                matrix_room_id=f"!a-{suffix}:test",
+                transport_room_id=f"!a-{suffix}:test",
                 name="room a",
                 description="",
             )
             second = Room(
                 tenant_id=tenant_id,
-                matrix_room_id=f"!b-{suffix}:test",
+                transport_room_id=f"!b-{suffix}:test",
                 name="room b",
                 description="",
             )
             session.add_all([first, second])
             await session.commit()
             room_ids = {first.id: tenant_id, second.id: tenant_id}
-            mxid_a, mxid_b = first.matrix_room_id, second.matrix_room_id
-            client_id, user_id = puppet.id, puppet.matrix_user_id
+            mxid_a, mxid_b = first.transport_room_id, second.transport_room_id
+            client_id, user_id = human_actor.id, human_actor.transport_user_id
 
         seen: dict[str, list[str | None]] = {}
         original = MessageStore.list_for_room
@@ -1388,8 +1391,12 @@ class TestATransportActsInItsClientsTenant:
         self._tasks.append(asyncio.create_task(transport.receive_forever()))
         await _watched_room(transport)
 
-        await transport.send_message(mxid_a, "in a", sender_name="puppet", metered=True)
-        await transport.send_message(mxid_b, "in b", sender_name="puppet", metered=True)
+        await transport.send_message(
+            mxid_a, "in a", sender_name="human actor", metered=True
+        )
+        await transport.send_message(
+            mxid_b, "in b", sender_name="human actor", metered=True
+        )
 
         for room_id in room_ids:
             await listener.announce(room_id)
@@ -1423,21 +1430,21 @@ class TestATransportActsInItsClientsTenant:
             await session.flush()
             client = Client(
                 tenant_id=tenant_id,
-                matrix_user_id=f"@sys-{suffix}:test",
+                transport_user_id=f"@sys-{suffix}:test",
                 display_name="admin",
                 type="admin",
             )
             session.add(client)
             elsewhere = Room(
                 tenant_id=other_tenant,
-                matrix_room_id=f"!elsewhere-{suffix}:test",
+                transport_room_id=f"!elsewhere-{suffix}:test",
                 name="somebody else's room",
                 description="",
             )
             session.add(elsewhere)
             await session.commit()
-            client_id, user_id = client.id, client.matrix_user_id
-            elsewhere_mxid = elsewhere.matrix_room_id
+            client_id, user_id = client.id, client.transport_user_id
+            elsewhere_mxid = elsewhere.transport_room_id
 
         transport = _transport(
             rls_harness.restricted,
@@ -1472,14 +1479,14 @@ async def test_the_schema_forbids_a_client_row_in_another_tenants_room(
         await session.flush()
         client = Client(
             tenant_id=tenant_a,
-            matrix_user_id=f"@sys-{suffix}:test",
+            transport_user_id=f"@sys-{suffix}:test",
             display_name="admin",
             type="admin",
         )
         session.add(client)
         room = Room(
             tenant_id=tenant_b,
-            matrix_room_id=f"!b-{suffix}:test",
+            transport_room_id=f"!b-{suffix}:test",
             name="room b",
             description="",
         )
@@ -1514,6 +1521,7 @@ class TestWhatIsMeasured:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         handlers: TransportHandlers | None = None,
+        actor_role: str = "agent",
     ) -> tuple[PostgresTransport, _FakeListener, str]:
         async with session_factory() as session:
             _, transport_room_id, client_id, user_id = await _make_room(session)
@@ -1521,7 +1529,11 @@ class TestWhatIsMeasured:
 
         listener = _FakeListener()
         transport = _transport(
-            session_factory, client_id=client_id, user_id=user_id, listener=listener
+            session_factory,
+            client_id=client_id,
+            user_id=user_id,
+            listener=listener,
+            actor_role=actor_role,
         )
         transport.register_handlers(handlers or _Received().handlers())
         await transport.join_room(transport_room_id)
@@ -1549,6 +1561,24 @@ class TestWhatIsMeasured:
         payloads = {p.name: p for p in _registry.collect()}
         assert self._kinds(payloads, "switch.messages.sent") == {"message": 1.0}
         assert self._kinds(payloads, "switch.messages.delivered") == {"message": 1.0}
+
+    async def test_writes_and_reads_say_which_actor_did_them(
+        self, session_factory: async_sessionmaker[AsyncSession], _registry
+    ) -> None:
+        # The same tag on both sides, so a dashboard can put who writes next
+        # to who reads.
+        transport, listener, room = await self._receiving(
+            session_factory, actor_role="system"
+        )
+
+        await transport.send_message(room, "hello", sender_name="Switch", metered=False)
+        await listener.announce(await _watched_room(transport))
+
+        payloads = {p.name: p for p in _registry.collect()}
+        for name in ("switch.messages.sent", "switch.messages.delivered"):
+            assert [dict(point.attributes) for point in payloads[name].numbers] == [
+                {"kind": "message", "actor": "system"}
+            ], name
 
     async def test_media_is_counted_apart_from_text(
         self, session_factory: async_sessionmaker[AsyncSession], _registry
@@ -1588,7 +1618,7 @@ class TestWhatIsMeasured:
         )
         point = payload.histograms[0]
         assert point.count == 1
-        assert point.attributes == {"kind": "message"}
+        assert point.attributes == {"kind": "message", "actor": "agent"}
         # Never negative: the row's timestamp comes from the database's clock
         # and the subtraction happens on this process's, so skew is ordinary.
         assert 0.0 <= point.total < 60_000.0

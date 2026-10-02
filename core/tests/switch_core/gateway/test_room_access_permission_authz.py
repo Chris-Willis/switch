@@ -59,7 +59,7 @@ async def _add_room(
     write_visibility: str = "private",
 ) -> Room:
     room = Room(
-        matrix_room_id=f"!{name}:test",
+        transport_room_id=f"!{name}:test",
         name=name,
         description=f"{name} desc",
         owner_id=owner_id,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
@@ -11,8 +11,8 @@ from switch_core.bridges.collaboration.models import (
 )
 
 
-class _FakePuppet:
-    matrix_user_id = "@puppet:s"
+class _FakeHumanActor:
+    transport_user_id = "@human actor:s"
 
     def __init__(self) -> None:
         self.uploads: list[dict[str, Any]] = []
@@ -25,7 +25,7 @@ class _FakePuppet:
 
     async def send_media(
         self,
-        matrix_room_id,
+        transport_room_id,
         mxc,
         filename,
         mimetype,
@@ -39,7 +39,7 @@ class _FakePuppet:
     ):  # noqa: ANN001, ANN201
         self.media.append(
             {
-                "matrix_room_id": matrix_room_id,
+                "matrix_room_id": transport_room_id,
                 "mxc": mxc,
                 "filename": filename,
                 "mimetype": mimetype,
@@ -53,7 +53,7 @@ class _FakePuppet:
         return f"$evt-{len(self.media) - 1}"
 
     async def send_message(
-        self, matrix_room_id, content, *, metered, format=None, thread_root_id=None
+        self, transport_room_id, content, *, metered, format=None, thread_root_id=None
     ):  # noqa: ANN001, ANN201, A002
         self.messages.append({"content": content, "thread_root_id": thread_root_id})
         return "$evt-text"
@@ -70,14 +70,14 @@ async def _no_text_answer(_msg: object) -> None:
 
 
 def _fake_bridge() -> SimpleNamespace:
-    puppet = _FakePuppet()
+    human_actor = _FakeHumanActor()
     recorded: list[dict[str, str]] = []
 
     async def _is_registered_agent(_name: str) -> bool:
         return False
 
-    async def _ensure_user_in_matrix_room(**_kwargs: Any) -> _FakePuppet:
-        return puppet
+    async def _ensure_human_in_room(**_kwargs: Any) -> _FakeHumanActor:
+        return human_actor
 
     async def _record_message_map(**kwargs: str) -> None:
         recorded.append(kwargs)
@@ -92,9 +92,9 @@ def _fake_bridge() -> SimpleNamespace:
         _adapter=_FakeAdapter(),
         _channel_to_room={"chan-1": ("room-1", "!room:s")},
         _is_registered_agent=_is_registered_agent,
-        _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
+        _ensure_human_in_room=_ensure_human_in_room,
         _record_message_map=_record_message_map,
-        puppet=puppet,
+        human_actor=human_actor,
         recorded=recorded,
     )
     return ns
@@ -125,7 +125,7 @@ def _attachment(filename: str, mimetype: str) -> Attachment:
 async def test_three_attachments_are_stamped_as_one_group() -> None:
     bridge = _fake_bridge()
 
-    await BridgeCore._handle_inbound_message(
+    await CollaborationCore._handle_inbound_message(
         bridge,
         _msg(
             content="three files",
@@ -137,7 +137,7 @@ async def test_three_attachments_are_stamped_as_one_group() -> None:
         ),
     )
 
-    media = bridge.puppet.media
+    media = bridge.human_actor.media
     assert len(media) == 3
 
     group_ids = {m["group"]["id"] for m in media}
@@ -158,7 +158,7 @@ async def test_three_attachments_are_stamped_as_one_group() -> None:
             "external_post_id": "post-1",
         }
     ]
-    assert bridge.puppet.messages == []
+    assert bridge.human_actor.messages == []
 
 
 async def test_single_attachment_carries_no_group_marker() -> None:
@@ -166,19 +166,19 @@ async def test_single_attachment_carries_no_group_marker() -> None:
     # a complete message and never buffers it.
     bridge = _fake_bridge()
 
-    await BridgeCore._handle_inbound_message(
+    await CollaborationCore._handle_inbound_message(
         bridge, _msg(attachments=[_attachment("cat.png", "image/png")])
     )
 
-    assert len(bridge.puppet.media) == 1
-    assert bridge.puppet.media[0]["group"] is None
-    assert bridge.puppet.media[0]["caption"] == "here you go"
+    assert len(bridge.human_actor.media) == 1
+    assert bridge.human_actor.media[0]["group"] is None
+    assert bridge.human_actor.media[0]["caption"] == "here you go"
 
 
 async def test_attachment_failures_are_disclosed_alongside_text() -> None:
     bridge = _fake_bridge()
 
-    await BridgeCore._handle_inbound_message(
+    await CollaborationCore._handle_inbound_message(
         bridge,
         _msg(
             content="see attached",
@@ -188,7 +188,7 @@ async def test_attachment_failures_are_disclosed_alongside_text() -> None:
         ),
     )
 
-    body = bridge.puppet.messages[0]["content"]
+    body = bridge.human_actor.messages[0]["content"]
     assert body.startswith("see attached")
     assert "huge.zip" in body
     assert "too large" in body
@@ -200,7 +200,7 @@ async def test_attachment_failures_are_disclosed_when_text_is_empty() -> None:
     # in the room — never a silent drop.
     bridge = _fake_bridge()
 
-    await BridgeCore._handle_inbound_message(
+    await CollaborationCore._handle_inbound_message(
         bridge,
         _msg(
             content="   ",
@@ -211,7 +211,7 @@ async def test_attachment_failures_are_disclosed_when_text_is_empty() -> None:
         ),
     )
 
-    body = bridge.puppet.messages[0]["content"]
+    body = bridge.human_actor.messages[0]["content"]
     assert body.splitlines() == [
         "_attachment not relayed: huge.zip — too large_",
         "_attachment not relayed: broken.pdf — download failed_",
@@ -221,7 +221,7 @@ async def test_attachment_failures_are_disclosed_when_text_is_empty() -> None:
 async def test_attachment_failures_ride_on_the_caption_of_relayed_media() -> None:
     bridge = _fake_bridge()
 
-    await BridgeCore._handle_inbound_message(
+    await CollaborationCore._handle_inbound_message(
         bridge,
         _msg(
             content="two files, one failed",
@@ -232,7 +232,7 @@ async def test_attachment_failures_ride_on_the_caption_of_relayed_media() -> Non
         ),
     )
 
-    assert bridge.puppet.messages == []
-    caption = bridge.puppet.media[0]["caption"]
+    assert bridge.human_actor.messages == []
+    caption = bridge.human_actor.media[0]["caption"]
     assert "two files, one failed" in caption
     assert "huge.zip" in caption

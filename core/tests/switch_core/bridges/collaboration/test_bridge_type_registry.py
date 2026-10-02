@@ -51,7 +51,7 @@ def _service() -> CollaborationBridgeLifecycleService:
         client_store=None,  # type: ignore[arg-type]
         client_lifecycle=None,  # type: ignore[arg-type]
         room_service=None,  # type: ignore[arg-type]
-        matrix_admin=None,  # type: ignore[arg-type]
+        provisioning=None,  # type: ignore[arg-type]
         session_factory=None,  # type: ignore[arg-type]
         config=config,
         client_factory=None,  # type: ignore[arg-type]

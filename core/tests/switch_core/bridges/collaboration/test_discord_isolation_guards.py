@@ -66,7 +66,7 @@ async def test_each_guilds_bridge_has_its_own_identity_caches() -> None:
     """The same Discord user in two tenants' guilds yields two independent
     records: each guild is served by its own adapter (one install = one tenant,
     decision D2), so a user-id-keyed cache on one is not shared with the other.
-    The database side is scoped the same way — puppet and external-user rows are
+    The database side is scoped the same way — human actor and external-user rows are
     written under each bridge's tenant through row-level security."""
     tenant_a = DiscordAdapter(
         config=DiscordConnectionConfig(guild_id="1", event_delivery="shared")

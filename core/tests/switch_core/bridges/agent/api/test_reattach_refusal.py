@@ -19,10 +19,10 @@ from fastapi import HTTPException
 
 from switch_core.bridges.agent.api.handlers import poll_events
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 
@@ -33,7 +33,7 @@ CONN_ID = "conn-1"
 class _Protocol:
     def __init__(self) -> None:
         self.event_buffer = EventBuffer()
-        self.connections = ConnectionRegistry()
+        self.connections = AgentConnectionRegistry()
         # No approval outcomes: these tests are about opening the stream.
         self.approval_outcomes = None
         # Every stream a client is handed goes past the session reporter; one

@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 from switch_core.bridges.collaboration.adapter import (
-    CollaborationAdapter,
+    PlatformAdapter,
     RequestCard,
     RichContentFailed,
     TurnActivity,
@@ -27,7 +27,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import turn_sum
 from .session_fixtures import _item, _turn, open_request
 
 
-class _BareAdapter(CollaborationAdapter):
+class _BareAdapter(PlatformAdapter):
     """Concrete only so it can be instantiated: `post_rich` / `update_rich`
     are what is under test, and nothing else here is called.
 

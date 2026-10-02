@@ -27,7 +27,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
     TaskProtocolConfig,
@@ -65,7 +65,7 @@ class _FakeClientLifecycle:
     async def create_client(self, *, client_type: str, display_name: str) -> Client:
         async with self._session_factory() as session:
             client = Client(
-                matrix_user_id=f"@{display_name}:test",
+                transport_user_id=f"@{display_name}:test",
                 display_name=display_name,
                 type=client_type,
             )
@@ -82,8 +82,8 @@ class _NoBridges:
         return []
 
 
-def _service(session_factory: async_sessionmaker[AsyncSession]) -> ProtocolService:
-    svc = object.__new__(ProtocolService)
+def _service(session_factory: async_sessionmaker[AsyncSession]) -> AgentCore:
+    svc = object.__new__(AgentCore)
     svc.session_factory = session_factory  # type: ignore[attr-defined]
     svc.agent_store = AgentStore()  # type: ignore[attr-defined]
     svc.api_key_store = ApiKeyStore()  # type: ignore[attr-defined]
@@ -124,7 +124,7 @@ async def _membership(
         await session.commit()
 
 
-async def _register(svc: ProtocolService, name: str, owner_id: str) -> str:
+async def _register(svc: AgentCore, name: str, owner_id: str) -> str:
     result = await svc.register_agent(
         name=name,
         description=f"{name} desc",
@@ -141,7 +141,7 @@ async def _private_room(
     async with session_factory() as session:
         room = Room(
             tenant_id=tenant_id,
-            matrix_room_id=f"!{tenant_id}-private:test",
+            transport_room_id=f"!{tenant_id}-private:test",
             name="private",
             description="",
             owner_id=owner_id,

@@ -539,8 +539,8 @@ async def _require_directory_account(
     """Raise unless the platform's directory really lists this account.
 
     This is an existence check, not an ownership one — anyone may claim any
-    real account, deliberately. What it prevents is provisioning a Matrix
-    puppet for an id that came from nowhere: the claim body is user-supplied,
+    real account, deliberately. What it prevents is provisioning a
+    human actor for an id that came from nowhere: the claim body is user-supplied,
     and the row it creates is permanent.
 
     Only reached for an account Switch has never seen. One it has recorded is
@@ -626,7 +626,7 @@ async def claim_bridge_identity(
         # Nobody has seen this person speak yet, which is the normal case right
         # after connecting a workspace. Provision the identity now rather than
         # making them post something first — but only once the platform agrees
-        # the account exists. Provisioning mints a Matrix puppet, so taking the
+        # the account exists. Provisioning mints a human actor, so taking the
         # request's word for it would let any signed-in user conjure accounts
         # for people who do not exist.
         await _require_directory_account(
@@ -635,8 +635,8 @@ async def claim_bridge_identity(
             external_user_id=payload.external_user_id,
             username=payload.username,
         )
-        bridge_core = collab_lifecycle.get(bridge_id)
-        if bridge_core is None:
+        collaboration_core = collab_lifecycle.get(bridge_id)
+        if collaboration_core is None:
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -645,7 +645,7 @@ async def claim_bridge_identity(
                 ),
             )
         try:
-            external_user = await bridge_core.ensure_external_user(
+            external_user = await collaboration_core.ensure_external_user(
                 external_user_id=payload.external_user_id,
                 external_username=payload.username,
             )

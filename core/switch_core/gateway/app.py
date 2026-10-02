@@ -3,8 +3,8 @@ from __future__ import annotations
 from fastapi import FastAPI
 from starlette.middleware.sessions import SessionMiddleware
 
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.server_connectors.lifecycle import (
     ServerSideConnectorLifecycleService,
 )
@@ -80,7 +80,7 @@ def create_gateway_app(
     usage_store: UsageStore,
     budget_store: BudgetStore,
     resource_service: ResourceService,
-    protocol: ProtocolService,
+    protocol: AgentCore,
     install_service: MessagingInstallService | None,
     invite_mailer: InviteMailer | None,
     config: SwitchConfig,

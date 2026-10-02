@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 
 
 class _FakeAdapter:
@@ -39,9 +39,9 @@ class _FakeAdapter:
         self.stopped = True
 
 
-def _core(provision: Any) -> tuple[BridgeCore, _FakeAdapter]:
-    """A BridgeCore with everything start() touches stubbed but the task logic."""
-    core = object.__new__(BridgeCore)
+def _core(provision: Any) -> tuple[CollaborationCore, _FakeAdapter]:
+    """A CollaborationCore with everything start() touches stubbed but the task logic."""
+    core = object.__new__(CollaborationCore)
     adapter = _FakeAdapter()
     core._bridge_type = "slack"  # type: ignore[attr-defined]
     core._adapter = adapter  # type: ignore[attr-defined]
@@ -52,7 +52,7 @@ def _core(provision: Any) -> tuple[BridgeCore, _FakeAdapter]:
         return None
 
     core._load_channel_map = _noop  # type: ignore[assignment]
-    core._load_existing_puppets = _noop  # type: ignore[assignment]
+    core._load_existing_human_actors = _noop  # type: ignore[assignment]
     core._ensure_channel_captures = _noop  # type: ignore[assignment]
     core._refresh_channel_types = _noop  # type: ignore[assignment]
     core._handle_channel_migrated = None  # type: ignore[attr-defined]

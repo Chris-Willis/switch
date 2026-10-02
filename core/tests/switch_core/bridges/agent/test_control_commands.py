@@ -41,7 +41,7 @@ def _client(
     placed: str | None = None,
     relayed: list[Any] | None = None,
 ) -> SimpleNamespace:
-    """Minimal AgentClient stand-in for _dispatch_control_command."""
+    """Minimal AgentConsumer stand-in for _dispatch_control_command."""
 
     agent = SimpleNamespace(
         id="agent-1",
@@ -52,7 +52,7 @@ def _client(
     async def _fresh_agent(_session: Any) -> SimpleNamespace:
         return agent
 
-    async def _resolve_room_meta(_matrix_room_id: str) -> SimpleNamespace:
+    async def _resolve_room_meta(_transport_room_id: str) -> SimpleNamespace:
         return SimpleNamespace(
             room_id="room-1",
             name="Room",

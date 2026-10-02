@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -44,7 +44,7 @@ def init_dependencies(
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
     event_buffer: EventBuffer,
-    connections: ConnectionRegistry,
+    connections: AgentConnectionRegistry,
     task_store: TaskStore,
     resource_service: ResourceService,
     api_key_store: ApiKeyStore,
@@ -75,7 +75,7 @@ def init_dependencies(
     _state["telemetry"] = telemetry
     _state["session_start_limiter"] = default_session_start_limiter()
 
-    _state["protocol"] = ProtocolService(
+    _state["protocol"] = AgentCore(
         agent_store=agent_store,
         agent_session_store=agent_session_store,
         room_store=room_store,
@@ -146,7 +146,7 @@ def get_config() -> SwitchConfig:
     return _state["config"]  # type: ignore[no-any-return]
 
 
-def get_protocol() -> ProtocolService:
+def get_protocol() -> AgentCore:
     return _state["protocol"]  # type: ignore[no-any-return]
 
 

@@ -24,8 +24,8 @@ from switch_core.db.models import (
     APPROVAL_REQUEST_KINDS,
     SESSION_ACTIVITY_KINDS,
     Agent,
+    AgentSessionActivityItem,
     ApprovalRequest,
-    SessionActivityItem,
     UsageMetric,
     require_tenant_id,
 )
@@ -37,8 +37,8 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.session_activity_store import (
     TURN_ITEM_ID,
+    AgentSessionActivityStore,
     ApprovalRequestStore,
-    SessionActivityStore,
 )
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.delivery.addressing import AddressingResolver
@@ -148,11 +148,11 @@ class SwitchUser:
 Answerer = PlatformPerson | SwitchUser
 
 
-class SessionActivityService:
+class AgentSessionActivityService:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._sessions = session_factory
         self._approvals = ApprovalRequestStore()
-        self._activity = SessionActivityStore()
+        self._activity = AgentSessionActivityStore()
         self._usage = UsageStore()
         self._rooms = RoomStore()
         self._external_users = ExternalUserStore()
@@ -236,7 +236,7 @@ class SessionActivityService:
             )
             moved = await self._activity.upsert(
                 db,
-                SessionActivityItem(
+                AgentSessionActivityItem(
                     tenant_id=tenant_id,
                     agent_id=agent_id,
                     session_id=session_id,
@@ -329,7 +329,7 @@ class SessionActivityService:
 
     async def turn_items(
         self, agent_id: str, session_id: str, turn_id: str
-    ) -> list[SessionActivityItem]:
+    ) -> list[AgentSessionActivityItem]:
         async with tenant_session(self._sessions, require_tenant_id()) as db:
             return await self._activity.turn(db, agent_id, session_id, turn_id)
 

@@ -25,15 +25,15 @@ from switch_core.authz import Action, Principal, require, require_manage
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.mediation import MediationService
+from switch_core.bridges.agent.protocol.agent_connections import (
+    AgentConnectionRegistry,
+    ClientDeclaration,
+)
 from switch_core.bridges.agent.protocol.agent_detail import (
     apply_agent_options,
     assemble_agent_detail,
     list_agent_summaries,
     reparent_agent,
-)
-from switch_core.bridges.agent.protocol.connections import (
-    ClientDeclaration,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.presence import rooms_occupied
@@ -98,10 +98,10 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_api_key
 from switch_core.deeplinks import deeplink_for_platform
 from switch_core.events import (
-    LlmCallReport as MatrixLlmCallReport,
+    LlmCallReport as RoomLlmCallReport,
 )
 from switch_core.events import (
-    ToolCallReport as MatrixToolCallReport,
+    ToolCallReport as RoomToolCallReport,
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.room_wide_mention import (
@@ -126,7 +126,7 @@ if TYPE_CHECKING:
     from switch_core.bridges.collaboration.lifecycle_service import (
         CollaborationBridgeLifecycleService,
     )
-    from switch_core.clients.client_base import ClientBase
+    from switch_core.clients.actor import Actor
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
     from switch_core.config import SwitchConfig
     from switch_core.db.stores.agent_session_store import AgentSessionStore
@@ -249,14 +249,14 @@ def _describe_room(room: Room) -> RoomDescriptor:
         id=room.id,
         name=room.name,
         description=room.description,
-        transport_room_id=room.matrix_room_id,
-        matrix_room_id=room.matrix_room_id,
+        transport_room_id=room.transport_room_id,
+        matrix_room_id=room.transport_room_id,
         archived=room.archived_at is not None,
         bridge_id=room.bridge_id,
     )
 
 
-class ProtocolService:
+class AgentCore:
     # Class-level defaults: several tests assemble a minimal instance without
     # `__init__`, and `emit_safely` treats None as "report nothing".
     telemetry: TelemetryService | None = None
@@ -275,7 +275,7 @@ class ProtocolService:
         client_lifecycle: ClientLifecycleService,
         collab_lifecycle: CollaborationBridgeLifecycleService,
         event_buffer: EventBuffer,
-        connections: ConnectionRegistry,
+        connections: AgentConnectionRegistry,
         task_store: TaskStore,
         resource_service: ResourceService,
         api_key_store: ApiKeyStore,
@@ -306,7 +306,7 @@ class ProtocolService:
         self.client_lifecycle = client_lifecycle
         self.collab_lifecycle = collab_lifecycle
         self.event_buffer = event_buffer
-        # Injected, not constructed: more than one ProtocolService exists in a
+        # Injected, not constructed: more than one AgentCore exists in a
         # running server, and a connection registered through one must be
         # visible to all of them. Owning a registry here would split the live
         # connection set in two.
@@ -636,7 +636,7 @@ class ProtocolService:
         )
         await self.api_key_store.create(session, api_key_record)
 
-        # The Matrix client's display name is the agent's identifier, never its
+        # The client's display name is the agent's identifier, never its
         # human display name: it is stamped on every event as `sender_name`, and
         # the collaboration bridges match on it to recognise an agent's own echo
         # coming back from a platform. A human name here would make an agent
@@ -788,9 +788,11 @@ class ProtocolService:
         instead would repeat the cross-tenant identity leak this method exists
         to avoid.
         """
-        for bridge_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
+        for collaboration_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
             try:
-                await bridge_core.adapter.create_agent_identity(agent_name, description)
+                await collaboration_core.adapter.create_agent_identity(
+                    agent_name, description
+                )
             except Exception:
                 logger.warning(
                     "Failed to create bridge identity for %s",
@@ -900,9 +902,9 @@ class ProtocolService:
         there, the tenant is the caller's to establish — `delete_agent`
         refuses without one before it stops anything.
         """
-        for bridge_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
+        for collaboration_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
             try:
-                await bridge_core.adapter.remove_agent_identity(agent_name)
+                await collaboration_core.adapter.remove_agent_identity(agent_name)
             except Exception:
                 logger.warning(
                     "Failed to remove bridge identity for %s",
@@ -1165,44 +1167,44 @@ class ProtocolService:
     # ── Messaging ──────────────────────────────────────────────────────────────
 
     async def _post_agent_notice(
-        self, client: Any, matrix_room_id: str, body: str
+        self, client: Any, transport_room_id: str, body: str
     ) -> None:
-        """Best-effort post of an activity notice from the agent's own Matrix
+        """Best-effort post of an activity notice from the agent's own client
         identity. Used to announce resource-manager-driven side effects (e.g.
         room-document mutations) in a way that flows through collaboration
         bridges — the resource manager isn't a bridge participant, so its own
         notices wouldn't reach Slack/Mattermost."""
         try:
-            await client.send_message(matrix_room_id, body, metered=False)
+            await client.send_message(transport_room_id, body, metered=False)
         except Exception:
             logger.exception(
-                "Failed to post agent activity notice to %s", matrix_room_id
+                "Failed to post agent activity notice to %s", transport_room_id
             )
 
     async def _post_role_change_notice(
-        self, agent_id: str, matrix_room_id: str, action: str
+        self, agent_id: str, transport_room_id: str, action: str
     ) -> None:
-        """Announce a role assume/release from the acting agent's own Matrix
+        """Announce a role assume/release from the acting agent's own client
         identity, so the notice reaches collaboration bridges (Slack/Mattermost)."""
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             return
-        await self._post_agent_notice(client, matrix_room_id, f"🎭 {action}.")
+        await self._post_agent_notice(client, transport_room_id, f"🎭 {action}.")
 
     async def _resolve_thread_root(
-        self, client: ClientBase[Any], matrix_room_id: str, thread_id: str
+        self, client: Actor[Any], transport_room_id: str, thread_id: str
     ) -> str:
         """Resolve a caller-supplied thread_id to the actual thread root.
 
-        Matrix threads are flat: every reply relates to a single root. Agents
+        Threads are flat: every reply relates to a single root. Agents
         may pass any message id in a thread (including a mid-thread reply), so
         we look the event up and, if it is itself an m.thread reply, return its
         root. If the event does not exist in the room we fail loud rather than
         post into a non-existent thread.
         """
         if client.transport is None:
-            raise ValueError("Agent client not connected to Matrix")
-        event = await client.transport.get_event(matrix_room_id, thread_id)
+            raise ValueError("Agent client not connected")
+        event = await client.transport.get_event(transport_room_id, thread_id)
         if event is None:
             raise ValueError(f"thread_id not found in room: {thread_id}")
         root = getattr(event, "thread_root_id", None)
@@ -1236,10 +1238,10 @@ class ProtocolService:
         thread_root_id: str | None = None
         if thread_id is not None:
             thread_root_id = await self._resolve_thread_root(
-                client, room.matrix_room_id, thread_id
+                client, room.transport_room_id, thread_id
             )
         event_id = await client.send_message(
-            room.matrix_room_id,
+            room.transport_room_id,
             content,
             thread_root_id=thread_root_id,
             extra_content=extra_content,
@@ -1248,9 +1250,9 @@ class ProtocolService:
         if event_id is None:
             raise ValueError("Failed to send message")
         logger.debug(
-            "[AGENT-MSG] sent event_id=%s to matrix room=%s",
+            "[AGENT-MSG] sent event_id=%s to room=%s",
             event_id,
-            room.matrix_room_id,
+            room.transport_room_id,
         )
         # The agent has replied, so clear any typing indicator raised when the
         # inbound message arrived. The message itself is already delivered, so a
@@ -1271,7 +1273,7 @@ class ProtocolService:
         caption: str | None = None,
         thread_id: str | None = None,
     ) -> dict[str, object]:
-        """Upload one or more files to the Matrix media repository and post them
+        """Store one or more files in Switch's media store and post them
         to a room as m.image / m.file events. `files` is a list of
         (data, filename, mimetype). Returns
         {"event_id": <first>, "mxc": <first>, "attachments": [{event_id, mxc,
@@ -1287,8 +1289,8 @@ class ProtocolService:
         (normalised to its root).
 
         With more than one file the events share an attachment-group marker so
-        receivers can coalesce them into one logical message — Matrix itself has
-        no multi-attachment event.
+        receivers can coalesce them into one logical message, since a media
+        event carries one file.
         """
         if not files:
             raise ValueError("no attachments provided")
@@ -1312,18 +1314,18 @@ class ProtocolService:
         thread_root_id: str | None = None
         if thread_id is not None:
             thread_root_id = await self._resolve_thread_root(
-                client, room.matrix_room_id, thread_id
+                client, room.transport_room_id, thread_id
             )
 
         total = len(files)
         group_id = str(uuid.uuid4()) if total > 1 else None
         posted: list[dict[str, str]] = []
         for index, (data, filename, mimetype) in enumerate(files):
-            mxc = await client.upload_media(data, mimetype, filename)
+            media_uri = await client.upload_media(data, mimetype, filename)
             msgtype = "m.image" if mimetype.startswith("image/") else "m.file"
             event_id = await client.send_media(
-                room.matrix_room_id,
-                mxc,
+                room.transport_room_id,
+                media_uri,
                 filename,
                 mimetype,
                 len(data),
@@ -1341,7 +1343,9 @@ class ProtocolService:
             )
             if event_id is None:
                 raise ValueError(f"Failed to send media message for '{filename}'")
-            posted.append({"event_id": event_id, "mxc": mxc, "filename": filename})
+            posted.append(
+                {"event_id": event_id, "mxc": media_uri, "filename": filename}
+            )
         try:
             await self._set_typing(agent_id, room, False)
         except Exception:
@@ -1683,8 +1687,8 @@ class ProtocolService:
             )
             return
 
-        bridge_core = self.collab_lifecycle.get(room.bridge_id)
-        if bridge_core is None:
+        collaboration_core = self.collab_lifecycle.get(room.bridge_id)
+        if collaboration_core is None:
             raise ValueError(
                 f"Collaboration bridge {room.bridge_id} for room {room.id} "
                 "is not running"
@@ -1693,7 +1697,7 @@ class ProtocolService:
             agent = await self.agent_store.get(session, agent_id)
         if agent is None:
             raise ValueError(f"Agent not found: {agent_id}")
-        await bridge_core.handle_outbound_typing(room.id, agent.name, is_typing)
+        await collaboration_core.handle_outbound_typing(room.id, agent.name, is_typing)
 
     async def update_status(self, agent_id: str, room_id: str, detail: str) -> None:
         """Send a status message to a room."""
@@ -1702,7 +1706,7 @@ class ProtocolService:
         if client is None:
             raise ValueError("Agent client not running")
         await client.send_message(
-            room.matrix_room_id, f"*{detail}*", format="markdown", metered=True
+            room.transport_room_id, f"*{detail}*", format="markdown", metered=True
         )
 
     async def set_runtime_state(
@@ -1774,7 +1778,7 @@ class ProtocolService:
         await self._emit_runtime_state(
             agent_id=agent_id,
             agent_name=agent.name,
-            matrix_room_id=room.matrix_room_id,
+            transport_room_id=room.transport_room_id,
             room_id=room.id,
             state=state,
             mention_handle=await self._mention_handle_for(
@@ -1791,7 +1795,7 @@ class ProtocolService:
         *,
         agent_id: str,
         agent_name: str,
-        matrix_room_id: str,
+        transport_room_id: str,
         room_id: str,
         state: str,
         mention_handle: str | None,
@@ -1807,7 +1811,7 @@ class ProtocolService:
             )
             return
         await client.send_event(
-            matrix_room_id,
+            transport_room_id,
             "com.switch.agent.runtime_state",
             {
                 "agent_id": agent_id,
@@ -1905,7 +1909,7 @@ class ProtocolService:
         await self._emit_runtime_state(
             agent_id=agent.id,
             agent_name=agent.name,
-            matrix_room_id=room.matrix_room_id,
+            transport_room_id=room.transport_room_id,
             room_id=room.id,
             state=RUNTIME_STATE_IDLE,
             mention_handle=await self._mention_handle_for(agent, room.bridge_id),
@@ -2118,9 +2122,9 @@ class ProtocolService:
         }
 
     async def download_media(
-        self, agent_id: str, room_id: str, mxc: str
+        self, agent_id: str, room_id: str, media_uri: str
     ) -> tuple[bytes, str, str | None]:
-        """Download an attachment's bytes from the Matrix media repository.
+        """Read an attachment's bytes from Switch's media store.
 
         Membership in `room_id` is required as authorization. Returns
         (bytes, content_type, filename).
@@ -2130,12 +2134,12 @@ class ProtocolService:
         if client is None:
             raise ValueError("Agent client not running")
         if client.transport is None:
-            raise ValueError("Agent client not connected to Matrix")
+            raise ValueError("Agent client not connected")
 
         try:
-            resp = await client.transport.download_media(mxc)
+            resp = await client.transport.download_media(media_uri)
         except TransportError as exc:
-            raise ValueError(f"Failed to download media {mxc}: {exc}") from exc
+            raise ValueError(f"Failed to download media {media_uri}: {exc}") from exc
         return resp.body, resp.content_type or "", resp.filename
 
     # ── Events ───────────────────────────────────────────────────────────────
@@ -2161,7 +2165,7 @@ class ProtocolService:
         without the same check this call would hand over events from a room
         the agent has since been removed from.
 
-        `AgentClient.on_removed` already empties the buffer of a removed
+        `AgentConsumer.on_removed` already empties the buffer of a removed
         room's events, so this is the second of two answers. It is the
         authoritative one: that signal is in-process, and this reads the table
         the removal wrote.
@@ -2236,11 +2240,11 @@ class ProtocolService:
         if client is None:
             raise ValueError("Agent client not running")
         if client.transport is None:
-            raise ValueError("Agent client not connected to Matrix")
+            raise ValueError("Agent client not connected")
 
         for event in events:
             if isinstance(event, ToolCallReport):
-                tool_event = MatrixToolCallReport(
+                tool_event = RoomToolCallReport(
                     agent_id=agent_id,
                     tool_id=event.tool_name,
                     args=event.arguments,
@@ -2249,12 +2253,12 @@ class ProtocolService:
                     cost=event.cost,
                 )
                 await client.send_event(
-                    room.matrix_room_id,
+                    room.transport_room_id,
                     "com.switch.report.tool_call",
                     tool_event.model_dump(exclude_none=True),
                 )
             elif isinstance(event, LlmCallReport):
-                llm_event = MatrixLlmCallReport(
+                llm_event = RoomLlmCallReport(
                     agent_id=agent_id,
                     model_id=event.model,
                     messages=event.messages,
@@ -2264,7 +2268,7 @@ class ProtocolService:
                     cost=event.cost,
                 )
                 await client.send_event(
-                    room.matrix_room_id,
+                    room.transport_room_id,
                     "com.switch.report.llm_call",
                     llm_event.model_dump(exclude_none=True),
                 )
@@ -2328,7 +2332,7 @@ class ProtocolService:
         client = self.client_lifecycle.get_by_agent_id(requester_id)
         if client and client.transport:
             await client.send_event(
-                room.matrix_room_id,
+                room.transport_room_id,
                 "com.switch.task.delegate",
                 {
                     "task_id": task_id,
@@ -2363,7 +2367,7 @@ class ProtocolService:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client and client.transport:
             await client.send_event(
-                room.matrix_room_id,
+                room.transport_room_id,
                 "com.switch.task.accept",
                 {
                     "task_id": task_id,
@@ -2396,7 +2400,7 @@ class ProtocolService:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client and client.transport:
             await client.send_event(
-                room.matrix_room_id,
+                room.transport_room_id,
                 "com.switch.task.update",
                 {
                     "task_id": task_id,
@@ -2430,7 +2434,7 @@ class ProtocolService:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client and client.transport:
             await client.send_event(
-                room.matrix_room_id,
+                room.transport_room_id,
                 "com.switch.task.finalise",
                 {
                     "task_id": task_id,
@@ -2440,7 +2444,7 @@ class ProtocolService:
                 },
             )
             await client.send_message(
-                room.matrix_room_id, outcome, format="markdown", metered=True
+                room.transport_room_id, outcome, format="markdown", metered=True
             )
 
     async def cancel_task(self, agent_id: str, task_id: str, reason: str) -> None:
@@ -2462,7 +2466,7 @@ class ProtocolService:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client and client.transport:
             await client.send_event(
-                room.matrix_room_id,
+                room.transport_room_id,
                 "com.switch.task.cancel",
                 {
                     "task_id": task_id,
@@ -2759,7 +2763,7 @@ class ProtocolService:
         """Add human users to a bridged room. Requires room membership (or owner/admin).
 
         The room must already be bridged; each name is resolved against the
-        room's bridge, added to its external channel, and joined to the Matrix
+        room's bridge, added to its external channel, and joined to the
         room. Returns the names that could not be resolved on the bridge (these
         were skipped); an empty list means every requested user was added.
         """
@@ -3121,7 +3125,7 @@ class ProtocolService:
             resolved_name = role.name
         if not already_held:
             await self._post_role_change_notice(
-                agent_id, room.matrix_room_id, f"assumed the `{resolved_name}` role"
+                agent_id, room.transport_room_id, f"assumed the `{resolved_name}` role"
             )
         return result
 
@@ -3136,18 +3140,18 @@ class ProtocolService:
                 session, agent_id, live_connection_ids
             )
             released_role: str | None = None
-            matrix_room_id: str | None = None
+            transport_room_id: str | None = None
             if live is not None:
                 released_role = await self.room_role_store.agent_room_role(
                     session, live.room_id, agent_id, live_connection_ids
                 )
                 room = await self.room_store.get(session, live.room_id)
-                matrix_room_id = room.matrix_room_id if room is not None else None
+                transport_room_id = room.transport_room_id if room is not None else None
             await self.room_role_store.release_lease(session, agent_id)
             await session.commit()
-        if released_role is not None and matrix_room_id is not None:
+        if released_role is not None and transport_room_id is not None:
             await self._post_role_change_notice(
-                agent_id, matrix_room_id, f"released the `{released_role}` role"
+                agent_id, transport_room_id, f"released the `{released_role}` role"
             )
 
     async def touch_role_lease(self, agent_id: str, holder: str | None) -> bool:
@@ -3689,8 +3693,8 @@ class ProtocolService:
             channel_type=room.channel_type,
             admin_mode=room.admin_mode,
             instructions=room.instructions,
-            transport_room_id=room.matrix_room_id,
-            matrix_room_id=room.matrix_room_id,
+            transport_room_id=room.transport_room_id,
+            matrix_room_id=room.transport_room_id,
             created_at=str(room.created_at),
             bridge_id=room.bridge_id,
             bridge_display_name=bridge_display_name,
@@ -3840,7 +3844,7 @@ class ProtocolService:
     ) -> RoomDetailDescriptor:
         """Archive or unarchive a room on the calling agent's behalf.
 
-        Metadata-only and reversible — the Matrix room, members, and bridge
+        Metadata-only and reversible: the room, members, and bridge
         channel are untouched; the room just leaves (or rejoins) the default
         active lists. Requires the agent to be a member of the room and to
         have write access to it.
@@ -3968,7 +3972,7 @@ class ProtocolService:
 
         await self._announce_document(
             agent_id,
-            room.matrix_room_id,
+            room.transport_room_id,
             f"\U0001f4c4 created room document \u201c{document_name}\u201d.",
         )
         return document_id
@@ -4001,7 +4005,7 @@ class ProtocolService:
 
         await self._announce_document(
             agent_id,
-            room.matrix_room_id,
+            room.transport_room_id,
             f"\U0001f4c4 updated room document \u201c{document_name}\u201d.",
         )
 
@@ -4030,12 +4034,12 @@ class ProtocolService:
 
         await self._announce_document(
             agent_id,
-            room.matrix_room_id,
+            room.transport_room_id,
             f"\U0001f5d1 deleted room document \u201c{document_name}\u201d.",
         )
 
     async def _announce_document(
-        self, agent_id: str, matrix_room_id: str, body: str
+        self, agent_id: str, transport_room_id: str, body: str
     ) -> None:
         """Say in the room what the agent just did to a document.
 
@@ -4050,10 +4054,10 @@ class ProtocolService:
                 "Agent %s has no connected client, so its document change in "
                 "%s was not announced in the room",
                 agent_id,
-                matrix_room_id,
+                transport_room_id,
             )
             return
-        await self._post_agent_notice(client, matrix_room_id, body)
+        await self._post_agent_notice(client, transport_room_id, body)
 
     async def post_llm_response(
         self,

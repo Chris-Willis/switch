@@ -1,6 +1,6 @@
 """Which agents have something of their own in a room, from live state only.
 
-Presence is a session that connected to the room (`ConnectionRegistry`
+Presence is a session that connected to the room (`AgentConnectionRegistry`
 placement) or a room slot claimed on one of the agent's connections, which is
 what a standalone or MCP client leaves behind. Coverage is not presence: an
 `all`-scope watcher covering a room is the delivery rule, not something in it.
@@ -14,11 +14,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 
 
 def agents_present_in(
-    agent_ids: Iterable[str], room_id: str, connections: ConnectionRegistry
+    agent_ids: Iterable[str], room_id: str, connections: AgentConnectionRegistry
 ) -> set[str]:
     return {
         agent_id
@@ -28,7 +28,7 @@ def agents_present_in(
     }
 
 
-def rooms_occupied(agent_id: str, connections: ConnectionRegistry) -> set[str]:
+def rooms_occupied(agent_id: str, connections: AgentConnectionRegistry) -> set[str]:
     """Every room this agent is in right now."""
     occupied = connections.placed_rooms(agent_id)
     for conn in connections.for_agent(agent_id):

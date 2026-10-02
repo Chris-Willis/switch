@@ -20,7 +20,7 @@ from switch_core.bridges.collaboration.adapter import ChannelNotBindable
 from switch_core.room_service import RoomCreateConfig
 from tests.switch_core.test_room_service_change_bridge import (
     _build_service,
-    _FakeBridgeCore,
+    _FakeCollaborationCore,
 )
 
 
@@ -28,8 +28,8 @@ class _Reached(Exception):
     """Raised by the first step after the check, to show it was passed."""
 
 
-def _service(events: list[Any]) -> tuple[Any, _FakeBridgeCore]:
-    bridge = _FakeBridgeCore(events, matrix_user_id="@bot:switch.local")
+def _service(events: list[Any]) -> tuple[Any, _FakeCollaborationCore]:
+    bridge = _FakeCollaborationCore(events, transport_user_id="@bot:switch.local")
     bridge.adapter.not_bindable.add("chan-elsewhere")
     svc, _ = _build_service(
         room=SimpleNamespace(),
@@ -42,7 +42,7 @@ def _service(events: list[Any]) -> tuple[Any, _FakeBridgeCore]:
     async def create_matrix_room(*_: Any, **__: Any) -> str:
         raise _Reached
 
-    svc._matrix_admin.create_room = create_matrix_room
+    svc._provisioning.create_room = create_matrix_room
     return svc, bridge
 
 

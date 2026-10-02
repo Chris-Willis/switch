@@ -398,7 +398,10 @@ class Client(TenantScoped, Base):
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    matrix_user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # The column keeps its Matrix-era name; the attribute says what it is.
+    transport_user_id: Mapped[str] = mapped_column(
+        "matrix_user_id", Text, nullable=False
+    )
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -467,7 +470,7 @@ class Agent(TenantScoped, Base):
     icon_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Human-readable name shown to people ("Switch Dev") next to the machine
     # identifier `name` carries ("switchdev"). NULL means none was chosen and
-    # the display layer falls back to `name`. Never the Matrix client display
+    # the display layer falls back to `name`. Never the client display
     # name: that stays the identifier, because it is what bridges match on to
     # recognise an agent's own echo.
     display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -713,7 +716,10 @@ class Room(TenantScoped, Base):
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    matrix_room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # The column keeps its Matrix-era name; the attribute says what it is.
+    transport_room_id: Mapped[str] = mapped_column(
+        "matrix_room_id", Text, nullable=False
+    )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     bridge_id: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -761,7 +767,7 @@ class Room(TenantScoped, Base):
     )
     # When set, the room is archived: hidden from the default active room lists
     # (gateway + agent MCP tools) but otherwise fully intact and retrievable —
-    # members, Matrix room, and bridge channel are untouched. NULL = active.
+    # members, room, and bridge channel are untouched. NULL = active.
     # Archiving is metadata-only and reversible (unarchive clears this).
     archived_at: Mapped[str | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -1901,7 +1907,7 @@ class Message(TenantScoped, Base):
 
     Every participant in a room is a Switch-owned client, so recording each
     send captures the whole room exactly once — including messages a human
-    originates on a bridged platform, which enter through that user's puppet.
+    originates on a bridged platform, which enter through that user's human actor.
 
     `content` is the full event body as sent. The columns beside it are
     denormalised out of it for querying; for a custom `com.switch.*` event
@@ -2212,7 +2218,7 @@ class ApprovalRequest(TenantScoped, Base):
     )
 
 
-class SessionActivityItem(TenantScoped, Base):
+class AgentSessionActivityItem(TenantScoped, Base):
     """One step of a turn as a platform draws it: the turn itself, a message,
     a tool call, or a notice.
 
@@ -2389,7 +2395,7 @@ for _table, _triggers in (
         ApprovalRequest.__table__,
         (CREATE_APPROVAL_INSERT_TRIGGER, CREATE_APPROVAL_STATE_TRIGGER),
     ),
-    (SessionActivityItem.__table__, (CREATE_ACTIVITY_TRIGGER,)),
+    (AgentSessionActivityItem.__table__, (CREATE_ACTIVITY_TRIGGER,)),
 ):
     for _ddl in (CREATE_SESSION_ACTIVITY_NOTIFY_FUNCTION, *_triggers):
         event.listen(_table, "after_create", DDL(_ddl).execute_if(dialect="postgresql"))

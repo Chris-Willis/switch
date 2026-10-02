@@ -74,11 +74,11 @@ vi.mock('./local-host', () => ({ startLocalWatcher: vi.fn(), stopLocalWatcher: v
 vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn() } }));
 
 const {
-  configureSharedWatcher,
-  configureSharedWatcherFor,
+  configureAgentHost,
+  configureAgentHostFor,
   keepAutoApproveChoice,
   recordAutoApproveOnHost,
-} = await import('./shared-watcher');
+} = await import('./agent-host');
 
 const run = promisify(execFile);
 let root: string;
@@ -140,7 +140,7 @@ it('takes auto-approve from the host when another Console changed it', async () 
   mocks.agent.mockResolvedValue(agent(false));
   mocks.bringUp.mockResolvedValue({ root, runtimeMode: 'full-access', legacyStopped: [] });
 
-  await configureSharedWatcher('agent-1', { connected: true, spawning: true }, 'explicit');
+  await configureAgentHost('agent-1', { connected: true, spawning: true }, 'explicit');
 
   expect(adopted()).toBe(true);
   expect(mocks.updateAgent).toHaveBeenCalledWith({ agentId: 'agent-1', autoApprove: true });
@@ -149,7 +149,7 @@ it('takes auto-approve from the host when another Console changed it', async () 
 it('leaves the row alone when it already agrees with the host', async () => {
   mocks.agent.mockResolvedValue(agent(true));
 
-  await configureSharedWatcher('agent-1', { connected: true, spawning: true }, 'explicit');
+  await configureAgentHost('agent-1', { connected: true, spawning: true }, 'explicit');
 
   expect(adopted()).toBe(true);
   expect(mocks.updateAgent).not.toHaveBeenCalled();
@@ -158,7 +158,7 @@ it('leaves the row alone when it already agrees with the host', async () => {
 it('writes this Console’s value when the person using it has just changed it', async () => {
   mocks.agent.mockResolvedValue(agent(true));
 
-  await configureSharedWatcherFor('agent-1', { connected: true, spawning: true }, 'explicit', {
+  await configureAgentHostFor('agent-1', { connected: true, spawning: true }, 'explicit', {
     name: undefined,
     autoApprove: 'this-console',
   });
@@ -177,12 +177,7 @@ it('does not take a subagent watcher’s setting for its parent’s', async () =
     return { stdout, stderr };
   });
 
-  await configureSharedWatcher(
-    'agent-1',
-    { connected: true, spawning: true },
-    'explicit',
-    'helper'
-  );
+  await configureAgentHost('agent-1', { connected: true, spawning: true }, 'explicit', 'helper');
 
   expect(adopted()).toBe(false);
   expect(mocks.updateAgent).not.toHaveBeenCalled();
@@ -192,7 +187,7 @@ it('does not take a subagent watcher’s setting for its parent’s', async () =
 it('asks nothing of the host’s choice for a watcher being stopped', async () => {
   mocks.agent.mockResolvedValue(agent(true));
 
-  await configureSharedWatcher('agent-1', { connected: false, spawning: false }, 'explicit');
+  await configureAgentHost('agent-1', { connected: false, spawning: false }, 'explicit');
 
   expect(adopted()).toBe(false);
 });

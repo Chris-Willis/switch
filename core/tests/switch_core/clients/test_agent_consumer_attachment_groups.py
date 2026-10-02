@@ -5,8 +5,8 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 
-import switch_core.clients.agent_client as ac
-from switch_core.clients.agent_client import AgentClient, _GateOutcome
+import switch_core.clients.agent_consumer as ac
+from switch_core.clients.agent_consumer import AgentConsumer, _GateOutcome
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.transport import InboundMedia, RoomRef
 
@@ -65,7 +65,7 @@ def _fake_client() -> SimpleNamespace:
     queue = _FakeQueue()
     meta = RoomMeta(room_id="room-1", name="Room", bridge_id="bridge-1")
 
-    async def _resolve_room_meta(_matrix_room_id: str) -> RoomMeta:
+    async def _resolve_room_meta(_transport_room_id: str) -> RoomMeta:
         return meta
 
     async def _addressed(event: Any, _meta: RoomMeta) -> bool:
@@ -95,15 +95,15 @@ def _fake_client() -> SimpleNamespace:
         _gate_addressed=_gate_addressed,
         queue=queue,
     )
-    ns._emit_media = AgentClient._emit_media.__get__(ns)
+    ns._emit_media = AgentConsumer._emit_media.__get__(ns)
     ns._schedule_attachment_group_flush = (
-        AgentClient._schedule_attachment_group_flush.__get__(ns)
+        AgentConsumer._schedule_attachment_group_flush.__get__(ns)
     )
     ns._cancel_attachment_group_flush = (
-        AgentClient._cancel_attachment_group_flush.__get__(ns)
+        AgentConsumer._cancel_attachment_group_flush.__get__(ns)
     )
     ns._flush_incomplete_attachment_group = (
-        AgentClient._flush_incomplete_attachment_group.__get__(ns)
+        AgentConsumer._flush_incomplete_attachment_group.__get__(ns)
     )
     return ns
 
@@ -121,7 +121,7 @@ async def test_grouped_media_coalesces_into_one_event() -> None:
     ]
 
     for index, (name, mimetype, msgtype) in enumerate(parts):
-        await AgentClient.on_media(
+        await AgentConsumer.on_media(
             client,
             _room(),
             _media_event(
@@ -154,7 +154,7 @@ async def test_grouped_media_coalesces_out_of_order() -> None:
     names = {0: "a.png", 1: "b.png", 2: "c.png"}
 
     for index in order:
-        await AgentClient.on_media(
+        await AgentConsumer.on_media(
             client,
             _room(),
             _media_event(
@@ -177,7 +177,7 @@ async def test_grouped_media_coalesces_out_of_order() -> None:
 async def test_ungrouped_media_emits_immediately() -> None:
     client = _fake_client()
 
-    await AgentClient.on_media(
+    await AgentConsumer.on_media(
         client, _room(), _media_event(body="cat.png", mimetype="image/png")
     )
 
@@ -195,7 +195,7 @@ async def test_incomplete_group_flushes_with_disclosed_notice() -> None:
     try:
         client = _fake_client()
         for index, name in [(0, "cat.png"), (1, "notes.md")]:
-            await AgentClient.on_media(
+            await AgentConsumer.on_media(
                 client,
                 _room(),
                 _media_event(
@@ -228,7 +228,7 @@ async def test_group_is_anchored_on_part_zero_not_the_completing_part() -> None:
     # Part 0 arrives FIRST, so a later part completes the group — otherwise the
     # completing event happens to be part 0 and the assertion proves nothing.
     for index, name in [(0, "a.png"), (1, "b.md"), (2, "c.csv")]:
-        await AgentClient.on_media(
+        await AgentConsumer.on_media(
             client,
             _room(),
             _media_event(
@@ -250,7 +250,7 @@ async def test_incomplete_group_is_anchored_on_part_zero() -> None:
     try:
         client = _fake_client()
         for index, name in [(0, "a.png"), (2, "c.csv")]:
-            await AgentClient.on_media(
+            await AgentConsumer.on_media(
                 client,
                 _room(),
                 _media_event(
@@ -290,7 +290,7 @@ async def test_group_timeout_bounds_the_group_not_the_gap_between_parts(
 
     monkeypatch.setattr(asyncio.get_running_loop(), "call_later", call_later)
     client = _fake_client()
-    await AgentClient.on_media(
+    await AgentConsumer.on_media(
         client,
         _room(),
         _media_event(
@@ -306,7 +306,7 @@ async def test_group_timeout_bounds_the_group_not_the_gap_between_parts(
     # Parts keep trickling in below the deadline; the timer must NOT be
     # pushed back by each arrival.
     for index, name in [(1, "b.md"), (2, "c.csv")]:
-        await AgentClient.on_media(
+        await AgentConsumer.on_media(
             client,
             _room(),
             _media_event(
@@ -343,7 +343,7 @@ class TestAddressingSurvivesCoalescing:
     async def test_a_mention_on_part_zero_addresses_the_whole_group(self) -> None:
         client = _fake_client()
         for index, name in [(0, "one.png"), (1, "two.png")]:
-            await AgentClient.on_media(
+            await AgentConsumer.on_media(
                 client,
                 _room(),
                 _media_event(
@@ -365,7 +365,7 @@ class TestAddressingSurvivesCoalescing:
     async def test_it_holds_when_the_captioned_part_arrives_last(self) -> None:
         client = _fake_client()
         for index, name in [(1, "two.png"), (0, "one.png")]:
-            await AgentClient.on_media(
+            await AgentConsumer.on_media(
                 client,
                 _room(),
                 _media_event(
@@ -382,7 +382,7 @@ class TestAddressingSurvivesCoalescing:
         # The fix must carry addressing across the group, not assert it.
         client = _fake_client()
         for index, name in [(0, "one.png"), (1, "two.png")]:
-            await AgentClient.on_media(
+            await AgentConsumer.on_media(
                 client,
                 _room(),
                 _media_event(
@@ -402,7 +402,7 @@ class TestAddressingSurvivesCoalescing:
         ac.ATTACHMENT_GROUP_TIMEOUT_SECONDS = 0.01
         try:
             client = _fake_client()
-            await AgentClient.on_media(
+            await AgentConsumer.on_media(
                 client,
                 _room(),
                 _media_event(
@@ -412,7 +412,7 @@ class TestAddressingSurvivesCoalescing:
                     group={"id": "grp-addr-partial", "index": 0, "total": 3},
                 ),
             )
-            await AgentClient.on_media(
+            await AgentConsumer.on_media(
                 client,
                 _room(),
                 _media_event(
@@ -433,7 +433,7 @@ class TestAddressingSurvivesCoalescing:
     async def test_a_single_attachment_is_unaffected(self) -> None:
         # One screenshot always worked; it takes no group and no buffering.
         client = _fake_client()
-        await AgentClient.on_media(
+        await AgentConsumer.on_media(
             client, _room(), _media_event(body="@agent-a one picture")
         )
 

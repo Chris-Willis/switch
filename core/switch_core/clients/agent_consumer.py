@@ -6,7 +6,7 @@ import random
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, NamedTuple, Unpack
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.commands import (
@@ -15,7 +15,7 @@ from switch_core.bridges.agent.commands import (
     _addressed_by_name_or_role,
     dispatch_command,
 )
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.presence import (
     agents_present_in,
@@ -34,17 +34,14 @@ from switch_core.bridges.agent.protocol.types import (
     TaskUpdatePayload,
 )
 from switch_core.budgets import BudgetExceeded, BudgetGuard
+from switch_core.clients.actor import AgentActor
 from switch_core.clients.admin_messages import (
     AUTO_REPLY_FLAG,
     PLATFORM_MARKER,
     platform_on_behalf_of,
     platform_replies_in_channel,
 )
-from switch_core.clients.client_base import (
-    ClientBase,
-    ClientBaseKwargs,
-    ClientConfig,
-)
+from switch_core.clients.consumer import Consumer
 from switch_core.clients.mentions import (
     NAME_CHAR as _NAME_CHAR,
 )
@@ -205,7 +202,7 @@ _ADDRESSING_UNCLAIMED_MESSAGE = ADDRESSING_UNCLAIMED_MESSAGE
 class _GateOutcome(NamedTuple):
     """Whether a message that tags this agent really addresses it, plus the
     refusal to post when it does not. The refusal is returned rather than sent
-    so the caller can close its database session before talking to Matrix."""
+    so the caller can close its database session before posting."""
 
     addressed: bool
     refusal: str | None
@@ -229,10 +226,18 @@ def _role_elsewhere_message(other_room_name: str) -> str:
     return _elsewhere_message([other_room_name], holds_role_here=True)
 
 
-class AgentClient(ClientBase[ClientConfig]):
+class AgentConsumer(Consumer[AgentActor]):
+    """Reads the rooms an agent is in, and decides what reaches the agent.
+
+    One per agent. Applies addressing, queues what should wake the agent in
+    its event buffer for the SSE stream, and posts the replies an agent cannot
+    give itself (greetings, offline and refusal notices) through its actor.
+    """
+
     def __init__(
         self,
         *,
+        actor: AgentActor,
         event_buffer: EventBuffer,
         agent_store: AgentStore,
         room_store: RoomStore,
@@ -242,11 +247,10 @@ class AgentClient(ClientBase[ClientConfig]):
         agent_session_store: AgentSessionStore,
         room_role_store: RoomRoleStore,
         external_user_store: ExternalUserStore,
-        connections: ConnectionRegistry,
+        connections: AgentConnectionRegistry,
         frontend_base_url: str | None,
-        **kwargs: Unpack[ClientBaseKwargs[ClientConfig]],
     ) -> None:
-        super().__init__(**kwargs)
+        super().__init__(actor=actor)
         self._event_buffer = event_buffer
         self._agent_store = agent_store
         self._room_store = room_store
@@ -260,7 +264,6 @@ class AgentClient(ClientBase[ClientConfig]):
         self._frontend_base_url = (
             frontend_base_url.rstrip("/") if frontend_base_url else None
         )
-        self._agent: Agent | None = None
         # Addressing is decided from stores, not from this client, so the same
         # rules can decide for a message read out of the log.
         self._addressing = AddressingResolver(
@@ -281,9 +284,7 @@ class AgentClient(ClientBase[ClientConfig]):
 
     @property
     def agent(self) -> Agent:
-        if self._agent is None:
-            raise RuntimeError("Agent not loaded — call start() first")
-        return self._agent
+        return self.actor.agent
 
     async def _fresh_agent(self, session: AsyncSession) -> Agent:
         """Re-read the agent row and refresh the cached snapshot.
@@ -300,7 +301,7 @@ class AgentClient(ClientBase[ClientConfig]):
         """
         fresh = await self._agent_store.get(session, self.agent.id)
         if fresh is not None:
-            self._agent = fresh
+            self.actor.set_agent(fresh)
         return self.agent
 
     async def start(self) -> None:
@@ -317,7 +318,7 @@ class AgentClient(ClientBase[ClientConfig]):
             agent = await self._agent_store.get_by_client_id(session, self.client_id)
             if agent is None:
                 raise RuntimeError(f"No agent found for client: {self.client_id}")
-            self._agent = agent
+            self.actor.set_agent(agent)
         await super().start()
 
     # ── Event hooks ───────────────────────────────────────────────────────────
@@ -341,7 +342,7 @@ class AgentClient(ClientBase[ClientConfig]):
             greeting = f"Hi! I'm {name} — how can I help?"
         else:
             greeting = random.choice(AGENT_GREETINGS).format(name=name)
-        await self.send_message(
+        await self.actor.send_message(
             room.room_id, greeting, format="markdown", metered=False
         )
 
@@ -371,7 +372,9 @@ class AgentClient(ClientBase[ClientConfig]):
         another way when they speak — and the log, which records the Switch
         name, disagree with what was delivered live.
         """
-        client = await self.client_store.get_by_matrix_user_id(session, event.state_key)
+        client = await self.client_store.get_by_transport_user_id(
+            session, event.state_key
+        )
         if client is not None:
             return client.display_name
         fallback = event.display_name or event.state_key.split(":")[0].lstrip("@")
@@ -434,7 +437,7 @@ class AgentClient(ClientBase[ClientConfig]):
             reply_thread_root = thread_id if thread_id is not None else event.event_id
 
         # Every database read this message needs happens in one session, and
-        # nothing is posted to Matrix while it is open. A busy room fans one
+        # nothing is posted to the room while it is open. A busy room fans one
         # inbound event out to every agent client in it at once, so a client
         # that took a slot per question would multiply a single message into
         # dozens of concurrent checkouts.
@@ -488,7 +491,7 @@ class AgentClient(ClientBase[ClientConfig]):
         if not sender_name:
             sender_name = event.sender
             logger.error(
-                "Message received without sender name, using matrix name: %s",
+                "Message received without sender name, using the sender id: %s",
                 sender_name,
             )
 
@@ -549,15 +552,15 @@ class AgentClient(ClientBase[ClientConfig]):
         if not sender_name:
             sender_name = event.sender
             logger.error(
-                "Media received without sender name, using matrix name: %s",
+                "Media received without sender name, using the sender id: %s",
                 sender_name,
             )
 
         # Mirror on_message: surface the thread this media belongs to (if any).
         thread_id = event.thread_root_id
 
-        # Several files posted as one message arrive as separate Matrix events
-        # sharing a group marker (Matrix has no multi-attachment event). Hold
+        # Several files posted as one message arrive as separate media events
+        # sharing a group marker (a media event carries one file). Hold
         # them until the group is complete, then emit ONE payload carrying all
         # of them, so the agent sees one message with N attachments.
         group = parse_attachment_group(content)
@@ -854,7 +857,7 @@ class AgentClient(ClientBase[ClientConfig]):
     ) -> None:
         """Post a command result as this agent (an agent-owned command like
         `!run-cmd` answers in the agent's own voice, not as a system message)."""
-        await self.send_message(
+        await self.actor.send_message(
             room_id,
             body,
             format=format,
@@ -862,15 +865,19 @@ class AgentClient(ClientBase[ClientConfig]):
             metered=False,
         )
 
-    async def _resolve_room_meta(self, matrix_room_id: str) -> RoomMeta | None:
-        if matrix_room_id in self._room_meta:
-            return self._room_meta[matrix_room_id]
+    async def _resolve_room_meta(self, transport_room_id: str) -> RoomMeta | None:
+        if transport_room_id in self._room_meta:
+            return self._room_meta[transport_room_id]
 
         async with tenant_session(self.session_factory, self.tenant_id) as session:
-            room = await self._room_store.get_by_matrix_room_id(session, matrix_room_id)
+            room = await self._room_store.get_by_transport_room_id(
+                session, transport_room_id
+            )
             if room is None:
-                logger.error("Room not found for matrix room ID: %s", matrix_room_id)
-                self._room_meta[matrix_room_id] = None
+                logger.error(
+                    "Room not found for transport room id: %s", transport_room_id
+                )
+                self._room_meta[transport_room_id] = None
                 return None
 
             agent_greetings_enabled = True
@@ -886,7 +893,7 @@ class AgentClient(ClientBase[ClientConfig]):
             agent_greetings_enabled=agent_greetings_enabled,
             channel_type=room.channel_type,
         )
-        self._room_meta[matrix_room_id] = meta
+        self._room_meta[transport_room_id] = meta
         return meta
 
     async def _reply_when_unavailable_here(
@@ -1119,8 +1126,8 @@ class AgentClient(ClientBase[ClientConfig]):
         )
         return self.agent.id in live
 
-    async def _is_direct_room(self, matrix_room_id: str) -> bool:
-        meta = await self._resolve_room_meta(matrix_room_id)
+    async def _is_direct_room(self, transport_room_id: str) -> bool:
+        meta = await self._resolve_room_meta(transport_room_id)
         return meta is not None and meta.channel_type == "direct"
 
     # ── Task event forwarding ────────────────────────────────────────────────
@@ -1128,7 +1135,7 @@ class AgentClient(ClientBase[ClientConfig]):
     async def on_task_delegate(self, room: RoomRef, event: TaskDelegate) -> None:
         if event.performer_agent_id != self.agent.id:
             return
-        await self.send_message(
+        await self.actor.send_message(
             room.room_id, "Working on it.", format="markdown", metered=False
         )
         meta = await self._resolve_room_meta(room.room_id)
@@ -1267,7 +1274,7 @@ class AgentClient(ClientBase[ClientConfig]):
         """
         return self._addressing.addressed_without_lookup(
             agent=self.agent,
-            agent_matrix_id=self.matrix_user_id,
+            agent_user_id=self.transport_user_id,
             channel_type=meta.channel_type,
             message=self._as_incoming(event),
         )
@@ -1286,7 +1293,7 @@ class AgentClient(ClientBase[ClientConfig]):
         return await self._addressing.addresses(
             session,
             agent=self.agent,
-            agent_matrix_id=self.matrix_user_id,
+            agent_user_id=self.transport_user_id,
             room_id=meta.room_id,
             channel_type=meta.channel_type,
             message=self._as_incoming(event),
@@ -1296,11 +1303,11 @@ class AgentClient(ClientBase[ClientConfig]):
         self,
         session: AsyncSession,
         agent: Agent,
-        matrix_sender: str,
+        sender_user_id: str,
         room_id: str,
         content: Mapping[str, object] | None = None,
     ) -> AddressingDecision:
-        """Whether `matrix_sender` may address this agent in `room_id`, per the
+        """Whether `sender_user_id` may address this agent in `room_id`, per the
         agent's scoped addressing policy.
 
         `agent` is the freshly-read row rather than the cached snapshot: the
@@ -1313,7 +1320,7 @@ class AgentClient(ClientBase[ClientConfig]):
             session,
             agent=agent,
             room_id=room_id,
-            sender=matrix_sender,
+            sender=sender_user_id,
             content=content,
         )
 
@@ -1356,7 +1363,7 @@ class AgentClient(ClientBase[ClientConfig]):
 
     async def _post_auto_reply(
         self,
-        matrix_room_id: str,
+        transport_room_id: str,
         event: InboundMessage,
         msg: str,
         thread_root_id: str | None,
@@ -1365,8 +1372,8 @@ class AgentClient(ClientBase[ClientConfig]):
         another offline agent it tags does not answer it in turn."""
         handle = self._sender_handle(event)
         already_tagged = _mention_regex(handle).search(msg) is not None
-        await self.send_message(
-            matrix_room_id,
+        await self.actor.send_message(
+            transport_room_id,
             msg if already_tagged else f"@{handle} {msg}",
             format="markdown",
             mentions=[event.sender],
@@ -1405,8 +1412,9 @@ class AgentClient(ClientBase[ClientConfig]):
 
         Prefers the bridge-provided `sender_name` (the external username, which
         the collaboration bridge rewrites into a real @mention on Slack /
-        Mattermost); falls back to the mxid localpart for a native Matrix user
-        (paired with `mentions=[event.sender]` so Matrix renders a pill).
+        Mattermost); falls back to the participant id's localpart for a client with no
+        bridge-provided name (paired with `mentions=[event.sender]` so the
+        mention renders as a pill).
         """
         content = event.content
         person = platform_on_behalf_of(content)
@@ -1420,7 +1428,7 @@ class AgentClient(ClientBase[ClientConfig]):
     def _is_mentioned(self, event: InboundMessage) -> bool:
         return self._addressing.mentions_name(
             agent=self.agent,
-            agent_matrix_id=self.matrix_user_id,
+            agent_user_id=self.transport_user_id,
             message=self._as_incoming(event),
         )
 
