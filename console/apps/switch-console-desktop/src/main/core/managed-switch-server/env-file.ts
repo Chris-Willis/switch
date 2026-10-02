@@ -67,6 +67,7 @@ export function buildEnvFile(params: LocalServerEnvParams): string {
     '',
     `AGENT_REGISTRATION_TOKEN=${secrets.agentRegistrationToken}`,
     `JWT_SECRET_KEY=${secrets.jwtSecretKey}`,
+    `SECRET_KEYS=${secrets.secretKeys}`,
     `GATEWAY_ADMIN_EMAIL=${LOCAL_SERVER_ADMIN_EMAIL}`,
     `GATEWAY_ADMIN_PASSWORD=${secrets.gatewayAdminPassword}`,
     `FRONTEND_BASE_URL=${gatewayUrlFor(ports)}`,
@@ -116,12 +117,16 @@ export function readEnvValue(env: string, key: string): string | null {
 
 /**
  * What another Console needs to run the same stack. `dbRuntimePassword` is
- * null for a `.env` from before switch-core split its database roles; the
- * caller fills it in (see `withRuntimePassword` in `secret-values.ts`).
+ * null for a `.env` from before switch-core split its database roles, and
+ * `secretKeys` for one from before `SECRET_KEYS`; the caller fills them in
+ * (see `withNewerSecrets` in `secret-values.ts`).
  */
 export type StackEnv = {
   ports: LocalServerPorts;
-  secrets: Omit<LocalServerSecrets, 'dbRuntimePassword'> & { dbRuntimePassword: string | null };
+  secrets: Omit<LocalServerSecrets, 'dbRuntimePassword' | 'secretKeys'> & {
+    dbRuntimePassword: string | null;
+    secretKeys: string | null;
+  };
   version: string | null;
 };
 
@@ -198,6 +203,7 @@ export function keysDisagreeing(
   const expected = new Map<string, string>();
   for (const [field, key] of PORT_KEYS) expected.set(key, String(copy.ports[field]));
   for (const [field, key] of SECRET_KEYS) expected.set(key, copy.secrets[field]);
+  expected.set('SECRET_KEYS', copy.secrets.secretKeys);
   // Which password `DB_PASSWORD` is depends on the layout that wrote the file.
   if (readEnvValue(env, 'DB_OWNER_PASSWORD') !== null) {
     expected.set('DB_OWNER_PASSWORD', copy.secrets.dbPassword);
@@ -244,7 +250,11 @@ export function readStackEnv(env: string): StackEnvReading {
     kind: 'complete',
     env: {
       ports: ports as LocalServerPorts,
-      secrets: { ...(plain as Record<PlainSecret, string>), ...database },
+      secrets: {
+        ...(plain as Record<PlainSecret, string>),
+        ...database,
+        secretKeys: readEnvValue(env, 'SECRET_KEYS'),
+      },
       version: readEnvValue(env, 'SWITCH_VERSION'),
     },
   };

@@ -10,6 +10,7 @@ const secrets: LocalServerSecrets = {
   dbRuntimePassword: 'db-runtime-pw',
   agentRegistrationToken: 'agent-token',
   jwtSecretKey: 'jwt-key',
+  secretKeys: 'console:secret-keys-value',
   gatewayAdminPassword: 'gw-admin',
   mattermostAdminPassword: 'mm-admin',
   mattermostUserPassword: 'mm-user',
@@ -63,6 +64,7 @@ describe('buildEnvFile', () => {
     expect(vars.DB_OWNER_PASSWORD).toBe('db-pw');
     expect(vars.AGENT_REGISTRATION_TOKEN).toBe('agent-token');
     expect(vars.JWT_SECRET_KEY).toBe('jwt-key');
+    expect(vars.SECRET_KEYS).toBe('console:secret-keys-value');
     expect(vars.GATEWAY_ADMIN_PASSWORD).toBe('gw-admin');
     expect(vars.MATTERMOST_ADMIN_PASSWORD).toBe('mm-admin');
     expect(vars.MATTERMOST_USER_PASSWORD).toBe('mm-user');
@@ -199,6 +201,15 @@ describe('readStackEnv', () => {
     });
   });
 
+  it('reads a file written before SECRET_KEYS, leaving the key ring to be filled in', () => {
+    const legacy = written.replace(/^SECRET_KEYS=.*$/m, '');
+
+    expect(readStackEnv(legacy)).toEqual({
+      kind: 'complete',
+      env: { ports, secrets: { ...secrets, secretKeys: null }, version: '1.2.3' },
+    });
+  });
+
   it('names the owner password a file from before the role split is missing', () => {
     const legacy = written
       .replace('DB_USER=switch_app', 'DB_USER=postgres')
@@ -303,6 +314,12 @@ describe('keysDisagreeing', () => {
     expect(keysDisagreeing(partial, { ports, secrets: { ...secrets, jwtSecretKey: 'x' } })).toEqual(
       []
     );
+  });
+
+  it('names a key ring the copy disagrees with', () => {
+    expect(
+      keysDisagreeing(written, { ports, secrets: { ...secrets, secretKeys: 'console:other' } })
+    ).toEqual(['SECRET_KEYS']);
   });
 
   it('reads DB_PASSWORD as the owner’s in a file written before the role split', () => {
