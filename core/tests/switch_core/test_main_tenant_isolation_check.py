@@ -9,7 +9,7 @@ superuser, so the restricted-role check refuses it.
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import insert
+from sqlalchemy import insert, text
 
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Tenant
@@ -48,7 +48,7 @@ async def test_an_unrestricted_connection_is_refused_by_default(
 async def test_opting_out_is_allowed_with_one_workspace(
     rls_harness: RLSHarness,
 ) -> None:
-    await _check_tenant_isolation(
+    assert not await _check_tenant_isolation(
         _config(require_restricted_role=False), rls_harness.owner_engine
     )
 
@@ -65,3 +65,28 @@ async def test_opting_out_is_refused_once_a_second_workspace_exists(
         await _check_tenant_isolation(
             _config(require_restricted_role=False), rls_harness.owner_engine
         )
+
+
+async def test_a_restricted_connection_reports_isolation(
+    rls_harness: RLSHarness,
+) -> None:
+    assert await _check_tenant_isolation(
+        _config(require_restricted_role=True), rls_harness.restricted_engine
+    )
+
+
+async def test_opting_out_survives_a_role_boot_could_not_grant(
+    rls_harness: RLSHarness,
+) -> None:
+    """No DB_OWNER_USER, so boot never granted the runtime role the lookups.
+    The role check names that; counting workspaces through a lookup the role
+    cannot run must not turn it into a permission-denied crash."""
+    role = rls_harness.restricted_engine.url.username
+    async with rls_harness.owner_engine.begin() as conn:
+        await conn.execute(
+            text(f'REVOKE EXECUTE ON FUNCTION all_tenant_ids() FROM "{role}"')
+        )
+
+    assert not await _check_tenant_isolation(
+        _config(require_restricted_role=False), rls_harness.restricted_engine
+    )

@@ -20,6 +20,7 @@ import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -28,6 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -408,6 +410,37 @@ class TestCreateTenant:
             response = await client.post("/tenants", json={"name": "Ops Co"})
 
         assert response.status_code == 201, response.text
+
+    async def test_no_workspace_is_created_where_tenants_are_not_isolated(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """With DB_REQUIRE_RESTRICTED_ROLE off the server keeps to one
+        workspace, operators included: a second would run unisolated, and the
+        next boot would refuse to start."""
+        user_id = await _make_unaffiliated_user(
+            session_factory, name="operator", role="admin"
+        )
+        token = create_jwt(user_id, "operator@example.invalid", "admin", _SECRET, None)
+        lifecycle = ClientLifecycleService(
+            matrix_admin=MagicMock(),
+            client_store=MagicMock(),
+            tenant_store=TenantStore(),
+            client_factory=MagicMock(),
+            session_factory=session_factory,
+            config=SimpleNamespace(matrix_server_name="test"),  # type: ignore[arg-type]
+            tenants_isolated=False,
+        )
+
+        app = _app(session_factory, client_lifecycle=lifecycle, signup_mode="open")
+        async with _client(app, token) as client:
+            response = await client.post("/tenants", json={"name": "Second Co"})
+
+        assert response.status_code == 409, response.text
+        assert "DB_REQUIRE_RESTRICTED_ROLE" in response.json()["detail"]
+        async with session_factory() as session:
+            assert (
+                await session.execute(select(Tenant).where(Tenant.name == "Second Co"))
+            ).first() is None
 
     async def test_a_failure_other_than_a_taken_slug_is_not_retried(
         self, session_factory: async_sessionmaker[AsyncSession]

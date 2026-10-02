@@ -589,6 +589,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             client_factory=client_factory,
             session_factory=session_factory,
             config=config,
+            tenants_isolated=True,
         )
 
         room_service = RoomService(

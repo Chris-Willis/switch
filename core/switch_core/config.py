@@ -64,9 +64,9 @@ class SwitchConfig(BaseSettings):
     #
     # Set false only for a single-tenant deployment that has not created its
     # runtime role yet. Boot then logs at `error` on every start, because that
-    # is a deployment with no tenant isolation in it. Refused outright where a
-    # second tenant can exist: with sign-up letting people create workspaces,
-    # or once more than one workspace is stored.
+    # is a deployment with no tenant isolation in it. It keeps to one
+    # workspace: refused with open sign-up, refused at boot once more than one
+    # is stored, and no workspace can be created while it runs.
     db_require_restricted_role: bool = True
 
     # The server half of every client's `@localpart:server` id. Not a

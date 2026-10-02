@@ -13,7 +13,10 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.service import ProtocolService
-from switch_core.clients.client_lifecycle_service import ClientLifecycleService
+from switch_core.clients.client_lifecycle_service import (
+    ClientLifecycleService,
+    TenantIsolationNotInForce,
+)
 from switch_core.config import SwitchConfig
 from switch_core.db.models import (
     Invitation,
@@ -351,6 +354,8 @@ async def _provision_workspace(
             tenant = await client_lifecycle.create_tenant(name, slug)
         except TenantSlugTaken:
             continue
+        except TenantIsolationNotInForce as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         break
     if tenant is None:
         logger.error(

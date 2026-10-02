@@ -15,6 +15,7 @@ import uvicorn
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -314,19 +315,42 @@ async def _prepare_database(config: SwitchConfig) -> None:
     )
 
 
-async def _check_tenant_isolation(config: SwitchConfig, engine: AsyncEngine) -> None:
+_INSUFFICIENT_PRIVILEGE = "42501"
+
+
+async def _check_tenant_isolation(config: SwitchConfig, engine: AsyncEngine) -> bool:
     """Refuse to serve on a connection the policies do not apply to.
 
     Before anything else touches the database, because the first thing that
     does is the admin seeding, and a deployment that is not isolating tenants
     should not get as far as writing a row.
+
+    Returns whether isolation is in force. False only with
+    DB_REQUIRE_RESTRICTED_ROLE off, and then the server keeps to the one
+    workspace it has: no further tenant may be created while it runs.
     """
     try:
         await verify_restricted_role(engine)
     except RuntimeRoleError as exc:
         if config.db_require_restricted_role:
             raise
-        tenant_count = len(await all_tenant_ids(create_session_factory(engine)))
+        try:
+            tenant_count = len(await all_tenant_ids(create_session_factory(engine)))
+        except DBAPIError as count_error:
+            if getattr(count_error.orig, "sqlstate", None) != _INSUFFICIENT_PRIVILEGE:
+                raise
+            # The role cannot run the lookups because boot had no owner
+            # connection to grant them with. Nothing can resolve a tenant on
+            # such a connection, let alone serve a second one, so the count is
+            # not needed to keep tenants apart; the role check's own error
+            # already names what is missing.
+            logger.error(
+                "Tenant isolation is NOT in force on this deployment, and the "
+                "number of workspaces could not be checked: %s Continuing only "
+                "because DB_REQUIRE_RESTRICTED_ROLE is false.",
+                exc,
+            )
+            return False
         if tenant_count > 1:
             raise RuntimeRoleError(
                 f"{exc} DB_REQUIRE_RESTRICTED_ROLE=false is only allowed on a "
@@ -337,9 +361,12 @@ async def _check_tenant_isolation(config: SwitchConfig, engine: AsyncEngine) -> 
             "Tenant isolation is NOT in force on this deployment: %s "
             "Continuing only because DB_REQUIRE_RESTRICTED_ROLE is false. "
             "Every row-level-security policy in this schema is inert, and any "
-            "second tenant onboarded here can read the first's data.",
+            "second tenant onboarded here can read the first's data, so none "
+            "can be created while it runs.",
             exc,
         )
+        return False
+    return True
 
 
 async def run(config: SwitchConfig) -> None:
@@ -350,7 +377,7 @@ async def run(config: SwitchConfig) -> None:
     # the schema owner's connection where one is configured, and neither
     # belongs on the pooled application engine built below.
     engine = create_engine_from_config(config)
-    await _check_tenant_isolation(config, engine)
+    tenants_isolated = await _check_tenant_isolation(config, engine)
     session_factory = create_session_factory(engine)
     # Wired here rather than inside the engine factory, so the database layer
     # keeps knowing nothing about observability. Unconditional: the listeners
@@ -520,6 +547,7 @@ async def run(config: SwitchConfig) -> None:
         client_factory=client_factory,
         session_factory=session_factory,
         config=config,
+        tenants_isolated=tenants_isolated,
     )
 
     # ── Collaboration bridge lifecycle ───────────────────────────────────────
