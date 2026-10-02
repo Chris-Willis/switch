@@ -15,7 +15,6 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
-import httpx
 import requests as sync_requests
 from mattermostdriver import Driver
 from mattermostdriver.exceptions import (
@@ -53,6 +52,7 @@ from switch_core.bridges.collaboration.mattermost.callback import (
     interrupt_action,
     read_press,
 )
+from switch_core.bridges.collaboration.mattermost.http_client import NoRedirectClient
 from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
@@ -83,6 +83,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     render_request,
     turn_status,
 )
+from switch_core.outbound import guarded_async_client
 from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
@@ -310,6 +311,12 @@ class MattermostAdapter(CollaborationAdapter):
     #: the channel open. A settled card reads better than that tombstone and
     #: keeps the channel a record of what was asked and what was decided.
     removes_answered_cards: ClassVar[bool] = False
+
+    @classmethod
+    def outbound_urls(cls, connection_config: dict[str, object]) -> list[str]:
+        # The driver connects without our pinning, so this check at
+        # registration, edit and start is the guard for the server URL.
+        return [str(connection_config["url"])]
 
     def __init__(self, *, config: MattermostConnectionConfig) -> None:
         super().__init__()
@@ -2292,6 +2299,22 @@ class MattermostAdapter(CollaborationAdapter):
         # the response has to be a PNG it can accept.
         return default_icon_url(agent_name, image_format="png")
 
+    async def _fetch_icon(self, url: str) -> bytes | None:
+        """The icon's bytes, or None if it is larger than the ceiling."""
+        async with guarded_async_client(
+            self.outbound_policy, follow_redirects=False, timeout=10.0
+        ) as client:
+            async with client.stream("GET", url) as resp:
+                resp.raise_for_status()
+                chunks: list[bytes] = []
+                size = 0
+                async for chunk in resp.aiter_bytes():
+                    size += len(chunk)
+                    if size > _MAX_BOT_ICON_BYTES:
+                        return None
+                    chunks.append(chunk)
+        return b"".join(chunks)
+
     async def _set_bot_icon(self, bot_id: str, agent_name: str) -> None:
         if not self._admin_driver or not self._main_loop:
             logger.error("[BOT-ICON] skipping %s: no driver or loop", agent_name)
@@ -2302,19 +2325,16 @@ class MattermostAdapter(CollaborationAdapter):
             logger.debug("[BOT-ICON] fetching avatar for %s", agent_name)
             # This is the one place Switch dereferences an agent's icon URL
             # rather than handing it to a platform, so the fetch is bounded:
-            # redirects off (a permitted host could otherwise bounce us to an
-            # internal one, which validation at write time cannot foresee) and
-            # a size ceiling so a hostile response cannot be read unbounded.
-            async with httpx.AsyncClient(follow_redirects=False) as client:
-                resp = await client.get(url, timeout=10.0)
-                resp.raise_for_status()
-                image_bytes = resp.content
-            if len(image_bytes) > _MAX_BOT_ICON_BYTES:
+            # only addresses the outbound policy allows, checked as the
+            # connection is made (validation at write time cannot see what a
+            # name resolves to later), no redirects, and a size ceiling
+            # enforced while reading rather than after.
+            image_bytes = await self._fetch_icon(url)
+            if image_bytes is None:
                 logger.error(
-                    "[BOT-ICON] icon for %s is %d bytes, over the %d limit — "
+                    "[BOT-ICON] icon for %s is over the %d byte limit — "
                     "leaving the current icon in place",
                     agent_name,
-                    len(image_bytes),
                     _MAX_BOT_ICON_BYTES,
                 )
                 return
@@ -2330,6 +2350,8 @@ class MattermostAdapter(CollaborationAdapter):
                     upload_url,
                     headers={"Authorization": f"Bearer {token}"},
                     files={"image": ("icon.png", data, "image/png")},
+                    allow_redirects=False,
+                    timeout=30,
                 )
                 if not r.ok:
                     logger.error(
@@ -2695,7 +2717,7 @@ class MattermostAdapter(CollaborationAdapter):
             opts["login_id"] = login_id
             opts["password"] = password
 
-        return Driver(opts)
+        return Driver(opts, client_cls=NoRedirectClient)
 
     def _mm_api(
         self, method: str, endpoint: str, data: dict[str, Any] | None = None

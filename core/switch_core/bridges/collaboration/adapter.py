@@ -34,6 +34,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     request_summary,
     turn_summary,
 )
+from switch_core.outbound import OutboundPolicy
 from switch_core.sessions.contract import (
     Item,
     SnapshotRequest,
@@ -532,6 +533,17 @@ class CollaborationAdapter(ABC):
         the event loop that carries every live Matrix session.
         """
         return connection_config
+
+    @classmethod
+    def outbound_urls(cls, connection_config: dict[str, object]) -> list[str]:
+        """The URLs in this config that Switch itself connects to.
+
+        Checked against the deployment's `OutboundPolicy` before the bridge is
+        stored, when its config is edited and each time it starts, so a config
+        cannot point Switch at an internal address. Not the platform's own API
+        hosts, and not URLs only handed to the platform or put in links.
+        """
+        return []
 
     @classmethod
     def exclusive_resource(cls, connection_config: dict[str, object]) -> str | None:
@@ -1263,6 +1275,21 @@ class CollaborationAdapter(ABC):
         the channel-type handler. Called at bridge startup. Default is a no-op;
         only Teams saves types it could not verify."""
         return None
+
+    def set_outbound_policy(self, policy: OutboundPolicy) -> None:
+        """Install the policy for anything this adapter fetches from a URL a
+        tenant or agent chose. Set by the lifecycle before the adapter starts."""
+        self._outbound_policy = policy
+
+    @property
+    def outbound_policy(self) -> OutboundPolicy:
+        policy: OutboundPolicy | None = getattr(self, "_outbound_policy", None)
+        if policy is None:
+            raise RuntimeError(
+                f"{type(self).__name__} fetched a URL before its outbound policy "
+                "was set"
+            )
+        return policy
 
     def set_service_url_persister(
         self, persist: Callable[[str], Awaitable[None]]

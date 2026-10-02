@@ -627,6 +627,14 @@ Include with `nindent 12`.
   value: {{ .Values.switchCore.signup.maxWorkspacesPerUser | quote }}
 - name: GATEWAY_TENANT_CHOICE_ENABLED
   value: {{ .Values.switchCore.tenantChoiceEnabled | quote }}
+{{- $outboundHosts := .Values.switchCore.outbound.allowedPrivateHosts }}
+{{- if .Values.mattermost.enabled }}
+{{- $outboundHosts = append $outboundHosts (include "switch.mattermostHost" .) }}
+{{- end }}
+{{- if $outboundHosts }}
+- name: OUTBOUND_ALLOWED_PRIVATE_HOSTS
+  value: {{ join "," $outboundHosts | quote }}
+{{- end }}
 {{- with .Values.switchCore.smtp }}
 {{- if .enabled }}
 {{- if not $.Values.switchCore.frontendBaseUrl }}

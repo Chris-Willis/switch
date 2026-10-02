@@ -8,6 +8,8 @@ from urllib.parse import urlsplit
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from switch_core.outbound import OutboundPolicy
+
 # A Postgres time value: a bare count of milliseconds, or a count with a unit.
 _PG_INTERVAL_RE = re.compile(r"^\d+\s*(us|ms|s|min|h|d)?$")
 
@@ -75,6 +77,13 @@ class SwitchConfig(BaseSettings):
 
     # JWT auth
     jwt_secret_key: str
+
+    # Private hosts Switch may reach at a URL a tenant or agent supplied (a
+    # Mattermost server, an OpenCode server, an agent icon): comma-separated
+    # hostnames and CIDRs. Anything else that is not a public address is
+    # refused. Link-local and metadata addresses are refused even when listed.
+    # See `outbound.py`.
+    outbound_allowed_private_hosts: str = ""
 
     # Gateway admin seed
     gateway_admin_email: str
@@ -718,6 +727,15 @@ class SwitchConfig(BaseSettings):
                 f"{self.gateway_max_workspaces_per_user!r}."
             )
         return self
+
+    @model_validator(mode="after")
+    def _validate_outbound_allowed_private_hosts(self) -> "SwitchConfig":
+        OutboundPolicy.parse(self.outbound_allowed_private_hosts)
+        return self
+
+    @property
+    def outbound_policy(self) -> OutboundPolicy:
+        return OutboundPolicy.parse(self.outbound_allowed_private_hosts)
 
     @model_validator(mode="after")
     def _validate_db_user(self) -> "SwitchConfig":

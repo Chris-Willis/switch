@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, ClassVar, Literal, NoReturn
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import BaseModel, Field, model_validator
@@ -227,6 +228,9 @@ class SlackConnectionConfig(BridgeConnectionConfig):
 # A turn whose end never arrives — the agent died, the session was dropped —
 # leaves its stream open with nothing to close it. Far more than this many at
 # once is a bridge holding turns nobody is waiting on, so the oldest goes.
+# Where Slack serves private files from, commercial and GovSlack.
+_SLACK_FILE_DOMAINS = ("slack.com", "slack-gov.com")
+
 _MAX_OPEN_STREAMS = 100
 
 # Far above the open-stream bound on purpose. An entry here is what stops a
@@ -2984,7 +2988,18 @@ class SlackAdapter(CollaborationAdapter):
         return attachments, failures
 
     async def _download_file(self, url: str) -> bytes:
-        """Fetch a Slack private file URL with the bot token, returning bytes."""
+        """Fetch a Slack private file URL with the bot token, returning bytes.
+
+        Refuses any host but Slack's own: the request carries the bot token,
+        and the URL is read out of an event rather than built here.
+        """
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+        if parts.scheme != "https" or not any(
+            host == domain or host.endswith(f".{domain}")
+            for domain in _SLACK_FILE_DOMAINS
+        ):
+            raise ValueError(f"{url!r} is not a Slack file URL")
         async with httpx.AsyncClient() as client:
             resp = await client.get(
                 url,

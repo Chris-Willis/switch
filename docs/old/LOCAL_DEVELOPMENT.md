@@ -87,6 +87,13 @@ start the gateway frontend — you run both of those yourself, in their own
 terminals, so each gets hot-reload while you work. `just down` stops the
 stack; `just reset` also wipes its volumes (Postgres data included).
 
+switch-core refuses to connect to a private address at a URL a bridge or
+connector config names, unless `OUTBOUND_ALLOWED_PRIVATE_HOSTS` lists it. The
+`.env.example` default, `localhost`, covers the local Mattermost and an OpenCode
+server on your machine. An `.env` from before that setting existed lacks it, and
+the Mattermost bridge then refuses to start with a message naming the variable:
+add the line from `.env.example`.
+
 `just migrate` runs `alembic upgrade head` against the Postgres started by
 `just up`. Run it once after the stack is up and again after pulling any
 change that adds a migration — `just run` does not apply migrations itself

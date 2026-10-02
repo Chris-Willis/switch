@@ -246,6 +246,13 @@ switchCore:
   # lists them, rather than a 403. The gateway UI does not need it; turn it on
   # once every API client authenticating against this deployment handles it.
   tenantChoiceEnabled: false
+  # Private hosts switch-core may reach at a URL a tenant or agent supplied —
+  # a Mattermost server, an OpenCode server, an agent icon. Hostnames or CIDRs.
+  # Anything else that is not a public address is refused, and link-local and
+  # cloud metadata addresses are refused even when listed. The bundled
+  # Mattermost (mattermost.enabled) is added automatically.
+  outbound:
+    allowedPrivateHosts: []
   # Invitation e-mails. When enabled, an invitation addressed to an e-mail is
   # sent there through this SMTP relay (SES SMTP, Postmark, a company relay —
   # anything that speaks SMTP). Off, the invitation is still created and the

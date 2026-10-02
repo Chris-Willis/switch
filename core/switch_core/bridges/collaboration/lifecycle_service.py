@@ -19,6 +19,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     BridgeCredentialError,
     BridgeOperationError,
+    BridgeStartRefused,
 )
 from switch_core.clients.bridge_client import BridgeClient, BridgeClientConfig
 from switch_core.clients.client_factory import ClientFactory
@@ -33,6 +34,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_collaboration_bridge
 from switch_core.deeplinks import gateway_url_warning
+from switch_core.outbound import OutboundURLRefused
 from switch_core.provisioning import Provisioning
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import UNKNOWN_AGE, age_days, seconds_since
@@ -344,7 +346,9 @@ class CollaborationBridgeLifecycleService:
         self._bridge_starting_listeners: list[
             Callable[[CollaborationAdapter], None]
         ] = []
-        self._bridge_start_guards: list[BridgeStartGuard] = []
+        self._bridge_start_guards: list[BridgeStartGuard] = [
+            self._refuse_disallowed_urls
+        ]
 
         self._adapter_registry: dict[str, type[CollaborationAdapter]] = {}
         self._config_registry: dict[str, type[BridgeConnectionConfig]] = {}
@@ -448,6 +452,32 @@ class CollaborationBridgeLifecycleService:
         config is stored. A guard raises `BridgeStartRefused`.
         """
         self._bridge_start_guards.append(guard)
+
+    async def check_outbound_urls(
+        self, bridge_type: str, connection_config: Mapping[str, object]
+    ) -> None:
+        """Raise `OutboundURLRefused` if the config names a URL Switch may not reach."""
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            return
+        policy = self._config.outbound_policy
+        for url in adapter_cls.outbound_urls(dict(connection_config)):
+            await policy.check_url(url)
+
+    async def _refuse_disallowed_urls(
+        self,
+        *,
+        bridge_id: str,
+        tenant_id: str,
+        bridge_type: str,
+        connection_config: Mapping[str, object],
+    ) -> None:
+        """Start guard: re-checked at every start and edit, because what a
+        hostname resolves to can change after the bridge was registered."""
+        try:
+            await self.check_outbound_urls(bridge_type, connection_config)
+        except OutboundURLRefused as exc:
+            raise BridgeStartRefused(f"Bridge {bridge_id}: {exc}") from exc
 
     async def check_start_guards(
         self,
@@ -748,6 +778,7 @@ class CollaborationBridgeLifecycleService:
         connection_config = validated.model_dump(mode="json")
 
         await self._reject_resource_conflict(bridge_type, connection_config)
+        await self.check_outbound_urls(bridge_type, connection_config)
 
         # Before anything is written. The adapter runs in a background task
         # whose failures are logged and swallowed, so credentials that are wrong
@@ -874,6 +905,7 @@ class CollaborationBridgeLifecycleService:
                 connection_config=bridge.connection_config or {},
             )
             adapter = adapter_cls(config=typed_config)  # type: ignore[call-arg]
+            adapter.set_outbound_policy(self._config.outbound_policy)
             adapter.set_service_url_persister(
                 lambda service_url: self._persist_service_url(
                     bridge_id, tenant_id, service_url

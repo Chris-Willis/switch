@@ -38,6 +38,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
+from switch_core.outbound import OutboundPolicy
 from switch_core.tenant_context import tenant_scope
 
 pytestmark = pytest.mark.no_ambient_tenant
@@ -106,6 +107,7 @@ def _service(
         protocol=None,  # type: ignore[arg-type]
         session_factory=session_factory,
         encryption_secret="s" * 32,
+        outbound_policy=OutboundPolicy.parse(""),
     )
 
 

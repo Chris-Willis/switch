@@ -600,6 +600,7 @@ async def run(config: SwitchConfig) -> None:
         session_factory=session_factory,
         encryption_secret=config.jwt_secret_key,
         telemetry=telemetry,
+        outbound_policy=config.outbound_policy,
     )
     connector_lifecycle.register_connector_type(
         "opencode", OpenCodeConnector, OpenCodeConnectionConfig
