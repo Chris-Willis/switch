@@ -13,7 +13,7 @@ import {
 import type { ProviderRuntimeEvent } from '../events';
 import { stubSwitchFetch } from '../testing/agent-sessions-server';
 import { connectParent } from './session-channel';
-import { runSharedHost } from './shared-host';
+import { parkAfterMs, runSharedHost } from './shared-host';
 import { hostParked } from './shared-state';
 
 const roots: string[] = [];
@@ -668,6 +668,16 @@ it('takes commands and room messages from its parent, and pushes what it records
   } finally {
     expect(await host.stop()).toBeNull();
   }
+});
+
+it('parks after a day idle unless the environment says otherwise', () => {
+  vi.stubEnv('SWITCH_SESSION_PARK_AFTER_MS', '');
+  expect(parkAfterMs()).toBe(24 * 60 * 60 * 1000);
+  vi.stubEnv('SWITCH_SESSION_PARK_AFTER_MS', '5000');
+  expect(parkAfterMs()).toBe(5000);
+  vi.stubEnv('SWITCH_SESSION_PARK_AFTER_MS', 'off');
+  expect(parkAfterMs()).toBeNull();
+  vi.unstubAllEnvs();
 });
 
 it('parks itself once it has sat idle, and says so for whoever would start it', async () => {

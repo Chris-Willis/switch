@@ -225,7 +225,7 @@ Compatibility with deployed Consoles is waived (owner's call).
    raises: the data cannot be rebuilt.
 
 9. Idle sessions park. A host with a parent that has had nothing to do for
-   `SWITCH_SESSION_PARK_AFTER_MS` (30 minutes by default, `off` to disable)
+   `SWITCH_SESSION_PARK_AFTER_MS` (one day by default, `off` to disable)
    records `parked` in `shared-state.jsonl` and exits. The idle check needs
    no turn running, no open request, no reset decision and no room message
    queued. It stops answering its parent first, so a request that arrives

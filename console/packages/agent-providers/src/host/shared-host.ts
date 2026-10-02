@@ -58,11 +58,11 @@ export type SharedHostOptions = {
 };
 
 /** How long a session sits idle before its host parks, unless the environment says otherwise. */
-const PARK_AFTER_MS = 30 * 60 * 1000;
+const PARK_AFTER_MS = 24 * 60 * 60 * 1000;
 
 /**
  * The park timeout for this process: `SWITCH_SESSION_PARK_AFTER_MS` in
- * milliseconds, `off` to never park, or 30 minutes when unset.
+ * milliseconds, `off` to never park, or one day when unset.
  */
 export function parkAfterMs(): number | null {
   const value = process.env.SWITCH_SESSION_PARK_AFTER_MS;
