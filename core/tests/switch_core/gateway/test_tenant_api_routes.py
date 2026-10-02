@@ -741,6 +741,27 @@ class TestInvitationAuthorisation:
 
         assert response.status_code == 422, response.text
 
+    @pytest.mark.parametrize(("uses", "status"), [(100, 201), (101, 422)])
+    async def test_a_link_cannot_be_made_effectively_unlimited(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        uses: int,
+        status: int,
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name="a-owner", tenant_id=TENANT_A, role="owner"
+        )
+        token = _token(user_id, "a-owner@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.post(
+                f"/tenants/{TENANT_A}/invitations",
+                json={"role": "member", "uses_remaining": uses},
+            )
+
+        assert response.status_code == status, response.text
+
 
 class TestOwnershipIsOwnerOnly:
     """Who owns a workspace is decided by its owners, not by its admins.

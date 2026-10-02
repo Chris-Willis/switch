@@ -52,8 +52,8 @@ class OIDCTokenValidator:
     def __init__(
         self,
         issuer_url: str,
-        audience: str | None = None,
-        verify_issuer: bool = True,
+        audience: str,
+        verify_issuer: bool,
     ) -> None:
         self._issuer = issuer_url
         self._audience = audience
@@ -64,8 +64,6 @@ class OIDCTokenValidator:
     def validate(self, token: str) -> dict:
         signing_key = self._jwk_client.get_signing_key_from_jwt(token)
         options: dict[str, bool] = {}
-        if self._audience is None:
-            options["verify_aud"] = False
         if not self._verify_issuer:
             options["verify_iss"] = False
         return jwt.decode(

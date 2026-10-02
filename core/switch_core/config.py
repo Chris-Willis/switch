@@ -62,9 +62,11 @@ class SwitchConfig(BaseSettings):
     # like one that is, right up until a second customer reads the first's
     # rooms.
     #
-    # Set false only for a deployment that has not created its runtime role
-    # yet. Boot then logs at `error` on every start, because that is a
-    # deployment with no tenant isolation in it.
+    # Set false only for a single-tenant deployment that has not created its
+    # runtime role yet. Boot then logs at `error` on every start, because that
+    # is a deployment with no tenant isolation in it. Refused outright where a
+    # second tenant can exist: with sign-up letting people create workspaces,
+    # or once more than one workspace is stored.
     db_require_restricted_role: bool = True
 
     # The server half of every client's `@localpart:server` id. Not a
@@ -80,7 +82,9 @@ class SwitchConfig(BaseSettings):
     gateway_admin_email: str
     gateway_admin_password: str
 
-    # OIDC (optional — enables OAuth token validation on the MCP server)
+    # OIDC (optional — enables OAuth token validation on the MCP server).
+    # The audience is required with the issuer: without it, a token the same
+    # IdP minted for any other application would be accepted here.
     oauth_issuer_url: str | None = None
     oauth_audience: str | None = None
     oauth_verify_issuer: bool = True
@@ -716,6 +720,26 @@ class SwitchConfig(BaseSettings):
                 "GATEWAY_MAX_WORKSPACES_PER_USER must not be negative (0 "
                 "disables workspace creation), got "
                 f"{self.gateway_max_workspaces_per_user!r}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_oauth_audience(self) -> "SwitchConfig":
+        if self.oauth_issuer_url and not self.oauth_audience:
+            raise ValueError(
+                "OAUTH_AUDIENCE is required when OAUTH_ISSUER_URL is set: "
+                "without it, agent tokens are accepted whatever application "
+                "the IdP issued them for."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_db_require_restricted_role(self) -> "SwitchConfig":
+        if not self.db_require_restricted_role and self.gateway_signup_mode == "open":
+            raise ValueError(
+                "DB_REQUIRE_RESTRICTED_ROLE=false cannot be combined with "
+                "GATEWAY_SIGNUP_MODE=open: anyone may then create a workspace "
+                "on a deployment that does not isolate them from each other."
             )
         return self
 

@@ -326,6 +326,13 @@ async def _check_tenant_isolation(config: SwitchConfig, engine: AsyncEngine) -> 
     except RuntimeRoleError as exc:
         if config.db_require_restricted_role:
             raise
+        tenant_count = len(await all_tenant_ids(create_session_factory(engine)))
+        if tenant_count > 1:
+            raise RuntimeRoleError(
+                f"{exc} DB_REQUIRE_RESTRICTED_ROLE=false is only allowed on a "
+                f"single-tenant deployment, and this one has {tenant_count} "
+                "workspaces."
+            ) from exc
         logger.error(
             "Tenant isolation is NOT in force on this deployment: %s "
             "Continuing only because DB_REQUIRE_RESTRICTED_ROLE is false. "
