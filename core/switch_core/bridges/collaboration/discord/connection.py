@@ -16,6 +16,14 @@ logger = logging.getLogger(__name__)
 
 _READY_TIMEOUT = 30.0
 
+# The client's default, and passed again on every post that carries text
+# Switch did not write, so no single path depends on the other. Escaping the
+# text is not enough on its own: Discord decides who a message pings from the
+# raw content it receives, so `@everyone` is refused here rather than in
+# markup. Only the mass mentions are withheld; a user or role the agent
+# deliberately mentioned still resolves.
+NO_MASS_MENTIONS = discord.AllowedMentions(everyone=False)
+
 # A member search is a Gateway send, and discord.py holds every send past 110 a
 # minute on one socket until the minute is up. On the shared connection that
 # budget is every organisation's at once, so searches get about half of it and
@@ -186,7 +194,9 @@ class DiscordConnection:
         `_READY_TIMEOUT`. On timeout the half-open client is torn down; on a
         connect-task failure it is left as-is for the caller's `close()`.
         """
-        client = discord.Client(intents=self._intents)
+        client = discord.Client(
+            intents=self._intents, allowed_mentions=NO_MASS_MENTIONS
+        )
         client.event(self._make_on_message())
         # Presses on a card's buttons. Registered alongside the command tree
         # rather than through it: the tree is handed application-command
