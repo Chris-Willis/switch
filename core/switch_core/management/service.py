@@ -9,8 +9,12 @@ change already visible.
 Every change that affects what a controller should run bumps that
 controller's `assignment_revision`; every change to one agent's definition,
 desired state or placement bumps the definition's own `revision`. A move
-bumps both controllers, and the new controller's first credential fetch
-rotates the agent's key, which fences the old controller out.
+bumps both controllers.
+
+Placement is also told to Core, after the commit: which controller runs each
+agent is Core's `ControllerPresence`, which lets that controller act as the
+agent and carries the agent's events on that controller's stream alone. A move
+rebinds the agent, which is what fences the old controller out.
 """
 
 from __future__ import annotations
@@ -25,6 +29,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.auth import ControllerPrincipal
 from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
+from switch_core.bridges.agent.protocol.controller_presence import (
+    DETACH_DELETED,
+    DETACH_UNASSIGNED,
+    Binding,
+    ControllerPresence,
+)
 from switch_core.db.models import (
     CONTROLLER_ENROLLMENT_KEY_TYPE,
     CONTROLLER_KEY_TYPE,
@@ -99,10 +109,12 @@ class ManagementService:
         operations: AgentControllerOperationStore,
         api_keys: ApiKeyStore,
         agents: AgentStore,
+        presence: ControllerPresence,
         clock: Callable[[], datetime],
     ) -> None:
         self.settings = settings
         self.notifier = notifier
+        self.presence = presence
         self.controllers = controllers
         self.definitions = definitions
         self.operations = operations
@@ -363,36 +375,6 @@ class ManagementService:
             "report_within_s": self.settings.status_interval_seconds,
         }
 
-    async def agent_credentials(
-        self,
-        session: AsyncSession,
-        principal: ControllerPrincipal,
-        agent_id: str,
-        protocol: AgentCore,
-    ) -> dict[str, Any]:
-        """Rotate the agent's API key and hand the new one to its controller.
-
-        Rotating on every fetch is the v1 fence: whichever controller fetched
-        last holds the only key that works.
-        """
-        row = await self.definitions.get_for_agent(
-            session, principal.tenant_id, agent_id
-        )
-        if row is None or row.controller_id != principal.controller_id:
-            raise ManagementError(
-                403,
-                reason_codes.NOT_ASSIGNED,
-                "This agent is not assigned to this controller.",
-            )
-        await session.commit()
-        api_key = await protocol.rotate_agent_api_key(agent_id)
-        logger.info(
-            "Rotated the API key of agent %s for controller %s",
-            agent_id,
-            principal.controller_id,
-        )
-        return {"agent_id": agent_id, "api_key": api_key}
-
     # ── Operations, controller side ───────────────────────────────────────────
 
     async def _expire_overdue(
@@ -568,6 +550,7 @@ class ManagementService:
         await session.commit()
         logger.info("Revoked agent controller %s", controller_id)
         self.notifier.credential_revoked(controller_id)
+        self.presence.revoke_controller(controller_id)
 
     # ── Managed agents, owner side ────────────────────────────────────────────
 
@@ -668,6 +651,13 @@ class ManagementService:
         for controller_id, revision in revisions.items():
             self.notifier.assignment_changed(controller_id, revision)
 
+    def _bind(self, tenant_id: str, row: AgentDefinitionRow) -> None:
+        """Tell Core where the agent runs now, after the change has committed."""
+        if row.controller_id is None:
+            self.presence.unbind(row.agent_id, DETACH_UNASSIGNED)
+            return
+        self.presence.bind(binding_of(tenant_id, row))
+
     async def create_managed_agent(
         self,
         session: AsyncSession,
@@ -720,6 +710,7 @@ class ManagementService:
             session, tenant_id, {request.controller_id}
         )
         await session.commit()
+        self._bind(tenant_id, row)
         self._nudge(revisions)
         logger.info(
             "Created managed agent %s on controller %s",
@@ -847,6 +838,7 @@ class ManagementService:
                 )
         revisions = await self._bump_and_collect(session, tenant_id, affected)
         await session.commit()
+        self._bind(tenant_id, row)
         self._nudge(revisions)
         agent = await self._owned_agent(session, owner_id, agent.id)
         return await self._view(session, tenant_id, row, agent, {})
@@ -868,6 +860,7 @@ class ManagementService:
             session, tenant_id, {row.controller_id}
         )
         await session.commit()
+        self.presence.unbind(agent_id, DETACH_UNASSIGNED)
         self._nudge(revisions)
 
     async def forget_deleted_agent(
@@ -892,6 +885,7 @@ class ManagementService:
             session, tenant_id, {row.controller_id}
         )
         await session.commit()
+        self.presence.unbind(agent_id, DETACH_DELETED)
         self._nudge(revisions)
         logger.info("Stopped managing agent %s, which is being deleted", agent_id)
 
@@ -989,6 +983,17 @@ class ManagementService:
             session, tenant_id, controller_ids, OPERATION_LIST_LIMIT
         )
         return [operation_view(operation) for operation in operations]
+
+
+def binding_of(tenant_id: str, row: AgentDefinitionRow) -> Binding:
+    """The binding Core keeps for a placed definition."""
+    assert row.controller_id is not None
+    return Binding(
+        agent_id=row.agent_id,
+        controller_id=row.controller_id,
+        tenant_id=tenant_id,
+        auto_session=DefinitionV1.model_validate(row.definition).auto_session,
+    )
 
 
 def placement_from(

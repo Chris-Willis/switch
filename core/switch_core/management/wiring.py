@@ -3,7 +3,9 @@
 `create_management` returns None when `AGENT_MANAGEMENT_ENABLED` is off, and
 with None nothing is mounted and the bearer middleware has no controller
 branch. When it is on, the authenticator goes to the middleware as the agent
-bridge app is built, and `install` adds the routes once both apps exist.
+bridge app is built, `install` adds the routes once both apps exist, and
+`load_bindings` tells Core which controller runs each agent before the bridge
+serves.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.config import SwitchConfig
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_controller_operation_store import (
@@ -26,6 +29,7 @@ from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.management.auth import ManagementAuthenticator
+from switch_core.management.bindings import load_bindings
 from switch_core.management.controller_routes import router as controller_router
 from switch_core.management.dependencies import init_management_dependencies
 from switch_core.management.gateway_routes import router as gateway_router
@@ -65,12 +69,20 @@ class Management:
         async with tenant_session(self.session_factory, tenant_id) as session:
             await self.service.forget_deleted_agent(session, tenant_id, agent_id)
 
+    async def load_bindings(self) -> int:
+        return await load_bindings(
+            session_factory=self.session_factory,
+            definitions=self.service.definitions,
+            presence=self.service.presence,
+        )
+
 
 def build_management(
     *,
     token_secret: str,
     status_interval_seconds: int,
     session_factory: async_sessionmaker[AsyncSession],
+    presence: ControllerPresence,
     clock: Callable[[], datetime],
 ) -> Management:
     controllers = AgentControllerStore()
@@ -85,12 +97,14 @@ def build_management(
         operations=AgentControllerOperationStore(),
         api_keys=ApiKeyStore(),
         agents=AgentStore(),
+        presence=presence,
         clock=clock,
     )
     authenticator = ManagementAuthenticator(
         session_factory=session_factory,
         controllers=controllers,
         token_secret=token_secret,
+        presence=presence,
     )
     return Management(
         service=service, authenticator=authenticator, session_factory=session_factory
@@ -98,7 +112,9 @@ def build_management(
 
 
 def create_management(
-    config: SwitchConfig, session_factory: async_sessionmaker[AsyncSession]
+    config: SwitchConfig,
+    session_factory: async_sessionmaker[AsyncSession],
+    presence: ControllerPresence,
 ) -> Management | None:
     if not config.agent_management_enabled:
         return None
@@ -111,5 +127,6 @@ def create_management(
         token_secret=config.controller_token_secret,
         status_interval_seconds=config.controller_status_interval_seconds,
         session_factory=session_factory,
+        presence=presence,
         clock=utc_now,
     )

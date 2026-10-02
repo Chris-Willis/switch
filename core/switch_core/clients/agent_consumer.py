@@ -431,6 +431,8 @@ class AgentConsumer(Consumer[AgentActor]):
         # — e.g. on Mattermost, whose native "X joined the
         # channel" notice makes it redundant.
         meta = await self._resolve_room_meta(room.room_id)
+        if meta is not None:
+            self._connections.controllers.room_joined(self.agent.id, meta.room_id)
         if meta is not None and not meta.agent_greetings_enabled:
             logger.info(
                 "Suppressing self-join greeting for %s in %s "
@@ -461,6 +463,7 @@ class AgentConsumer(Consumer[AgentActor]):
             return
         self._event_buffer.drop_room(self.agent.id, meta.room_id)
         self._connections.release_room_everywhere(self.agent.id, meta.room_id)
+        self._connections.controllers.room_left(self.agent.id, meta.room_id)
 
     async def _member_name(
         self, session: AsyncSession, event: InboundMembership
@@ -1177,6 +1180,13 @@ class AgentConsumer(Consumer[AgentActor]):
         if self._connections.can_spawn_for(self.agent.id, meta.room_id):
             return _STARTING_SESSION_MESSAGE
 
+        # A controller-backed agent is answered from its controller alone, and
+        # Switch cannot see where its sessions are, so there is nowhere else to
+        # point the asker: none of the heartbeat rows, placements or room
+        # claims below is its.
+        if self._connections.controllers.is_bound(self.agent.id):
+            return await self._unavailable_reply(session, meta, agent, asker_handle)
+
         if connection_model == "auto_session":
             # The heartbeat arm only: a client still running the
             # /watch/heartbeat loop declares no capability, and that loop meant
@@ -1347,6 +1357,10 @@ class AgentConsumer(Consumer[AgentActor]):
         )
         if connection_model == "session_passive":
             return False
+        if self._connections.controllers.is_bound(self.agent.id):
+            return connection_model == "always_on" and self._connections.is_live(
+                self.agent.id
+            )
         # Union of the presence sources while every kind of client exists
         # (CHOO-1857 stage B): a client on the push transport keeps only a
         # connection, one still polling keeps only the heartbeat row, and a

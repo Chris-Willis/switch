@@ -805,41 +805,6 @@ class AgentCore:
     ) -> None:
         self._agent_removal_listener = listener
 
-    async def rotate_agent_api_key(self, agent_id: str) -> str:
-        """Issue the agent a new API key and invalidate the one it had.
-
-        The same swap re-registration performs, without touching anything else
-        about the agent: a new `agent` key, the agent pointed at it, the old key
-        deleted, and the auth cache dropped so the old key stops authenticating
-        on every door at once. Returns the new key's plaintext.
-
-        Raises:
-            ValueError: no agent with this id exists in the bound tenant.
-        """
-        api_key = secrets.token_urlsafe(32)
-        async with self.session_factory() as session:
-            agent = await self.agent_store.get(session, agent_id)
-            if agent is None:
-                raise ValueError(f"No such agent: {agent_id}")
-            if agent.owner_id is None:
-                raise ValueError(
-                    f"Agent {agent_id} has no owner, so it has no one to issue a key to."
-                )
-            new_key = ApiKey(
-                type="agent",
-                key_hash=hashlib.sha256(api_key.encode()).hexdigest(),
-                encrypted_key=encrypt_token(api_key, self.config.jwt_secret_key),
-                label=agent.name,
-                user_id=agent.owner_id,
-            )
-            await self.api_key_store.create(session, new_key)
-            old_api_key_id = agent.api_key_id
-            await self.agent_store.update(session, agent_id, api_key_id=new_key.id)
-            await self.api_key_store.delete(session, old_api_key_id)
-            await session.commit()
-        self.api_key_cache.invalidate_agent(agent_id)
-        return api_key
-
     async def _create_bridge_identities(
         self, tenant_id: str, agent_name: str, description: str
     ) -> None:

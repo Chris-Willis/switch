@@ -2,8 +2,7 @@
 
 Enrollment by one-time code, token exchange, credential rotation, the
 assignment and its ETag, status reports and the state derived from them,
-the operation lifecycle, and the per-agent credential fetch that fences a
-moved agent's old controller out.
+the operation lifecycle, and the bindings placement keeps in Core.
 """
 
 from __future__ import annotations
@@ -14,9 +13,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.auth import BearerAuthMiddleware
-from switch_core.db.models import AgentControllerEnrollmentCode, ApiKey
-from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.models import AgentControllerEnrollmentCode
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from tests.switch_core.management.harness import (
     EnrolledController,
@@ -565,83 +562,30 @@ class TestOperations:
         assert response.json()["error"]["code"] == "operation_unsupported"
 
 
-class TestAgentCredentials:
-    async def test_a_fetch_rotates_the_key_and_the_old_one_stops_resolving(
+class TestPlacementBindsTheAgentInCore:
+    async def test_placing_moving_and_removing_rebind_it(
         self, harness: Harness
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
-        async with harness.client() as client:
-            controller = await enroll_console(harness, client, owner)
-            agent_id = await _placed_agent(harness, client, controller)
-            path = (
-                f"/v1/management/controllers/{controller.controller_id}"
-                f"/agents/{agent_id}/credentials"
-            )
-            first = await client.post(path, headers=controller.headers)
-            second = await client.post(path, headers=controller.headers)
-
-        assert first.status_code == 200, first.text
-        assert first.json()["agent_id"] == agent_id
-        first_key = first.json()["api_key"]
-        second_key = second.json()["api_key"]
-        assert first_key != second_key
-
-        mw = BearerAuthMiddleware(
-            _noop,
-            agent_store=AgentStore(),
-            api_key_store=ApiKeyStore(),
-            api_key_cache=harness.cache,
-            session_factory=harness.session_factory,
-        )
-        assert await mw._resolve_api_key(first_key) == (None, None)
-        _, agent = await mw._resolve_api_key(second_key)
-        assert agent is not None and agent.id == agent_id
-
-    async def test_an_agent_on_another_controller_is_not_assigned(
-        self, harness: Harness
-    ) -> None:
-        owner = await add_member(harness.session_factory, "ada")
+        presence = harness.protocol.connections.controllers
         async with harness.client() as client:
             first = await enroll_console(harness, client, owner, "one")
             second = await enroll_console(harness, client, owner, "two")
             agent_id = await _placed_agent(harness, client, first)
-            response = await client.post(
-                f"/v1/management/controllers/{second.controller_id}"
-                f"/agents/{agent_id}/credentials",
-                headers=second.headers,
-            )
-        assert response.status_code == 403
-        assert response.json()["error"]["code"] == "not_assigned"
-
-    async def test_moving_an_agent_fences_the_old_controller(
-        self, harness: Harness
-    ) -> None:
-        owner = await add_member(harness.session_factory, "ada")
-        async with harness.client() as client:
-            first = await enroll_console(harness, client, owner, "one")
-            second = await enroll_console(harness, client, owner, "two")
-            agent_id = await _placed_agent(harness, client, first)
+            placed = presence.binding(agent_id)
             await report_status(client, second, 1, providers=[provider("claude")])
-            old = await client.post(
-                f"/v1/management/controllers/{first.controller_id}"
-                f"/agents/{agent_id}/credentials",
-                headers=first.headers,
-            )
             moved = await client.patch(
                 f"/gateway/management/agents/{agent_id}",
                 json={"controller_id": second.controller_id},
                 cookies=cookies_for(owner),
             )
-            new = await client.post(
-                f"/v1/management/controllers/{second.controller_id}"
-                f"/agents/{agent_id}/credentials",
-                headers=second.headers,
+            after_move = presence.binding(agent_id)
+            no_auto = await client.patch(
+                f"/gateway/management/agents/{agent_id}",
+                json={"definition": definition(auto_session=False)},
+                cookies=cookies_for(owner),
             )
-            refused = await client.post(
-                f"/v1/management/controllers/{first.controller_id}"
-                f"/agents/{agent_id}/credentials",
-                headers=first.headers,
-            )
+            after_edit = presence.binding(agent_id)
             first_assignment = await client.get(
                 f"/v1/management/controllers/{first.controller_id}/assignment",
                 headers=first.headers,
@@ -650,24 +594,57 @@ class TestAgentCredentials:
                 f"/v1/management/controllers/{second.controller_id}/assignment",
                 headers=second.headers,
             )
+            removed = await client.delete(
+                f"/gateway/management/agents/{agent_id}", cookies=cookies_for(owner)
+            )
 
+        assert placed is not None
+        assert (placed.controller_id, placed.auto_session) == (
+            first.controller_id,
+            True,
+        )
         assert moved.status_code == 200, moved.text
         assert moved.json()["revision"] == 2
-        assert refused.status_code == 403
+        assert (
+            after_move is not None and after_move.controller_id == second.controller_id
+        )
+        assert no_auto.status_code == 200, no_auto.text
+        assert after_edit is not None and after_edit.auto_session is False
         assert first_assignment.json() == {"revision": 2, "agents": []}
-        assert second_assignment.json()["revision"] == 1
         assert [a["agent_id"] for a in second_assignment.json()["agents"]] == [agent_id]
-        async with harness.session_factory() as session:
-            hashes = {
-                key.key_hash
-                for key in (await session.execute(select(ApiKey))).scalars()
-            }
-        assert hashlib.sha256(old.json()["api_key"].encode()).hexdigest() not in hashes
-        assert hashlib.sha256(new.json()["api_key"].encode()).hexdigest() in hashes
+        assert removed.status_code == 200, removed.text
+        assert presence.binding(agent_id) is None
 
+    async def test_an_unplaced_agent_is_not_bound(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            created = await create_managed_agent(
+                client, owner, name="idle", controller_id=None
+            )
+        assert created.status_code == 201, created.text
+        assert (
+            harness.protocol.connections.controllers.binding(created.json()["agent_id"])
+            is None
+        )
 
-async def _noop(scope, receive, send) -> None:
-    return None
+    async def test_bindings_are_loaded_from_every_tenant_at_startup(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await _placed_agent(harness, client, controller)
+        presence = harness.protocol.connections.controllers
+        presence.unbind(agent_id, "unassigned")
+        assert presence.binding(agent_id) is None
+
+        loaded = await harness.management.load_bindings()
+
+        assert loaded == 1
+        binding = presence.binding(agent_id)
+        assert binding is not None
+        assert binding.controller_id == controller.controller_id
+        assert binding.auto_session is True
 
 
 def test_bearer_helper() -> None:

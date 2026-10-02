@@ -220,6 +220,40 @@ class OperationResultRequest(_ControllerBody):
         return result
 
 
+class ControllerConnectionRequest(_ControllerBody):
+    """Opening the controller's stream: where to resume each of its agents.
+
+    A cursor is a sequence number in that agent's own buffer, or `"head"`. An
+    agent left out starts at its head.
+    """
+
+    client: str | None = None
+    client_version: str | None = None
+    cursors: dict[str, int | Literal["head"]]
+
+    @field_validator("cursors")
+    @classmethod
+    def _cursors_are_sequences(
+        cls, value: dict[str, int | Literal["head"]]
+    ) -> dict[str, int | Literal["head"]]:
+        for agent_id, cursor in value.items():
+            if isinstance(cursor, int) and cursor < 0:
+                raise ValueError(f"cursor for {agent_id} must not be negative")
+        return value
+
+    def resume_cursors(self) -> dict[str, int | None]:
+        return {
+            agent_id: None if cursor == "head" else cursor
+            for agent_id, cursor in self.cursors.items()
+        }
+
+
+class ControllerBeatRequest(_ControllerBody):
+    connection_id: str
+    generation: int
+    cursors: dict[str, int]
+
+
 # ── Gateway requests ──────────────────────────────────────────────────────────
 
 

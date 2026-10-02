@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.auth import BearerAuthMiddleware, ControllerPrincipal
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.db.models import TENANT_ZERO_ID, Tenant
 from switch_core.db.stores.agent_store import AgentStore
@@ -276,7 +277,10 @@ class TestTheFlagOff:
         class _Off:
             agent_management_enabled = False
 
-        assert create_management(_Off(), object()) is None  # type: ignore[arg-type]
+        assert (
+            create_management(_Off(), object(), AgentConnectionRegistry().controllers)  # type: ignore[arg-type]
+            is None
+        )
 
     async def test_the_agent_bridge_app_mounts_no_management_route(self) -> None:
         class _Config:

@@ -85,6 +85,18 @@ class AgentDefinitionStore:
         )
         return [(row[0], row[1]) for row in result.all()]
 
+    async def list_placed(
+        self, session: AsyncSession, tenant_id: str
+    ) -> list[AgentDefinition]:
+        """Every definition placed on a controller."""
+        result = await session.execute(
+            select(AgentDefinition).where(
+                AgentDefinition.tenant_id == tenant_id,
+                AgentDefinition.controller_id.is_not(None),
+            )
+        )
+        return list(result.scalars().all())
+
     async def update(
         self,
         session: AsyncSession,

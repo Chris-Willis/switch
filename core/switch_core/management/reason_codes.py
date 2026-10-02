@@ -1,7 +1,9 @@
 """Reason codes carried in error envelopes, status reports and placement refusals.
 
 The codes from the controller contract (§9), plus the few v1 adds for its own
-routes. A code is part of the wire contract: a controller acts on it, so it
+routes. `no_stream` and `managed_by_controller` are also answered by Core's
+bearer middleware and controller stream, which name the same strings without
+importing this module. A code is part of the wire contract: a controller acts on it, so it
 is never renamed.
 """
 
@@ -14,6 +16,8 @@ NOT_ASSIGNED = "not_assigned"
 TAKEN_OVER = "taken_over"
 STALE_GENERATION = "stale_generation"
 UNKNOWN_CONNECTION = "unknown_connection"
+NO_STREAM = "no_stream"
+MANAGED_BY_CONTROLLER = "managed_by_controller"
 ALREADY_CLAIMED = "already_claimed"
 CANCELLED = "cancelled"
 LEASE_EXPIRED = "lease_expired"
@@ -48,6 +52,8 @@ ALL_REASON_CODES = frozenset(
         TAKEN_OVER,
         STALE_GENERATION,
         UNKNOWN_CONNECTION,
+        NO_STREAM,
+        MANAGED_BY_CONTROLLER,
         ALREADY_CLAIMED,
         CANCELLED,
         LEASE_EXPIRED,

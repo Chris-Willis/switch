@@ -1,9 +1,9 @@
 """Core does not depend on agent management.
 
-Management may call into Core (registration and key rotation through
-`AgentCore`, the stores, the gateway's authentication), but nothing in
-Core imports `switch_core.management` except the process wiring that decides
-whether to build it at all. Keeping that one-way is what lets the module stay
+Management may call into Core (registration through `AgentCore`, the
+bindings in `ControllerPresence`, the stores, the gateway's authentication),
+but nothing in Core imports `switch_core.management` except the process wiring
+that decides whether to build it at all. Keeping that one-way is what lets the module stay
 behind its flag, and come out again, without touching Core.
 """
 

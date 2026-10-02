@@ -2,7 +2,8 @@
 
 Two shapes, matching the two kinds of route:
 
-- **Access token** (`swct_…`), on every controller route but two. The bearer
+- **Access token** (`swct_…`), on every controller route but two, and on the
+  agent routes a controller acts as its agents on. The bearer
   middleware hands it here (`ManagementAuthenticator.authenticate`). The
   token is signed, so its tenant claim is trusted and bound directly; the
   controller row is then read under that tenant, and a revoked controller is
@@ -21,6 +22,7 @@ import re
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.auth import ControllerAuthError, ControllerPrincipal
+from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.tenant_lookup import tenant_of_api_key
@@ -43,10 +45,19 @@ class ManagementAuthenticator:
         session_factory: async_sessionmaker[AsyncSession],
         controllers: AgentControllerStore,
         token_secret: str,
+        presence: ControllerPresence,
     ) -> None:
         self._session_factory = session_factory
         self._controllers = controllers
         self._token_secret = token_secret
+        self._presence = presence
+
+    @property
+    def presence(self) -> ControllerPresence:
+        return self._presence
+
+    def is_controller_token(self, token: str) -> bool:
+        return token.startswith(tokens.ACCESS_TOKEN_PREFIX)
 
     def handles(self, path: str) -> bool:
         return _under(path, MANAGEMENT_PREFIX) or _under(path, CONTROLLERS_PREFIX)

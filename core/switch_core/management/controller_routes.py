@@ -6,6 +6,11 @@ names a controller then requires it to be the token's own. Enrollment and
 token exchange carry their secret in the body and resolve their tenant from
 it here.
 
+The controller's stream (`/v1/controllers/{id}/...`) is Core's: these routes
+authenticate and parse, and Core's `ControllerPresence` and controller stream
+do the rest. Management only adds its nudges and the first frame's
+assignment revision.
+
 Every failure is answered in the contract's error envelope (`errors.py`).
 `Switch-Controller-Protocol` is checked when sent, and every response says
 which protocol versions this server accepts.
@@ -13,7 +18,8 @@ which protocol versions this server accepts.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Coroutine
+import logging
+from collections.abc import Awaitable, Callable, Coroutine
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, Request, Response
@@ -23,6 +29,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.auth import ControllerPrincipal
 from switch_core.bridges.agent.dependencies import get_protocol, get_session
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.protocol.controller_presence import (
+    ControllerConnectionError,
+)
+from switch_core.bridges.agent.protocol.controller_stream import (
+    KEEPALIVE_INTERVAL_SECONDS,
+    STREAM_HEADERS,
+    controller_event_stream,
+)
+from switch_core.bridges.agent.protocol.liveness import HEARTBEAT_INTERVAL_SECONDS
 from switch_core.db.session_scope import tenant_session
 from switch_core.management import reason_codes
 from switch_core.management.auth import ManagementAuthenticator
@@ -36,6 +51,8 @@ from switch_core.management.dependencies import (
 from switch_core.management.errors import ManagementError, ManagementRoute, error_body
 from switch_core.management.schemas import (
     MAX_STATUS_BYTES,
+    ControllerBeatRequest,
+    ControllerConnectionRequest,
     EnrollRequest,
     OperationResultRequest,
     ProgressRequest,
@@ -44,11 +61,8 @@ from switch_core.management.schemas import (
     wire_time,
 )
 from switch_core.management.service import ManagementService
-from switch_core.management.stream import (
-    KEEPALIVE_INTERVAL_SECONDS,
-    STREAM_HEADERS,
-    controller_event_stream,
-)
+
+logger = logging.getLogger(__name__)
 
 PROTOCOL_HEADER = "Switch-Controller-Protocol"
 PROTOCOL_ACCEPTS_HEADER = "Switch-Controller-Protocol-Accepts"
@@ -89,6 +103,7 @@ router = APIRouter(route_class=ControllerRoute, tags=["agent management"])
 Principal = Annotated[ControllerPrincipal, Depends(get_controller_principal)]
 Management = Annotated[ManagementService, Depends(get_management)]
 Session = Annotated[AsyncSession, Depends(get_session)]
+Protocol = Annotated[AgentCore, Depends(get_protocol)]
 
 
 def _path_controller(controller_id: str, principal: Principal) -> ControllerPrincipal:
@@ -260,32 +275,144 @@ async def operation_result(
     return Response(status_code=204)
 
 
-@router.post("/v1/management/controllers/{controller_id}/agents/{agent_id}/credentials")
-async def agent_credentials(
-    agent_id: str,
+# ── The controller's stream ──────────────────────────────────────────────────
+
+
+def _connection_refusal(exc: ControllerConnectionError) -> ManagementError:
+    status = {
+        reason_codes.UNKNOWN_CONNECTION: 404,
+        reason_codes.CONTROLLER_REVOKED: 401,
+    }.get(exc.code, 409)
+    return ManagementError(status, exc.code, str(exc))
+
+
+def _rooms_reader(protocol: AgentCore) -> Callable[[str], Awaitable[set[str]]]:
+    async def rooms_of(agent_id: str) -> set[str]:
+        rooms = await protocol.list_rooms(agent_id, include_archived=True)
+        return {room.id for room in rooms}
+
+    return rooms_of
+
+
+@router.post("/v1/controllers/{controller_id}/connection", status_code=201)
+async def open_connection(
+    body: ControllerConnectionRequest,
     principal: PathController,
-    management: Management,
-    session: Session,
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    protocol: Protocol,
 ) -> dict[str, Any]:
-    return await management.agent_credentials(session, principal, agent_id, protocol)
+    """Open the controller's connection, taking over any it had.
+
+    The agents bound to it are attached on the stream, each from its cursor
+    here; the response names them. Opening again is a takeover: the earlier
+    connection's stream ends with `taken_over`, and its beats are refused.
+    """
+    presence = protocol.connections.controllers
+    try:
+        conn = presence.open(
+            controller_id=principal.controller_id,
+            tenant_id=principal.tenant_id,
+            resume_cursors=body.resume_cursors(),
+        )
+    except ControllerConnectionError as exc:
+        raise _connection_refusal(exc) from exc
+    logger.info(
+        "Controller %s opened connection %s (client=%s version=%s)",
+        principal.controller_id,
+        conn.id,
+        body.client or "unknown",
+        body.client_version or "unknown",
+    )
+    return {
+        "connection_id": conn.id,
+        "generation": conn.generation,
+        "heartbeat_interval_s": HEARTBEAT_INTERVAL_SECONDS,
+        "agents": sorted(presence.agents_of(principal.controller_id)),
+    }
 
 
 @router.get("/v1/controllers/{controller_id}/events")
 async def controller_events(
     principal: PathController,
     management: Management,
+    protocol: Protocol,
     session_factory: Annotated[
         async_sessionmaker[AsyncSession], Depends(get_management_session_factory)
     ],
+    connection_id: str,
+    generation: int,
 ) -> StreamingResponse:
+    """The controller's one stream: its agents' events and the management nudges.
+
+    The nudge subscription is taken before the first frame is built, so a
+    change that commits while the stream is opening is still delivered.
+    """
+    presence = protocol.connections.controllers
+    nudges = management.notifier.subscribe(principal.controller_id)
+    try:
+        conn = presence.require(principal.controller_id, connection_id, generation)
+        async with tenant_session(session_factory, principal.tenant_id) as session:
+            state = await management.connection_state(session, principal)
+    except ControllerConnectionError as exc:
+        nudges.close()
+        raise _connection_refusal(exc) from exc
+    except BaseException:
+        nudges.close()
+        raise
+    opening = {
+        **state,
+        "connection_id": conn.id,
+        "generation": conn.generation,
+        "heartbeat_interval_s": HEARTBEAT_INTERVAL_SECONDS,
+    }
+    token = presence.attach_stream(conn)
     return StreamingResponse(
         controller_event_stream(
-            principal=principal,
-            service=management,
-            session_factory=session_factory,
+            conn=conn,
+            stream_token=token,
+            presence=presence,
+            buffer=protocol.event_buffer,
+            approvals=protocol.approval_outcomes,
+            nudges=nudges,
+            opening=opening,
+            rooms_of=_rooms_reader(protocol),
             keepalive_seconds=KEEPALIVE_INTERVAL_SECONDS,
         ),
         media_type="text/event-stream",
         headers=STREAM_HEADERS,
     )
+
+
+@router.post("/v1/controllers/{controller_id}/connection/beat")
+async def connection_beat(
+    body: ControllerBeatRequest,
+    principal: PathController,
+    protocol: Protocol,
+) -> dict[str, Any]:
+    """Keep the controller, and so every agent on it, live; confirm cursors.
+
+    The cursors confirmed here are where a stream reattached to this
+    connection resumes each agent.
+
+    Every two seconds; six without one and its agents are not live. Refused
+    with `taken_over` once another connection has replaced this one, which is
+    terminal for the client, and with `no_stream` or `unknown_connection`
+    when the stream has to be opened again.
+    """
+    presence = protocol.connections.controllers
+    try:
+        conn = presence.beat(
+            principal.controller_id, body.connection_id, body.generation
+        )
+    except ControllerConnectionError as exc:
+        raise _connection_refusal(exc) from exc
+    agents = presence.agents_of(principal.controller_id)
+    for agent_id, cursor in body.cursors.items():
+        binding = presence.binding(agent_id)
+        if agent_id not in agents or binding is None:
+            continue
+        # Clamped to the head, as an agent's own beat is: a higher number
+        # belongs to a previous life of this process.
+        confirmed = min(cursor, protocol.event_buffer.head(agent_id))
+        protocol.event_buffer.confirm(agent_id, presence.holder_id(binding), confirmed)
+        presence.resume_from(conn, agent_id, confirmed)
+    return {"agents": sorted(agents)}

@@ -237,6 +237,14 @@ async def _connection_sweep_loop(protocol: AgentCore, lag: EventLoopLag) -> None
                     conn.agent_id,
                     conn.beats,
                 )
+            for controller_conn in protocol.connections.controllers.sweep():
+                logger.info(
+                    "Controller connection %s for controller %s expired (beat "
+                    "lapsed, %d beats received)",
+                    controller_conn.id,
+                    controller_conn.controller_id,
+                    controller_conn.beats,
+                )
         except Exception:
             logger.exception("AgentConnection sweep failed")
 
@@ -586,7 +594,7 @@ async def run(config: SwitchConfig) -> None:
     # Built before the agent bridge app because its authenticator is the bearer
     # middleware's controller branch; its routes are installed once both apps
     # exist, below.
-    management = create_management(config, session_factory)
+    management = create_management(config, session_factory, connections.controllers)
 
     # ── FastAPI apps ─────────────────────────────────────────────────────────
     agent_bridge_app, protocol = create_agent_bridge_app(
@@ -751,6 +759,9 @@ async def run(config: SwitchConfig) -> None:
             gateway_app=gateway_app,
             protocol=protocol,
         )
+        # Before the bridge serves: until Core knows which agents a controller
+        # runs, their own keys would be let in and their presence misread.
+        await management.load_bindings()
 
     agent_bridge_app.mount("/gateway", gateway_app)
 

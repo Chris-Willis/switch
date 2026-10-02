@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -13,6 +14,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
+from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.bridges.agent.registration_bootstrap import REGISTRATION_KEY_TYPES
 from switch_core.bridges.collaboration.install import (
     PUBLIC_PATH_PREFIX as MESSAGING_INSTALL_PREFIX,
@@ -50,6 +52,34 @@ PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     # A cloud machine's supervisor, which holds a machine capability rather
     # than an agent key; the routes check the capability themselves.
     "/hosted/machines",
+)
+
+
+# The contract's reason codes this module answers with. Named here rather than
+# imported, because Core does not import the management module that owns the
+# full list (`management/reason_codes.py` carries the same strings).
+NOT_ASSIGNED = "not_assigned"
+MANAGED_BY_CONTROLLER = "managed_by_controller"
+FORBIDDEN = "forbidden"
+VALIDATION_ERROR = "validation_error"
+
+AGENT_ID_HEADER = b"x-switch-agent-id"
+
+# Agent routes a controller acts as an agent on: everything under
+# `/agents/{agent_id}/` and `/agent-sessions/`.
+_AGENT_PATH = re.compile(r"/agents/(?P<segment>[^/]+)(?P<rest>/.*)?")
+_AGENT_SESSIONS_PREFIX = "/agent-sessions/"
+# First segments under `/agents/` that name no agent. On these the agent comes
+# from `X-Switch-Agent-Id` alone.
+_NOT_AN_AGENT_SEGMENT = frozenset({"rooms", "feature-flags"})
+# Registration: a controller registers nothing, so its token is refused here.
+_REGISTRATION_SEGMENTS = frozenset({"register-known", "register-known-bulk"})
+# The connection surface a controller serves its agents itself, from its own
+# stream (`GET /v1/controllers/{id}/events`). A controller-backed agent has no
+# connection of its own, and the legacy heartbeats would make it look live from
+# a second source.
+_SERVED_ON_THE_CONTROLLER_STREAM = re.compile(
+    r"/(events|notifications|rooms/[^/]+/events|connection/.*|watch/heartbeat)"
 )
 
 
@@ -105,14 +135,24 @@ class ControllerAuthenticator(Protocol):
     """The agent-management side of bearer authentication.
 
     Supplied only when agent management is enabled. The middleware asks it
-    which paths it owns and hands it their tokens, and knows nothing else
-    about controllers: what a controller token is, and which of its routes
-    authenticate by their body instead, belong to the management module.
+    which paths it owns and hands it their tokens: what a controller token
+    is, and which of its routes authenticate by their body instead, belong to
+    the management module.
+
+    `presence` is Core's own record of which controller runs which agent,
+    which Management keeps current. The middleware reads it to let a
+    controller act as the agents bound to it, and to keep a controller-backed
+    agent's own credential out.
     """
+
+    @property
+    def presence(self) -> ControllerPresence: ...
 
     def handles(self, path: str) -> bool: ...
 
     def is_public(self, path: str) -> bool: ...
+
+    def is_controller_token(self, token: str) -> bool: ...
 
     async def authenticate(self, token: str) -> ControllerPrincipal: ...
 
@@ -140,6 +180,11 @@ class BearerAuthMiddleware:
     controller paths outright: their tokens are controller access tokens and
     nothing else, the principal lands in ``scope["controller"]``, and a refusal
     is answered in the controller contract's error envelope.
+
+    A controller access token is also accepted on the agent routes, acting as
+    one agent bound to that controller (``_serve_act_as``), and a
+    controller-backed agent's own credential is refused everywhere: a
+    controller is the one way in for the agents it runs.
 
     This is where a request's tenant gets bound (see
     ``switch_core.tenant_context``), for all three credentials — registration
@@ -206,6 +251,20 @@ class BearerAuthMiddleware:
 
         token = auth_header[7:]
 
+        if (
+            self._controller_auth is not None
+            and self._controller_auth.is_controller_token(token)
+        ):
+            if _is_agent_route(path):
+                await self._serve_act_as(
+                    self._controller_auth, path, headers, token, scope, receive, send
+                )
+                return
+            await _controller_refusal(
+                FORBIDDEN, "A controller access token is not accepted here.", 403
+            )(scope, receive, send)
+            return
+
         # Single ApiKey lookup. If the row exists, branch on its type:
         # agent token → resolve to Agent; registration token → pass through.
         # If no row exists, fall through to OIDC (where applicable).
@@ -215,6 +274,17 @@ class BearerAuthMiddleware:
             agent = await self._try_oidc(token)
 
         if agent is not None:
+            if (
+                self._controller_auth is not None
+                and self._controller_auth.presence.is_bound(agent.id)
+            ):
+                await _controller_refusal(
+                    MANAGED_BY_CONTROLLER,
+                    f"Agent {agent.id} is run by an agents controller, which acts "
+                    "for it; its own credential is not accepted while it is.",
+                    409,
+                )(scope, receive, send)
+                return
             scope["agent"] = agent
             scope["agent_id"] = agent.id
             # api_key.tenant_id is the source of truth (docs/old/
@@ -267,18 +337,110 @@ class BearerAuthMiddleware:
             return
         if not auth_header.startswith("Bearer "):
             await _controller_refusal(
-                "invalid_credential", "Missing or invalid Authorization header"
+                "invalid_credential", "Missing or invalid Authorization header", 401
             )(scope, receive, send)
             return
         try:
             principal = await controller_auth.authenticate(auth_header[7:])
         except ControllerAuthError as exc:
-            await _controller_refusal(exc.code, exc.message)(scope, receive, send)
+            await _controller_refusal(exc.code, exc.message, 401)(scope, receive, send)
             return
         scope["controller"] = principal
         with (
             tenant_scope(principal.tenant_id),
             log_context(tenant_id=principal.tenant_id, user_id=principal.owner_id),
+        ):
+            await self.app(scope, receive, send)
+
+    async def _serve_act_as(
+        self,
+        controller_auth: ControllerAuthenticator,
+        path: str,
+        headers: dict[bytes, bytes],
+        token: str,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        """A controller acting as one of its agents on an agent route.
+
+        The agent comes from the path, or from `X-Switch-Agent-Id` where the
+        path names none; both present and different is refused. It must be
+        bound to this controller now: Management's binding is the whole of
+        the authorization, checked here once so that no handler has to. The
+        handlers then see the agent in `scope["agent"]`, exactly as an agent's
+        own key would leave it, and the controller in `scope["controller"]`.
+
+        Nothing here touches the API-key cache, which maps a token to one
+        agent. A controller token is verified on every request, and its
+        controller re-read so a revoked one is refused at once.
+        """
+        try:
+            principal = await controller_auth.authenticate(token)
+        except ControllerAuthError as exc:
+            await _controller_refusal(exc.code, exc.message, 401)(scope, receive, send)
+            return
+
+        header = headers.get(AGENT_ID_HEADER, b"").decode() or None
+        path_agent, rest = _path_agent(path)
+        if header is not None and path_agent is not None and header != path_agent:
+            await _controller_refusal(
+                VALIDATION_ERROR,
+                f"X-Switch-Agent-Id names agent {header} but the path names "
+                f"agent {path_agent}.",
+                400,
+            )(scope, receive, send)
+            return
+        agent_id = path_agent or header
+        if agent_id is None:
+            await _controller_refusal(
+                VALIDATION_ERROR,
+                "Name the agent this controller is acting as with X-Switch-Agent-Id.",
+                400,
+            )(scope, receive, send)
+            return
+
+        binding = controller_auth.presence.binding(agent_id)
+        if (
+            binding is None
+            or binding.controller_id != principal.controller_id
+            or binding.tenant_id != principal.tenant_id
+        ):
+            await _controller_refusal(
+                NOT_ASSIGNED,
+                f"Agent {agent_id} is not assigned to this controller.",
+                403,
+            )(scope, receive, send)
+            return
+
+        if path_agent is not None and _SERVED_ON_THE_CONTROLLER_STREAM.fullmatch(rest):
+            await _controller_refusal(
+                MANAGED_BY_CONTROLLER,
+                "A controller receives its agents' events on its own stream, "
+                "GET /v1/controllers/{id}/events; this agent route is not "
+                "served to it.",
+                409,
+            )(scope, receive, send)
+            return
+
+        async with tenant_session(
+            self._session_factory, principal.tenant_id
+        ) as session:
+            agent = await self._agent_store.get(session, agent_id)
+            if agent is not None:
+                session.expunge(agent)
+        if agent is None:
+            await _controller_refusal(
+                NOT_ASSIGNED, f"Agent {agent_id} does not exist.", 403
+            )(scope, receive, send)
+            return
+
+        scope["agent"] = agent
+        scope["agent_id"] = agent.id
+        scope["controller"] = principal
+        with (
+            tenant_scope(principal.tenant_id),
+            log_context(agent_id=agent.id, tenant_id=principal.tenant_id),
         ):
             await self.app(scope, receive, send)
 
@@ -356,11 +518,26 @@ class BearerAuthMiddleware:
             return await self._agent_store.get_by_oauth_client_id(session, client_id)
 
 
-def _controller_refusal(code: str, message: str) -> Response:
+def _controller_refusal(code: str, message: str, status_code: int) -> Response:
     return JSONResponse(
         {"error": {"code": code, "message": message, "retryable": False}},
-        status_code=401,
+        status_code=status_code,
     )
+
+
+def _is_agent_route(path: str) -> bool:
+    if path.startswith(_AGENT_SESSIONS_PREFIX):
+        return True
+    match = _AGENT_PATH.fullmatch(path)
+    return match is not None and match["segment"] not in _REGISTRATION_SEGMENTS
+
+
+def _path_agent(path: str) -> tuple[str | None, str]:
+    """The agent an agent route's path names, if any, and the rest of the path."""
+    match = _AGENT_PATH.fullmatch(path)
+    if match is None or match["segment"] in _NOT_AN_AGENT_SEGMENT:
+        return None, ""
+    return match["segment"], match["rest"] or ""
 
 
 def _is_public_path(path: str) -> bool:

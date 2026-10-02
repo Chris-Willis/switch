@@ -206,7 +206,7 @@ stream. The flag and everything else above stay as they are.
 ### Model
 - **Controller-backed agent:** an agent whose `agent_definitions.controller_id` is set.
   Core treats it differently from a directly connected agent:
-  - It has **no per-agent connection** in `ConnectionRegistry`, no placements and no room claims.
+  - It has **no per-agent connection** in `AgentConnectionRegistry`, no placements and no room claims.
   - **Presence** comes from its controller. The agent is live while its controller's stream is
     attached and its heartbeat is fresh. It can start sessions on demand when
     `definition.auto_session` is set and it is a member of the room.
@@ -223,7 +223,7 @@ stream. The flag and everything else above stay as they are.
 - Management fills it at startup (all bindings) and on every binding change, through
   a narrow API. Core never imports Management and never reads its tables.
 - Every presence reader in Core asks `ControllerPresence` for controller-backed agents and the
-  `ConnectionRegistry` for the others:
+  `AgentConnectionRegistry` for the others:
   - statuses (LIVE / DORMANT / NO_SESSION)
   - the agent client's reachability replies and its "Starting a session…" promise
   - the bridges' `agent_online`
@@ -276,3 +276,53 @@ stream. The flag and everything else above stay as they are.
   `X-Switch-Agent-Id` header, and `X-Switch-Room-Id` resolved from the local placements.
 - The watcher and session-host code does not change. The credentials file it reads names the
   relay and its local token, never a Switch credential.
+
+### Core implementation notes (decisions the spec left open)
+
+- **Presence states.** Core cannot see which room a controller-backed agent's
+  sessions are in (the controller keeps placements locally), so a
+  session-shaped agent is never `LIVE`: it is `DORMANT` where its live
+  controller will start a session (`auto_session` and a member of the room),
+  `NO_SESSION` where the controller is live and will not, and `DISCONNECTED`
+  when the controller is not live (`NO_SESSION` for `session_addressable`, as
+  for any agent). An `always_on` agent is `LIVE` exactly while its controller
+  is. Consequence: an `auto_session` controller-backed agent gets the
+  "Starting a session…" reply on every addressed message, including when a
+  session is already working in the room. Fixing that needs the controller to
+  report its placements upstream, which this contract does not have yet.
+- **Liveness** is "stream attached and beat within 6 s"; the connection sweep
+  closes lapsed controller connections. `rooms_occupied` answers with all the
+  agent's rooms while its controller is live, so the runtime-state sweep does
+  not reset a working session it cannot see.
+- **Holder id.** A controller-backed agent holds things under
+  `controller:{controller_id}:{agent_id}`: the operation caller's session key
+  and session id, the reader of its unread counts, and the holder of a role
+  lease (live while the agent is). Moving the agent changes it, so a lease does
+  not survive a move.
+- **Act-as routes.** Every `/agents/{agent_id}/...` and `/agent-sessions/...`
+  route; on `/agents/rooms/...`, `/agents/feature-flags` and `/agent-sessions/...`
+  the agent comes from `X-Switch-Agent-Id` alone. Refused for a controller
+  token: registration (`403 forbidden`), any non-agent route (`403
+  forbidden`), and the connection surface the relay serves itself — `events`,
+  `notifications`, `rooms/{id}/events`, `connection/*`, `watch/heartbeat` —
+  with `409 managed_by_controller`. `X-Switch-Connection-Id` and the session
+  selector headers are ignored for a controller principal.
+- **Own key.** A controller-backed agent's own API key (or OIDC token) is
+  refused on every route with `409 managed_by_controller`, in the contract
+  envelope. Binding an agent closes any connection it still held.
+- **Open/beat bodies.** `POST /connection` returns `agents: string[]` (the
+  agent ids bound now); the beat returns `{agents}`. `client` and
+  `client_version` are optional on open. A beat with no stream attached is
+  `409 no_stream`. Each open is a new server-generated connection id and
+  generation and takes over the previous one. A second `GET /events` on the
+  same connection takes the stream over and resumes every agent from its
+  latest beat-confirmed cursor (or where the earlier stream attached it).
+- **Frames** wrap today's per-agent payloads unchanged: `agent.event
+  {agent_id, seq, event}`, `agent.session_command {agent_id, room_id,
+  command}` (`command.sessionId` is null: the controller picks the session
+  from the room), `agent.approval_outcome {agent_id, outcome}`, and the stream
+  ends with `evicted {code, reason}` (`taken_over`, `heartbeat_lapsed`,
+  `closed`) or after `credential.revoked`. `connection_state` adds
+  `connection_id`, `generation` and `heartbeat_interval_s`.
+- **Revocation** leaves the agents bound to the revoked controller (still
+  controller-backed, not live) until they are moved or removed.

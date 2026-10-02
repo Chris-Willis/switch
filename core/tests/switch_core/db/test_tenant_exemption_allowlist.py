@@ -73,6 +73,11 @@ _ALLOWED_MODULES = {
     # resolution shape as the line above, through the same `tenant_of_api_key`,
     # with the row then read scoped to the tenant it produced.
     "switch_core.management.auth",
+    # Core keeps which controller runs each agent in memory, so at startup
+    # every tenant's placed definitions are read back into it: enumerate the
+    # tenants, then read each one's definitions under its own policy, the same
+    # boot-style fan-out `main` does.
+    "switch_core.management.bindings",
     # The gateway's JWT subject resolves to its membership, and
     # `tenant_members` is scoped, so nothing else can answer it. In the
     # authentication module itself rather than on an injected store: a store

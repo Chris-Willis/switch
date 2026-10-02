@@ -14,7 +14,6 @@ must be null in the response the test provokes, and the other way round.
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import Any
@@ -22,28 +21,35 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.auth import ControllerPrincipal
-from switch_core.db.models import TENANT_ZERO_ID
+from switch_core.bridges.agent.commands import room_control_frame
+from switch_core.bridges.agent.protocol.event_buffer import Reader
+from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.management.schemas import (
+    ControllerBeatRequest,
+    ControllerConnectionRequest,
     EnrollRequest,
     OperationResultRequest,
     StatusReport,
     TokenRequest,
 )
-from switch_core.management.stream import controller_event_stream
 from tests.switch_core.management.harness import (
     FIXTURES,
     Harness,
     add_member,
+    add_room,
     build_harness,
     cookies_for,
     create_managed_agent,
     definition,
     enroll_console,
     fixture,
+    open_connection,
+    open_stream,
+    place_agent,
     provider,
     report_status,
+    take,
 )
 
 
@@ -87,6 +93,10 @@ class TestRequestFixturesParse:
             _fixture("operation_result_succeeded.json")
         )
         OperationResultRequest.model_validate(_fixture("operation_result_failed.json"))
+        ControllerConnectionRequest.model_validate(
+            _fixture("controller_connection_request.json")
+        )
+        ControllerBeatRequest.model_validate(_fixture("controller_beat_request.json"))
 
 
 class TestEnrollmentAndTokens:
@@ -127,9 +137,7 @@ class TestEnrollmentAndTokens:
 
 
 class TestControllerMessages:
-    async def test_assignment_status_operations_and_credentials(
-        self, harness: Harness
-    ) -> None:
+    async def test_assignment_status_and_operations(self, harness: Harness) -> None:
         owner = await add_member(harness.session_factory, "ada")
         async with harness.client() as client:
             controller = await enroll_console(harness, client, owner)
@@ -205,11 +213,6 @@ class TestControllerMessages:
                 json=_fixture("operation_result_failed.json"),
                 headers=controller.headers,
             )
-            credentials = await client.post(
-                f"/v1/management/controllers/{controller.controller_id}"
-                f"/agents/{agent_id}/credentials",
-                headers=controller.headers,
-            )
 
         assert assignment.status_code == 200
         assert_same_shape(assignment.json(), _fixture("assignment_response.json"))
@@ -221,10 +224,6 @@ class TestControllerMessages:
         assert_same_shape(claimed.json(), _fixture("operation.json"))
         assert succeeded.status_code == 204
         assert failed.status_code == 204
-        assert credentials.status_code == 200
-        assert_same_shape(
-            credentials.json(), _fixture("agent_credentials_response.json")
-        )
 
     async def test_the_error_envelope(self, harness: Harness) -> None:
         owner = await add_member(harness.session_factory, "ada")
@@ -242,46 +241,162 @@ class TestControllerMessages:
         assert refused.json() == _fixture("error_response.json")
 
 
-class TestStreamFrames:
-    async def test_each_frame_matches(self, harness: Harness) -> None:
+class TestTheControllerConnection:
+    async def test_open_and_beat(self, harness: Harness) -> None:
         owner = await add_member(harness.session_factory, "ada")
         async with harness.client() as client:
             controller = await enroll_console(harness, client, owner)
-        notifier = harness.management.service.notifier
-        stream = controller_event_stream(
-            principal=ControllerPrincipal(
-                controller_id=controller.controller_id,
-                owner_id=owner.id,
-                tenant_id=TENANT_ZERO_ID,
-            ),
-            service=harness.management.service,
-            session_factory=harness.session_factory,
-            keepalive_seconds=30,
-        )
-        frames = [await anext(stream)]
-        notifier.assignment_changed(controller.controller_id, 4)
-        notifier.operation_pending(
-            controller.controller_id,
-            operation_id="op",
-            kind="provider.recheck",
-            agent_id=None,
-        )
-        notifier.credential_revoked(controller.controller_id)
-        frames.extend([raw async for raw in stream])
-
-        parsed = []
-        for raw in frames:
-            event_line, data_line = raw.decode().strip().split("\n")
-            parsed.append(
-                {
-                    "event": event_line.removeprefix("event: "),
-                    "data": json.loads(data_line.removeprefix("data: ")),
-                }
+            agent_id = await place_agent(client, controller, name="reviewer")
+            body = _fixture("controller_connection_request.json")
+            body["cursors"] = {agent_id: 0, "not-bound": "head"}
+            opened = await client.post(
+                f"/v1/controllers/{controller.controller_id}/connection",
+                json=body,
+                headers=controller.headers,
             )
-        expected = _fixture("stream_frames.json")
-        assert [f["event"] for f in parsed] == [f["event"] for f in expected]
-        for actual, recorded in zip(parsed, expected, strict=True):
-            assert_same_shape(actual, recorded)
+            stream = await open_stream(harness, controller, opened.json())
+            await take(stream, 2)
+            beat_body = _fixture("controller_beat_request.json")
+            beat_body.update(
+                connection_id=opened.json()["connection_id"],
+                generation=opened.json()["generation"],
+                cursors={agent_id: 0},
+            )
+            beat = await client.post(
+                f"/v1/controllers/{controller.controller_id}/connection/beat",
+                json=beat_body,
+                headers=controller.headers,
+            )
+            await stream.aclose()
+
+        assert opened.status_code == 201, opened.text
+        assert_same_shape(
+            opened.json(), _fixture("controller_connection_response.json")
+        )
+        assert beat.status_code == 200, beat.text
+        assert_same_shape(beat.json(), _fixture("controller_beat_response.json"))
+
+
+class _Outcomes:
+    """Approval outcomes owed to one agent, as the listener would push them."""
+
+    def __init__(self, outcome: dict[str, Any]) -> None:
+        self._outcome = outcome
+
+    def subscribe(self, tenant_id, agent_id, on_outcome, on_resync):  # type: ignore[no-untyped-def]
+        return lambda: None
+
+    async def undelivered(self, agent_id: str) -> list[dict[str, Any]]:
+        return [self._outcome]
+
+
+class TestStreamFrames:
+    async def test_each_frame_matches(self, harness: Harness) -> None:
+        recorded = {entry["event"]: entry for entry in _fixture("stream_frames.json")}
+        harness.protocol.approval_outcomes = _Outcomes(  # type: ignore[assignment]
+            recorded["agent.approval_outcome"]["data"]["outcome"]
+        )
+        presence = harness.protocol.connections.controllers
+        owner = await add_member(harness.session_factory, "ada")
+        provoked: list[tuple[str, dict[str, Any]]] = []
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            second = await enroll_console(harness, client, owner, "second")
+            await report_status(client, second, 1, providers=[provider("claude")])
+            agent_id = await place_agent(client, controller, name="reviewer")
+            room_id = await add_room(harness.session_factory, agent_id)
+            opened = await open_connection(client, controller, {agent_id: 41})
+            stream = await open_stream(harness, controller, opened)
+            # connection_state, agent.attached, agent.gap (a cursor from
+            # before a restart), agent.approval_outcome
+            provoked += await take(stream, 4)
+
+            # The restart left the room's count unknown; a read through the
+            # head gives it a baseline again, as `read_context` would.
+            binding = presence.binding(agent_id)
+            assert binding is not None
+            buffer = harness.protocol.event_buffer
+            buffer.caught_up(
+                agent_id,
+                Reader(id=presence.holder_id(binding), is_session=False),
+                room_id,
+                buffer.head(agent_id),
+                None,
+            )
+            harness.protocol.event_buffer.enqueue(
+                agent_id,
+                room_id,
+                AgentEvent(
+                    type="message",
+                    room_id=room_id,
+                    payload=MessagePayload(
+                        addressed=True,
+                        sender="@ada:test",
+                        sender_name="Ada",
+                        message_id="$event-1",
+                        body="@reviewer can you look at this?",
+                        timestamp=0,
+                    ),
+                ),
+            )
+            provoked += await take(stream, 1)
+
+            presence.relay_session_command(
+                agent_id,
+                room_control_frame(
+                    agent_id=agent_id,
+                    session_id=None,
+                    room_id=room_id,
+                    action="reset",
+                    actor_id="@ada:test",
+                    message_id="$reset-command",
+                    thread_id=None,
+                    surface="slack",
+                    requester_name="Ada",
+                ),
+            )
+            provoked += await take(stream, 1)
+
+            other_room = await add_room(harness.session_factory, agent_id, name="new")
+            presence.room_joined(agent_id, other_room)
+            provoked += await take(stream, 1)
+
+            harness.management.service.notifier.operation_pending(
+                controller.controller_id,
+                operation_id="op",
+                kind="provider.recheck",
+                agent_id=None,
+            )
+            provoked += await take(stream, 1)
+
+            moved = await client.patch(
+                f"/gateway/management/agents/{agent_id}",
+                json={"controller_id": second.controller_id},
+                cookies=cookies_for(owner),
+            )
+            assert moved.status_code == 200, moved.text
+            # assignment.changed and agent.detached
+            provoked += await take(stream, 2)
+
+            revoked = await client.delete(
+                f"/gateway/management/controllers/{controller.controller_id}",
+                cookies=cookies_for(owner),
+            )
+            assert revoked.status_code == 200, revoked.text
+            provoked += await take(stream, 1)
+
+            first = await open_connection(client, second)
+            first_stream = await open_stream(harness, second, first)
+            await take(first_stream, 1)
+            await open_connection(client, second)
+            provoked += await take(first_stream, 1)
+
+        names = [name for name, _ in provoked]
+        assert sorted(names) == sorted(recorded), names
+        for name, data in provoked:
+            assert_same_shape(
+                {"event": name, "data": data}, recorded[name], f"$[{name}]"
+            )
 
 
 def test_every_fixture_is_exercised() -> None:

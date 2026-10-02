@@ -5,8 +5,10 @@ The agent bridge side is a bare FastAPI app behind the real
 side is mounted at `/gateway` with the real `get_current_user`. Only what
 those need from the rest of the server is stubbed: the agent bridge's session
 and protocol, and the gateway's config. The protocol is a real
-`AgentCore` with its collaborators faked out, so registration and key
-rotation write real rows.
+`AgentCore` with its collaborators faked out, so registration writes
+real rows, and with a real connection registry and event buffer, so the
+controller stream and the act-as routes run against Core's own state. The
+agent routes are mounted too, for a controller to act on.
 
 Requests go through `httpx.AsyncClient` over `ASGITransport`, for the reason
 `gateway/test_tenant_resolution.py` gives.
@@ -14,7 +16,9 @@ Requests go through `httpx.AsyncClient` over `ASGITransport`, for the reason
 
 from __future__ import annotations
 
+import asyncio
 import json
+import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -24,18 +28,34 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI
+from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent import dependencies as bridge_deps
+from switch_core.bridges.agent.api.activity_routes import router as activity_router
+from switch_core.bridges.agent.api.handlers import router as api_router
+from switch_core.bridges.agent.api.operations import router as operations_router
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
-from switch_core.bridges.agent.auth import BearerAuthMiddleware
+from switch_core.bridges.agent.auth import BearerAuthMiddleware, ControllerPrincipal
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
-from switch_core.db.models import TENANT_ZERO_ID, Client, TenantMember, User
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    Client,
+    Room,
+    TenantMember,
+    User,
+    room_agents,
+)
+from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
+from switch_core.management import controller_routes
 from switch_core.management.wiring import Management, build_management
 
 JWT_SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
@@ -104,7 +124,11 @@ def protocol_service(
     svc.collab_lifecycle = _NoBridges()  # type: ignore[assignment]
     svc.config = SimpleNamespace(jwt_secret_key=JWT_SECRET)  # type: ignore[assignment]
     svc.telemetry = None
-    svc.event_buffer = SimpleNamespace(remove=lambda _agent_id: None)  # type: ignore[assignment]
+    svc.event_buffer = EventBuffer(sequence_base=0)
+    svc.connections = AgentConnectionRegistry()
+    svc.approval_outcomes = None  # type: ignore[assignment]
+    svc.room_store = RoomStore()
+    svc.agent_session_store = AgentSessionStore()
     return svc
 
 
@@ -138,14 +162,15 @@ class Harness:
 
 def build_harness(session_factory: async_sessionmaker[AsyncSession]) -> Harness:
     clock = Clock()
+    cache = ApiKeyCache(ttl_seconds=5, max_entries=64)
+    protocol = protocol_service(session_factory, cache)
     management = build_management(
         token_secret=TOKEN_SECRET,
         status_interval_seconds=STATUS_INTERVAL,
         session_factory=session_factory,
+        presence=protocol.connections.controllers,
         clock=clock,
     )
-    cache = ApiKeyCache(ttl_seconds=5, max_entries=64)
-    protocol = protocol_service(session_factory, cache)
 
     async def _session() -> AsyncIterator[AsyncSession]:
         async with session_factory() as session:
@@ -157,7 +182,13 @@ def build_harness(session_factory: async_sessionmaker[AsyncSession]) -> Harness:
         agent_bridge_app=agent_app, gateway_app=gateway_app, protocol=protocol
     )
 
+    agent_app.include_router(activity_router)
+    agent_app.include_router(api_router, prefix="/agents")
+    agent_app.include_router(operations_router)
     agent_app.dependency_overrides[bridge_deps.get_session] = _session
+    agent_app.dependency_overrides[bridge_deps.get_session_factory] = lambda: (
+        session_factory
+    )
     agent_app.dependency_overrides[bridge_deps.get_protocol] = lambda: protocol
 
     gateway_app.dependency_overrides[gw_deps.get_session] = _session
@@ -331,3 +362,111 @@ async def create_managed_agent(
         },
         cookies=cookies_for(owner),
     )
+
+
+async def place_agent(
+    client: httpx.AsyncClient,
+    controller: EnrolledController,
+    *,
+    name: str,
+    auto_session: bool = True,
+) -> str:
+    """Create a managed agent on `controller`, which must accept placements."""
+    await report_status(client, controller, 1, providers=[provider("claude")])
+    created = await create_managed_agent(
+        client,
+        controller.owner,
+        name=name,
+        controller_id=controller.controller_id,
+        definition_body=definition(auto_session=auto_session),
+    )
+    assert created.status_code == 201, created.text
+    return str(created.json()["agent_id"])
+
+
+async def add_room(
+    session_factory: async_sessionmaker[AsyncSession],
+    *agent_ids: str,
+    name: str = "room",
+) -> str:
+    """A room with these agents as members."""
+    async with session_factory() as session:
+        room = Room(
+            transport_room_id=f"!{uuid.uuid4().hex}:test.local",
+            name=name,
+            description=f"{name} description",
+        )
+        session.add(room)
+        await session.flush()
+        for agent_id in agent_ids:
+            await session.execute(
+                insert(room_agents).values(room_id=room.id, agent_id=agent_id)
+            )
+        await session.commit()
+        return room.id
+
+
+def parse_frame(raw: bytes) -> tuple[str, dict[str, Any]]:
+    event, data = "", "{}"
+    for line in raw.decode().strip().splitlines():
+        if line.startswith("event: "):
+            event = line[len("event: ") :]
+        elif line.startswith("data: "):
+            data = line[len("data: ") :]
+    return event, json.loads(data)
+
+
+async def take(
+    stream: AsyncIterator[bytes], count: int, timeout: float = 3.0
+) -> list[tuple[str, dict[str, Any]]]:
+    """The next `count` frames off a stream, keepalives skipped."""
+    frames: list[tuple[str, dict[str, Any]]] = []
+
+    async def pump() -> None:
+        while len(frames) < count:
+            raw = await anext(stream)
+            if raw.startswith(b":"):
+                continue
+            frames.append(parse_frame(raw))
+
+    await asyncio.wait_for(pump(), timeout=timeout)
+    return frames
+
+
+async def open_connection(
+    client: httpx.AsyncClient,
+    controller: EnrolledController,
+    cursors: dict[str, int | str] | None = None,
+) -> dict[str, Any]:
+    response = await client.post(
+        f"/v1/controllers/{controller.controller_id}/connection",
+        json={"cursors": cursors or {}},
+        headers=controller.headers,
+    )
+    assert response.status_code == 201, response.text
+    return dict(response.json())
+
+
+async def open_stream(
+    harness: Harness,
+    controller: EnrolledController,
+    opened: dict[str, Any],
+) -> AsyncIterator[bytes]:
+    """The controller's event stream, from the route itself.
+
+    Called directly rather than over HTTP: the in-process transport collects a
+    response whole, and this one never ends by itself.
+    """
+    response = await controller_routes.controller_events(
+        principal=ControllerPrincipal(
+            controller_id=controller.controller_id,
+            owner_id=controller.owner.id,
+            tenant_id=TENANT_ZERO_ID,
+        ),
+        management=harness.management.service,
+        protocol=harness.protocol,
+        session_factory=harness.session_factory,
+        connection_id=opened["connection_id"],
+        generation=opened["generation"],
+    )
+    return response.body_iterator  # type: ignore[return-value]
