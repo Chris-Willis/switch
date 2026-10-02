@@ -3,7 +3,9 @@
 An agent placed on an agents controller has no connection of its own. Its
 controller holds one stream for every agent bound to it, and the agent is
 reachable exactly while that stream is: attached, and beating within the same
-TTL an agent connection beats in (`connections.HEARTBEAT_TTL_SECONDS`).
+TTL an agent connection beats in (`connections.HEARTBEAT_TTL_SECONDS`). Each
+beat also says which rooms each agent has a session working in, and those are
+the rooms the agent is present in.
 
 Core owns this state and never reads Management's tables. Management fills it
 through the narrow surface at the top of the class (`load`, `bind`, `unbind`,
@@ -125,6 +127,11 @@ class ControllerConnection:
     # reattached after a dropped socket resumes from here rather than
     # replaying everything since the open. None, or absent, is the head.
     resume_cursors: dict[str, int | None]
+    # The rooms each agent has a session working in, as the controller last
+    # said: the whole map on every beat, replacing the one before. Only agents
+    # bound to this controller are kept. Cleared when the stream detaches or
+    # the connection closes, since nothing then vouches for it.
+    placements: dict[str, set[str]]
     last_beat: float
     opened_at: float
     beats: int = 0
@@ -223,6 +230,7 @@ class ControllerPresence:
         if conn is not None:
             conn.closure = REVOKED
             conn.stream_attached = False
+            conn.placements.clear()
             conn.wake.set()
 
     # ------------------------------------------------------------------
@@ -274,11 +282,20 @@ class ControllerPresence:
     def rooms(self, agent_id: str) -> set[str]:
         return set(self._rooms.get(agent_id, ()))
 
-    def occupied_rooms(self, agent_id: str) -> set[str]:
-        """The rooms the agent may be working in: all of its rooms while its
-        controller is live, none otherwise. Core cannot see which of them a
-        session of the agent is in; the controller keeps that to itself."""
-        return self.rooms(agent_id) if self.is_live(agent_id) else set()
+    def placed_rooms(self, agent_id: str) -> set[str]:
+        """The rooms a session of the agent is working in, as its live
+        controller reports them, narrowed to the rooms it still belongs to.
+        Empty while the controller is not live."""
+        binding = self._bindings.get(agent_id)
+        if binding is None:
+            return set()
+        conn = self._live_connection(binding.controller_id)
+        if conn is None:
+            return set()
+        return conn.placements.get(agent_id, set()) & self._rooms.get(agent_id, set())
+
+    def is_placed(self, agent_id: str, room_id: str) -> bool:
+        return room_id in self.placed_rooms(agent_id)
 
     def live_in_room(self, agent_id: str, room_id: str) -> bool:
         return self.is_live(agent_id) and room_id in self._rooms.get(agent_id, ())
@@ -350,6 +367,7 @@ class ControllerPresence:
         controller_id: str,
         tenant_id: str,
         resume_cursors: dict[str, int | None],
+        placements: dict[str, list[str]],
     ) -> ControllerConnection:
         """Open a connection for the controller, taking over any it had."""
         if controller_id in self._revoked:
@@ -358,6 +376,7 @@ class ControllerPresence:
         if previous is not None:
             previous.closure = TAKEN_OVER
             previous.stream_attached = False
+            previous.placements.clear()
             previous.wake.set()
             remembered = self._superseded.setdefault(
                 controller_id, deque(maxlen=_SUPERSEDED_REMEMBERED)
@@ -372,10 +391,12 @@ class ControllerPresence:
             tenant_id=tenant_id,
             generation=generation,
             resume_cursors=dict(resume_cursors),
+            placements={},
             last_beat=now,
             opened_at=now,
         )
         self._connections[controller_id] = conn
+        self.replace_placements(conn, placements)
         logger.info(
             "[CONTROLLER] opened controller=%s connection=%s generation=%s agents=%d",
             controller_id,
@@ -417,6 +438,43 @@ class ControllerPresence:
     def detach_stream(self, conn: ControllerConnection, token: int) -> None:
         if conn.stream_token == token:
             conn.stream_attached = False
+            conn.placements.clear()
+
+    def replace_placements(
+        self, conn: ControllerConnection, placements: dict[str, list[str]]
+    ) -> None:
+        """Make `placements` the whole of where this controller's sessions are.
+
+        An agent left out is in no room. An agent not bound to this controller
+        is ignored, and so is a room the agent is known not to belong to —
+        logged at debug, since a relay a moment behind a membership change says
+        exactly that and nothing is wrong. Membership is applied again when
+        the map is read, so a room the agent leaves later drops out too.
+        """
+        bound = self.agents_of(conn.controller_id)
+        kept: dict[str, set[str]] = {}
+        for agent_id, rooms in placements.items():
+            if agent_id not in bound:
+                logger.debug(
+                    "[CONTROLLER] controller=%s placed agent=%s, which is not "
+                    "bound to it; ignored",
+                    conn.controller_id,
+                    agent_id,
+                )
+                continue
+            member = self._rooms.get(agent_id)
+            placed = set(rooms)
+            if member is not None and not placed <= member:
+                logger.debug(
+                    "[CONTROLLER] controller=%s placed agent=%s in rooms it is not "
+                    "a member of; ignored: %s",
+                    conn.controller_id,
+                    agent_id,
+                    ", ".join(sorted(placed - member)),
+                )
+                placed &= member
+            kept[agent_id] = placed
+        conn.placements = kept
 
     def beat(
         self, controller_id: str, connection_id: str, generation: int
@@ -487,9 +545,13 @@ class ControllerPresence:
                 conn.beats,
             )
         conn.stream_attached = False
+        conn.placements.clear()
         conn.wake.set()
 
     def _forget(self, binding: Binding) -> None:
+        conn = self._connections.get(binding.controller_id)
+        if conn is not None:
+            conn.placements.pop(binding.agent_id, None)
         held = self._by_controller.get(binding.controller_id)
         if held is not None:
             held.discard(binding.agent_id)

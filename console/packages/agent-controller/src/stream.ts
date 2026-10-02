@@ -13,6 +13,7 @@ import {
   type AgentEventFrame,
   agentEventFrameSchema,
   type AgentGapFrame,
+  type AgentPlacements,
   agentGapFrameSchema,
   type AgentRoomsFrame,
   agentRoomsFrameSchema,
@@ -121,6 +122,8 @@ export type ControllerStreamOptions = {
   cursors: () => Record<string, AgentCursor>;
   /** How far each agent's watcher has confirmed reading, sent on every beat. */
   confirmed: () => Record<string, number>;
+  /** The rooms each agent's sessions work in, sent on the open and on every beat. */
+  placements: () => AgentPlacements;
   /** A connection was opened: Core attached these agents to it. */
   onOpened: (connection: ControllerConnection) => Promise<void> | void;
   /** The stream is attached and reading. */
@@ -178,7 +181,8 @@ type Attempt = {
  * was; a connection Core no longer knows (its 6 s heartbeat lapsed, or it was
  * superseded) is opened afresh, from the cursors as they stand. While the
  * stream is attached the connection is beaten every `heartbeat_interval_s`
- * with each agent's confirmed cursor.
+ * with each agent's confirmed cursor and the rooms its sessions work in, so a
+ * placement made locally reaches Switch on the next beat.
  *
  * Ends with `'revoked'` on `credential.revoked` or a request refused as
  * `controller_revoked`, with `'taken_over'` when another instance of this
@@ -247,7 +251,11 @@ class ControllerStream {
   private async attach(attempt: Attempt): Promise<void> {
     const { client, log } = this.options;
     if (!this.held) {
-      const opened = await client.openConnection(this.options.cursors(), attempt.socket.signal);
+      const opened = await client.openConnection(
+        this.options.cursors(),
+        this.options.placements(),
+        attempt.socket.signal
+      );
       this.held = {
         connectionId: opened.connection_id,
         generation: opened.generation,
@@ -342,7 +350,7 @@ class ControllerStream {
       await delay(connection.heartbeatMs, undefined, { signal }).catch(() => {});
       if (signal.aborted) return;
       try {
-        await client.beat(connection, this.options.confirmed(), signal);
+        await client.beat(connection, this.options.confirmed(), this.options.placements(), signal);
         if (failures > 0)
           log.info('The controller stream heartbeat recovered', { afterFailures: failures });
         failures = 0;

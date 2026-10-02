@@ -312,6 +312,7 @@ async def open_connection(
             controller_id=principal.controller_id,
             tenant_id=principal.tenant_id,
             resume_cursors=body.resume_cursors(),
+            placements=body.placements,
         )
     except ControllerConnectionError as exc:
         raise _connection_refusal(exc) from exc
@@ -391,7 +392,8 @@ async def connection_beat(
     """Keep the controller, and so every agent on it, live; confirm cursors.
 
     The cursors confirmed here are where a stream reattached to this
-    connection resumes each agent.
+    connection resumes each agent. `placements` replaces where the
+    controller's sessions are, which is where each agent is LIVE.
 
     Every two seconds; six without one and its agents are not live. Refused
     with `taken_over` once another connection has replaced this one, which is
@@ -415,4 +417,5 @@ async def connection_beat(
         confirmed = min(cursor, protocol.event_buffer.head(agent_id))
         protocol.event_buffer.confirm(agent_id, presence.holder_id(binding), confirmed)
         presence.resume_from(conn, agent_id, confirmed)
+    presence.replace_placements(conn, body.placements)
     return {"agents": sorted(agents)}

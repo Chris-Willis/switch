@@ -51,6 +51,9 @@ export class FakeCore {
   readonly results = new Map<string, OperationResult>();
   readonly opens: Record<string, AgentCursor>[] = [];
   readonly beats: Record<string, number>[] = [];
+  /** The `placements` each open and each beat carried, in order. */
+  readonly openPlacements: Record<string, string[]>[] = [];
+  readonly beatPlacements: Record<string, string[]>[] = [];
   /** Answers the next request to a path with this, once. */
   readonly scripted: { method: string; path: string; status: number; body: unknown }[] = [];
   /** What `GET .../media` sends, in these chunks; `waitBetween` holds back all but the first. */
@@ -243,6 +246,7 @@ export class FakeCore {
     if (method === 'POST' && url.pathname === `${streamBase}/connection`) {
       const cursors = (body as { cursors: Record<string, AgentCursor> }).cursors;
       this.opens.push(cursors);
+      this.openPlacements.push((body as { placements: Record<string, string[]> }).placements);
       if (this.current) {
         this.current.superseded = true;
         for (const [stream, connection] of this.streams)
@@ -311,6 +315,7 @@ export class FakeCore {
       if (beat.generation !== connection.generation)
         return this.refuse(res, 409, 'stale_generation');
       this.beats.push(beat.cursors);
+      this.beatPlacements.push((body as { placements: Record<string, string[]> }).placements);
       return this.json(res, 200, { agents: this.bound() });
     }
     if (method === 'GET' && url.pathname === `${base}/assignment`) {

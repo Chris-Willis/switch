@@ -460,6 +460,7 @@ export async function runController(
         return { ...cursors, ...relay.cursors() };
       },
       confirmed: () => relay.cursors(),
+      placements: () => relay.sessionRooms(),
       onOpened: (connection) =>
         log.info('Switch has these agents bound to this controller', {
           agents: connection.agents,

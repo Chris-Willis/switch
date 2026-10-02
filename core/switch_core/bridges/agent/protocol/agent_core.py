@@ -3008,7 +3008,17 @@ class AgentCore:
             would be a guess. A seat taken without a session falls back to its
             connection, and to the binding row for callers predating
             connections.
+
+            A controller-backed holder is located by the rooms its controller
+            reports its sessions working in: this room if it is one of them,
+            otherwise the one room it is in, if there is only one.
             """
+            controllers = self.connections.controllers
+            if controllers.is_bound(lease.agent_id):
+                placed = controllers.placed_rooms(lease.agent_id)
+                if room_id in placed:
+                    return room_id
+                return next(iter(placed)) if len(placed) == 1 else None
             if lease.session_id is not None:
                 return self.connections.session_room(lease.agent_id, lease.session_id)
             if lease.transport_session_id is None:

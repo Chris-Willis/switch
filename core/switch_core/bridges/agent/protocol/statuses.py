@@ -167,9 +167,9 @@ def controller_statuses(
 ) -> dict[str, AgentStatus]:
     """Presence for agents run by an agents controller.
 
-    Switch cannot see which room each of their sessions works in, so a
-    session-shaped agent is never LIVE here: it is DORMANT where its live
-    controller will start a session for the room, NO_SESSION where the
+    A session-shaped agent is LIVE in a room its live controller reports a
+    session of it working in (`placed_rooms`). Elsewhere it is DORMANT where
+    the controller will start a session for the room, NO_SESSION where the
     controller is live and will not, and DISCONNECTED (or NO_SESSION, for a
     `session_addressable` agent, as for any other) when the controller is not
     live. An `always_on` agent is LIVE exactly while its controller is.
@@ -181,15 +181,21 @@ def controller_statuses(
             "connection_model", "session_passive"
         )
         live = controllers.is_live(agent.id)
+        placed = controllers.is_placed(agent.id, room_id)
         spawns = controllers.can_spawn_for(agent.id, room_id)
         if model == "always_on":
             statuses[agent.id] = AgentStatus.LIVE if live else AgentStatus.DISCONNECTED
         elif model == "session_addressable":
-            statuses[agent.id] = (
-                AgentStatus.DORMANT if spawns else AgentStatus.NO_SESSION
-            )
+            if placed:
+                statuses[agent.id] = AgentStatus.LIVE
+            elif spawns:
+                statuses[agent.id] = AgentStatus.DORMANT
+            else:
+                statuses[agent.id] = AgentStatus.NO_SESSION
         elif model == "auto_session":
-            if spawns:
+            if placed:
+                statuses[agent.id] = AgentStatus.LIVE
+            elif spawns:
                 statuses[agent.id] = AgentStatus.DORMANT
             elif live:
                 statuses[agent.id] = AgentStatus.NO_SESSION

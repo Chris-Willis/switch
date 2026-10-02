@@ -85,6 +85,11 @@ nor on `4`, because two instances would take the stream from each other in turn.
   `operation.pending`, `credential.revoked`).
 - Beats the connection (`POST .../connection/beat`) every `heartbeat_interval_s`
   (2 s) while the stream is attached, with each agent's confirmed cursor.
+- The open and every beat also carry `placements`: for each agent with a session
+  placed in a room by one of its live local connections, those rooms. It is the
+  whole current map each time (Switch replaces what it held), and agents with no
+  placement are left out, so a placement the watcher makes reaches Switch on the
+  next beat.
 - A dropped stream is reattached to the same connection. A connection Switch no
   longer knows (`unknown_connection`, `stale_generation`, or any `evicted` but
   `taken_over`) is opened afresh, from the cursors as they stand. Reconnects back

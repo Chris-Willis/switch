@@ -412,6 +412,7 @@ class TestTheConnection:
                     "connection_id": old["connection_id"],
                     "generation": old["generation"],
                     "cursors": {},
+                    "placements": {},
                 },
                 headers=controller.headers,
             )
@@ -421,12 +422,18 @@ class TestTheConnection:
                     "connection_id": new["connection_id"],
                     "generation": new["generation"] + 1,
                     "cursors": {},
+                    "placements": {},
                 },
                 headers=controller.headers,
             )
             unknown = await client.post(
                 beat_path,
-                json={"connection_id": "nope", "generation": 1, "cursors": {}},
+                json={
+                    "connection_id": "nope",
+                    "generation": 1,
+                    "cursors": {},
+                    "placements": {},
+                },
                 headers=controller.headers,
             )
             no_stream = await client.post(
@@ -435,6 +442,7 @@ class TestTheConnection:
                     "connection_id": new["connection_id"],
                     "generation": new["generation"],
                     "cursors": {},
+                    "placements": {},
                 },
                 headers=controller.headers,
             )
@@ -492,6 +500,7 @@ class TestTheConnection:
                     "connection_id": opened["connection_id"],
                     "generation": opened["generation"],
                     "cursors": {agent_id: 99, "not-mine": 3},
+                    "placements": {},
                 },
                 headers=controller.headers,
             )
@@ -533,6 +542,7 @@ class TestTheConnection:
                     "connection_id": opened["connection_id"],
                     "generation": opened["generation"],
                     "cursors": {confirmed: 2},
+                    "placements": {},
                 },
                 headers=controller.headers,
             )
@@ -562,6 +572,55 @@ class TestTheConnection:
         events = [(d["agent_id"], d["seq"]) for n, d in frames if n == "agent.event"]
         assert sorted(events) == sorted([(confirmed, 3), (unconfirmed, 2)])
 
+    async def test_placements_on_open_and_each_beat_replace_the_last(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        presence = harness.protocol.connections.controllers
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await place_agent(client, controller, name="reviewer")
+            here = await add_room(harness.session_factory, agent_id, name="here")
+            there = await add_room(harness.session_factory, agent_id, name="there")
+            outside = await add_room(harness.session_factory, name="outside")
+            opened = await client.post(
+                f"/v1/controllers/{controller.controller_id}/connection",
+                json={"cursors": {}, "placements": {agent_id: [here]}},
+                headers=controller.headers,
+            )
+            assert opened.status_code == 201, opened.text
+            stream = await open_stream(harness, controller, opened.json())
+            await take(stream, 2)
+            on_open = presence.placed_rooms(agent_id)
+            path = f"/v1/controllers/{controller.controller_id}/connection/beat"
+            body = {
+                "connection_id": opened.json()["connection_id"],
+                "generation": opened.json()["generation"],
+                "cursors": {},
+            }
+            moved = await client.post(
+                path,
+                json={**body, "placements": {agent_id: [there, outside]}},
+                headers=controller.headers,
+            )
+            after_move = presence.placed_rooms(agent_id)
+            emptied = await client.post(
+                path, json={**body, "placements": {}}, headers=controller.headers
+            )
+            after_empty = presence.placed_rooms(agent_id)
+            missing = await client.post(path, json=body, headers=controller.headers)
+        await stream.aclose()
+
+        assert on_open == {here}
+        assert moved.status_code == 200, moved.text
+        # The room it is not a member of is ignored.
+        assert after_move == {there}
+        assert emptied.status_code == 200, emptied.text
+        assert after_empty == set()
+        assert missing.status_code == 422
+        assert missing.json()["error"]["code"] == "validation_error"
+        assert presence.placed_rooms(agent_id) == set()
+
     async def test_a_lapsed_beat_ends_the_stream_and_its_agents_are_not_live(
         self, harness: Harness, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -585,6 +644,7 @@ class TestTheConnection:
                     "connection_id": opened["connection_id"],
                     "generation": opened["generation"],
                     "cursors": {},
+                    "placements": {},
                 },
                 headers=controller.headers,
             )

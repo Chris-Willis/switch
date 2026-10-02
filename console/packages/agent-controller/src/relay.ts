@@ -335,6 +335,23 @@ export class LocalRelay {
     return cursors;
   }
 
+  /**
+   * For each agent with a session placed in a room by one of its live local
+   * connections, those rooms, sorted. Agents with none are left out.
+   */
+  sessionRooms(): Record<string, string[]> {
+    const placements: Record<string, string[]> = {};
+    for (const agent of this.agents.values()) {
+      const rooms = new Set<string>();
+      for (const placed of agent.placements.values()) {
+        const owner = this.connections.get(placed.owner);
+        if (owner && owner.agentId === agent.agentId && this.alive(owner)) rooms.add(placed.roomId);
+      }
+      if (rooms.size) placements[agent.agentId] = [...rooms].sort();
+    }
+    return placements;
+  }
+
   /** The agent's events flow on the controller stream and its watcher is connected here. */
   attached(agentId: string): boolean {
     const agent = this.agents.get(agentId);

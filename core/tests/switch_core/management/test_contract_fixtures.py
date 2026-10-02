@@ -247,8 +247,10 @@ class TestTheControllerConnection:
         async with harness.client() as client:
             controller = await enroll_console(harness, client, owner)
             agent_id = await place_agent(client, controller, name="reviewer")
+            room_id = await add_room(harness.session_factory, agent_id)
             body = _fixture("controller_connection_request.json")
             body["cursors"] = {agent_id: 0, "not-bound": "head"}
+            body["placements"] = {agent_id: [room_id]}
             opened = await client.post(
                 f"/v1/controllers/{controller.controller_id}/connection",
                 json=body,
@@ -261,12 +263,14 @@ class TestTheControllerConnection:
                 connection_id=opened.json()["connection_id"],
                 generation=opened.json()["generation"],
                 cursors={agent_id: 0},
+                placements={agent_id: [room_id]},
             )
             beat = await client.post(
                 f"/v1/controllers/{controller.controller_id}/connection/beat",
                 json=beat_body,
                 headers=controller.headers,
             )
+            placed = harness.protocol.connections.controllers.placed_rooms(agent_id)
             await stream.aclose()
 
         assert opened.status_code == 201, opened.text
@@ -275,6 +279,8 @@ class TestTheControllerConnection:
         )
         assert beat.status_code == 200, beat.text
         assert_same_shape(beat.json(), _fixture("controller_beat_response.json"))
+        assert harness.protocol.connections.controllers.placed_rooms(agent_id) == set()
+        assert placed == {room_id}
 
 
 class _Outcomes:

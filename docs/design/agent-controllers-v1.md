@@ -279,21 +279,28 @@ stream. The flag and everything else above stay as they are.
 
 ### Core implementation notes (decisions the spec left open)
 
-- **Presence states.** Core cannot see which room a controller-backed agent's
-  sessions are in (the controller keeps placements locally), so a
-  session-shaped agent is never `LIVE`: it is `DORMANT` where its live
-  controller will start a session (`auto_session` and a member of the room),
-  `NO_SESSION` where the controller is live and will not, and `DISCONNECTED`
-  when the controller is not live (`NO_SESSION` for `session_addressable`, as
-  for any agent). An `always_on` agent is `LIVE` exactly while its controller
-  is. Consequence: an `auto_session` controller-backed agent gets the
-  "Starting a session…" reply on every addressed message, including when a
-  session is already working in the room. Fixing that needs the controller to
-  report its placements upstream, which this contract does not have yet.
+- **Placements.** The beat body carries `placements: {agent_id: [room_id, ...]}`:
+  for each bound agent, the rooms where one of its sessions works now (the
+  relay knows them from its watchers' placements). It is the full map each
+  beat and replaces the last; an agent left out is in no room; agents not
+  bound to the controller and rooms the agent is not a member of are ignored
+  (logged at debug). The open request may carry an initial map. Placements
+  are dropped when the controller's stream detaches, its beat lapses, it is
+  taken over or revoked, and an agent's when it is unbound or moved.
+- **Presence states.** A session-shaped controller-backed agent is `LIVE` in a
+  room it is placed in. Elsewhere it is `DORMANT` where its live controller
+  will start a session (`auto_session` and a member of the room), `NO_SESSION`
+  where the controller is live and will not, and `DISCONNECTED` when the
+  controller is not live (`NO_SESSION` for `session_addressable`, as for any
+  agent). An `always_on` agent is `LIVE` exactly while its controller is.
+  Placed rooms also answer `agents_present_in`, `rooms_occupied` (so the
+  runtime-state sweep keeps a working session's state and resets the rest),
+  a role holder's `present_here`/`session_room`, and the agent detail's
+  session rows. An addressed agent placed in the room is available, so no
+  "Starting a session…" or offline reply is posted; unplaced, the reply names
+  the rooms it is placed in elsewhere.
 - **Liveness** is "stream attached and beat within 6 s"; the connection sweep
-  closes lapsed controller connections. `rooms_occupied` answers with all the
-  agent's rooms while its controller is live, so the runtime-state sweep does
-  not reset a working session it cannot see.
+  closes lapsed controller connections.
 - **Holder id.** A controller-backed agent holds things under
   `controller:{controller_id}:{agent_id}`: the operation caller's session key
   and session id, the reader of its unread counts, and the holder of a role
@@ -311,8 +318,9 @@ stream. The flag and everything else above stay as they are.
   refused on every route with `409 managed_by_controller`, in the contract
   envelope. Binding an agent closes any connection it still held.
 - **Open/beat bodies.** `POST /connection` returns `agents: string[]` (the
-  agent ids bound now); the beat returns `{agents}`. `client` and
-  `client_version` are optional on open. A beat with no stream attached is
+  agent ids bound now); the beat returns `{agents}`. `client`,
+  `client_version` and `placements` are optional on open; `placements` is
+  required on the beat. A beat with no stream attached is
   `409 no_stream`. Each open is a new server-generated connection id and
   generation and takes over the previous one. A second `GET /events` on the
   same connection takes the stream over and resumes every agent from its

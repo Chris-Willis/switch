@@ -257,10 +257,18 @@ const rooms = z.array(z.string().min(1));
 export const agentCursorSchema = z.union([sequence, z.literal('head')]);
 export type AgentCursor = z.infer<typeof agentCursorSchema>;
 
+/**
+ * For each bound agent with at least one session working in a room here, those
+ * rooms. The whole current map every time: Core replaces what it held.
+ */
+export const agentPlacementsSchema = z.record(z.string().min(1), z.array(id).min(1));
+export type AgentPlacements = z.infer<typeof agentPlacementsSchema>;
+
 export const controllerConnectionRequestSchema = z.object({
   client: z.string().min(1),
   client_version: z.string().min(1),
   cursors: z.record(z.string().min(1), agentCursorSchema),
+  placements: agentPlacementsSchema,
 });
 export type ControllerConnectionRequest = z.infer<typeof controllerConnectionRequestSchema>;
 
@@ -277,6 +285,7 @@ export const controllerBeatRequestSchema = z.object({
   connection_id: id,
   generation: z.number().int(),
   cursors: z.record(z.string().min(1), sequence),
+  placements: agentPlacementsSchema,
 });
 export type ControllerBeatRequest = z.infer<typeof controllerBeatRequestSchema>;
 

@@ -224,12 +224,14 @@ class ControllerConnectionRequest(_ControllerBody):
     """Opening the controller's stream: where to resume each of its agents.
 
     A cursor is a sequence number in that agent's own buffer, or `"head"`. An
-    agent left out starts at its head.
+    agent left out starts at its head. `placements` is the initial map of
+    rooms each agent has a session working in, as on a beat; absent is none.
     """
 
     client: str | None = None
     client_version: str | None = None
     cursors: dict[str, int | Literal["head"]]
+    placements: dict[str, list[str]] = Field(default_factory=dict)
 
     @field_validator("cursors")
     @classmethod
@@ -249,9 +251,14 @@ class ControllerConnectionRequest(_ControllerBody):
 
 
 class ControllerBeatRequest(_ControllerBody):
+    """A beat. `placements` is, for each bound agent, every room where one of
+    its sessions works now: the whole map each time, replacing the last. An
+    agent left out is in no room."""
+
     connection_id: str
     generation: int
     cursors: dict[str, int]
+    placements: dict[str, list[str]]
 
 
 # ── Gateway requests ──────────────────────────────────────────────────────────

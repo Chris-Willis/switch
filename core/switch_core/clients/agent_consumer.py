@@ -1180,12 +1180,28 @@ class AgentConsumer(Consumer[AgentActor]):
         if self._connections.can_spawn_for(self.agent.id, meta.room_id):
             return _STARTING_SESSION_MESSAGE
 
-        # A controller-backed agent is answered from its controller alone, and
-        # Switch cannot see where its sessions are, so there is nowhere else to
-        # point the asker: none of the heartbeat rows, placements or room
-        # claims below is its.
+        # A controller-backed agent is answered from its controller alone: none
+        # of the heartbeat rows, placements or room claims below is its. Rooms
+        # its controller reports a session of it working in are where else the
+        # asker can find it.
         if self._connections.controllers.is_bound(self.agent.id):
-            return await self._unavailable_reply(session, meta, agent, asker_handle)
+            elsewhere = sorted(
+                self._connections.controllers.placed_rooms(self.agent.id)
+                - {meta.room_id}
+            )
+            placed_names: list[str] = []
+            for rid in elsewhere:
+                placed_room = await self._room_store.get(session, rid)
+                placed_name = placed_room.name if placed_room is not None else rid
+                if placed_name != meta.name:
+                    placed_names.append(placed_name)
+            return await self._unavailable_reply(
+                session,
+                meta,
+                agent,
+                asker_handle,
+                other_room_names=placed_names or None,
+            )
 
         if connection_model == "auto_session":
             # The heartbeat arm only: a client still running the
@@ -1358,9 +1374,11 @@ class AgentConsumer(Consumer[AgentActor]):
         if connection_model == "session_passive":
             return False
         if self._connections.controllers.is_bound(self.agent.id):
-            return connection_model == "always_on" and self._connections.is_live(
-                self.agent.id
-            )
+            # A session its controller reports working here answers; so does
+            # an always-on agent whose controller is live at all.
+            if connection_model == "always_on":
+                return self._connections.is_live(self.agent.id)
+            return self._connections.controllers.is_placed(self.agent.id, room_id)
         # Union of the presence sources while every kind of client exists
         # (CHOO-1857 stage B): a client on the push transport keeps only a
         # connection, one still polling keeps only the heartbeat row, and a

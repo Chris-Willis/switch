@@ -248,18 +248,29 @@ async def assemble_agent_detail(
                 )
             )
 
-    # A controller-backed agent has no connection of its own; its controller's
-    # stream is the one session Switch can see, and it is room-agnostic.
+    # A controller-backed agent has no connection of its own. Its sessions are
+    # the rooms its live controller reports them working in, and with none
+    # placed its controller is still one room-agnostic session.
     if connections.controllers.is_live(agent.id):
-        sessions.append(
-            AgentSessionDetail(
-                room_id=None,
-                room_name=None,
-                lifecycle="controller",
-                state="live",
-                last_seen_at=str(now),
+        placed: list[str | None] = list(
+            sorted(connections.controllers.placed_rooms(agent.id))
+        ) or [None]
+        for placed_room in placed:
+            room_name = None
+            if placed_room is not None:
+                room_name = room_name_by_id.get(placed_room)
+                if room_name is None:
+                    linked_room = await room_store.get(session, placed_room)
+                    room_name = linked_room.name if linked_room else None
+            sessions.append(
+                AgentSessionDetail(
+                    room_id=placed_room,
+                    room_name=room_name,
+                    lifecycle="controller",
+                    state="live",
+                    last_seen_at=str(now),
+                )
             )
-        )
 
     child_agents = await agent_store.get_children(session, [agent.id])
     children = [
