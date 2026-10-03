@@ -463,7 +463,7 @@ describe('runControllerStream against the controller stream routes', () => {
       idleTimeoutMs: 2_000,
       initialBackoffMs: 5,
       maxBackoffMs: 20,
-        random: () => 0,
+      random: () => 0,
     });
     await waitFor(() => core.streamCount === 1, 'the stream');
     core.push('assignment.changed', { revision: 4 });
