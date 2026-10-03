@@ -134,7 +134,11 @@ def test_presence_keeps_it_in_step_with_bindings_and_revocations(
     presence = ControllerPresence(on_bound=lambda agent_id: None)
     presence.use_auth_cache(cache)
     binding = Binding(
-        agent_id="a1", controller_id="c1", tenant_id="t1", auto_session=True
+        agent_id="a1",
+        controller_id="c1",
+        tenant_id="t1",
+        auto_session=True,
+        running=True,
     )
 
     def warm() -> None:
@@ -147,7 +151,13 @@ def test_presence_keeps_it_in_step_with_bindings_and_revocations(
 
     warm()
     presence.bind(
-        Binding(agent_id="a1", controller_id="c2", tenant_id="t1", auto_session=True)
+        Binding(
+            agent_id="a1",
+            controller_id="c2",
+            tenant_id="t1",
+            auto_session=True,
+            running=True,
+        )
     )
     assert cache.agent("t1", "a1") is None
 

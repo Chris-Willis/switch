@@ -293,6 +293,10 @@ stream. The flag and everything else above stay as they are.
   where the controller is live and will not, and `DISCONNECTED` when the
   controller is not live (`NO_SESSION` for `session_addressable`, as for any
   agent). An `always_on` agent is `LIVE` exactly while its controller is.
+  An agent whose owner set it to `stopped` is not live however healthy its
+  controller is: it is never promised a session, it holds no placements, and
+  the agent client tells the room it is stopped and that its owner has to set
+  it running.
   Placed rooms also answer `agents_present_in`, `rooms_occupied` (so the
   runtime-state sweep keeps a working session's state and resets the rest),
   a role holder's `present_here`/`session_room`, and the agent detail's

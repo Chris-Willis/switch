@@ -289,6 +289,24 @@ def _offline_owner_message(
     return f"{opening} {terminal}\n\n```\n{cmd}\n```"
 
 
+def _stopped_owner_message(owner_handle: str | None, asker_handle: str) -> str:
+    """The reply for a managed agent its owner has set to stopped.
+
+    Nothing will start a session for it until the owner sets it running
+    again, and only the owner can, so it is the owner who is asked.
+    """
+    needs_me = "" if owner_handle == asker_handle else f", and @{asker_handle} needs me"
+    if owner_handle:
+        return (
+            f"@{owner_handle} — you've stopped me, so I'm not running{needs_me}. "
+            "Set me to running in Switch to bring me back."
+        )
+    return (
+        f"I'm stopped, so I'm not running{needs_me}. **My owner has to set me "
+        "to running** in Switch to bring me back."
+    )
+
+
 # The refusal wording lives with the decision that produces it. Kept under
 # these names because they are how the rest of the package and its tests refer
 # to them.
@@ -1185,6 +1203,11 @@ class AgentConsumer(Consumer[AgentActor]):
         # its controller reports a session of it working in are where else the
         # asker can find it.
         if self._connections.controllers.is_bound(self.agent.id):
+            if self._connections.controllers.is_stopped(self.agent.id):
+                return _stopped_owner_message(
+                    await self.owner_handle_in(session, agent, meta.bridge_id),
+                    asker_handle,
+                )
             elsewhere = sorted(
                 self._connections.controllers.placed_rooms(self.agent.id)
                 - {meta.room_id}

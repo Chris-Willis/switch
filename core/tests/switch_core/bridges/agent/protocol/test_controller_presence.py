@@ -69,13 +69,18 @@ class _NoRows:
 
 
 def _bind(
-    registry: AgentConnectionRegistry, agent_id: str, *, auto_session: bool = True
+    registry: AgentConnectionRegistry,
+    agent_id: str,
+    *,
+    auto_session: bool = True,
+    running: bool = True,
 ) -> Binding:
     binding = Binding(
         agent_id=agent_id,
         controller_id=CONTROLLER,
         tenant_id=TENANT_ZERO_ID,
         auto_session=auto_session,
+        running=running,
     )
     registry.controllers.bind(binding)
     return binding
@@ -230,6 +235,7 @@ class TestTheRegistryAsksTheController:
             controller_id="controller-2",
             tenant_id=TENANT_ZERO_ID,
             auto_session=True,
+            running=True,
         )
         registry.controllers.bind(moved)
 
@@ -349,11 +355,15 @@ def _client(registry: AgentConnectionRegistry, agent_id: str) -> SimpleNamespace
     async def _unavailable_reply(*_args: Any, **_kwargs: Any) -> str:
         return "offline"
 
+    async def owner_handle_in(*_args: Any) -> str | None:
+        return "owner"
+
     ns = SimpleNamespace(
         agent=SimpleNamespace(id=agent_id),
         _connections=registry,
         _agent_session_store=_NoRows(),
         _unavailable_reply=_unavailable_reply,
+        owner_handle_in=owner_handle_in,
     )
     ns._is_available = AgentConsumer._is_available.__get__(ns)
     ns._reply_when_unavailable_here = (
@@ -387,6 +397,58 @@ class TestTheAgentClientsReplies:
         assert declined == "offline"
         assert lapsed == "offline"
         assert auto._agent_session_store.asked == []
+
+    async def test_a_stopped_agent_is_not_promised_a_session(
+        self, db: AsyncSession
+    ) -> None:
+        registry = AgentConnectionRegistry()
+        _bind(registry, "auto", running=False)
+        _bind(registry, "always", running=False)
+        conn = _go_live(registry, ("auto", {ROOM}), ("always", {ROOM}))
+        registry.controllers.replace_placements(conn, {"auto": [ROOM]})
+        meta = SimpleNamespace(room_id=ROOM, name="Room", bridge_id=None)
+        client = _client(registry, "auto")
+        agent = _agent("auto", "auto_session")
+
+        available = await client._is_available(object(), agent, ROOM)
+        reply = await client._reply_when_unavailable_here(object(), agent, meta, "u")
+        statuses = await compute_agent_statuses(
+            db,
+            [agent, _agent("always", "always_on")],  # type: ignore[list-item]
+            ROOM,
+            _NoRows(),  # type: ignore[arg-type]
+            registry,
+        )
+
+        assert available is False
+        assert reply != _STARTING_SESSION_MESSAGE
+        assert reply.startswith("@owner — you've stopped me")
+        assert "and @u needs me" in reply
+        assert statuses == {
+            "auto": AgentStatus.DISCONNECTED,
+            "always": AgentStatus.DISCONNECTED,
+        }
+        assert not registry.can_spawn_for("auto", ROOM)
+        assert not registry.is_live("auto")
+        assert registry.controllers.placed_rooms("auto") == set()
+        assert not registry.relay_session_command(
+            "auto", {"origin": {"roomId": ROOM}}, worker_only=False
+        )
+
+        registry.controllers.bind(
+            Binding(
+                agent_id="auto",
+                controller_id=CONTROLLER,
+                tenant_id=TENANT_ZERO_ID,
+                auto_session=True,
+                running=True,
+            )
+        )
+        assert registry.can_spawn_for("auto", ROOM)
+        assert (
+            await client._reply_when_unavailable_here(object(), agent, meta, "u")
+            == _STARTING_SESSION_MESSAGE
+        )
 
     async def test_an_always_on_agent_is_available_while_its_controller_is(
         self,

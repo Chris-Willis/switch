@@ -615,6 +615,37 @@ class TestPlacementBindsTheAgentInCore:
         assert removed.status_code == 200, removed.text
         assert presence.binding(agent_id) is None
 
+    async def test_the_wanted_state_reaches_the_binding(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        presence = harness.protocol.connections.controllers
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await _placed_agent(harness, client, controller)
+            running = presence.binding(agent_id)
+            stop = await client.patch(
+                f"/gateway/management/agents/{agent_id}",
+                json={"desired_state": "stopped"},
+                cookies=cookies_for(owner),
+            )
+            stopped = presence.binding(agent_id)
+            presence.unbind(agent_id, "unassigned")
+            await harness.management.load_bindings()
+            reloaded = presence.binding(agent_id)
+            start = await client.patch(
+                f"/gateway/management/agents/{agent_id}",
+                json={"desired_state": "running"},
+                cookies=cookies_for(owner),
+            )
+            started = presence.binding(agent_id)
+
+        assert stop.status_code == 200, stop.text
+        assert start.status_code == 200, start.text
+        assert running is not None and running.running is True
+        assert stopped is not None and stopped.running is False
+        assert presence.is_stopped(agent_id) is False
+        assert reloaded is not None and reloaded.running is False
+        assert started is not None and started.running is True
+
     async def test_an_unplaced_agent_is_not_bound(self, harness: Harness) -> None:
         owner = await add_member(harness.session_factory, "ada")
         async with harness.client() as client:

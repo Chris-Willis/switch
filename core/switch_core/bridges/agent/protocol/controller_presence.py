@@ -112,12 +112,16 @@ class ControllerRevokedError(ControllerConnectionError):
 
 @dataclass(frozen=True)
 class Binding:
-    """Which controller may act for an agent, and whether it starts sessions."""
+    """Which controller may act for an agent, whether its owner wants it
+    running, and whether it starts sessions."""
 
     agent_id: str
     controller_id: str
     tenant_id: str
     auto_session: bool
+    # False when the owner has set the agent to stopped: its controller runs
+    # nothing for it, so it is not live however healthy the controller is.
+    running: bool
 
 
 @dataclass
@@ -212,12 +216,20 @@ class ControllerPresence:
             self._rooms.pop(binding.agent_id, None)
         if previous is None or previous.controller_id != binding.controller_id:
             logger.info(
-                "[CONTROLLER] agent=%s bound to controller=%s auto_session=%s",
+                "[CONTROLLER] agent=%s bound to controller=%s auto_session=%s running=%s",
                 binding.agent_id,
                 binding.controller_id,
                 binding.auto_session,
+                binding.running,
             )
             self._on_bound(binding.agent_id)
+        elif previous.running != binding.running:
+            logger.info(
+                "[CONTROLLER] agent=%s on controller=%s set to %s",
+                binding.agent_id,
+                binding.controller_id,
+                "running" if binding.running else "stopped",
+            )
         self._wake(binding.controller_id)
 
     def unbind(self, agent_id: str, reason: str) -> None:
@@ -291,10 +303,16 @@ class ControllerPresence:
             return None
         return conn
 
+    def is_stopped(self, agent_id: str) -> bool:
+        """Bound, and set to stopped by its owner."""
+        binding = self._bindings.get(agent_id)
+        return binding is not None and not binding.running
+
     def is_live(self, agent_id: str) -> bool:
         binding = self._bindings.get(agent_id)
         return (
             binding is not None
+            and binding.running
             and self._live_connection(binding.controller_id) is not None
         )
 
@@ -304,9 +322,9 @@ class ControllerPresence:
     def placed_rooms(self, agent_id: str) -> set[str]:
         """The rooms a session of the agent is working in, as its live
         controller reports them, narrowed to the rooms it still belongs to.
-        Empty while the controller is not live."""
+        Empty while the controller is not live or the agent is stopped."""
         binding = self._bindings.get(agent_id)
-        if binding is None:
+        if binding is None or not binding.running:
             return set()
         conn = self._live_connection(binding.controller_id)
         if conn is None:
@@ -344,10 +362,10 @@ class ControllerPresence:
 
     def relay_session_command(self, agent_id: str, frame: dict[str, Any]) -> bool:
         """Queue a session command on the agent's controller stream. False when
-        its controller is not live, so the sender is told rather than the
-        command held for a stream that may not return."""
+        its controller is not live or the agent is stopped, so the sender is
+        told rather than the command held for a stream that may not return."""
         binding = self._bindings.get(agent_id)
-        if binding is None:
+        if binding is None or not binding.running:
             return False
         conn = self._live_connection(binding.controller_id)
         if conn is None:

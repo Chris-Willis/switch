@@ -993,6 +993,7 @@ def binding_of(tenant_id: str, row: AgentDefinitionRow) -> Binding:
         controller_id=row.controller_id,
         tenant_id=tenant_id,
         auto_session=DefinitionV1.model_validate(row.definition).auto_session,
+        running=row.desired_state == "running",
     )
 
 

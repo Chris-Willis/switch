@@ -218,6 +218,7 @@ class TestTheAuthorizationMatrix:
                 controller_id=controller.controller_id,
                 tenant_id="another-tenant",
                 auto_session=True,
+                running=True,
             )
         )
         mw, _ = _middleware(harness)
@@ -392,6 +393,7 @@ class TestTheAgentsOwnCredential:
                 controller_id="c",
                 tenant_id=TENANT_ZERO_ID,
                 auto_session=True,
+                running=True,
             )
         )
         captured: dict[str, Any] = {}
