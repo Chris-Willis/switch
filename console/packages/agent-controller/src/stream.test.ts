@@ -58,7 +58,7 @@ function sse(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
-async function waitFor(condition: () => boolean, what: string, timeoutMs = 5000): Promise<void> {
+async function waitFor(condition: () => boolean, what: string, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
     if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}.`);

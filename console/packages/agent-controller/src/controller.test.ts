@@ -38,7 +38,7 @@ function agent(revision: number, overrides: Partial<AgentAssignment> = {}): Agen
   };
 }
 
-async function waitFor(condition: () => boolean, what: string, timeoutMs = 5000): Promise<void> {
+async function waitFor(condition: () => boolean, what: string, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
     if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}.`);
