@@ -252,9 +252,12 @@ describe('runController', () => {
 
     expect(core.beatPlacements.at(-1)).toEqual({});
     await stream.replacePlacements({ 'session-1': 'room-a' });
-    const beatsBefore = core.beats.length;
-    await waitFor(() => core.beats.length > beatsBefore, 'the next beat');
-    expect(core.beatPlacements.at(-1)).toEqual({ 'agent-1': ['room-a'] });
+    // A beat already on its way still carries the old placements; the next one has the new.
+    await waitFor(
+      () =>
+        JSON.stringify(core.beatPlacements.at(-1)) === JSON.stringify({ 'agent-1': ['room-a'] }),
+      'a beat with the new placement'
+    );
 
     core.forgetConnection();
     await waitFor(() => core.opens.length === 2, 'a new connection');

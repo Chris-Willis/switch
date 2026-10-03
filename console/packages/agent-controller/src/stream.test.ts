@@ -460,7 +460,8 @@ describe('runControllerStream against the controller stream routes', () => {
       onFrame: async (frame) => void frames.push(frame),
       signal: stop.signal,
       log: silentLogger,
-      idleTimeoutMs: 2_000,
+      // Long enough that a loaded machine does not lapse the stream before the test does.
+      idleTimeoutMs: 30_000,
       initialBackoffMs: 5,
       maxBackoffMs: 20,
       random: () => 0,
@@ -473,9 +474,13 @@ describe('runControllerStream against the controller stream routes', () => {
     expect(core.openPlacements[0]).toEqual({ 'agent-1': ['room-a'] });
     expect(core.beatPlacements[0]).toEqual({ 'agent-1': ['room-a'] });
     placements = { 'agent-1': ['room-a', 'room-b'] };
-    const beatsBefore = core.beats.length;
-    await waitFor(() => core.beats.length > beatsBefore, 'the next beat');
-    expect(core.beatPlacements.at(-1)).toEqual({ 'agent-1': ['room-a', 'room-b'] });
+    // A beat already on its way still carries the old placements; the next one has the new.
+    await waitFor(
+      () =>
+        JSON.stringify(core.beatPlacements.at(-1)) ===
+        JSON.stringify({ 'agent-1': ['room-a', 'room-b'] }),
+      'a beat with the new placements'
+    );
 
     core.closeStreams();
     await waitFor(() => core.streamCount === 1, 'the stream reattached');
