@@ -2312,9 +2312,15 @@ it('tells the room once a session keeps not taking a message, instead of startin
   try {
     await eventually(() => streams.length === 1);
     await streams[0]!.onEvent!(addressed(1, 'room'));
-    for (let second = 0; second < 120; second++) {
-      if (calls.some((call) => call.name === 'send_targeted_message')) break;
+    // Bounded by real time, not by a count of fake seconds: each restart reads
+    // the agent's template from disk, which advancing fake time does not wait for.
+    const deadline = performance.now() + 20_000;
+    while (
+      !calls.some((call) => call.name === 'send_targeted_message') &&
+      performance.now() < deadline
+    ) {
       await vi.advanceTimersByTimeAsync(1000);
+      await new Promise((resolve) => setImmediate(resolve));
     }
     const told = calls.filter((call) => call.name === 'send_targeted_message');
     expect(told).toHaveLength(1);
