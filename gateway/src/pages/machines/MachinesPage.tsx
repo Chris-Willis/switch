@@ -221,9 +221,13 @@ export default function MachinesPage() {
         headerName: "Agents running",
         width: 130,
         valueGetter: (_value, row) =>
-          row.status
-            ? `${row.status.agents.filter((a) => a.process === "running").length} / ${row.status.agents.length}`
-            : EM_DASH,
+          row.state === "revoked"
+            ? "None (revoked)"
+            : row.state === "unknown"
+              ? "Unknown"
+              : row.status
+                ? `${row.status.agents.filter((a) => a.process === "running").length} / ${row.status.agents.length}`
+                : EM_DASH,
       },
       {
         field: "last_seen_at",
@@ -331,6 +335,12 @@ export default function MachinesPage() {
         renderCell: ({ row }) => {
           if (row.controller_id === null)
             return <Typography variant="body2" color="text.secondary">{EM_DASH}</Typography>;
+          if (row.controller_state === "revoked")
+            return (
+              <Tooltip title="Its machine was revoked, so nothing runs this agent. Move it to another machine to run it again.">
+                <Chip size="small" label="not running: machine revoked" />
+              </Tooltip>
+            );
           if (row.controller_state === "unknown")
             return (
               <Tooltip title="The machine has stopped reporting; this agent's state is not known.">
@@ -568,10 +578,10 @@ export default function MachinesPage() {
         <DialogTitle>Revoke {revokeTarget?.name}?</DialogTitle>
         <DialogContent>
           <DialogContentText>
-            The machine's controller loses access to Switch immediately. If it is online, it
-            also stops every agent it runs and deletes their keys. Agents placed on it stay
-            placed until you move them; moving one issues it a new key, which shuts out the old
-            machine. Enrolling the machine again needs a new code.
+            The machine's controller loses access to Switch immediately, and if it is online
+            it stops every agent it runs. Agents placed on it stay placed, and offline, until
+            you move them to another machine or stop managing them. Enrolling the machine again
+            needs a new code.
           </DialogContentText>
         </DialogContent>
         <DialogActions>

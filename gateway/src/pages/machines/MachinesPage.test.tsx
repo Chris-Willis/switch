@@ -123,6 +123,45 @@ describe("MachinesPage", () => {
     expect(screen.getByText("failed: invalid_credential")).toBeTruthy();
   });
 
+  it("shows a revoked machine's agents as not running, whatever it last reported", async () => {
+    const revoked: Controller = {
+      ...laptop,
+      state: "revoked",
+      revoked_at: new Date().toISOString(),
+      status: {
+        ...laptop.status!,
+        agents: [{ ...laptop.status!.agents[0]!, process: "running", reason: undefined, detail: undefined }],
+      },
+    };
+    mockManagement({
+      "GET /controllers": [200, [revoked]],
+      "GET /agents": [
+        200,
+        [{ ...pmAgent, controller_state: "revoked", status: revoked.status!.agents[0] }],
+      ],
+      "GET /operations": [200, []],
+    });
+    render(<MachinesPage />);
+    expect(await screen.findByText("None (revoked)")).toBeTruthy();
+    expect(screen.getByText("not running: machine revoked")).toBeTruthy();
+    expect(screen.queryByText("1 / 1")).toBeNull();
+    // Only what is wanted says running; nothing claims the agent actually is.
+    expect(screen.getAllByText("running")).toHaveLength(1);
+  });
+
+  it("describes revoking without per-agent keys", async () => {
+    mockManagement({
+      "GET /controllers": [200, [laptop]],
+      "GET /agents": [200, [pmAgent]],
+      "GET /operations": [200, []],
+    });
+    render(<MachinesPage />);
+    fireEvent.click(await screen.findByLabelText("Revoke laptop"));
+    const text = (await screen.findByText(/loses access to Switch immediately/)).textContent ?? "";
+    expect(text).not.toMatch(/key/);
+    expect(text).toMatch(/stay placed, and offline, until you move them/);
+  });
+
   it("says when agent management is off instead of showing an empty page", async () => {
     mockManagement({});
     render(<MachinesPage />);
