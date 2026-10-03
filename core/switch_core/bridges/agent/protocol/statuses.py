@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.presence import agents_present_in
 from switch_core.bridges.agent.protocol.types import AgentStatus
 from switch_core.db.models import Agent
@@ -14,7 +14,7 @@ async def compute_agent_statuses(
     agents: list[Agent],
     room_id: str,
     agent_session_store: AgentSessionStore,
-    connections: ConnectionRegistry,
+    connections: AgentConnectionRegistry,
 ) -> dict[str, AgentStatus]:
     """Derive each agent's presence status in a room, keyed by agent id.
 
@@ -49,7 +49,7 @@ async def compute_agent_statuses(
       agent is connected but nothing will start one; else DISCONNECTED.
     - ``session_passive``: always AWAITING_MANUAL_POLL (no heartbeat).
 
-    Shared by ProtocolService (room detail / participants) and the in-room
+    Shared by AgentCore (room detail / participants) and the in-room
     ``!status`` command so both report presence identically.
     """
     always_on_ids: list[str] = []

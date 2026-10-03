@@ -39,9 +39,10 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import yaml
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
+from switch_core.agent_runs import AgentOrigin, kickoff_fingerprint
 from switch_core.bridges.collaboration.models import ChannelType
 from switch_core.bridges.resource.registry import validate_reference_value
-from switch_core.clients.admin_client import AdminClient
+from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import OnBehalfOf
 from switch_core.room_service import RoleSpec, RoomCreateConfig
 
@@ -196,7 +197,7 @@ class ParamSpec(BaseModel):
         return self
 
 
-def _coerce(value: Any, spec: ParamSpec, name: str) -> str | int | float | bool:
+def coerce_param(value: Any, spec: ParamSpec, name: str) -> str | int | float | bool:
     """Coerce a raw input value to the declared type."""
     t = spec.type
     if t == "string":
@@ -266,9 +267,9 @@ def resolve_params(
     missing: list[str] = []
     for name, spec in declared.items():
         if name in inputs and inputs[name] is not None:
-            resolved[name] = _coerce(inputs[name], spec, name)
+            resolved[name] = coerce_param(inputs[name], spec, name)
         elif spec.default is not None and not isinstance(spec.default, list):
-            resolved[name] = _coerce(spec.default, spec, name)
+            resolved[name] = coerce_param(spec.default, spec, name)
         elif spec.is_required:
             missing.append(name)
         elif spec.type == "string":
@@ -973,6 +974,8 @@ class RoomYamlService:
         kickoff: str | None = None,
         creator_name: str | None = None,
         group_id: str | None = None,
+        origin: AgentOrigin | None = None,
+        template_name: str | None = None,
     ) -> ProvisionResult:
         """Create the room and everything the spec attaches to it.
 
@@ -980,6 +983,12 @@ class RoomYamlService:
         creator's behalf (see ``_send_kickoff``); ``creator_name`` is how the
         message names them. ``group_id`` files the room under a group that
         already exists (see ``provision_group``).
+
+        With ``origin`` an agent is creating the room: it is recorded in that
+        agent's run (see ``agent_runs``), and the kickoff carries the agent's
+        authority, not its owner's, with the run so far appended. The checks
+        that can refuse an agent's room have run before this is called.
+        ``template_name`` is what the room's run is listed under.
         """
         bridge_id = await self._resolve_bridge_id(spec.bridge)
         if spec.users and bridge_id is None:
@@ -1003,6 +1012,11 @@ class RoomYamlService:
             group_id=group_id,
             created_by=user_id,
             from_template=True,
+            created_by_agent_id=origin.agent_id if origin else None,
+            parent_room_id=origin.parent_room_id if origin else None,
+            run_id=origin.run_id if origin else None,
+            kickoff_hash=kickoff_fingerprint(kickoff) if origin and kickoff else None,
+            template_name=template_name,
             owner_id=user_id,
             acting_user_id=user_id,
             acting_is_admin=is_admin,
@@ -1033,6 +1047,7 @@ class RoomYamlService:
                     agent_names=spec.agents,
                     user_id=user_id,
                     user_name=creator_name,
+                    origin=origin,
                     failures=failures,
                 )
             except Exception as e:  # noqa: BLE001 - reported on the result
@@ -1055,6 +1070,8 @@ class RoomYamlService:
         user_id: str,
         is_admin: bool,
         creator_name: str | None = None,
+        origin: AgentOrigin | None = None,
+        template_name: str | None = None,
     ) -> GroupProvisionResult:
         """Provision a room group, its rooms, and the links between them.
 
@@ -1086,6 +1103,8 @@ class RoomYamlService:
                     is_admin=is_admin,
                     kickoff=room_spec.kickoff,
                     creator_name=creator_name,
+                    origin=origin,
+                    template_name=template_name,
                     group_id=group_id,
                 )
             except Exception as e:  # noqa: BLE001 - reported, not swallowed
@@ -1264,6 +1283,7 @@ class RoomYamlService:
         user_id: str,
         user_name: str | None,
         failures: list[dict[str, Any]],
+        origin: AgentOrigin | None = None,
     ) -> None:
         """Post the kickoff into the room the template just created.
 
@@ -1285,30 +1305,36 @@ class RoomYamlService:
             fail("kickoff posting is not configured on this server")
             return
         admins = self._client_lifecycle.get_by_type("admin", room.tenant_id)
-        admin = next((c for c in admins if isinstance(c, AdminClient)), None)
+        admin = next((c for c in admins if isinstance(c, SystemActor)), None)
         if admin is None:
             fail("the platform has no client to post with")
             return
 
         late = await self._wait_for_kickoff_audience(
-            room.matrix_room_id, admin, agent_names
+            room.transport_room_id, admin, agent_names
         )
         if late:
             fail("did not join the room in time to see the kickoff: " + ", ".join(late))
         if "the platform" in late:
             return
 
-        person = OnBehalfOf(user_id, user_name or user_id)
-        headline = f"Template kickoff on behalf of @{person.name}"
+        if origin is not None:
+            person = OnBehalfOf(user_id, origin.agent_name, origin.agent_id)
+            headline = f"Kickoff from {origin.headline_name}"
+            if origin.trace:
+                text = f"{text}\n\n{origin.trace}"
+        else:
+            person = OnBehalfOf(user_id, user_name or user_id)
+            headline = f"Template kickoff on behalf of {person.label}"
         try:
             root_id = await admin.send_platform_message(
-                room.matrix_room_id, headline, on_behalf_of=person
+                room.transport_room_id, headline, on_behalf_of=person
             )
             if root_id is None:
                 fail("the platform could not post the kickoff")
                 return
             event_id = await admin.send_platform_message(
-                room.matrix_room_id,
+                room.transport_room_id,
                 text,
                 thread_root_id=root_id,
                 on_behalf_of=person,
@@ -1322,8 +1348,8 @@ class RoomYamlService:
 
     async def _wait_for_kickoff_audience(
         self,
-        matrix_room_id: str,
-        admin: AdminClient,
+        transport_room_id: str,
+        admin: SystemActor,
         agent_names: list[str],
     ) -> list[str]:
         """Wait for the sender and the template's agents to be in the room.
@@ -1334,7 +1360,7 @@ class RoomYamlService:
         miss anything.
         """
         late: list[str] = []
-        if not await admin.wait_joined(matrix_room_id, KICKOFF_JOIN_TIMEOUT):
+        if not await admin.wait_joined(transport_room_id, KICKOFF_JOIN_TIMEOUT):
             late.append("the platform")
         if not agent_names or self._client_lifecycle is None:
             return late
@@ -1345,7 +1371,9 @@ class RoomYamlService:
             if client is None:
                 continue
             try:
-                joined = await client.wait_joined(matrix_room_id, KICKOFF_JOIN_TIMEOUT)
+                joined = await client.wait_joined(
+                    transport_room_id, KICKOFF_JOIN_TIMEOUT
+                )
             except RuntimeError:
                 # Not connected: it is not receiving anything either way.
                 continue

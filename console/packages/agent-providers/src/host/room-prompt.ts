@@ -62,6 +62,15 @@ export function cutoverCommandId(agentId: string, roomId: string, messageId: str
   return uuidFrom(`switch-room-cutover:${agentId}:${roomId}:${messageId}`);
 }
 
+/** The fresh start a room message triggers on a conversation that cannot continue: once per message. */
+export function roomFreshStartCommandId(
+  agentId: string,
+  roomId: string,
+  messageId: string
+): string {
+  return uuidFrom(`switch-room-fresh-start:${agentId}:${roomId}:${messageId}`);
+}
+
 const MIME_ALIASES: Record<string, string> = {
   'image/jpg': 'image/jpeg',
   'text/x-markdown': 'text/markdown',

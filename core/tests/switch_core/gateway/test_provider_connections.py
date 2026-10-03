@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
     HostedLaunch,
@@ -59,7 +59,7 @@ async def connection_app(session_factory):
 
     app.dependency_overrides[get_session] = sessions
     app.dependency_overrides[get_protocol] = lambda: SimpleNamespace(
-        connections=ConnectionRegistry()
+        connections=AgentConnectionRegistry()
     )
     app.dependency_overrides[get_current_user] = lambda: identity["user"]
     app.dependency_overrides[get_config] = lambda: SimpleNamespace(
@@ -276,7 +276,7 @@ async def test_disconnect_rings_owners_workers_to_revoke_without_superseding(
     connection_app, provider
 ):
     client, _, _, factory, app = connection_app
-    registry = Mock(spec=ConnectionRegistry)
+    registry = Mock(spec=AgentConnectionRegistry)
     app.dependency_overrides[get_protocol] = lambda: SimpleNamespace(
         connections=registry
     )

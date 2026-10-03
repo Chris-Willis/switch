@@ -56,7 +56,7 @@ side rather than the collector's: **percentile aggregations are off by default
 on a distribution metric and are billed separately.** Enable them per metric in
 Metrics Summary, and add the tag each panel groups by to that metric's
 configured tag set — `route` for requests, `operation` for database queries,
-`platform` for bridge calls — or `p95: … by {…}` returns nothing on a fresh
+`bridge` and `platform` for bridge calls — or `p95: … by {…}` returns nothing on a fresh
 account. Empty is the honest outcome either way; a panel is never silently
 switched to a different statistic.
 

@@ -32,7 +32,7 @@ from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivitySnapshot,
-    CollaborationAdapter,
+    PlatformAdapter,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -266,7 +266,7 @@ def _ephemeral(text: str) -> dict[str, Any]:
     return {"ephemeral_text": text, "skip_slack_parsing": True}
 
 
-class MattermostAdapter(CollaborationAdapter):
+class MattermostAdapter(PlatformAdapter):
     draws_session_activity: ClassVar[bool] = True
 
     #: A problem somebody has to act on still gets its own reply, so it
@@ -279,6 +279,7 @@ class MattermostAdapter(CollaborationAdapter):
     #: post with nobody to name says as much. This is the legacy ping's policy,
     #: carried over: it is the one that reaches the person who can do something.
     notifies_only_by_mention: ClassVar[bool] = True
+    channel_mention: ClassVar[str | None] = "@channel"
 
     #: The status is the turn's one post, not a line beside it, so the clock
     #: advancing is not on its own worth rewriting what a reader is reading.
@@ -521,7 +522,7 @@ class MattermostAdapter(CollaborationAdapter):
         name = await self._username_for(press.user_id)
         if name is None:
             # Refused rather than attributed to the raw id: the id is what the
-            # answer is judged against, but the name is what a puppet is
+            # answer is judged against, but the name is what a human actor is
             # created under, and inventing one from an id makes a person who
             # cannot be looked up into a permanent participant named after a
             # lookup failure.
@@ -718,6 +719,8 @@ class MattermostAdapter(CollaborationAdapter):
         sender_name: str,
         content: str,
         thread_root_id: str | None = None,
+        *,
+        room_wide_mention: bool = False,
     ) -> str | None:
         bot_driver = self._bot_drivers.get(sender_name)
         if not bot_driver:
@@ -1956,8 +1959,8 @@ class MattermostAdapter(CollaborationAdapter):
 
     async def get_external_user_id(self, username: str) -> str | None:
         """Resolve a platform username to its current user id, or None if the
-        user does not exist. Used by the homeserver cutover to rebind a puppet's
-        ``external_user_id`` when Mattermost has been rebuilt and ids changed."""
+        user does not exist. Used to rebind a human actor's ``external_user_id`` when
+        Mattermost has been rebuilt and ids changed."""
         if not self._admin_driver or not self._main_loop:
             raise RuntimeError("Mattermost client not connected")
         try:
@@ -2349,12 +2352,8 @@ class MattermostAdapter(CollaborationAdapter):
 
     # ── Translation ──────────────────────────────────────────────────────────
 
-    def translate_outbound(self, content: str) -> str:
-        return re.sub(
-            r"@(\w+):\S+",
-            r"@\1",
-            content,
-        )
+    def _render_outbound(self, content: str) -> str:
+        return re.sub(r"@(\w+):\S+", r"@\1", content)
 
     def translate_inbound(self, raw_message: str) -> str:
         return raw_message

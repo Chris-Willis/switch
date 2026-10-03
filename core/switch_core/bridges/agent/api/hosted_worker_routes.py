@@ -23,15 +23,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import get_protocol, get_session
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
+    AgentConnection,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    Connection,
-    ConnectionRegistry,
     SupersededControlError,
     UnfencedControlError,
     UnknownConnectionError,
     WorkerAlreadyAttachedError,
 )
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.hosted_workers import (
     HOSTED_PROTOCOL_REVISION,
     HOSTED_WORKER_ONLY_MESSAGE,
@@ -45,7 +46,6 @@ from switch_core.bridges.agent.protocol.hosted_workers import (
     WorkerBinding,
     hosted_launch_of,
 )
-from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.config import SwitchConfig
 from switch_core.db.models import (
     Agent,
@@ -79,8 +79,8 @@ def hosted_worker_only() -> HTTPException:
 
 
 def require_worker(
-    registry: ConnectionRegistry, agent: Agent, connection_id: str, generation: int
-) -> Connection:
+    registry: AgentConnectionRegistry, agent: Agent, connection_id: str, generation: int
+) -> AgentConnection:
     """The attached worker making this call, or the refusal saying why not."""
     if hosted_launch_of(agent.metadata_) is None:
         raise hosted_worker_only()
@@ -110,13 +110,13 @@ class WorkerAttach:
 
     binding: WorkerBinding
     attached: dict[str, Any]
-    takes_over: Connection | None
+    takes_over: AgentConnection | None
 
 
 async def admit_worker(
     *,
     session: AsyncSession,
-    registry: ConnectionRegistry,
+    registry: AgentConnectionRegistry,
     config: SwitchConfig,
     agent: Agent,
     launch_id: str,
@@ -244,7 +244,7 @@ async def relay_push(
     agent_id: str,
     body: RelayPushes,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict[str, list[str]]:
     """Live events for Console views, forwarded in order per subscription."""
     require_self(agent_id, agent)
@@ -264,7 +264,7 @@ async def relay_reply(
     relay_id: str,
     request: Request,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict[str, bool]:
     """The worker's answer to one relayed Console request."""
     require_self(agent_id, agent)
@@ -339,7 +339,7 @@ async def idle_report(
     agent_id: str,
     body: IdleReportBody,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     """Keep the worker's latest idle report; answer the doorbells it may have missed."""
@@ -413,7 +413,7 @@ class RoomNotice(BaseModel):
 
 
 async def post_room_notice(
-    protocol: ProtocolService,
+    protocol: AgentCore,
     agent: Agent,
     room_id: str,
     message_id: str,
@@ -436,7 +436,7 @@ async def post_room_notice(
 
 
 async def post_notice_once(
-    protocol: ProtocolService,
+    protocol: AgentCore,
     agent: Agent,
     room_id: str,
     *,
@@ -464,7 +464,7 @@ async def post_notice_once(
             if target is None:
                 raise ValueError(f"Message {anchor} is not in room {room_id}")
         sender = (
-            select(Client.matrix_user_id)
+            select(Client.transport_user_id)
             .join(Agent, Agent.client_id == Client.id)
             .where(Agent.id == agent.id)
             .scalar_subquery()
@@ -496,7 +496,7 @@ async def room_notice(
     agent_id: str,
     body: RoomNotice,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict[str, Any]:
     """A failure notice the worker owes a room, posted at most once."""
     require_self(agent_id, agent)
@@ -513,7 +513,7 @@ async def room_notice(
 
 
 async def post_mailbox_notices(
-    protocol: ProtocolService, notices: Sequence[MailboxNotice]
+    protocol: AgentCore, notices: Sequence[MailboxNotice]
 ) -> None:
     """Post what the mailbox owes rooms, one notice per room and reason, after the commit.
 
@@ -597,7 +597,7 @@ async def mailbox_ack(
     agent_id: str,
     body: MailboxAcks,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     """The attached worker says how far each delivered row has got; forward moves only."""

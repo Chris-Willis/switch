@@ -21,7 +21,7 @@ from switch_core.bridges.agent.dependencies import (
     get_protocol,
     get_session_factory,
 )
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.config import SwitchConfig
 from switch_core.connections.loader import CATALOG, SKILL_PROVIDERS, deployment_skills
 from switch_core.crypto import decrypt_token
@@ -325,7 +325,7 @@ ATTACH_TIMEOUT_ERROR = (
 def _apply_process_state(
     launch: HostedLaunch,
     report: AgentReport,
-    protocol: ProtocolService,
+    protocol: AgentCore,
     now: datetime,
 ) -> None:
     """Move the launch on the process state its supervisor reported."""
@@ -384,7 +384,7 @@ def _apply_process_state(
 async def heartbeat(
     body: Heartbeat,
     current: Annotated[MachineRequest, Depends(machine_request)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict:
     session, machine = current.session, current.machine
     now = datetime.now(UTC)

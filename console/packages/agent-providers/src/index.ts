@@ -57,8 +57,15 @@ export {
   sharedSessionRoot,
 } from './host/launch';
 export type { Supervision } from './host/launch';
-export { runSharedWatcher } from './host/shared-watcher';
+export { hostStartSources, type HostStartSource } from './host/session-start';
+export { runAgentHost } from './host/agent-host';
 export { clearTakenOver, readTakenOver, type TakenOver } from './host/taken-over';
+export {
+  recordWatcherHealth,
+  WATCHER_HEALTH_FILE,
+  type WatcherHealthFile,
+  watcherHealthFileSchema,
+} from './host/watcher-health-file';
 export {
   readWatchFlags,
   WATCH_FLAGS_FILE,
@@ -94,6 +101,6 @@ export {
   RELAY_TIMEOUT_MS,
   type RelayFetch,
 } from './host/cloud-relay-client';
-export { hostSessions, LIST_SCRIPT } from './host/session-list';
+export { hostSessions, hostSessionsByAgent, LIST_SCRIPT } from './host/session-list';
 export { JournalUnavailableError, replayJournal } from './host/journal-snapshot';
 export { openCodeConsoleCredentialSchema } from './opencode/console-credential';

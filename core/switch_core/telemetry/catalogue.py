@@ -172,7 +172,7 @@ _SNAPSHOT_COUNTS = (
     "agent_other_count",
     # Connections, not distinct agents: an agent may hold several. No
     # "sessions started today" — nothing durable records one, so it could only
-    # be an in-process tally a restart resets. `agent_session_started` covers it.
+    # be an in-process tally a restart resets. `session_started` covers it.
     "session_live_count",
     "connector_slack_count",
     "connector_mattermost_count",
@@ -222,6 +222,8 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     # At most once per deployment, and only for one installed after this
     # shipped. Together they are the activation funnel.
     "deployment_installed": dict(_SINCE_INSTALL),
+    # The first connector a person added. One the setup step registered itself
+    # never claims it, or the bundled Mattermost would, seconds after install.
     "first_connector_added": {**_SINCE_INSTALL, "bridge_platform": BRIDGE_PLATFORM},
     "first_room_created": {
         **_SINCE_INSTALL,
@@ -299,9 +301,20 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "registration_path": one_of("bootstrap", "personal_key", "gateway", "other"),
         "has_parent": BOOLEAN,
     },
-    # No "start source": the server sees an authenticated connection whether a
-    # person launched the session or Console spawned it.
+    # An agent coming online: its first live connection. No "start source": the
+    # server sees an authenticated connection whether a person launched the
+    # session or Console spawned it. `session_started` is the one that says.
     "agent_session_started": {"known_agent_type": KNOWN_AGENT_TYPE},
+    # A coding-agent session starting, as its host reports it once, when the
+    # session is new. `start_source` is what the launcher stamped on it: `user`
+    # a person starting one in Console, `room` the agent being addressed in a
+    # room, `automation` Console's local automation API, and `unknown` a
+    # launcher that said nothing — reported rather than dropped, so a launch
+    # path nobody stamped shows up as a gap instead of as no sessions.
+    "session_started": {
+        "start_source": one_of("user", "room", "automation", "unknown"),
+        "known_agent_type": KNOWN_AGENT_TYPE,
+    },
     # No runtime: the connection registry is the only thing that knows a
     # session ended and it holds none. Starts carry it.
     "agent_session_ended": {
@@ -314,10 +327,18 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "bridge_platform": BRIDGE_PLATFORM,
         "seconds_since_install": NUMBER,
         "seconds_since_configured": NUMBER,
+        # Registered by the deployment's setup step (the bundled Mattermost)
+        # rather than by a person. Filter these out to measure onboarding.
+        "is_preconfigured": BOOLEAN,
+        # The first connector a person added: never true for a preconfigured
+        # one, and a preconfigured one already running does not make it false.
         "is_first_connector": BOOLEAN,
         "failed_attempts_before_success": NUMBER,
     },
     "bridge_connected": {
+        # Which side of the bridge: always "collaboration" today; "agent" is
+        # declared so the agent bridge can report the same events.
+        "bridge": one_of("collaboration", "agent"),
         "bridge_platform": BRIDGE_PLATFORM,
         "outcome": OUTCOME,
         # `none` on success, so the property set stays exact either way.
@@ -362,6 +383,36 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     "reference_type_deleted": {"age_days": NUMBER},
     "template_created": {"template_kind": TEMPLATE_KIND},
     "template_deleted": {"template_kind": TEMPLATE_KIND, "age_days": NUMBER},
+    # An agent asked for something and was told no, on purpose. Which rule
+    # people run into is what a finer rights model is designed from; who and
+    # what stays in the server log (see `agent_refusals`).
+    "agent_request_refused": {
+        "operation": one_of(
+            "list_templates",
+            "get_template",
+            "run_template",
+            "save_template",
+            "update_template",
+            "delete_template",
+            "create_room",
+            "create_room_from_yaml",
+        ),
+        "reason": one_of(
+            "not_found",
+            "not_yours",
+            "name_taken",
+            "visibility_not_allowed",
+            "invalid",
+            "too_large",
+            "missing_agents",
+            "agent_creation_console_only",
+            "busy",
+            "run_paused",
+            "run_stopped",
+            "repeat",
+            "kickoff_ignored",
+        ),
+    },
     "room_link_created": {},
     "room_link_removed": {},
     "room_role_defined": {"exclusive": BOOLEAN},
@@ -376,10 +427,18 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     "server_connector_removed": {"connector_kind": one_of("opencode", "other")},
     # Configured, not connected. Many of these and few `bridge_connected` is a
     # deployment whose setup is failing.
-    "connector_configured": {"bridge_platform": BRIDGE_PLATFORM},
-    "invitation_sent": {},
+    "connector_configured": {
+        "bridge_platform": BRIDGE_PLATFORM,
+        "is_preconfigured": BOOLEAN,
+    },
+    "invitation_sent": {
+        "delivery": one_of("sent", "not_configured", "failed", "not_requested")
+    },
     "invitation_accepted": {"age_hours": NUMBER},
     "bridge_disconnected": {
+        # Which side of the bridge: always "collaboration" today; "agent" is
+        # declared so the agent bridge can report the same events.
+        "bridge": one_of("collaboration", "agent"),
         "bridge_platform": BRIDGE_PLATFORM,
         # Shutdown reasons plus every failure `bridge_connected` can carry.
         "reason": one_of(

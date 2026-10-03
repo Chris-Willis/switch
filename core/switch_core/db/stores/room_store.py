@@ -49,10 +49,10 @@ class RoomStore:
             return None
         return row[0], row[1] is not None
 
-    async def get_by_matrix_room_id(
-        self, session: AsyncSession, matrix_room_id: str
+    async def get_by_transport_room_id(
+        self, session: AsyncSession, transport_room_id: str
     ) -> Room | None:
-        """Resolve a room by its Matrix room id within the bound tenant.
+        """Resolve a room by its transport room id (`transport_room_id`) within the bound tenant.
 
         Scoped explicitly rather than left to row-level security:
         `matrix_room_id` is unique per tenant
@@ -62,19 +62,82 @@ class RoomStore:
         every inbound-event path that resolves a room this way (provisioning,
         the Postgres transport, admin commands). Every caller that reaches
         this by now already knows its tenant — `PostgresTransport` and the
-        two `ClientBase` subclasses carry it on the row they were built from,
+        two `Actor` subclasses carry it on the row they were built from,
         and `PostgresProvisioning` is only ever called from `room_service`
         inside a `tenant_scope` bound to the room it is acting on — so there
         is no bootstrap case left that needs an unfiltered fallback, the same
-        as `ClientStore.get_by_matrix_user_id`.
+        as `ClientStore.get_by_transport_user_id`.
         """
         result = await session.execute(
             select(Room).where(
                 Room.tenant_id == require_tenant_id(),
-                Room.matrix_room_id == matrix_room_id,
+                Room.transport_room_id == transport_room_id,
             )
         )
         return result.scalar_one_or_none()
+
+    async def run_rooms(self, session: AsyncSession, root_id: str) -> list[Room]:
+        """Every room of the run rooted at ``root_id``, the root first, then in
+        the order they were created. Archived rooms are included: a run is a
+        record of what happened."""
+        result = await session.execute(
+            select(Room)
+            .where(or_(Room.id == root_id, Room.run_id == root_id))
+            .order_by(Room.run_id.is_not(None), Room.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def path_to_root(self, session: AsyncSession, room_id: str) -> list[Room]:
+        """``room_id`` and each room above it, up to the root of its run.
+
+        Parents are set when a room is created and never change, so the walk
+        cannot loop; the bound is only there so a corrupted row cannot hang a
+        request."""
+        path: list[Room] = []
+        current: str | None = room_id
+        while current is not None and len(path) < 1000:
+            room = await session.get(Room, current)
+            if room is None:
+                break
+            path.append(room)
+            current = room.parent_room_id
+        return path
+
+    async def set_run_control(
+        self, session: AsyncSession, root_id: str, control: dict[str, object] | None
+    ) -> None:
+        await session.execute(
+            update(Room).where(Room.id == root_id).values(run_control=control)
+        )
+
+    async def recent_run_roots(
+        self, session: AsyncSession, *, user_id: str | None, limit: int
+    ) -> list[str]:
+        """The roots of the runs most recently added to, newest first.
+
+        A run is a template a person ran or a room an agent created, with
+        everything agents created below it. With ``user_id`` only the runs that
+        user took part in count: a template they ran, or a room one of their
+        agents created (``created_by`` is the agent's owner on that path).
+        Without it, every run, which is what an admin sees."""
+        root = sa_func.coalesce(Room.run_id, Room.id)
+        in_run = or_(
+            Room.run_id.is_not(None),
+            Room.template_name.is_not(None),
+            Room.created_by_agent_id.is_not(None),
+        )
+        stmt = select(root).where(in_run)
+        if user_id is not None:
+            stmt = stmt.where(
+                Room.created_by == user_id,
+                or_(
+                    Room.created_by_agent_id.is_not(None),
+                    Room.template_name.is_not(None),
+                ),
+            )
+        stmt = stmt.group_by(root).order_by(sa_func.max(Room.created_at).desc())
+        result = await session.execute(stmt.limit(limit))
+        return [row[0] for row in result.all()]
 
     async def get_all(
         self, session: AsyncSession, *, include_archived: bool = False
@@ -131,6 +194,29 @@ class RoomStore:
         room.channel_type = channel_type
         room.external_channel_id = external_channel_id
         await session.flush()
+
+    async def correct_channel_type(
+        self,
+        session: AsyncSession,
+        *,
+        bridge_id: str,
+        external_channel_id: str,
+        channel_type: str,
+    ) -> list[str]:
+        """Set `channel_type` on this bridge's rooms bound to the channel and
+        saved as a channel of the other privacy; returns the ids that changed."""
+        result = await session.execute(
+            update(Room)
+            .where(
+                Room.bridge_id == bridge_id,
+                Room.external_channel_id == external_channel_id,
+                Room.channel_type.in_(("channel_public", "channel_private")),
+                Room.channel_type != channel_type,
+            )
+            .values(channel_type=channel_type)
+            .returning(Room.id)
+        )
+        return list(result.scalars().all())
 
     async def clear_bridge(self, session: AsyncSession, room_id: str) -> None:
         room = await session.get(Room, room_id)
@@ -362,19 +448,22 @@ class RoomStore:
     async def get_member_agent_clients(
         self, session: AsyncSession, room_id: str
     ) -> dict[str, str]:
-        """`{client_id: matrix_user_id}` for the agents this room has as members.
+        """`{client_id: transport_user_id}` for the agents this room has as members.
 
         Resolved from the database rather than from the running client
         registry, so it answers correctly before the agent clients have
         finished booting.
         """
         result = await session.execute(
-            select(Client.id, Client.matrix_user_id)
+            select(Client.id, Client.transport_user_id)
             .join(Agent, Agent.client_id == Client.id)
             .join(room_agents, room_agents.c.agent_id == Agent.id)
             .where(room_agents.c.room_id == room_id)
         )
-        return {client_id: matrix_user_id for client_id, matrix_user_id in result.all()}
+        return {
+            client_id: transport_user_id
+            for client_id, transport_user_id in result.all()
+        }
 
     async def get_by_bridge(self, session: AsyncSession, bridge_id: str) -> list[Room]:
         result = await session.execute(select(Room).where(Room.bridge_id == bridge_id))

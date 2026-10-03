@@ -19,7 +19,8 @@ from switch_core.bridges.agent.hosted_cutover import (
     cutover_notice_candidates,
     post_owed_cutover_notices,
 )
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.hosted_workers import (
     FrameSlot,
     WorkerBusyError,
@@ -27,7 +28,6 @@ from switch_core.bridges.agent.protocol.hosted_workers import (
     frame_size,
     offer_key,
 )
-from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.config import hosted_configured
 from switch_core.db.models import HostedLaunch, HostedWakeMailbox, require_tenant_id
 from switch_core.db.session_scope import tenant_session
@@ -43,7 +43,10 @@ logger = logging.getLogger(__name__)
 
 
 async def offer_pending(
-    session: AsyncSession, registry: ConnectionRegistry, boot: int, launch: HostedLaunch
+    session: AsyncSession,
+    registry: AgentConnectionRegistry,
+    boot: int,
+    launch: HostedLaunch,
 ) -> int:
     """Lease the agent's `pending` rows to its worker, then queue them as `wake` frames.
 
@@ -102,7 +105,7 @@ async def offer_pending(
 
 
 async def deliver_on_attach(
-    session: AsyncSession, protocol: ProtocolService, launch: HostedLaunch
+    session: AsyncSession, protocol: AgentCore, launch: HostedLaunch
 ) -> int:
     """At attach: take back every offer of the agent's, then offer all `pending` rows.
 
@@ -139,7 +142,7 @@ async def retains_hosted_work(session: AsyncSession) -> bool:
     )
 
 
-async def mailbox_upkeep(protocol: ProtocolService, since: datetime) -> None:
+async def mailbox_upkeep(protocol: AgentCore, since: datetime) -> None:
     """One pass over the bound tenant: reclaim, expire, prune, post owed notices, re-offer, log the backlog and post owed cutover notices.
 
     Skipped on a server that does not run cloud agents, unless the tenant still

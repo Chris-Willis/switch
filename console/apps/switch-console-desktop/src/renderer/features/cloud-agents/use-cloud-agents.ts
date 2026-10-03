@@ -1,8 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
 import { type CloudAgent, parseCloudAgentKey } from '@shared/core/cloud-agents/cloud-agents';
+
+/**
+ * Whether the server's workspace on screen went unasked because Switch Console
+ * is not signed in to the server: the sidebar already says to sign in.
+ */
+export function serverNotSignedIn(serverId: string | null): boolean {
+  const workspaceId = workspacesStore.idOnServerInScope(serverId);
+  return switchRoomsStore.workspacesNotSignedIn.some((workspace) => workspace.id === workspaceId);
+}
 
 /**
  * The server's cloud agents, from its launch list; no worker is asked. Not
@@ -12,7 +22,7 @@ import { type CloudAgent, parseCloudAgentKey } from '@shared/core/cloud-agents/c
  * session or declared version changes, which is when it may have gained them.
  */
 export function useCloudAgents(serverId: string | null) {
-  const signedOut = switchRoomsStore.serversNotSignedIn.some((server) => server.id === serverId);
+  const signedOut = serverNotSignedIn(serverId);
   const user = serverId === null ? null : (switchServersStore.statusFor(serverId)?.user ?? null);
   return useQuery({
     queryKey: ['cloud-agents', serverId, user?.id ?? null, user?.server?.version ?? null],
@@ -29,7 +39,7 @@ export function useCloudAgents(serverId: string | null) {
  * `['cloud-agents']`, so every refresh of the list refreshes this too.
  */
 export function useCloudMachines(serverId: string | null) {
-  const signedOut = switchRoomsStore.serversNotSignedIn.some((server) => server.id === serverId);
+  const signedOut = serverNotSignedIn(serverId);
   const user = serverId === null ? null : (switchServersStore.statusFor(serverId)?.user ?? null);
   return useQuery({
     queryKey: ['cloud-agents', serverId, 'machines', user?.id ?? null],

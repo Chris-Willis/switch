@@ -12,6 +12,7 @@ import {
   gatewayRequest,
 } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
+import { withServerWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { KV } from '@main/db/kv';
 import {
   type CloudAgent,
@@ -50,10 +51,24 @@ function launchOf(agentId: string): { serverId: string; requestId: string } {
   return key;
 }
 
-async function serverOf(serverId: string): Promise<SwitchServer> {
-  const server = await getServer(serverId);
-  if (!server) throw new Error('The Switch server for this cloud agent was removed.');
-  return server;
+async function requireCloudServer(serverId: string): Promise<void> {
+  if (!(await getServer(serverId)))
+    throw new Error('The Switch server for this cloud agent was removed.');
+}
+
+/**
+ * Run `fn` against the cloud agent's server with its workspace's tenant
+ * selected: launches, machines and their operations belong to a tenant, so a
+ * call that went out under another one would answer for that one instead.
+ * One lease per request, never around a wait, so a workspace switch is not
+ * held up by a long poll.
+ */
+async function onCloudServer<T>(
+  serverId: string,
+  fn: (server: SwitchServer) => Promise<T>
+): Promise<T> {
+  await requireCloudServer(serverId);
+  return withServerWorkspaceSession(serverId, fn);
 }
 
 function launchPath(requestId: string, rest = ''): string {
@@ -79,15 +94,17 @@ export async function cloudControl(agentId: string): Promise<CloudRelayClient> {
   const existing = clients.get(agentId);
   if (existing && !existing.isClosed) return existing;
   const { serverId, requestId } = launchOf(agentId);
-  const server = await serverOf(serverId);
+  await requireCloudServer(serverId);
   const client = new CloudRelayClient(
     (path, init) =>
-      gatewayRequest(server, launchPath(requestId, path), {
-        authenticated: true,
-        method: init.method,
-        body: init.body,
-        signal: init.signal,
-      }),
+      withServerWorkspaceSession(serverId, (server) =>
+        gatewayRequest(server, launchPath(requestId, path), {
+          authenticated: true,
+          method: init.method,
+          body: init.body,
+          signal: init.signal,
+        })
+      ),
     { retryMs: 20_000, timeoutMs: RELAY_TIMEOUT_MS }
   );
   client.onClose(() => {
@@ -124,9 +141,10 @@ export async function listCloudMachines(server: SwitchServer): Promise<CloudMach
 
 /** The caller's cloud machines, or null when the server has no cloud agents. */
 export async function listServerCloudMachines(serverId: string): Promise<CloudMachine[] | null> {
-  const server = await serverOf(serverId);
-  if ((await listCloudLaunches(server)) === null) return null;
-  return listCloudMachines(server);
+  return onCloudServer(serverId, async (server) => {
+    if ((await listCloudLaunches(server)) === null) return null;
+    return listCloudMachines(server);
+  });
 }
 
 /**
@@ -193,8 +211,7 @@ function launchProblem(
  * `listCloudSessions`, only for the agents being looked at.
  */
 export async function listCloudAgents(serverId: string): Promise<CloudAgent[] | null> {
-  const server = await serverOf(serverId);
-  const listed = await listCloudLaunches(server);
+  const listed = await onCloudServer(serverId, listCloudLaunches);
   if (listed === null) return null;
   const launches = listed.filter(
     (launch) =>
@@ -208,7 +225,10 @@ export async function listCloudAgents(serverId: string): Promise<CloudAgent[] | 
       await lastSessions.del(key);
   if (launches.length === 0) return [];
   const machines = new Map(
-    (await listCloudMachines(server)).map((machine) => [machine.machine_id, machine])
+    (await onCloudServer(serverId, listCloudMachines)).map((machine) => [
+      machine.machine_id,
+      machine,
+    ])
   );
   return launches.map((launch): CloudAgent => {
     const machine = launch.machine_id === null ? null : (machines.get(launch.machine_id) ?? null);
@@ -264,16 +284,19 @@ export async function listCloudSessions(agentId: string): Promise<CloudSessions>
  */
 export async function wakeCloudAgent(agentId: string): Promise<CloudMachine> {
   const { serverId, requestId } = launchOf(agentId);
-  const server = await serverOf(serverId);
   const launch = cloudLaunchSchema.parse(
-    await (await gatewayFetch(server, launchPath(requestId), { authenticated: true })).json()
+    await onCloudServer(serverId, async (server) =>
+      (await gatewayFetch(server, launchPath(requestId), { authenticated: true })).json()
+    )
   );
   if (launch.machine_id === null)
     throw new Error(`The cloud agent ${launch.name} has no machine to start.`);
   const machineId = launch.machine_id;
   const read = async () =>
     cloudMachineSchema.parse(
-      await (await gatewayFetch(server, machinePath(machineId), { authenticated: true })).json()
+      await onCloudServer(serverId, async (server) =>
+        (await gatewayFetch(server, machinePath(machineId), { authenticated: true })).json()
+      )
     );
   const machine = await read();
   if (machine.desired_state === 'running') return machine;
@@ -285,13 +308,15 @@ export async function wakeCloudAgent(agentId: string): Promise<CloudMachine> {
     );
   try {
     return z.object({ machine: cloudMachineSchema }).parse(
-      await (
-        await gatewayFetch(server, machinePath(machineId, '/lifecycle'), {
-          authenticated: true,
-          method: 'POST',
-          body: { action: 'start', revision: machine.revision },
-        })
-      ).json()
+      await onCloudServer(serverId, async (server) =>
+        (
+          await gatewayFetch(server, machinePath(machineId, '/lifecycle'), {
+            authenticated: true,
+            method: 'POST',
+            body: { action: 'start', revision: machine.revision },
+          })
+        ).json()
+      )
     ).machine;
   } catch (error) {
     if (!(error instanceof GatewayError && error.kind === 'http' && error.status === 409))
@@ -333,17 +358,18 @@ export async function runCloudSessionOperation(
   if (action === 'start' && operationId !== sessionId)
     throw new Error('A cloud session start is identified by its session id.');
   const { serverId, requestId } = launchOf(agentId);
-  const server = await serverOf(serverId);
   let operation: CloudOperation;
   try {
     operation = cloudOperationSchema.parse(
-      await (
-        await gatewayFetch(server, launchPath(requestId, '/sessions'), {
-          authenticated: true,
-          method: 'POST',
-          body: { id: operationId, session_id: sessionId, action },
-        })
-      ).json()
+      await onCloudServer(serverId, async (server) =>
+        (
+          await gatewayFetch(server, launchPath(requestId, '/sessions'), {
+            authenticated: true,
+            method: 'POST',
+            body: { id: operationId, session_id: sessionId, action },
+          })
+        ).json()
+      )
     );
   } catch (error) {
     if (isDefiniteRefusal(error))
@@ -363,13 +389,15 @@ export async function runCloudSessionOperation(
         };
       await delay(1000);
       operation = cloudOperationSchema.parse(
-        await (
-          await gatewayFetch(
-            server,
-            launchPath(requestId, `/sessions/${encodeURIComponent(operationId)}`),
-            { authenticated: true }
-          )
-        ).json()
+        await onCloudServer(serverId, async (server) =>
+          (
+            await gatewayFetch(
+              server,
+              launchPath(requestId, `/sessions/${encodeURIComponent(operationId)}`),
+              { authenticated: true }
+            )
+          ).json()
+        )
       );
     }
   } catch (error) {

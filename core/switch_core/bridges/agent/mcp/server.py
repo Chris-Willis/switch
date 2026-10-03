@@ -29,7 +29,7 @@ from switch_core.bridges.agent.operations.context import init_operations_protoco
 from switch_core.bridges.agent.protocol.hosted_workers import CodedPermissionError
 
 if TYPE_CHECKING:
-    from switch_core.bridges.agent.protocol.service import ProtocolService
+    from switch_core.bridges.agent.protocol.agent_core import AgentCore
     from switch_core.config import SwitchConfig
     from switch_core.db.stores.agent_store import AgentStore
     from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def init_mcp_protocol(protocol: ProtocolService) -> None:
+def init_mcp_protocol(protocol: AgentCore) -> None:
     """Give the operations layer its protocol service.
 
     Kept under the old name because callers wire it at startup; the state it
@@ -99,7 +99,7 @@ def create_mcp_app(
     *,
     agent_store: AgentStore,
     api_key_store: ApiKeyStore,
-    protocol: ProtocolService,
+    protocol: AgentCore,
     config: SwitchConfig,
 ) -> tuple[ASGIApp, Any]:
     """Returns (asgi_app, lifespan). The lifespan must be wired into the parent app."""

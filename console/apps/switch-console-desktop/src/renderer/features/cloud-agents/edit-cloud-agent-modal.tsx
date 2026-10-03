@@ -1,14 +1,19 @@
 import type { RepoAgentAttributes } from '@switch-console/core/agents/plugins';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { observer } from 'mobx-react-lite';
 import { useCallback, useId, useRef, useState } from 'react';
 import { AgentAdvancedConfig } from '@renderer/features/locations/components/add-agent-modal/agent-advanced-config';
 import { AddressingPolicyRow } from '@renderer/features/locations/components/settings-view/sections/addressing-policy-settings-section';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
-import { remoteAgentsQueryKey, useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
+import {
+  useWorkspaceAgents,
+  workspaceAgentsQueryKey,
+} from '@renderer/lib/stores/use-workspace-agents';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
@@ -36,9 +41,15 @@ function sameAttributes(a: RepoAgentAttributes, b: RepoAgentAttributes): boolean
   return canonical(a) === canonical(b);
 }
 
-export function EditCloudAgentModal({ serverId, launch, onSuccess, onClose }: Props) {
+export const EditCloudAgentModal = observer(function EditCloudAgentModal({
+  serverId,
+  launch,
+  onSuccess,
+  onClose,
+}: Props) {
   const agentId = launch.agent_id;
-  const agents = useRemoteAgents(serverId);
+  const workspaceId = workspacesStore.idOnServerInScope(serverId);
+  const agents = useWorkspaceAgents(workspaceId);
   const configuration = useQuery({
     queryKey: ['cloud-launch-configuration', serverId, launch.request_id],
     queryFn: () => rpc.switchServers.getCloudLaunchConfiguration(serverId, launch.request_id),
@@ -47,14 +58,25 @@ export function EditCloudAgentModal({ serverId, launch, onSuccess, onClose }: Pr
   const error = agents.error ?? configuration.error;
   const missing = agents.data !== undefined && !agent;
 
-  if (agentId === null || error || missing || !agent || !configuration.data) {
+  if (
+    agentId === null ||
+    workspaceId === null ||
+    error ||
+    missing ||
+    !agent ||
+    !configuration.data
+  ) {
     return (
       <>
         <DialogHeader>
           <DialogTitle>Edit {launch.name}</DialogTitle>
         </DialogHeader>
         <DialogContentArea>
-          {agentId === null || missing ? (
+          {workspaceId === null ? (
+            <p role="alert" className="text-sm text-destructive">
+              This server has no workspace open, so the agent cannot be read.
+            </p>
+          ) : agentId === null || missing ? (
             <p role="alert" className="text-sm text-destructive">
               This cloud agent has not registered with the server yet.
             </p>
@@ -77,6 +99,7 @@ export function EditCloudAgentModal({ serverId, launch, onSuccess, onClose }: Pr
   return (
     <EditCloudAgentForm
       serverId={serverId}
+      workspaceId={workspaceId}
       launch={launch}
       agent={agent}
       configuration={configuration.data}
@@ -84,16 +107,21 @@ export function EditCloudAgentModal({ serverId, launch, onSuccess, onClose }: Pr
       onClose={onClose}
     />
   );
-}
+});
 
 function EditCloudAgentForm({
   serverId,
+  workspaceId,
   launch,
   agent,
   configuration,
   onSuccess,
   onClose,
-}: Props & { agent: RemoteAgentSummary; configuration: CloudLaunchConfiguration }) {
+}: Props & {
+  workspaceId: string;
+  agent: RemoteAgentSummary;
+  configuration: CloudLaunchConfiguration;
+}) {
   const queryClient = useQueryClient();
   const nameId = useId();
   const instructionsId = useId();
@@ -122,13 +150,13 @@ function EditCloudAgentForm({
       !sameAttributes(nextAttributes, configuration.definition_attributes);
     try {
       if (nextName !== agent.displayName)
-        await rpc.switchServers.updateAgentDisplayName({
-          serverId,
+        await rpc.workspaces.updateAgentDisplayName({
+          workspaceId,
           agentId: agent.id,
           displayName: nextName,
         });
       if (iconUrl !== agent.iconUrl)
-        await rpc.switchServers.updateAgentIcon({ serverId, agentId: agent.id, iconUrl });
+        await rpc.workspaces.updateAgentIcon({ workspaceId, agentId: agent.id, iconUrl });
       if (configurationChanged)
         await rpc.switchServers.updateCloudLaunchConfiguration(serverId, launch.request_id, {
           provider: launch.provider,
@@ -142,7 +170,7 @@ function EditCloudAgentForm({
       setSaving(false);
       return;
     } finally {
-      void queryClient.invalidateQueries({ queryKey: remoteAgentsQueryKey(serverId) });
+      void queryClient.invalidateQueries({ queryKey: workspaceAgentsQueryKey(workspaceId) });
       void queryClient.invalidateQueries({
         queryKey: ['cloud-launch-configuration', serverId, launch.request_id],
       });
@@ -187,6 +215,7 @@ function EditCloudAgentForm({
             </FieldDescription>
           </Field>
           <AddressingPolicyRow
+            workspaceId={workspaceId}
             serverId={serverId}
             agentId={agent.id}
             agentName={launch.name}

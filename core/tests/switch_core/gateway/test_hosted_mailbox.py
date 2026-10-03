@@ -12,9 +12,9 @@ from sqlalchemy import insert, select
 
 from switch_core.bridges.agent.api.hosted_worker_routes import post_mailbox_notices
 from switch_core.bridges.agent.hosted_mailbox import mailbox_upkeep
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     TAKEN_OVER,
-    ConnectionRegistry,
+    AgentConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import (
@@ -22,14 +22,14 @@ from switch_core.bridges.agent.protocol.types import (
     MessagePayload,
     TaskDelegatePayload,
 )
-from switch_core.clients.agent_client import (
+from switch_core.clients.agent_consumer import (
     _HOSTED_ERROR_MESSAGE,
     _HOSTED_MACHINE_ERROR_MESSAGE,
     _HOSTED_MACHINE_STOPPED_MESSAGE,
     _HOSTED_REMOVED_MESSAGE,
     _HOSTED_STOPPED_MESSAGE,
     AUTO_REPLY_FLAG,
-    AgentClient,
+    AgentConsumer,
     _GateOutcome,
     _hosted_unavailable,
 )
@@ -69,7 +69,7 @@ async def mailbox_app(worker_app):  # noqa: F811
         rooms = []
         for index in range(2):
             room = Room(
-                matrix_room_id=f"!{uuid4().hex[:8]}:example.com",
+                transport_room_id=f"!{uuid4().hex[:8]}:example.com",
                 name=f"r{index}",
                 description="",
             )
@@ -91,7 +91,7 @@ async def mailbox_app(worker_app):  # noqa: F811
                     )
                 )
         sender = await session.scalar(
-            select(Client.matrix_user_id)
+            select(Client.transport_user_id)
             .join(Agent, Agent.client_id == Client.id)
             .where(Agent.id == agent_id)
         )
@@ -147,7 +147,7 @@ def addressed(room_id: str, message_id: str, thread_id: str | None = None):
 
 
 async def address(app, event: AgentEvent | None) -> Any:
-    """`AgentClient._note_hosted_addressed`, as the agent's Matrix client runs it."""
+    """`AgentConsumer._note_hosted_addressed`, as the agent's Matrix client runs it."""
     client = SimpleNamespace(
         _hosted_launch_store=HostedLaunchStore(),
         session_factory=app.factory,
@@ -156,7 +156,7 @@ async def address(app, event: AgentEvent | None) -> Any:
         _event_buffer=app.service.event_buffer,
     )
     agent = await _agent(app.factory, app.agent_id)
-    return await AgentClient._note_hosted_addressed(client, agent, event)  # type: ignore[arg-type]
+    return await AgentConsumer._note_hosted_addressed(client, agent, event)  # type: ignore[arg-type]
 
 
 async def set_launch(app, **values: Any) -> None:
@@ -186,7 +186,7 @@ async def capability(app) -> str:
 
 def restart_core(app, boot: int) -> None:
     """A new Core process: nothing in memory survives, the database does."""
-    app.service.connections = ConnectionRegistry()
+    app.service.connections = AgentConnectionRegistry()
     app.service.event_buffer = EventBuffer(sequence_base=boot << 32)
 
 
@@ -794,7 +794,7 @@ async def test_mention_to_an_errored_running_machine_is_refused_not_queued(
 
 
 async def agent_client(app) -> SimpleNamespace:
-    """An `AgentClient` addressed by everything, with no live session, that
+    """An `AgentConsumer` addressed by everything, with no live session, that
     records what it posts and what it hands the live buffer."""
     agent = await _agent(app.factory, app.agent_id)
     meta = SimpleNamespace(
@@ -843,10 +843,10 @@ async def agent_client(app) -> SimpleNamespace:
         _gate_addressed=gate_addressed,
         _is_available=no,
         _reply_when_unavailable_here=reply_when_unavailable_here,
-        _triggered_by_auto_reply=AgentClient._triggered_by_auto_reply,
+        _triggered_by_auto_reply=AgentConsumer._triggered_by_auto_reply,
         _waking_notice_revisions={},
         _unreachable_notice_revisions={},
-        send_message=send_message,
+        actor=SimpleNamespace(send_message=send_message),
         posted=posted,
         enqueued=enqueued,
     )
@@ -856,7 +856,7 @@ async def agent_client(app) -> SimpleNamespace:
         "_post_auto_reply",
         "_sender_handle",
     ):
-        setattr(client, name, getattr(AgentClient, name).__get__(client))
+        setattr(client, name, getattr(AgentConsumer, name).__get__(client))
     return client
 
 
@@ -889,7 +889,7 @@ async def test_media_to_an_errored_running_machine_is_refused_not_queued(
         mimetype="text/markdown",
         size=5,
     )
-    await AgentClient.on_media(client, RoomRef(room_id="!room:example.com"), media)  # type: ignore[arg-type]
+    await AgentConsumer.on_media(client, RoomRef(room_id="!room:example.com"), media)  # type: ignore[arg-type]
     assert await rows(app) == {}
     assert client.posted == [f"@someone {_HOSTED_MACHINE_ERROR_MESSAGE}"]
     assert client.enqueued == []
@@ -906,7 +906,7 @@ async def test_task_delegate_to_an_errored_running_machine_is_refused(mailbox_ap
         summary="Do it",
         description="",
     )
-    await AgentClient.on_task_delegate(
+    await AgentConsumer.on_task_delegate(
         client,  # type: ignore[arg-type]
         RoomRef(room_id="!room:example.com"),
         delegate,
@@ -929,7 +929,9 @@ async def test_mention_to_an_errored_running_machine_is_answered_once(mailbox_ap
         body="@agent hello",
         sender_name="someone",
     )
-    await AgentClient.on_message(client, RoomRef(room_id="!room:example.com"), message)  # type: ignore[arg-type]
+    await AgentConsumer.on_message(
+        client, RoomRef(room_id="!room:example.com"), message
+    )  # type: ignore[arg-type]
     assert await rows(app) == {}
     assert client.posted == [f"@someone {_HOSTED_MACHINE_ERROR_MESSAGE}"]
     assert client.enqueued == []
@@ -964,7 +966,9 @@ async def test_auto_reply_to_an_owner_stopped_machine_is_not_answered(
         body=f"@agent {_HOSTED_MACHINE_STOPPED_MESSAGE}",
         sender_name="other",
     )
-    await AgentClient.on_message(client, RoomRef(room_id="!room:example.com"), message)  # type: ignore[arg-type]
+    await AgentConsumer.on_message(
+        client, RoomRef(room_id="!room:example.com"), message
+    )  # type: ignore[arg-type]
     assert await rows(app) == {}
     assert client.posted == posted
     assert client.enqueued == []

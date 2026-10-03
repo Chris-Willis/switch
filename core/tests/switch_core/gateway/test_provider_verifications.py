@@ -6,7 +6,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
     HostedMachine,
@@ -61,7 +61,7 @@ async def verification_app(session_factory, tmp_path):
 
     app.dependency_overrides[get_session] = sessions
     app.dependency_overrides[get_protocol] = lambda: SimpleNamespace(
-        connections=ConnectionRegistry()
+        connections=AgentConnectionRegistry()
     )
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_current_user] = lambda: user

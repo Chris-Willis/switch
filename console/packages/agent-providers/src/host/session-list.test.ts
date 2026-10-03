@@ -8,7 +8,13 @@ import type { ServerEvent, Session } from '@switch-console/shared/session-v1';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { JournalUnavailableError, readJournalSnapshot } from './journal-snapshot';
 import type * as launch from './launch';
-import { hostSessions, LIST_SCRIPT, listSessions, readHostSessions } from './session-list';
+import {
+  hostSessions,
+  hostSessionsByAgent,
+  LIST_SCRIPT,
+  listSessions,
+  readHostSessions,
+} from './session-list';
 
 const paths = vi.hoisted(() => ({ base: '' }));
 vi.mock('./launch', async (original) => ({
@@ -73,6 +79,26 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await rm(paths.base, { recursive: true, force: true });
+});
+
+it('lists every agent on the host, each with its owner, when no agent is named', async () => {
+  await record('one', 'agent', [], {});
+  await record('two', 'agent', [], {});
+  await record('other', 'someone-else', [], {});
+
+  const scripted = JSON.parse(
+    execFileSync(process.execPath, ['-e', LIST_SCRIPT, '', paths.base], { encoding: 'utf8' })
+  );
+  expect(readHostSessions(fs, path, null, paths.base)).toEqual(scripted);
+  const byAgent = hostSessionsByAgent(scripted);
+  expect([...byAgent.keys()].sort()).toEqual(['agent', 'someone-else']);
+  expect(
+    byAgent
+      .get('agent')!
+      .map((s) => s.sessionId)
+      .sort()
+  ).toEqual(['one', 'two']);
+  expect(byAgent.get('someone-else')!.map((s) => s.sessionId)).toEqual(['other']);
 });
 
 it('lists the same sessions in-process as LIST_SCRIPT does over a shell', async () => {

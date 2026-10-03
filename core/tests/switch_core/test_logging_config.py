@@ -251,14 +251,37 @@ def test_filter_stamps_every_field(monkeypatch: pytest.MonkeyPatch) -> None:
     record = logging.LogRecord(
         "x", logging.INFO, __file__, 1, "m", args=(), exc_info=None
     )
+    fields = {name: f"{name}-value" for name in CONTEXT_FIELDS if name != "tenant_id"}
 
-    with log_context(request_id="r", agent_id="a", user_id="u"):
+    with log_context(**fields):
         LogContextFilter("acme").filter(record)
 
     assert record.tenant_id == "acme"
-    assert record.request_id == "r"
-    assert record.agent_id == "a"
-    assert record.user_id == "u"
+    for name, value in fields.items():
+        assert getattr(record, name) == value, name
+
+
+def test_the_bridge_side_reaches_a_json_line(json_lines) -> None:
+    logger, lines = json_lines
+
+    with log_context(bridge="collaboration", platform="slack"):
+        logger.info("[BRIDGE-IN] message")
+
+    entry = _one(lines)
+    assert entry["bridge"] == "collaboration"
+    assert entry["platform"] == "slack"
+
+
+def test_the_console_rides_alongside_the_user_in_json(json_lines) -> None:
+    logger, lines = json_lines
+
+    with log_context(user_id="admin", console_id="c-1", console_name="bob@vm"):
+        logger.info("stopped the stack")
+
+    entry = _one(lines)
+    assert entry["user_id"] == "admin"
+    assert entry["console_id"] == "c-1"
+    assert entry["console_name"] == "bob@vm"
 
 
 def test_bound_tenant_beats_the_deployment_default() -> None:

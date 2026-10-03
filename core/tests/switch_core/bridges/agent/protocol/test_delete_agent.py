@@ -59,7 +59,7 @@ class TestDeleteAgentInARoom:
             assert agent is not None
             client_id = agent.client_id
             room = Room(
-                matrix_room_id=f"!{uuid.uuid4().hex[:8]}:test",
+                transport_room_id=f"!{uuid.uuid4().hex[:8]}:test",
                 name="a room",
                 description="somewhere the agent has been",
             )

@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.config import SwitchConfig
 from switch_core.db.models import (
     HostedLaunch,
@@ -142,7 +142,7 @@ def _needs_sweep(machine: HostedMachine, now: datetime, idle_minutes: int) -> bo
 async def _should_sleep(
     session: AsyncSession,
     machine: HostedMachine,
-    protocol: ProtocolService,
+    protocol: AgentCore,
     idle_after: timedelta,
     now: datetime,
 ) -> bool:
@@ -180,7 +180,7 @@ async def _should_sleep(
 
 async def _resume_removals(
     session: AsyncSession,
-    protocol: ProtocolService,
+    protocol: AgentCore,
     config: SwitchConfig,
     now: datetime,
 ) -> None:
@@ -215,7 +215,7 @@ async def _resume_removals(
 async def _sweep(
     session: AsyncSession,
     machine: HostedMachine,
-    protocol: ProtocolService,
+    protocol: AgentCore,
     idle_minutes: int,
     retention_days: int,
     now: datetime,
@@ -320,7 +320,7 @@ async def _time_out_stopping_launches(session: AsyncSession, now: datetime) -> N
 async def machines(
     session: Annotated[AsyncSession, Depends(controller_session)],
     config: Annotated[SwitchConfig, Depends(get_config)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict:
     store = HostedMachineStore()
     now = datetime.now(UTC)

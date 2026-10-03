@@ -8,9 +8,9 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import func, select, text
 
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentExistsError
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.service import AgentExistsError
 from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
@@ -106,7 +106,7 @@ async def launch_app(session_factory, monkeypatch):
         jwt_secret_key="SYNTHETIC-KEY",
     )
     protocol = make_service(session_factory)
-    protocol.connections = ConnectionRegistry()
+    protocol.connections = AgentConnectionRegistry()
     protocol.event_buffer = EventBuffer(sequence_base=1 << 32)
     protocol.client_lifecycle.stop = AsyncMock()
     protocol.client_lifecycle.delete_record = AsyncMock(
@@ -1020,7 +1020,7 @@ async def test_identity_edits_keep_the_launch_spec_that_registers_it_again(
             SimpleNamespace(
                 agent_session_store=AgentSessionStore(),
                 room_role_store=RoomRoleStore(),
-                connections=ConnectionRegistry(),
+                connections=AgentConnectionRegistry(),
             ),
             owner,
             False,

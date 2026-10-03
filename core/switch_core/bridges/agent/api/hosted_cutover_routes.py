@@ -26,7 +26,7 @@ from switch_core.bridges.agent.hosted_cutover import (
     queue_imports,
 )
 from switch_core.bridges.agent.hosted_mailbox import offer_pending
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.db.models import Agent, HostedLaunch, require_tenant_id
 from switch_core.db.stores.hosted_launch_store import lock_launch
 from switch_core.db.stores.hosted_mailbox_store import MailboxFull
@@ -47,7 +47,7 @@ async def cutover_manifest(
     agent_id: str,
     body: CutoverUpload,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     """Confirm the volume's manifest is the one recorded before the upgrade, and deliver what it owes."""

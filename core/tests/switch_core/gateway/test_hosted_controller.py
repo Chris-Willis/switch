@@ -30,13 +30,13 @@ from switch_core.bridges.agent.dependencies import get_session as get_worker_ses
 from switch_core.bridges.agent.dependencies import (
     get_session_factory as get_worker_session_factory,
 )
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
+    AgentConnection,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    Connection,
-    ConnectionRegistry,
 )
+from switch_core.bridges.agent.protocol.agent_core import AgentExistsError
 from switch_core.bridges.agent.protocol.hosted_workers import IdleReport, WorkerBinding
-from switch_core.bridges.agent.protocol.service import AgentExistsError
 from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
@@ -184,7 +184,7 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
         )
         await session.commit()
     service = make_service(session_factory)
-    service.connections = ConnectionRegistry()
+    service.connections = AgentConnectionRegistry()
     service.event_buffer = SimpleNamespace(boot=1, remove=Mock())
     service.config.hosted_idle_stop_minutes = 0
     service.config.hosted_disk_retention_days = 7
@@ -321,7 +321,7 @@ def attach_worker(
     revision: int = 1,
     boot_id: str = "boot-a",
     connection_id: str | None = None,
-) -> Connection:
+) -> AgentConnection:
     conn = service.connections.open(
         agent_id=agent_id,
         connection_id=connection_id or str(uuid4()),
@@ -338,11 +338,13 @@ def attach_worker(
     return conn
 
 
-def fence(conn: Connection) -> dict:
+def fence(conn: AgentConnection) -> dict:
     return {"connection_id": conn.id, "generation": conn.stream_generation}
 
 
-def report_idle(service, conn: Connection, *, busy: bool = False, seq: int = 1) -> None:
+def report_idle(
+    service, conn: AgentConnection, *, busy: bool = False, seq: int = 1
+) -> None:
     assert conn.worker is not None
     service.connections.record_idle_report(
         conn,
@@ -1041,7 +1043,7 @@ async def test_deleted_observation_with_live_launches_logs_an_invariant_failure(
 
 async def _idle_ready(
     controller_app, *, minutes: int, report: bool = True, busy: bool = False
-) -> Connection:
+) -> AgentConnection:
     """A ready machine whose one launch and the machine itself went quiet 31 minutes ago."""
     _, request_id, agent_id, service, factory, _ = controller_app
     service.config.hosted_idle_stop_minutes = minutes

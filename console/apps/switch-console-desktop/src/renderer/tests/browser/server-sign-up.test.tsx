@@ -17,11 +17,17 @@ const switchServers = vi.hoisted(() => ({
   signup: vi.fn(),
   passwordLogin: vi.fn(),
   ensureCloudMachine: vi.fn(),
+  switchCloud: vi.fn(),
+}));
+const workspaces = vi.hoisted(() => ({
+  list: vi.fn(async () => []),
+  getActiveId: vi.fn(async () => null),
+  serversWithoutMembership: vi.fn(async () => []),
 }));
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { switchServers },
+  rpc: { switchServers, workspaces },
 }));
 
 import {
@@ -31,12 +37,12 @@ import {
 } from '@renderer/features/switch-servers/server-sign-in';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 
-const MANAGED_ORIGIN = 'https://managed.example.com';
+const CLOUD_ORIGIN = 'https://cloud.example.com';
 const SERVER: SwitchServer = {
   id: 'server',
   name: 'Switch',
-  gatewayUrl: MANAGED_ORIGIN,
-  apiUrl: MANAGED_ORIGIN,
+  gatewayUrl: CLOUD_ORIGIN,
+  apiUrl: CLOUD_ORIGIN,
 } as SwitchServer;
 
 let container: HTMLDivElement | null = null;
@@ -44,7 +50,7 @@ let root: Root | null = null;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.stubEnv('VITE_SWITCH_MANAGED_URL', MANAGED_ORIGIN);
+  switchServers.switchCloud.mockResolvedValue({ url: CLOUD_ORIGIN });
   runInAction(() => {
     switchServersStore.servers = [SERVER];
     switchServersStore.authConfigs.clear();
@@ -68,7 +74,6 @@ afterEach(async () => {
   container?.remove();
   container = null;
   root = null;
-  vi.unstubAllEnvs();
 });
 
 const Harness = observer(function Harness({
@@ -224,7 +229,7 @@ it('signs up and hands on the machine status, without warming it twice', async (
   expect(switchServers.ensureCloudMachine).not.toHaveBeenCalled();
 });
 
-it('warms the cloud machine after signing in to the managed server', async () => {
+it('warms the cloud machine after signing in to Switch Cloud', async () => {
   switchServers.passwordLogin.mockResolvedValue({ success: true, data: {} });
   const onSignedIn = vi.fn();
   const el = await render(onSignedIn);

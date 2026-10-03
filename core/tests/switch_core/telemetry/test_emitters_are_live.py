@@ -6,7 +6,7 @@ immediately when the service is `None`, which is deliberate — several services
 are built without one in tests and tooling — and it means a call site can be
 present, correct, covered by its own unit test, and dead in production.
 
-That is exactly what happened. The agent bridge built *two* `ProtocolService`
+That is exactly what happened. The agent bridge built *two* `AgentCore`
 instances: one in `create_agent_bridge_app` that got the telemetry service, and
 one in `init_dependencies` that the HTTP handlers actually resolve through
 `Depends(get_protocol)` and that got nothing. Every session event and every
@@ -24,7 +24,7 @@ from __future__ import annotations
 from typing import Any
 
 from switch_core.bridges.agent.app import create_agent_bridge_app
-from switch_core.bridges.agent.dependencies import get_protocol
+from switch_core.bridges.agent.dependencies import get_protocol, get_telemetry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import NullSink
@@ -72,12 +72,12 @@ def _config() -> Any:
         oauth_issuer_url = None
         oauth_audience = None
         oauth_verify_issuer = True
-        matrix_server_name = "test"
+        id_server_name = "test"
 
     return _Config()
 
 
-def test_the_protocol_service_a_request_reaches_can_report() -> None:
+def test_the_agent_core_a_request_reaches_can_report() -> None:
     """`get_protocol()` is what every handler resolves. If its service has no
     telemetry, every session event and agent registration at the agent bridge
     is silently dropped."""
@@ -85,13 +85,13 @@ def test_the_protocol_service_a_request_reaches_can_report() -> None:
     _build(telemetry)
 
     assert get_protocol().telemetry is telemetry, (
-        "The ProtocolService the HTTP handlers resolve has no telemetry "
+        "The AgentCore the HTTP handlers resolve has no telemetry "
         "service, so every event it emits is dropped by emit_safely. The app "
         "and init_dependencies must be given the same one."
     )
 
 
-def test_the_protocol_service_the_app_returns_is_the_one_handlers_use() -> None:
+def test_the_agent_core_the_app_returns_is_the_one_handlers_use() -> None:
     """Two instances is the shape that caused the drop. They must be one, or
     a future change will wire telemetry to whichever is convenient and leave
     the other dead again."""
@@ -99,8 +99,18 @@ def test_the_protocol_service_the_app_returns_is_the_one_handlers_use() -> None:
     returned = _build(telemetry)
 
     assert get_protocol() is returned, (
-        "create_agent_bridge_app returns a different ProtocolService from the "
+        "create_agent_bridge_app returns a different AgentCore from the "
         "one its handlers use. Anything wired onto one is absent from the "
         "other — which is how the session events came to be emitted into "
         "nothing."
     )
+
+
+def test_the_session_start_route_reaches_the_same_telemetry() -> None:
+    """`/agent-sessions/{id}/started` resolves telemetry on its own rather than
+    through the protocol service. Wired to nothing, it answers every host
+    with `reported: false` and no error anywhere."""
+    telemetry = _telemetry()
+    _build(telemetry)
+
+    assert get_telemetry() is telemetry

@@ -22,7 +22,7 @@ vi.hoisted(() => {
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { sdkHost, switchServers: { listRemoteBridges: async () => [] } },
+  rpc: { sdkHost, workspaces: { listBridges: async () => [] } },
 }));
 
 vi.mock('@renderer/features/locations/stores/agents-store', () => ({
@@ -30,7 +30,13 @@ vi.mock('@renderer/features/locations/stores/agents-store', () => ({
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
-  switchRoomsStore: { serversNotSignedIn: [], readableRoomsOnServer: () => [] },
+  switchRoomsStore: { workspacesNotSignedIn: [], readableRoomsInWorkspace: () => [] },
+}));
+
+vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
+  workspacesStore: {
+    idOnServerInScope: (serverId: string | null) => (serverId === 'server' ? 'workspace' : null),
+  },
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({

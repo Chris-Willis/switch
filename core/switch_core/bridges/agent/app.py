@@ -5,6 +5,7 @@ import logging
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from switch_core.bridges.agent.api.activity_routes import router as activity_router
 from switch_core.bridges.agent.api.handlers import router as api_router
@@ -25,9 +26,9 @@ from switch_core.bridges.agent.auth import BearerAuthMiddleware
 from switch_core.bridges.agent.deeplink import router as deeplink_router
 from switch_core.bridges.agent.dependencies import get_protocol, init_dependencies
 from switch_core.bridges.agent.mcp import create_mcp_app
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -41,6 +42,7 @@ from switch_core.db.stores.collaboration_bridge_store import CollaborationBridge
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.task_store import TaskStore
+from switch_core.logging_context import log_context
 from switch_core.observability.http import MetricsMiddleware
 from switch_core.request_context import RequestContextMiddleware
 from switch_core.room_service import RoomService
@@ -69,15 +71,15 @@ def create_agent_bridge_app(
     session_factory: object,
     config: SwitchConfig,
     approval_outcomes: ApprovalOutcomes,
-    connections: ConnectionRegistry | None = None,
+    connections: AgentConnectionRegistry | None = None,
     telemetry: TelemetryService | None = None,
-) -> tuple[FastAPI, ProtocolService]:
+) -> tuple[FastAPI, AgentCore]:
     # One registry for the whole process: the live connection set is the source
     # of truth for reachability, so every service must see the same one. The
-    # caller may supply it — main.py does, because the Matrix agent clients are
+    # caller may supply it, and main.py does, because the agent clients are
     # wired before this app is built and read presence from the same registry.
     if connections is None:
-        connections = ConnectionRegistry()
+        connections = AgentConnectionRegistry()
 
     # One cache for the whole process, for the same reason as `connections`:
     # the HTTP door and the MCP door each carry their own auth middleware, and
@@ -178,8 +180,33 @@ def create_agent_bridge_app(
     # is still counted and timed — an authentication failure is traffic, and a
     # spike of it is the thing you most want a dashboard to show.
     app.add_middleware(MetricsMiddleware)
+    # Tags every log line of an agent request as the agent bridge's, as a
+    # field. Only agent paths: the gateway is mounted on this same app.
+    app.add_middleware(AgentBridgeLogContextMiddleware)
     # Added last, so it wraps the bearer middleware: a request rejected for bad
     # credentials is logged with a request id like any other.
     app.add_middleware(RequestContextMiddleware)
 
     return app, protocol
+
+
+class AgentBridgeLogContextMiddleware:
+    """Binds `bridge="agent"` for requests to the agent bridge's own paths.
+
+    Pure ASGI rather than `BaseHTTPMiddleware`, so the binding covers a
+    streamed response (the SSE stream) for as long as it runs, and is reset in
+    the same context it was set in.
+    """
+
+    _PREFIXES = ("/agents", "/mcp")
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        path = scope.get("path", "") if scope["type"] in ("http", "websocket") else ""
+        if not path.startswith(self._PREFIXES):
+            await self.app(scope, receive, send)
+            return
+        with log_context(bridge="agent"):
+            await self.app(scope, receive, send)

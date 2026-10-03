@@ -30,9 +30,9 @@ from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import get_config as get_worker_config
 from switch_core.bridges.agent.dependencies import get_protocol as get_worker_protocol
 from switch_core.bridges.agent.dependencies import get_session as get_worker_session
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     TAKEN_OVER,
-    ConnectionRegistry,
+    AgentConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.hosted_workers import ConsoleView
@@ -162,7 +162,7 @@ async def worker_app(session_factory, monkeypatch, tmp_path):
         )
         await session.commit()
     service = make_service(session_factory)
-    service.connections = ConnectionRegistry()
+    service.connections = AgentConnectionRegistry()
     service.event_buffer = EventBuffer(sequence_base=1 << 32)
     service.approval_outcomes = None
     service.config.hosted_sessions_per_agent = 8
@@ -801,7 +801,7 @@ async def test_relay_error_codes_in_order(worker_app):
     assert (status, body["error"]["code"]) == (409, "agent_crashed")
 
     await set_launch_values(factory, request_id, state="ready", error_code=None)
-    service.connections = ConnectionRegistry()
+    service.connections = AgentConnectionRegistry()
     status, body = await _relay_code(client, request_id, READ_ONLY)
     assert (status, body["error"]["code"]) == (409, "worker_not_attached")
     assert set(body["worker"]) >= {"machine_id", "process_state", "oom_kills"}
@@ -947,7 +947,9 @@ async def test_auto_start_off_notice_is_posted_once(worker_app):
     conn = await _ready_worker(worker_app)
     async with factory() as session:
         room = Room(
-            matrix_room_id=f"!{uuid4().hex[:8]}:example.com", name="r", description=""
+            transport_room_id=f"!{uuid4().hex[:8]}:example.com",
+            name="r",
+            description="",
         )
         session.add(room)
         await session.flush()
@@ -965,7 +967,7 @@ async def test_auto_start_off_notice_is_posted_once(worker_app):
             )
         )
         sender = await session.scalar(
-            select(Client.matrix_user_id)
+            select(Client.transport_user_id)
             .join(Agent, Agent.client_id == Client.id)
             .where(Agent.id == agent_id)
         )

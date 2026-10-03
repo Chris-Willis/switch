@@ -34,6 +34,11 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({
   getServer: async () => ({ id: 'server' }),
 }));
 
+vi.mock('@main/core/workspaces/workspace-session', () => ({
+  withServerWorkspaceSession: async (serverId: string, fn: (server: unknown) => unknown) =>
+    fn({ id: serverId }),
+}));
+
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
   GatewayError: FakeGatewayError,
   gatewayRequest: vi.fn(),

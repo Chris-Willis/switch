@@ -63,6 +63,9 @@ _CORE = Path(__file__).resolve().parents[2]
 _MERGE_REVISION = "33e037ee949f"
 _PILOT_HEAD = "95fc38e451b6"
 _MAIN_HEAD = "c4e9a1f7b203"
+# Main's head when it was last merged in: a database already there takes the
+# whole hosted chain on its next upgrade.
+_LATER_MAIN_HEAD = "a9e1c3f75b20"
 _MANIFEST_REVISION = "a3c9e5f71d28"
 # The last revision a database with cloud agents that are not removed can
 # reach: `b4e1d7a2c9f0` refuses one until they are.
@@ -745,6 +748,44 @@ async def test_main_database_keeps_session_activity_through_the_merge(
 
     assert [tuple(row) for row in requests] == [("r1", "Write file?", "open")]
     assert [tuple(row) for row in items] == [("item-1", "completed", "Read file")]
+    assert cutover == ([], [])
+
+
+async def test_later_main_database_takes_the_hosted_chain(main_url: str) -> None:
+    engine = create_async_engine(main_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade_to(_LATER_MAIN_HEAD))
+            assert (
+                await connection.scalar(text("SELECT to_regclass('hosted_launches')"))
+                is None
+            )
+
+        async with engine.begin() as connection:
+            await _seed_tenant_and_user(connection)
+            await connection.execute(
+                text(
+                    "INSERT INTO tenant_join_domains (tenant_id, domain, created_by) "
+                    "VALUES ('t1', 'example.invalid', 'u1')"
+                )
+            )
+
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade_to("heads"))
+
+        async with engine.begin() as connection:
+            await _assert_merged_schema(connection)
+            await _assert_runtime_grants(connection)
+            domains = (
+                await connection.execute(
+                    text("SELECT tenant_id, domain FROM tenant_join_domains")
+                )
+            ).all()
+            cutover = await _cutover_rows(connection)
+    finally:
+        await engine.dispose()
+
+    assert [tuple(row) for row in domains] == [("t1", "example.invalid")]
     assert cutover == ([], [])
 
 

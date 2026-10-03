@@ -22,11 +22,12 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import ColumnElement, distinct, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.api.hosted_worker_routes import post_notice_once
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.hosted_workers import NOTICE_MESSAGES
-from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     AttachmentRef,
@@ -213,7 +214,7 @@ def cutover_event(
     room: Room, row: Message, files: list[MessageAttachment]
 ) -> dict[str, Any]:
     """The mailbox event for a stored message, as the agent client would have built it."""
-    inbound = to_inbound(row, files, transport_room_id=room.matrix_room_id)
+    inbound = to_inbound(row, files, transport_room_id=room.transport_room_id)
     if not isinstance(inbound, InboundMessage):
         raise ValueError(f"event {row.transport_event_id} is not a room message")
     thread_id = inbound.thread_root_id
@@ -268,7 +269,17 @@ async def rebuild_event(
     session: AsyncSession, room_id: str, message_id: str
 ) -> dict[str, Any] | str:
     """The stored message rebuilt as a mailbox event, or why it cannot be."""
-    room = await session.scalar(select(Room).where(Room.id == room_id))
+    # Only the columns the event needs: `record` runs this against a database
+    # still at the pilot revision, before later migrations add room columns.
+    room = await session.scalar(
+        select(Room)
+        .options(
+            load_only(
+                Room.id, Room.transport_room_id, Room.bridge_id, Room.channel_type
+            )
+        )
+        .where(Room.id == room_id)
+    )
     if room is None:
         return "the room is gone"
     row = await session.scalar(
@@ -683,7 +694,7 @@ async def drop_notices(
 
 
 async def post_cutover_notices(
-    protocol: ProtocolService, agent: Agent, notices: list[CutoverNotice]
+    protocol: AgentCore, agent: Agent, notices: list[CutoverNotice]
 ) -> int:
     """Post each owed notice once, and record it; one that fails stays owed for the next pass."""
     unposted = 0
@@ -730,7 +741,7 @@ def cutover_notice_candidates() -> tuple[ColumnElement[bool], ...]:
     )
 
 
-async def post_owed_cutover_notices(protocol: ProtocolService) -> int:
+async def post_owed_cutover_notices(protocol: AgentCore) -> int:
     """Post every cutover notice the bound tenant still owes; returns how many stay owed."""
     async with tenant_session(protocol.session_factory, require_tenant_id()) as db:
         agent_ids = list(

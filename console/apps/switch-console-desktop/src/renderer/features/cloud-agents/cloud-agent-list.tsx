@@ -16,7 +16,12 @@ import { cloudAgentState } from './cloud-agent-state';
 import { cloudOperationAttempts, startAttemptKey } from './cloud-operation-attempts';
 import { CloudProblem } from './cloud-problem';
 import { CloudStartAttemptStatus } from './cloud-start-attempt-status';
-import { useCloudAgentSessions, useCloudAgents, useCloudProblemAction } from './use-cloud-agents';
+import {
+  serverNotSignedIn,
+  useCloudAgentSessions,
+  useCloudAgents,
+  useCloudProblemAction,
+} from './use-cloud-agents';
 
 export function cloudSessionName(session: Session): string {
   const room = session.roomIds?.[0];
@@ -63,7 +68,7 @@ export const CloudAgentList = observer(function CloudAgentList() {
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, [queryClient]);
-  if (switchRoomsStore.serversNotSignedIn.some((server) => server.id === serverId)) return null;
+  if (serverNotSignedIn(serverId)) return null;
   if (agents.error)
     return (
       <div role="alert" className="px-3 py-2 text-xs text-foreground-destructive">

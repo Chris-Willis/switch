@@ -12,7 +12,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from pydantic import ValidationError
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -249,7 +249,7 @@ async def test_verify_credentials_reports_an_unreachable_microsoft(
 # ── register() wiring ────────────────────────────────────────────────────────
 
 
-class _RecordingAdapter(CollaborationAdapter):
+class _RecordingAdapter(PlatformAdapter):
     """Records the order register() drives the two hooks in."""
 
     events: list[str] = []
@@ -316,7 +316,7 @@ def _lifecycle() -> CollaborationBridgeLifecycleService:
         client_store=MagicMock(),
         client_lifecycle=MagicMock(),
         room_service=MagicMock(),
-        matrix_admin=MagicMock(),
+        provisioning=MagicMock(),
         session_factory=MagicMock(),
         config=MagicMock(),
         client_factory=MagicMock(),
@@ -344,6 +344,7 @@ async def test_register_prepares_then_verifies_before_touching_anything() -> Non
             display_name="Recording",
             connection_config={"app_id": "a"},
             channel_creation_enabled=True,
+            preconfigured=False,
         )
 
     assert _RecordingAdapter.events == ["prepare", "verify"]
@@ -363,6 +364,7 @@ async def test_register_verifies_the_prepared_config_not_the_raw_request() -> No
             display_name="Recording",
             connection_config={"app_id": "a"},
             channel_creation_enabled=True,
+            preconfigured=False,
         )
 
     assert _RecordingAdapter.seen_config["generated"] == "yes"
@@ -381,7 +383,7 @@ async def test_exclusive_resource_is_the_listener_port() -> None:
 
 def test_outbound_only_adapters_claim_nothing() -> None:
     """Slack, Discord and Mattermost dial out; any number can coexist."""
-    assert CollaborationAdapter.exclusive_resource({}) is None
+    assert PlatformAdapter.exclusive_resource({}) is None
 
 
 # The one tenant these tests pretend the deployment has. Named rather than
@@ -429,7 +431,7 @@ def _service_with_existing(
         client_store=MagicMock(),
         client_lifecycle=MagicMock(),
         room_service=MagicMock(),
-        matrix_admin=MagicMock(),
+        provisioning=MagicMock(),
         session_factory=MagicMock(return_value=session),
         config=MagicMock(),
         client_factory=MagicMock(),
@@ -480,6 +482,7 @@ async def test_second_teams_bridge_on_the_same_port_is_refused(
                 display_name="Second Teams",
                 connection_config=_raw_config(),
                 channel_creation_enabled=True,
+                preconfigured=False,
             )
 
     message = str(excinfo.value)
@@ -509,6 +512,7 @@ async def test_a_second_bridge_on_its_own_port_is_allowed_through(
             display_name="Second Teams",
             connection_config=_raw_config(listen_port=3979),
             channel_creation_enabled=True,
+            preconfigured=False,
         )
 
 
@@ -531,6 +535,7 @@ async def test_a_non_teams_bridge_is_not_blocked_by_a_teams_one(
             display_name="Teams",
             connection_config=_raw_config(),
             channel_creation_enabled=True,
+            preconfigured=False,
         )
 
 
@@ -612,7 +617,7 @@ async def test_concurrent_registration_cannot_take_the_same_port_twice(
         client_store=MagicMock(),
         client_lifecycle=MagicMock(),
         room_service=MagicMock(),
-        matrix_admin=MagicMock(),
+        provisioning=MagicMock(),
         session_factory=MagicMock(return_value=session),
         config=MagicMock(),
         client_factory=MagicMock(),
@@ -641,12 +646,14 @@ async def test_concurrent_registration_cannot_take_the_same_port_twice(
             display_name="Teams A",
             connection_config=_raw_config(),
             channel_creation_enabled=True,
+            preconfigured=False,
         ),
         service.register(
             bridge_type="teams",
             display_name="Teams B",
             connection_config=_raw_config(),
             channel_creation_enabled=True,
+            preconfigured=False,
         ),
         return_exceptions=True,
     )
@@ -683,7 +690,7 @@ async def test_start_refuses_a_second_bridge_already_holding_the_port(
         client_store=MagicMock(),
         client_lifecycle=MagicMock(),
         room_service=MagicMock(),
-        matrix_admin=MagicMock(),
+        provisioning=MagicMock(),
         session_factory=MagicMock(return_value=session),
         config=MagicMock(),
         client_factory=MagicMock(),

@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import {
   clearTakenOver,
   ensureSharedProcess,
-  runSharedWatcher,
+  type HostStartSource,
+  runAgentHost,
   sharedConfigSchema,
   type SharedHostConfig,
   sharedSessionRoot,
@@ -217,7 +218,7 @@ export const consoleSupervision: Supervision = {
 export async function startLocalSession(
   root: string,
   config: SharedHostConfig,
-  options: { resuming: boolean; restart: boolean }
+  options: { resuming: boolean; restart: boolean; startSource: HostStartSource | null }
 ): Promise<void> {
   await ensureSharedProcess({
     root,
@@ -226,6 +227,7 @@ export async function startLocalSession(
     watcher: false,
     restart: options.restart,
     supervision: consoleSupervision,
+    startSource: options.startSource,
   });
 }
 
@@ -282,6 +284,7 @@ export async function startLocalWatcher(
     resuming: false,
     watcher: true,
     restart: false,
+    startSource: null,
     supervision: {
       links: null,
       build: consoleSupervision.build,
@@ -296,7 +299,7 @@ export async function startLocalWatcher(
           watchers,
           prepared,
           (signal) =>
-            runSharedWatcher(
+            runAgentHost(
               prepared,
               written,
               signal,

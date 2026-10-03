@@ -31,7 +31,9 @@ from switch_core.db.stores.hosted_machine_store import (
 from switch_core.db.stores.hosted_mailbox_store import HostedMailboxStore
 
 if TYPE_CHECKING:
-    from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+    from switch_core.bridges.agent.protocol.agent_connections import (
+        AgentConnectionRegistry,
+    )
     from switch_core.bridges.agent.protocol.hosted_workers import IdleReport
 
 
@@ -286,7 +288,7 @@ class HostedLaunchStore:
         self,
         session: AsyncSession,
         launch: HostedLaunch,
-        registry: ConnectionRegistry,
+        registry: AgentConnectionRegistry,
     ) -> IdleEvidence:
         """What Core knows about whether the launch's worker is doing anything.
 

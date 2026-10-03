@@ -7,7 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.config import SwitchConfig
 from switch_core.db.models import TENANT_ZERO_ID, User
@@ -20,8 +20,13 @@ from switch_core.db.stores.hosted_machine_store import (
 )
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
+    AuthenticatedSession,
+    describe_session_state,
+    get_authenticated_session,
     get_current_user,
     hash_password,
+    initial_tenant_claim,
+    list_tenant_memberships,
     require_admin,
     set_session_cookie,
     verify_password,
@@ -31,6 +36,7 @@ from switch_core.gateway.dependencies import (
     get_config,
     get_external_user_store,
     get_session,
+    get_session_factory,
     get_system_session,
     get_user_store,
 )
@@ -43,6 +49,7 @@ from switch_core.gateway.schemas import (
     LinkedIdentity,
     LoginRequest,
     ServerDeclaration,
+    SessionStateResponse,
     SessionUserResponse,
     SignupMachine,
     SignupRequest,
@@ -103,22 +110,33 @@ async def login(
     req: LoginRequest,
     response: Response,
     session: Annotated[AsyncSession, Depends(get_system_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> SessionUserResponse:
     # `get_system_session`, not `get_session`: there is no caller to take a
     # tenant from until this route decides there is one. It only ever reads
     # `users`, which is global (a person is one account across tenants), so
-    # there is nothing here a tenant would scope even once policies land.
+    # there is nothing here a tenant would scope. Which workspace the new
+    # session selects comes from the membership lookup, on a session of its own.
     if not config.gateway_password_login_enabled:
         raise HTTPException(status_code=403, detail="Password login is disabled")
 
     user = await user_store.get_by_email(session, req.email)
     if user is None or not verify_password(req.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    # Ends the read so its connection goes back to the pool before the
+    # membership lookup takes one: a request holds one connection at a time.
+    await session.commit()
 
     set_session_cookie(
-        response, user, config.jwt_secret_key, config.gateway_cookie_secure, None
+        response,
+        user,
+        config.jwt_secret_key,
+        config.gateway_cookie_secure,
+        await initial_tenant_claim(session_factory, user_store, user),
     )
     return _session_response(user)
 
@@ -205,7 +223,11 @@ async def signup(
         logger.info("Signed up user: %s (%s)", user.email, user.id)
 
         set_session_cookie(
-            response, user, config.jwt_secret_key, config.gateway_cookie_secure, None
+            response,
+            user,
+            config.jwt_secret_key,
+            config.gateway_cookie_secure,
+            TENANT_ZERO_ID,
         )
         signed_in = _session_response(user)
         machine = await _prewarm(session, user.id, config, settings)
@@ -256,7 +278,36 @@ async def auth_config(
         signup_enabled=config.gateway_signup_open,
         oidc_enabled=config.gateway_oidc_enabled,
         oidc_provider_label=config.gateway_oidc_provider_label,
+        signup_mode=config.gateway_signup_mode,
     )
+
+
+@router.get("/auth/session")
+async def session_state(
+    auth: Annotated[AuthenticatedSession, Depends(get_authenticated_session)],
+    session: Annotated[AsyncSession, Depends(get_system_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> SessionStateResponse:
+    """Who is signed in, which workspace this session is in, and — when it
+    is in none — what would get it into one.
+
+    Answers for every signed-in caller, including the ones `/auth/me` refuses:
+    someone with no workspace yet, or with several and none selected. That is
+    exactly who a client needs to ask, which is why this reports what tenant
+    resolution would decide (`describe_session_state`) instead of depending on
+    `get_current_user`, which raises for them.
+    """
+    user = await user_store.get(session, auth.user_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    # One connection at a time: release this one before the lookup opens its own.
+    await session.commit()
+    tenants = await list_tenant_memberships(session_factory, user_store, user.id)
+    return describe_session_state(config, user, auth.tenant_claim, tenants)
 
 
 @router.get("/auth/me")

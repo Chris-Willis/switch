@@ -85,11 +85,11 @@ from switch_core.bridges.agent.dependencies import (
     get_session,
 )
 from switch_core.bridges.agent.hosted_mailbox import deliver_on_attach
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     TAKEN_OVER,
+    AgentConnection,
     ClientDeclaration,
     Closure,
-    Connection,
     ConnectionError_,
     DeliveryFilter,
     NoStreamAttachedError,
@@ -104,15 +104,16 @@ from switch_core.bridges.agent.protocol.connections import (
     UnknownConnectionError,
     evicted_session_warning,
 )
+from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
 from switch_core.bridges.agent.protocol.event_buffer import Reader
 from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
-from switch_core.bridges.agent.protocol.service import AgentExistsError, ProtocolService
 from switch_core.bridges.agent.protocol.stream import event_stream
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_KEY_TYPE,
     REGISTRATION_KEY_TYPES,
     resolve_registration_owner_id,
 )
+from switch_core.budgets import BudgetExceeded
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Agent, HostedLaunch, Task, require_tenant_id
 from switch_core.db.session_scope import tenant_session
@@ -155,7 +156,7 @@ async def _resolve_registration_user_id(
     authorization: Annotated[str, Header()],
     session: Annotated[AsyncSession, Depends(get_session)],
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> str:
     """Validate the registration token in the Authorization header and
     return the user_id new agents should be owned by.
@@ -207,7 +208,7 @@ def registration_path() -> str:
 async def register_agent_endpoint(
     req: RegisterAgentRequest,
     owner_id: Annotated[str, Depends(_resolve_registration_user_id)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> RegisterAgentResponse:
     try:
         result = await protocol.register_agent(
@@ -245,7 +246,7 @@ async def _register_known(
     parent_agent_id: str | None,
     overwrite: bool,
     owner_id: str,
-    protocol: ProtocolService,
+    protocol: AgentCore,
 ) -> tuple[str, str]:
     """Register one known agent, translating domain errors to HTTP errors.
 
@@ -300,7 +301,7 @@ async def _register_known(
 async def register_known_agent_endpoint(
     req: RegisterKnownAgentRequest,
     owner_id: Annotated[str, Depends(_resolve_registration_user_id)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> RegisterAgentResponse:
     agent_id, api_key = await _register_known(
         agent_type=req.agent_type,
@@ -321,7 +322,7 @@ async def register_known_agent_endpoint(
 async def register_known_agents_bulk_endpoint(
     req: RegisterKnownAgentBulkRequest,
     owner_id: Annotated[str, Depends(_resolve_registration_user_id)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> RegisterKnownAgentBulkResponse:
     """Register many Claude Code subagents under one parent agent.
@@ -425,7 +426,7 @@ async def update_agent(
     agent_id: str,
     req: UpdateAgentRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict[str, bool]:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")
@@ -446,7 +447,7 @@ async def update_agent(
 async def delete_agent(
     agent_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict[str, bool]:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")
@@ -473,11 +474,13 @@ async def send_message(
     agent_id: str,
     req: SendMessageRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict[str, object]:
     logger.debug("Recieved message from agent %s: %s", agent.name, req.content)
     try:
         event_id = await protocol.send_message(agent.id, req.room_id, req.content)
+    except BudgetExceeded as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except PermissionError as e:
@@ -490,14 +493,16 @@ async def send_message(
 async def download_media(
     agent_id: str,
     room_id: str,
-    mxc: Annotated[str, Query(description="The mxc:// URI of the attachment")],
+    mxc: Annotated[
+        str, Query(description="The media URI of the attachment (its `mxc` field)")
+    ],
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> Response:
-    """Stream an attachment's bytes from the Matrix media repo.
+    """Stream an attachment's bytes from Switch's media store.
 
     The local channel uses this to materialise inbound images to disk (it holds
-    only the bridge API token, not Matrix credentials).
+    only the bridge API token, no other credentials).
     """
     try:
         data, content_type, filename = await protocol.download_media(
@@ -523,7 +528,7 @@ async def upload_media(
     agent_id: str,
     room_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     file: UploadFile | None = None,
     files: list[UploadFile] | None = None,
     caption: Annotated[str | None, Form()] = None,
@@ -533,7 +538,7 @@ async def upload_media(
 
     The inverse of the GET media endpoint: the local channel (or any connector
     holding the bridge API token) sends the files' bytes here; they are
-    uploaded to the Matrix media repo and posted to the room as
+    stored in Switch's media store and posted to the room as
     m.image / m.file events, with optional caption and threading.
 
     Accepts either a single `file` part or repeated `files` parts. Several
@@ -564,6 +569,8 @@ async def upload_media(
             caption=caption,
             thread_id=thread_id,
         )
+    except BudgetExceeded as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except PermissionError as e:
@@ -577,7 +584,7 @@ async def set_typing(
     agent_id: str,
     req: TypingRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict[str, bool]:
     logger.debug("Set Typing recieved %s, %s", agent.name, req.is_typing)
     try:
@@ -594,7 +601,7 @@ async def set_typing(
 async def renew_role_lease(
     agent_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     connection_id: Annotated[str | None, Header(alias="x-switch-connection-id")] = None,
 ) -> dict[str, bool]:
     """Refresh the caller's role-lease heartbeat (room-agnostic).
@@ -618,7 +625,7 @@ async def renew_connection(
     agent_id: str,
     req: ConnectionRenewRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict[str, bool]:
     """Refresh the agent's room-scoped liveness heartbeat.
 
@@ -640,7 +647,7 @@ async def renew_connection(
 async def watch_heartbeat(
     agent_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict[str, bool]:
     """Refresh an auto_session connector's global "watching" heartbeat.
 
@@ -659,7 +666,7 @@ async def update_status(
     agent_id: str,
     req: StatusRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict[str, bool]:
     if req.detail:
         try:
@@ -677,7 +684,7 @@ async def set_runtime_state(
     agent_id: str,
     req: RuntimeStateRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict[str, bool]:
     """Report the agent's session runtime state (working/awaiting-input/idle).
 
@@ -711,7 +718,7 @@ async def set_runtime_state(
 async def poll_events(
     agent_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     timeout: Annotated[float, Query()] = 10,
     accept: Annotated[str | None, Header()] = None,
@@ -785,7 +792,7 @@ async def poll_events(
 
 
 def _resolve_start_cursor(
-    protocol: ProtocolService,
+    protocol: AgentCore,
     agent_id: str,
     start_from: str,
     last_event_id: str | None,
@@ -809,7 +816,7 @@ def _resolve_start_cursor(
 
 def _open_connection(
     *,
-    protocol: ProtocolService,
+    protocol: AgentCore,
     agent: Agent,
     connection_id: str,
     scope: str,
@@ -818,7 +825,7 @@ def _open_connection(
     cursor: int,
     declaration: ClientDeclaration,
     expected_generation: int | None,
-) -> Connection:
+) -> AgentConnection:
     try:
         conn = protocol.connections.open(
             agent_id=agent.id,
@@ -865,7 +872,7 @@ def _open_connection(
 async def _open_event_stream(
     *,
     agent: Agent,
-    protocol: ProtocolService,
+    protocol: AgentCore,
     config: SwitchConfig,
     connection_id: str | None,
     scope: str,
@@ -900,7 +907,7 @@ async def _open_event_stream(
 
     cursor = _resolve_start_cursor(protocol, agent.id, start_from, last_event_id)
 
-    def open_connection() -> Connection:
+    def open_connection() -> AgentConnection:
         return _open_connection(
             protocol=protocol,
             agent=agent,
@@ -1001,11 +1008,11 @@ async def _open_event_stream(
     # created instead counted every rejected attempt as a session that began
     # and ended at once, which a retrying client repeats indefinitely.
     #
-    # `stream_generation == 0` keeps a supervisor reattaching to a connection
-    # it already had from reading as a new session: `open()` hands back the
-    # existing Connection and bumps the generation rather than making another.
-    if conn.stream_generation == 0:
-        await protocol.sessions.started(agent, conn)
+    # Every stream, a reattach included. The reporter keys sessions on the
+    # agent, so a stream on a connection the agent already holds continues its
+    # session rather than starting another, and an open that failed after
+    # registering its connection, retried on the same id, is still counted.
+    await protocol.sessions.started(agent, conn)
 
     return StreamingResponse(
         stream,
@@ -1024,7 +1031,7 @@ async def connection_beat(
     agent_id: str,
     req: ConnectionBeatRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict[str, Any]:
     """The single per-connection heartbeat.
 
@@ -1070,10 +1077,10 @@ async def connection_beat(
 
 
 def _current_connection(
-    protocol: ProtocolService,
+    protocol: AgentCore,
     agent: Agent,
     req: ConnectionSubscribeRequest | ConnectionPlacementsRequest,
-) -> Connection:
+) -> AgentConnection:
     """The connection this request may write to, or the refusal saying why not.
 
     A connection id survives a takeover, so it names the connection rather than
@@ -1101,7 +1108,7 @@ async def connection_subscribe(
     agent_id: str,
     req: ConnectionSubscribeRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict[str, Any]:
     """Claim a room on an open connection.
 
@@ -1176,7 +1183,7 @@ async def connection_unsubscribe(
     agent_id: str,
     req: ConnectionSubscribeRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict[str, Any]:
     """Release a room, returning coverage to any all-scope connection."""
     conn = _current_connection(protocol, agent, req)
@@ -1192,7 +1199,7 @@ async def connection_placements(
     agent_id: str,
     req: ConnectionPlacementsRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict[str, Any]:
     """Replace every session placement on an open connection.
 
@@ -1261,7 +1268,7 @@ async def connection_placements(
 async def poll_notifications(
     agent_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     timeout: Annotated[float, Query()] = 10,
 ) -> EventResponse | Response:
     """Long-poll the agent's notification stream across all its rooms.
@@ -1282,7 +1289,7 @@ async def poll_room_events(
     agent_id: str,
     room_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     timeout: Annotated[float, Query()] = 10,
 ) -> EventResponse | Response:
     try:
@@ -1302,7 +1309,7 @@ async def get_room_history(
     agent_id: str,
     room_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     since: Annotated[
         str | None,
         Query(description="ISO 8601 timestamp — return events from this point forward"),
@@ -1356,7 +1363,7 @@ async def get_room_history(
 async def list_participants(
     room_id: str,
     _agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> ParticipantsResponse:
     try:
         participants_desc = await protocol.list_participants(room_id)
@@ -1384,7 +1391,7 @@ async def delegate_task(
     agent_id: str,
     req: DelegateTaskRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> DelegateTaskResponse:
     # TODO: do we still need this ?
     if agent.id != agent_id:
@@ -1399,6 +1406,8 @@ async def delegate_task(
             description=req.description,
         )
         task = await protocol.get_task(agent.id, result.task_id)
+    except BudgetExceeded as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except PermissionError as e:
@@ -1414,7 +1423,7 @@ async def accept_task(
     agent_id: str,
     req: AcceptTaskRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> TaskInfo:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")
@@ -1435,7 +1444,7 @@ async def cancel_task(
     agent_id: str,
     req: CancelTaskRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> TaskInfo:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")
@@ -1455,7 +1464,7 @@ async def cancel_task(
 async def list_tasks(
     agent_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     room_id: Annotated[str | None, Query()] = None,
     role: Annotated[str | None, Query(description="'delegated' or 'assigned'")] = None,
     status: Annotated[str | None, Query()] = None,
@@ -1474,7 +1483,7 @@ async def get_task(
     agent_id: str,
     task_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> TaskInfo:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")
@@ -1493,7 +1502,7 @@ async def get_task(
 async def list_task_agents(
     agent_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     room_id: Annotated[str, Query()],
 ) -> TaskAgentsResponse:
     if agent.id != agent_id:
@@ -1519,7 +1528,7 @@ async def update_task(
     agent_id: str,
     req: UpdateTaskRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> TaskInfo:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")
@@ -1540,7 +1549,7 @@ async def finalise_task(
     agent_id: str,
     req: FinaliseTaskRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> TaskInfo:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")
@@ -1564,7 +1573,7 @@ async def report_events(
     agent_id: str,
     req: ReportEventsRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> Response:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")
@@ -1587,7 +1596,7 @@ async def pre_tool_call(
     agent_id: str,
     req: PreToolCallRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> PreToolCallResponse:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")
@@ -1612,7 +1621,7 @@ async def pre_llm_request(
     agent_id: str,
     req: PreLlmRequestRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> PreLlmRequestResponse:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")
@@ -1637,7 +1646,7 @@ async def post_tool_result(
     agent_id: str,
     req: PostToolResultRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> PostToolResultResponse:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")
@@ -1662,7 +1671,7 @@ async def post_llm_response(
     agent_id: str,
     req: PostLlmResponseRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> PostLlmResponseResponse:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")
@@ -1690,7 +1699,7 @@ async def create_room(
     agent_id: str,
     req: CreateModerationRoomRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> CreateModerationRoomResponse:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")
@@ -1727,8 +1736,8 @@ async def create_room(
     return CreateModerationRoomResponse(
         id=result.room.id,
         name=result.room.name,
-        transport_room_id=result.room.matrix_room_id,
-        matrix_room_id=result.room.matrix_room_id,
+        transport_room_id=result.room.transport_room_id,
+        matrix_room_id=result.room.transport_room_id,
         failed_attachments=result.failed_attachments,
     )
 
@@ -1739,7 +1748,7 @@ async def invite_agent(
     room_id: str,
     req: InviteAgentRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict[str, bool]:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")
@@ -1757,7 +1766,7 @@ async def invite_agent(
 async def list_rooms(
     agent_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> RoomListResponse:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")
@@ -1773,7 +1782,7 @@ async def get_room(
     agent_id: str,
     room_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> RoomDetailResponse:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")
@@ -1797,7 +1806,7 @@ async def get_room(
 async def list_agents(
     agent_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> AgentListResponse:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")
@@ -1820,7 +1829,7 @@ async def list_agents(
 async def list_bridges(
     agent_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> ListBridgesResponse:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")

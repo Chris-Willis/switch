@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select, update
 
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     MessagePayload,
@@ -490,7 +490,7 @@ async def test_tombstone_survives_expiry_and_prune(mailbox):
 
 async def test_busy_counts_rows_waiting_for_the_worker(mailbox):
     store, factory = mailbox
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
 
     async def evidence() -> tuple[bool, list[str]]:
         async with factory() as session:

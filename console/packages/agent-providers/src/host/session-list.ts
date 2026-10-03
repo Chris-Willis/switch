@@ -11,11 +11,15 @@ import { sharedSessionsBase } from './launch';
  * `readHostSessions` reads them; it is self-contained so the same source runs
  * in-process (a watcher answering `list`) and as `LIST_SCRIPT` under `node -e`
  * on a host Console reaches over SSH.
+ *
+ * A null `agentId` lists every agent's sessions on the host, each with the
+ * agent that owns it: answering for one agent reads every session directory
+ * anyway, so one run can serve every agent on the host.
  */
 export function readHostSessions(
   nodeFs: typeof fs,
   nodePath: typeof path,
-  agentId: string,
+  agentId: string | null,
   base: string
 ): ListedSession[] {
   const readJson = (file: string): unknown => {
@@ -78,7 +82,8 @@ export function readHostSessions(
       if (code === 'ENOENT' || code === 'ENOTDIR') continue;
       throw error;
     }
-    if (!config || !config.session || config.session.agentId !== agentId) continue;
+    const owner = config?.session?.agentId;
+    if (!owner || (agentId !== null && owner !== agentId)) continue;
     const upserts = lines(nodePath.join(root, 'events.jsonl')).filter(
       (e) => e && e.body && e.body.type === 'session.upsert'
     );
@@ -88,7 +93,13 @@ export function readHostSessions(
     );
     const handoffs = lines(nodePath.join(root, 'handoff.jsonl'));
     const room = handoffs.length ? (handoffs[handoffs.length - 1]!.roomId ?? null) : null;
-    found.push({ session: latest ?? config.session, stopped, room, alive: alive(root) });
+    found.push({
+      agentId: owner,
+      session: latest ?? config!.session,
+      stopped,
+      room,
+      alive: alive(root),
+    });
   }
   return found;
 }
@@ -102,6 +113,7 @@ type HostRecord = {
 } | null;
 
 export type ListedSession = {
+  agentId: string;
   session: unknown;
   stopped: boolean;
   room: string | null;
@@ -110,17 +122,19 @@ export type ListedSession = {
 
 /**
  * `readHostSessions` as a `node -e` script: `node -e LIST_SCRIPT <agentId>
- * [base]` prints the listing as JSON. An empty base is the default one.
+ * [base]` prints the listing as JSON. An empty agent id lists every agent's
+ * sessions; an empty base is the default one.
  */
 export const LIST_SCRIPT = `
 const path = require('node:path');
 const [agentId, baseArg] = process.argv.slice(1);
 const base = baseArg || path.join(require('node:os').homedir(), '.local', 'state', 'switch', 'sdk-sessions');
-process.stdout.write(JSON.stringify((${readHostSessions.toString()})(require('node:fs'), path, agentId, base)));
+process.stdout.write(JSON.stringify((${readHostSessions.toString()})(require('node:fs'), path, agentId || null, base)));
 `;
 
 const listedSchema = z.array(
   z.object({
+    agentId: z.string(),
     session: z.unknown(),
     stopped: z.boolean(),
     room: z.string().nullable(),
@@ -134,7 +148,22 @@ const listedSchema = z.array(
  * in. An entry whose record does not parse is left out.
  */
 export function hostSessions(listed: unknown): Session[] {
-  return listedSchema.parse(listed).flatMap((entry) => {
+  return listedSessions(listedSchema.parse(listed));
+}
+
+/** `hostSessions` for a listing of every agent on the host, grouped by the agent that owns each. */
+export function hostSessionsByAgent(listed: unknown): Map<string, Session[]> {
+  const byAgent = new Map<string, Session[]>();
+  for (const entry of listedSchema.parse(listed)) {
+    const sessions = listedSessions([entry]);
+    if (!sessions.length) continue;
+    byAgent.set(entry.agentId, [...(byAgent.get(entry.agentId) ?? []), ...sessions]);
+  }
+  return byAgent;
+}
+
+function listedSessions(listed: z.infer<typeof listedSchema>): Session[] {
+  return listed.flatMap((entry) => {
     const parsed = sessionSchema.safeParse(entry.session);
     if (!parsed.success) return [];
     return [

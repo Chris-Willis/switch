@@ -7,10 +7,10 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     SESSION_COMMAND_PROTOCOL_REVISION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.hosted_workers import WorkerBinding
@@ -29,11 +29,11 @@ FRAME = {"sessionId": "session-1", "commandId": "command-1"}
 
 
 class _Protocol:
-    def __init__(self, registry: ConnectionRegistry) -> None:
+    def __init__(self, registry: AgentConnectionRegistry) -> None:
         self.connections = registry
 
 
-def _watcher(registry: ConnectionRegistry, *, speaks: int, scope: str = "all"):
+def _watcher(registry: AgentConnectionRegistry, *, speaks: int, scope: str = "all"):
     conn = registry.open(
         agent_id=AGENT,
         connection_id=f"conn-{scope}-{speaks}",
@@ -74,7 +74,7 @@ async def owner(session_factory, people) -> str:
 
 
 async def test_a_relayed_session_command_reaches_the_watcher_stream() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     _, stream = _watcher(registry, speaks=SESSION_COMMAND_PROTOCOL_REVISION)
     try:
         await anext(stream)  # connection_state
@@ -96,7 +96,7 @@ async def test_a_relayed_session_command_reaches_the_watcher_stream() -> None:
     ],
 )
 async def test_a_command_nobody_can_take_is_not_relayed(speaks, scope) -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn, stream = _watcher(registry, speaks=speaks, scope=scope)
     conn.stream_attached = True
     assert registry.relay_session_command(AGENT, FRAME, worker_only=False) is False
@@ -108,7 +108,7 @@ async def test_switch_does_not_answer_where_an_agents_sessions_are(
     session_factory, owner
 ) -> None:
     """The agent's room watcher owns its connection and placements; Console asks it."""
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     _watcher(registry, speaks=SESSION_COMMAND_PROTOCOL_REVISION)
     registry.place_session(
         AGENT, "session-1", "room-1", f"conn-all-{SESSION_COMMAND_PROTOCOL_REVISION}"
@@ -118,7 +118,7 @@ async def test_switch_does_not_answer_where_an_agents_sessions_are(
 
 
 async def test_a_worker_only_command_skips_every_connection_but_the_worker() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     plain, plain_stream = _watcher(registry, speaks=SESSION_COMMAND_PROTOCOL_REVISION)
     plain.stream_attached = True
     assert registry.relay_session_command(AGENT, FRAME, worker_only=True) is False

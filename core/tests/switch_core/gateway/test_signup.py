@@ -25,6 +25,7 @@ from switch_core.gateway.auth_routes import router as auth_router
 from switch_core.gateway.dependencies import (
     get_config,
     get_session,
+    get_session_factory,
     get_system_session,
     get_user_store,
 )
@@ -48,6 +49,7 @@ async def signup_app(session_factory):
     )
     config = SimpleNamespace(
         gateway_signup_open=True,
+        gateway_signup_mode="default_tenant",
         gateway_signup_max_per_hour=20,
         gateway_password_login_enabled=True,
         gateway_oidc_enabled=False,
@@ -69,6 +71,7 @@ async def signup_app(session_factory):
 
     app.dependency_overrides[get_system_session] = sessions
     app.dependency_overrides[get_session] = scoped_sessions
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_user_store] = UserStore
     app.dependency_overrides[get_config] = lambda: config
     app.dependency_overrides[get_current_user] = lambda: identity["user"]
@@ -121,6 +124,17 @@ def test_signup_needs_password_login_too():
     ).gateway_signup_open
     assert not config(
         gateway_signup_enabled=False, gateway_password_login_enabled=True
+    ).gateway_signup_open
+
+
+@pytest.mark.parametrize("mode", ["invite_only", "open"])
+def test_signup_is_closed_outside_default_tenant_mode(mode):
+    """Sign-up lands a new account in tenant zero, which is only what
+    `gateway_signup_mode` decides for a first sign-in under `default_tenant`."""
+    assert not SwitchConfig.model_construct(
+        gateway_signup_enabled=True,
+        gateway_password_login_enabled=True,
+        gateway_signup_mode=mode,
     ).gateway_signup_open
 
 
