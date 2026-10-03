@@ -34,9 +34,11 @@ export type ControllerTiming = {
   defaultReportWithinS: number;
   streamIdleMs: number;
   streamInitialBackoffMs: number;
+  /**
+   * The longest wait before reopening the controller stream. Kept short:
+   * every agent on the controller is offline while the stream is down.
+   */
   streamMaxBackoffMs: number;
-  /** A controller stream that lasts this long resets the reconnect backoff. */
-  streamStableMs: number;
   relay: RelayTiming;
   /** The most events the relay holds per agent for its watcher to resume from. */
   relayBufferLimit: number;
@@ -50,8 +52,7 @@ export const DEFAULT_TIMING: ControllerTiming = {
   // Three missed 15 s keepalives.
   streamIdleMs: 45_000,
   streamInitialBackoffMs: 1_000,
-  streamMaxBackoffMs: 60_000,
-  streamStableMs: 30_000,
+  streamMaxBackoffMs: 8_000,
   relay: DEFAULT_RELAY_TIMING,
   relayBufferLimit: 5_000,
 };
@@ -479,7 +480,6 @@ export async function runController(
       idleTimeoutMs: timing.streamIdleMs,
       initialBackoffMs: timing.streamInitialBackoffMs,
       maxBackoffMs: timing.streamMaxBackoffMs,
-      stableMs: timing.streamStableMs,
       random: deps.random,
     });
     if (ending === 'revoked') await revoke();

@@ -136,10 +136,10 @@ export type ControllerStreamOptions = {
   log: Logger;
   /** No byte for this long, keepalives included, and the stream is presumed dead. */
   idleTimeoutMs: number;
+  /** The first reconnect wait, and where the wait returns to once a stream attaches. */
   initialBackoffMs: number;
+  /** The longest reconnect wait, before jitter of up to half of it is taken off. */
   maxBackoffMs: number;
-  /** A stream that lasts this long resets the backoff. */
-  stableMs: number;
   /** Jitter source in [0, 1); injectable for tests. */
   random: () => number;
 };
@@ -223,10 +223,6 @@ class ControllerStream {
           else {
             const reason = attempt.socket.signal.reason;
             failure = errorMessage(reason instanceof IdleTimeout ? reason : error);
-            log.warn('The controller stream is down; reconnecting.', {
-              error: failure,
-              retryInMs: this.backoff,
-            });
           }
         }
       } finally {
@@ -238,10 +234,16 @@ class ControllerStream {
       if (signal.aborted) break;
       if (attempt.attachedAt > 0) {
         this.options.onDisconnected(failure ?? 'the stream ended');
-        if (Date.now() - attempt.attachedAt >= this.options.stableMs)
-          this.backoff = this.options.initialBackoffMs;
+        // Every agent on this controller is offline until the stream is back,
+        // so a stream that attached at all starts the waits over.
+        this.backoff = this.options.initialBackoffMs;
       }
       const wait = Math.round(this.backoff * (0.5 + this.options.random() * 0.5));
+      if (failure !== null)
+        log.warn('The controller stream is down; reconnecting.', {
+          error: failure,
+          retryInMs: wait,
+        });
       await delay(wait, undefined, { signal }).catch(() => {});
       this.backoff = Math.min(this.backoff * 2, this.options.maxBackoffMs);
     }

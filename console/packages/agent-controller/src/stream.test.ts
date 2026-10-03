@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AccessTokens, ControllerApiError, ControllerClient } from './api';
+import { DEFAULT_TIMING } from './controller';
 import { silentLogger } from './log';
 import type { AgentCursor, ControllerConnection } from './schemas';
 import {
@@ -122,7 +123,6 @@ function run(
     idleTimeoutMs: 200,
     initialBackoffMs: 5,
     maxBackoffMs: 20,
-    stableMs: 10_000,
     random: () => 0,
     ...overrides,
   });
@@ -329,6 +329,46 @@ describe('runControllerStream', () => {
     expect(opens).toBe(3);
   });
 
+  it('waits less each time a stream attached, however briefly, and never long', async () => {
+    const scripted = new ScriptedClient();
+    let opens = 0;
+    scripted.open = async () => {
+      opens++;
+      if (opens <= 3) throw new TypeError('fetch failed');
+      return opened;
+    };
+    let attaches = 0;
+    scripted.events = async () => {
+      attaches++;
+      if (attaches === 1) return new Response(streamOf([]));
+      throw new TypeError('fetch failed');
+    };
+    const waits: number[] = [];
+    const log = {
+      ...silentLogger,
+      warn: (_message: string, fields?: Record<string, unknown>) => {
+        if (typeof fields?.retryInMs === 'number') waits.push(fields.retryInMs);
+      },
+    };
+    const stop = new AbortController();
+    const { ending } = run(scripted, stop.signal, {
+      log,
+      initialBackoffMs: 8,
+      maxBackoffMs: 64,
+    });
+    await waitFor(() => waits.length >= 5, 'five reconnect waits');
+    stop.abort();
+    await ending;
+    // Doubling from the start after the stream that attached, capped, with
+    // jitter taking half off (random() is 0 here).
+    expect(waits.slice(0, 5)).toEqual([4, 8, 16, 8, 16]);
+  });
+
+  it('caps the reconnect wait at seconds, not a minute', () => {
+    expect(DEFAULT_TIMING.streamInitialBackoffMs).toBeLessThanOrEqual(1_000);
+    expect(DEFAULT_TIMING.streamMaxBackoffMs).toBeLessThanOrEqual(10_000);
+  });
+
   const fixture = join(
     import.meta.dirname,
     '..',
@@ -423,8 +463,7 @@ describe('runControllerStream against the controller stream routes', () => {
       idleTimeoutMs: 2_000,
       initialBackoffMs: 5,
       maxBackoffMs: 20,
-      stableMs: 10_000,
-      random: () => 0,
+        random: () => 0,
     });
     await waitFor(() => core.streamCount === 1, 'the stream');
     core.push('assignment.changed', { revision: 4 });
