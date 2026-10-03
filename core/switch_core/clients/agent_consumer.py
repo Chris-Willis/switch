@@ -323,12 +323,13 @@ def _machine_offline_message(machine: str, owner_handle: str | None) -> str:
 
 
 def _machine_removed_message(machine: str, owner_handle: str | None) -> str:
-    owner = f"@{owner_handle} — " if owner_handle else ""
-    return (
-        f"{owner}My machine, **{machine}**, has been removed from Switch, so "
-        "nothing runs me. My owner has to move me to another machine to bring "
-        "me back."
+    removed = (
+        f"my machine, **{machine}**, has been removed from Switch, so nothing "
+        "runs me. My owner has to move me to another machine to bring me back."
     )
+    if owner_handle:
+        return f"@{owner_handle} — {removed}"
+    return removed[0].upper() + removed[1:]
 
 
 def _no_session_here_message(

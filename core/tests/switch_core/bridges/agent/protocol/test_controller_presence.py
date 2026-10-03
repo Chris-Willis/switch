@@ -483,7 +483,7 @@ class TestTheAgentClientsReplies:
             "check it."
         )
         assert removed.startswith(
-            "@owner — My machine, **machine**, has been removed from Switch"
+            "@owner — my machine, **machine**, has been removed from Switch"
         )
         assert "move me to another machine" in removed
 
