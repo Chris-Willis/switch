@@ -119,6 +119,9 @@ class Binding:
     controller_id: str
     tenant_id: str
     auto_session: bool
+    # The controller's name as its owner knows it ("the machine"), for the
+    # room to be told which machine is offline.
+    controller_name: str
     # False when the owner has set the agent to stopped: its controller runs
     # nothing for it, so it is not live however healthy the controller is.
     running: bool
@@ -270,6 +273,9 @@ class ControllerPresence:
 
     def binding(self, agent_id: str) -> Binding | None:
         return self._bindings.get(agent_id)
+
+    def is_revoked(self, controller_id: str) -> bool:
+        return controller_id in self._revoked
 
     def is_bound(self, agent_id: str) -> bool:
         return agent_id in self._bindings

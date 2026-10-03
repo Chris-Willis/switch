@@ -13,8 +13,10 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.db.models import AgentControllerEnrollmentCode
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.management.bindings import load_bindings
 from tests.switch_core.management.harness import (
     EnrolledController,
     Harness,
@@ -675,7 +677,34 @@ class TestPlacementBindsTheAgentInCore:
         binding = presence.binding(agent_id)
         assert binding is not None
         assert binding.controller_id == controller.controller_id
+        assert binding.controller_name == "laptop"
         assert binding.auto_session is True
+        assert not presence.is_revoked(controller.controller_id)
+
+    async def test_a_revoked_controller_reads_as_revoked_after_a_restart(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner, "workstation")
+            agent_id = await _placed_agent(harness, client, controller)
+            revoked = await client.delete(
+                f"/gateway/management/controllers/{controller.controller_id}",
+                cookies=cookies_for(owner),
+            )
+        assert revoked.status_code in (200, 204), revoked.text
+        restarted = AgentConnectionRegistry().controllers
+
+        await load_bindings(
+            session_factory=harness.session_factory,
+            definitions=harness.management.service.definitions,
+            controllers=harness.management.service.controllers,
+            presence=restarted,
+        )
+
+        binding = restarted.binding(agent_id)
+        assert binding is not None and binding.controller_name == "workstation"
+        assert restarted.is_revoked(controller.controller_id)
 
 
 def test_bearer_helper() -> None:

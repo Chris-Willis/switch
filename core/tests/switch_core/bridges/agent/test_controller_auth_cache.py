@@ -138,6 +138,7 @@ def test_presence_keeps_it_in_step_with_bindings_and_revocations(
         controller_id="c1",
         tenant_id="t1",
         auto_session=True,
+        controller_name="machine",
         running=True,
     )
 
@@ -156,6 +157,7 @@ def test_presence_keeps_it_in_step_with_bindings_and_revocations(
             controller_id="c2",
             tenant_id="t1",
             auto_session=True,
+            controller_name="machine",
             running=True,
         )
     )

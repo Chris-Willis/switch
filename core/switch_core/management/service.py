@@ -651,12 +651,20 @@ class ManagementService:
         for controller_id, revision in revisions.items():
             self.notifier.assignment_changed(controller_id, revision)
 
-    def _bind(self, tenant_id: str, row: AgentDefinitionRow) -> None:
+    async def _bind(
+        self, session: AsyncSession, tenant_id: str, row: AgentDefinitionRow
+    ) -> None:
         """Tell Core where the agent runs now, after the change has committed."""
         if row.controller_id is None:
             self.presence.unbind(row.agent_id, DETACH_UNASSIGNED)
             return
-        self.presence.bind(binding_of(tenant_id, row))
+        controller = await self.controllers.get(session, tenant_id, row.controller_id)
+        if controller is None:
+            raise RuntimeError(
+                f"agent {row.agent_id} is placed on controller {row.controller_id}, "
+                "which does not exist"
+            )
+        self.presence.bind(binding_of(tenant_id, row, controller))
 
     async def create_managed_agent(
         self,
@@ -710,7 +718,7 @@ class ManagementService:
             session, tenant_id, {request.controller_id}
         )
         await session.commit()
-        self._bind(tenant_id, row)
+        await self._bind(session, tenant_id, row)
         self._nudge(revisions)
         logger.info(
             "Created managed agent %s on controller %s",
@@ -838,7 +846,7 @@ class ManagementService:
                 )
         revisions = await self._bump_and_collect(session, tenant_id, affected)
         await session.commit()
-        self._bind(tenant_id, row)
+        await self._bind(session, tenant_id, row)
         self._nudge(revisions)
         agent = await self._owned_agent(session, owner_id, agent.id)
         return await self._view(session, tenant_id, row, agent, {})
@@ -985,14 +993,17 @@ class ManagementService:
         return [operation_view(operation) for operation in operations]
 
 
-def binding_of(tenant_id: str, row: AgentDefinitionRow) -> Binding:
-    """The binding Core keeps for a placed definition."""
-    assert row.controller_id is not None
+def binding_of(
+    tenant_id: str, row: AgentDefinitionRow, controller: AgentController
+) -> Binding:
+    """The binding Core keeps for a definition placed on `controller`."""
+    assert row.controller_id == controller.id
     return Binding(
         agent_id=row.agent_id,
-        controller_id=row.controller_id,
+        controller_id=controller.id,
         tenant_id=tenant_id,
         auto_session=DefinitionV1.model_validate(row.definition).auto_session,
+        controller_name=controller.name,
         running=row.desired_state == "running",
     )
 

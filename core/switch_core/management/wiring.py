@@ -74,6 +74,7 @@ class Management:
         return await load_bindings(
             session_factory=self.session_factory,
             definitions=self.service.definitions,
+            controllers=self.service.controllers,
             presence=self.service.presence,
         )
 

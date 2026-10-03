@@ -80,6 +80,7 @@ def _bind(
         controller_id=CONTROLLER,
         tenant_id=TENANT_ZERO_ID,
         auto_session=auto_session,
+        controller_name="machine",
         running=running,
     )
     registry.controllers.bind(binding)
@@ -235,6 +236,7 @@ class TestTheRegistryAsksTheController:
             controller_id="controller-2",
             tenant_id=TENANT_ZERO_ID,
             auto_session=True,
+            controller_name="machine",
             running=True,
         )
         registry.controllers.bind(moved)
@@ -369,6 +371,9 @@ def _client(registry: AgentConnectionRegistry, agent_id: str) -> SimpleNamespace
     ns._reply_when_unavailable_here = (
         AgentConsumer._reply_when_unavailable_here.__get__(ns)
     )
+    ns._controller_unavailable_reply = (
+        AgentConsumer._controller_unavailable_reply.__get__(ns)
+    )
     return ns
 
 
@@ -394,8 +399,13 @@ class TestTheAgentClientsReplies:
 
         assert available is False
         assert promised == _STARTING_SESSION_MESSAGE
-        assert declined == "offline"
-        assert lapsed == "offline"
+        assert declined.startswith("I don't have a session in this room.")
+        assert "my owner (@owner) can turn on automatic starts" in declined
+        assert lapsed.startswith(
+            "My machine, **machine**, is offline or reconnecting to Switch"
+        )
+        for reply in (declined, lapsed):
+            assert "Switch Console" not in reply
         assert auto._agent_session_store.asked == []
 
     async def test_a_stopped_agent_is_not_promised_a_session(
@@ -441,6 +451,7 @@ class TestTheAgentClientsReplies:
                 controller_id=CONTROLLER,
                 tenant_id=TENANT_ZERO_ID,
                 auto_session=True,
+                controller_name="machine",
                 running=True,
             )
         )
@@ -449,6 +460,32 @@ class TestTheAgentClientsReplies:
             await client._reply_when_unavailable_here(object(), agent, meta, "u")
             == _STARTING_SESSION_MESSAGE
         )
+
+    async def test_an_offline_or_removed_machine_is_named_not_console(
+        self,
+    ) -> None:
+        registry = AgentConnectionRegistry()
+        _bind(registry, "auto")
+        meta = SimpleNamespace(room_id=ROOM, name="Room", bridge_id=None)
+        client = _client(registry, "auto")
+        agent = _agent("auto", "auto_session")
+
+        never_connected = await client._reply_when_unavailable_here(
+            object(), agent, meta, "u"
+        )
+        registry.controllers.revoke_controller(CONTROLLER)
+        removed = await client._reply_when_unavailable_here(object(), agent, meta, "u")
+
+        assert never_connected == (
+            "My machine, **machine**, is offline or reconnecting to Switch, so "
+            "I can't answer right now. If I haven't answered once it's back, "
+            "address me again. If it stays offline, my owner (@owner) needs to "
+            "check it."
+        )
+        assert removed.startswith(
+            "@owner — My machine, **machine**, has been removed from Switch"
+        )
+        assert "move me to another machine" in removed
 
     async def test_an_always_on_agent_is_available_while_its_controller_is(
         self,

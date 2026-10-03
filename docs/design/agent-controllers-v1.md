@@ -178,7 +178,8 @@ These are the codes from the contract, plus `forbidden`, `invalid_credential`, `
   warning at startup**, saying no OS keychain backend is in use.
 - **Run loop:**
   1. Exchange the token, refreshing it before expiry. On `controller_revoked`: stop all agents, wipe the credential, and exit non-zero.
-  2. Open the nudge stream, reconnecting with backoff.
+  2. Open the nudge stream, reconnecting with jittered backoff capped at 8 s and
+     reset whenever a stream attaches: every agent is offline while it is down.
   3. On connect and on `assignment.changed`: pull the assignment with ETag, then reconcile.
   4. On `operation.pending`: list, claim, execute and report.
   5. As a safety net, resync fully every 10 minutes.
@@ -302,7 +303,11 @@ stream. The flag and everything else above stay as they are.
   a role holder's `present_here`/`session_room`, and the agent detail's
   session rows. An addressed agent placed in the room is available, so no
   "Starting a session…" or offline reply is posted; unplaced, the reply names
-  the rooms it is placed in elsewhere.
+  the rooms it is placed in elsewhere. With its controller not live the reply
+  names the machine (the controller's name, carried on the binding) as
+  offline or reconnecting, or as removed once it is revoked; a controller-
+  backed agent is never offered the terminal command or told to open Switch
+  Console.
 - **Liveness** is "stream attached and beat within 6 s"; the connection sweep
   closes lapsed controller connections.
 - **Holder id.** A controller-backed agent holds things under

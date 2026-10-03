@@ -307,6 +307,50 @@ def _stopped_owner_message(owner_handle: str | None, asker_handle: str) -> str:
     )
 
 
+def _owner_ref(owner_handle: str | None) -> str:
+    return f"my owner (@{owner_handle})" if owner_handle else "my owner"
+
+
+def _machine_offline_message(machine: str, owner_handle: str | None) -> str:
+    """A managed agent whose controller's stream is down: Core restarted, the
+    machine lost its network, or it is switched off."""
+    return (
+        f"My machine, **{machine}**, is offline or reconnecting to Switch, so "
+        "I can't answer right now. If I haven't answered once it's back, address "
+        f"me again. If it stays offline, {_owner_ref(owner_handle)} needs to "
+        "check it."
+    )
+
+
+def _machine_removed_message(machine: str, owner_handle: str | None) -> str:
+    owner = f"@{owner_handle} — " if owner_handle else ""
+    return (
+        f"{owner}My machine, **{machine}**, has been removed from Switch, so "
+        "nothing runs me. My owner has to move me to another machine to bring "
+        "me back."
+    )
+
+
+def _no_session_here_message(
+    auto_session: bool, elsewhere: list[str], owner_handle: str | None
+) -> str:
+    """A managed agent whose machine is up but starts no session for it here."""
+    if elsewhere:
+        where = ", ".join(f"**{name}**" for name in elsewhere)
+        opening = (
+            f"I don't have a session in this room, but I'm working in {where}. "
+            "Ask me there to come here."
+        )
+    else:
+        opening = "I don't have a session in this room."
+    if auto_session:
+        return opening
+    return (
+        f"{opening} My machine doesn't start sessions for me on its own: "
+        f"{_owner_ref(owner_handle)} can turn on automatic starts in Switch."
+    )
+
+
 # The refusal wording lives with the decision that produces it. Kept under
 # these names because they are how the rest of the package and its tests refer
 # to them.
@@ -1199,31 +1243,10 @@ class AgentConsumer(Consumer[AgentActor]):
             return _STARTING_SESSION_MESSAGE
 
         # A controller-backed agent is answered from its controller alone: none
-        # of the heartbeat rows, placements or room claims below is its. Rooms
-        # its controller reports a session of it working in are where else the
-        # asker can find it.
+        # of the heartbeat rows, placements or room claims below is its.
         if self._connections.controllers.is_bound(self.agent.id):
-            if self._connections.controllers.is_stopped(self.agent.id):
-                return _stopped_owner_message(
-                    await self.owner_handle_in(session, agent, meta.bridge_id),
-                    asker_handle,
-                )
-            elsewhere = sorted(
-                self._connections.controllers.placed_rooms(self.agent.id)
-                - {meta.room_id}
-            )
-            placed_names: list[str] = []
-            for rid in elsewhere:
-                placed_room = await self._room_store.get(session, rid)
-                placed_name = placed_room.name if placed_room is not None else rid
-                if placed_name != meta.name:
-                    placed_names.append(placed_name)
-            return await self._unavailable_reply(
-                session,
-                meta,
-                agent,
-                asker_handle,
-                other_room_names=placed_names or None,
+            return await self._controller_unavailable_reply(
+                session, agent, meta, asker_handle
             )
 
         if connection_model == "auto_session":
@@ -1291,6 +1314,35 @@ class AgentConsumer(Consumer[AgentActor]):
                 session, meta, agent, asker_handle, connected_not_live=True
             )
         return await self._unavailable_reply(session, meta, agent, asker_handle)
+
+    async def _controller_unavailable_reply(
+        self, session: AsyncSession, agent: Agent, meta: RoomMeta, asker_handle: str
+    ) -> str:
+        """Why an agent run by an agents controller cannot answer here.
+
+        Never the terminal command or "open Switch Console": a managed agent
+        is started by its controller, so the reply names what stands in the
+        way — the owner stopped it, its machine was removed or is offline, or
+        its machine is up but starts no session for it here (naming rooms a
+        session of it is working in, where the asker can find it).
+        """
+        controllers = self._connections.controllers
+        binding = controllers.binding(self.agent.id)
+        assert binding is not None
+        owner = await self.owner_handle_in(session, agent, meta.bridge_id)
+        if not binding.running:
+            return _stopped_owner_message(owner, asker_handle)
+        if controllers.is_revoked(binding.controller_id):
+            return _machine_removed_message(binding.controller_name, owner)
+        if not controllers.is_live(self.agent.id):
+            return _machine_offline_message(binding.controller_name, owner)
+        placed_names: list[str] = []
+        for rid in sorted(controllers.placed_rooms(self.agent.id) - {meta.room_id}):
+            placed_room = await self._room_store.get(session, rid)
+            placed_name = placed_room.name if placed_room is not None else rid
+            if placed_name != meta.name:
+                placed_names.append(placed_name)
+        return _no_session_here_message(binding.auto_session, placed_names, owner)
 
     async def owner_handle_in(
         self, session: AsyncSession, agent: Agent, bridge_id: str | None
