@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as Sqlite from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { ConfigurationError } from './errors';
 import { ControllerStore, STORE_SCHEMA_VERSION } from './store';
 
 let dir: string;
@@ -54,6 +55,7 @@ describe('ControllerStore', () => {
     raw.exec(`PRAGMA user_version = ${STORE_SCHEMA_VERSION + 1}`);
     raw.close();
     expect(() => ControllerStore.open(path)).toThrow(/newer than this controller understands/);
+    expect(() => ControllerStore.open(path)).toThrow(ConfigurationError);
   });
 
   it('keeps the identity across reopening, and clears a revocation on re-enrollment', () => {
@@ -74,6 +76,23 @@ describe('ControllerStore', () => {
     reopened.saveIdentity({ ...identity, controllerId: 'controller-2' });
     expect(reopened.revokedAt()).toBeNull();
     reopened.close();
+  });
+
+  it('moves the identity to another server URL and keeps the rest', () => {
+    const store = ControllerStore.open(path);
+    expect(() => store.saveServer('https://moved.example.com')).toThrow(/no identity/);
+    const identity = {
+      controllerId: 'controller-1',
+      server: 'https://switch.example.com',
+      name: 'build-box',
+      enrolledAt: '2026-01-01T00:00:00.000Z',
+    };
+    store.saveIdentity(identity);
+    store.saveAssignment(assignment, '"etag-1"', '2026-01-01T00:00:00.000Z');
+    store.saveServer('https://moved.example.com');
+    expect(store.identity()).toEqual({ ...identity, server: 'https://moved.example.com' });
+    expect(store.cachedAssignment()?.etag).toBe('"etag-1"');
+    store.close();
   });
 
   it('caches the assignment with its ETag', () => {

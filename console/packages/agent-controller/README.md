@@ -48,12 +48,27 @@ node packages/agent-controller/dist/cli.mjs status [--data-dir <dir>]
 - Logging goes to stderr. Set the level with `SWITCH_CONTROLLER_LOG_LEVEL`
   (`debug`, `info`, `warn`, `error`; the default is `info`).
 - Exit codes:
-  - `0`: stopped by SIGINT/SIGTERM.
-  - `1`: error.
-  - `2`: usage error.
-  - `3`: the server revoked this controller.
-  - `4`: another instance of this controller, with the same identity, opened the
-    controller stream after this one, which took it over.
+
+  | Code | Meaning | Restart? |
+  |---|---|---|
+  | `0` | Stopped by SIGINT/SIGTERM, or the command finished. | No |
+  | `1` | An error that may pass: the network, the server, or a crash. | Yes, with backoff |
+  | `2` | A configuration error that starting again unchanged cannot fix. | No, not until the configuration changes |
+  | `3` | The server revoked this controller. | No: it must be enrolled again |
+  | `4` | Another instance of this controller, with the same identity, opened the controller stream after this one, which took it over. | No |
+
+  Code `2` covers: an unknown command, option or missing argument; a server
+  URL that is not one, or is plain `http` to a host that is not loopback; a
+  data directory that belongs to another controller identity, or whose store
+  a newer controller wrote; a shared-host bundle that is missing, not a file
+  or unreadable; an unsupported platform (Windows); a data directory that
+  holds no identity, or no credential (revoked earlier and wiped, or never
+  enrolled); and with `--credential-stdin`, a credential that does not arrive
+  (stdin is a terminal, closes empty, holds more than one token, cannot be
+  read, or stays open past 10 s). The reason is the last line on stderr,
+  prefixed `switch-agent-controller: `. Once the controller is running,
+  failures talking to Switch are retried inside the process and do not end
+  it.
 
 Stopping the controller does **not** stop its agents. The watchers are detached
 processes, and they keep running the last assignment, but they cannot reach Switch
@@ -65,8 +80,10 @@ the running watchers so they read them. Agents stop when Management says so, or 
 the controller is revoked.
 
 To run it as a service, have your init system run `run` and restart it on exit code
-`1`. Do not restart it on `3`, because a revoked controller must be enrolled again,
-nor on `4`, because two instances would take the stream from each other in turn.
+`1` only. Do not restart it on `2`, because it would fail the same way until its
+configuration is fixed, nor on `3`, because a revoked controller must be enrolled
+again, nor on `4`, because two instances would take the stream from each other in
+turn. With systemd, `Restart=on-failure` and `RestartPreventExitStatus=2 3 4`.
 
 ## Run by a parent process
 
@@ -85,9 +102,18 @@ switch-agent-controller run \
 
 - `--controller-id` and `--server` adopt an identity enrolled elsewhere. A data
   directory that holds no identity is seeded with it; one that holds the same
-  identity is used as it is; one that holds another controller's is refused, as
-  `enroll` refuses it. `--name` (default: the host name) is recorded only when the
-  identity is seeded.
+  identity is used as it is; one that holds another controller's is refused
+  (exit code `2`), as `enroll` refuses it. `--name` (default: the host name) is
+  recorded only when the identity is seeded.
+- **A new server URL for the same controller.** When the data directory holds
+  this controller (the same `--controller-id`) at another server URL, the
+  stored server is replaced with the new `--server` and the controller runs
+  against it, with a warning in the log naming both. The cached assignment and
+  agent cursors are kept: they belong to the controller, not to the address it
+  was reached at. This is how a parent follows its Switch server to a new
+  address: it stops the controller and starts it again with the new
+  `--server`. Only the server moves this way; a different controller id is
+  still refused.
 - `--credential-stdin` reads the controller credential from stdin, to the end of
   the pipe, and keeps it in memory only (the memory secret store). The parent
   writes it and closes the pipe; the controller gives up after 10 s, and refuses a

@@ -40,6 +40,8 @@ let events: EmbeddedControllerStateEvent[];
 let calls: SpawnCall[];
 let management: { [K in keyof ManagementPort]: Mock<ManagementPort[K]> };
 let services: EmbeddedControllerService[];
+/** The server's API URL as Console has it now; null for a server it no longer knows. */
+let apiUrl: string | null;
 
 function service(overrides: Partial<EmbeddedControllerDeps> = {}): EmbeddedControllerService {
   const spawned = fakeSpawn();
@@ -51,6 +53,7 @@ function service(overrides: Partial<EmbeddedControllerDeps> = {}): EmbeddedContr
       platform: { os: 'linux', arch: 'x64', os_version: '6.1.0' },
     }),
     records: new EnrollmentFile(() => join(base, 'state.json')),
+    serverApiUrl: async () => apiUrl,
     secrets: {
       getSecret: async (key) => secrets.get(key) ?? null,
       setSecret: async (key, value) => void secrets.set(key, value),
@@ -97,6 +100,14 @@ function filesUnder(dir: string): string[] {
   return found;
 }
 
+function serverArg(call: SpawnCall): string | undefined {
+  return call.args[call.args.indexOf('--server') + 1];
+}
+
+function storedRecord(): unknown {
+  return JSON.parse(readFileSync(join(base, 'state.json'), 'utf8')).servers[SERVER];
+}
+
 function dataDir(): string {
   return controllerDataDir(base, SERVER);
 }
@@ -126,6 +137,7 @@ beforeEach(() => {
   secrets = new Map();
   events = [];
   services = [];
+  apiUrl = 'https://switch.example.com';
   management = {
     enroll: vi.fn<ManagementPort['enroll']>(async () => ({
       serverId: SERVER,
@@ -383,5 +395,66 @@ describe('EmbeddedControllerService', () => {
     expect(calls[0]!.child.signals).toEqual(['SIGTERM']);
     expect(secrets.size).toBe(0);
     expect((await running.overview(SERVER, null)).enrollment).toBeNull();
+  });
+  it('restarts a running controller at the server’s new API URL', async () => {
+    const running = await enabled();
+    apiUrl = 'https://moved.example.com';
+    await running.followServerApiUrl(SERVER);
+    expect(calls[0]!.child.signals).toEqual(['SIGTERM']);
+    await waitFor(() => calls.length === 2, 'the restart at the new URL');
+    expect(serverArg(calls[1]!)).toBe('https://moved.example.com');
+    await waitFor(() => calls[1]!.child.received === CREDENTIAL, 'the credential again');
+    expect(storedRecord()).toMatchObject({
+      kind: 'enrolled',
+      controllerId: 'controller-1',
+      server: 'https://moved.example.com',
+    });
+    expect(lastPhase()).toEqual({ kind: 'running', since: '2026-01-01T00:00:00.000Z' });
+  });
+
+  it('takes the new API URL when it next starts, if it was not running', async () => {
+    const running = await enabled();
+    calls[0]!.child.exit(4);
+    apiUrl = 'https://moved.example.com';
+    await running.followServerApiUrl(SERVER);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(calls).toHaveLength(1);
+    expect(lastPhase()?.kind).toBe('taken_over');
+    await running.restart(SERVER);
+    await waitFor(() => calls.length === 2, 'the restart asked for');
+    expect(serverArg(calls[1]!)).toBe('https://moved.example.com');
+  });
+
+  it('follows a URL that changed while Console was closed, at launch', async () => {
+    const first = await enabled();
+    await first.dispose();
+    apiUrl = 'http://127.0.0.1:18000';
+    const relaunched = service();
+    await relaunched.initialize();
+    await waitFor(() => calls.length === 1, 'the controller started at launch');
+    expect(serverArg(calls[0]!)).toBe('http://127.0.0.1:18000');
+    expect(storedRecord()).toMatchObject({ server: 'http://127.0.0.1:18000' });
+  });
+
+  it('does not restart a controller whose API URL is unchanged by an edit elsewhere', async () => {
+    const running = await enabled();
+    const before = calls.length;
+    await running.followServerApiUrl('another-server');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(calls).toHaveLength(before);
+    expect(calls[0]!.child.signals).toEqual([]);
+  });
+
+  it('reports a server Console no longer knows instead of starting at a stale URL', async () => {
+    await enabled();
+    apiUrl = null;
+    const relaunched = service();
+    await relaunched.initialize();
+    await waitFor(() => lastPhase()?.kind === 'error', 'the error');
+    expect(lastPhase()).toEqual({
+      kind: 'error',
+      message: 'Console no longer knows this Switch server, so it cannot say where to connect.',
+    });
+    expect(calls).toHaveLength(0);
   });
 });

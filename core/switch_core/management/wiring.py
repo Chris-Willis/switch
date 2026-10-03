@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.config import SwitchConfig
@@ -83,9 +84,11 @@ def build_management(
     status_interval_seconds: int,
     session_factory: async_sessionmaker[AsyncSession],
     presence: ControllerPresence,
+    auth_cache: ControllerAuthCache,
     clock: Callable[[], datetime],
 ) -> Management:
     controllers = AgentControllerStore()
+    presence.use_auth_cache(auth_cache)
     service = ManagementService(
         settings=ManagementSettings(
             token_secret=token_secret,
@@ -105,6 +108,7 @@ def build_management(
         controllers=controllers,
         token_secret=token_secret,
         presence=presence,
+        auth_cache=auth_cache,
     )
     return Management(
         service=service, authenticator=authenticator, session_factory=session_factory
@@ -128,5 +132,12 @@ def create_management(
         status_interval_seconds=config.controller_status_interval_seconds,
         session_factory=session_factory,
         presence=presence,
+        # The agent API-key cache's bound: the longest a controller revoked
+        # by any path that does not go through `ControllerPresence` could go
+        # on authenticating.
+        auth_cache=ControllerAuthCache(
+            ttl_seconds=config.agent_auth_cache_ttl_seconds,
+            max_entries=config.agent_auth_cache_max_entries,
+        ),
         clock=utc_now,
     )

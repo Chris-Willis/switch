@@ -1,6 +1,7 @@
 import { chmod, mkdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { ConfigurationError } from './errors';
 
 export const DATA_DIR_ENV = 'SWITCH_CONTROLLER_DATA_DIR';
 
@@ -19,7 +20,10 @@ export function defaultDataDir(input: {
     return join(input.home, 'Library', 'Application Support', 'Switch', 'agent-controller');
   if (input.platform === 'win32') {
     const local = input.env.LOCALAPPDATA;
-    if (!local) throw new Error(`LOCALAPPDATA is not set; pass --data-dir or set ${DATA_DIR_ENV}.`);
+    if (!local)
+      throw new ConfigurationError(
+        `LOCALAPPDATA is not set; pass --data-dir or set ${DATA_DIR_ENV}.`
+      );
     return join(local, 'Switch', 'agent-controller');
   }
   const xdg = input.env.XDG_STATE_HOME;

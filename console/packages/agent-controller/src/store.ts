@@ -1,5 +1,6 @@
 import type * as Sqlite from 'node:sqlite';
 import type { DatabaseSync } from 'node:sqlite';
+import { ConfigurationError } from './errors';
 import { type Assignment, assignmentSchema, type ReasonCode } from './schemas';
 
 /**
@@ -126,6 +127,13 @@ export class ControllerStore {
       this.setMeta('enrolled_at', identity.enrolledAt);
       this.db.prepare("DELETE FROM meta WHERE key = 'revoked_at'").run();
     });
+  }
+
+  /** Moves the identity to another server URL, keeping everything else. */
+  saveServer(server: string): void {
+    if (!this.meta('controller_id'))
+      throw new Error('There is no identity whose server could be changed.');
+    this.setMeta('server', server);
   }
 
   revokedAt(): string | null {
@@ -299,7 +307,7 @@ export class ControllerStore {
 function migrate(db: DatabaseSync): void {
   const current = Number((db.prepare('PRAGMA user_version').get() as Row).user_version);
   if (current > MIGRATIONS.length)
-    throw new Error(
+    throw new ConfigurationError(
       `The controller store is at schema version ${current}, newer than this controller understands (${MIGRATIONS.length}). Run a newer controller, or move the data directory aside to start again.`
     );
   for (let version = current; version < MIGRATIONS.length; version++) {

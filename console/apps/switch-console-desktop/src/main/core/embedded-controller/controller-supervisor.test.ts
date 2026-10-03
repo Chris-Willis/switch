@@ -82,20 +82,63 @@ describe('ControllerSupervisor', () => {
     }
   });
 
-  it('reports a usage refusal as an error, with what the controller said', async () => {
-    const { supervisor, calls, phases } = harness();
+  it('does not restart a controller stopped on a configuration error, and shows its reason', async () => {
+    const { supervisor, calls, phases, finals } = harness();
     supervisor.start();
     await waitFor(() => calls.length === 1, 'the spawn');
-    calls[0]!.child.say('--controller-id and --server adopt an identity together; pass both.');
+    const child = calls[0]!.child;
+    child.say('2026-01-01T00:00:00.000Z WARN The file secret store is in use');
+    child.say(
+      'switch-agent-controller: /data already belongs to controller c1 on https://switch.example.com, not c2.'
+    );
     await new Promise((resolve) => setTimeout(resolve, 5));
-    calls[0]!.child.exit(2);
+    child.exit(2);
     expect(phases.at(-1)).toEqual({
       kind: 'error',
       message:
-        'The agents controller refused how it was started: --controller-id and --server adopt an identity together; pass both.',
+        'The agents controller cannot run as it is set up: /data already belongs to controller c1 on https://switch.example.com, not c2.',
+    });
+    expect(finals).toEqual([]);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(calls).toHaveLength(1);
+    expect(supervisor.running).toBe(false);
+  });
+
+  it('takes the reason from the last line of a usage refusal, not the usage text before it', async () => {
+    const { supervisor, calls, phases } = harness();
+    supervisor.start();
+    await waitFor(() => calls.length === 1, 'the spawn');
+    const child = calls[0]!.child;
+    child.say('Usage: switch-agent-controller <command> [options]');
+    child.say('Log level: SWITCH_CONTROLLER_LOG_LEVEL (debug, info, warn, error; default info).');
+    child.say(
+      'switch-agent-controller: --controller-id and --server adopt an identity together; pass both.'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    child.exit(2);
+    expect(phases.at(-1)).toEqual({
+      kind: 'error',
+      message:
+        'The agents controller cannot run as it is set up: --controller-id and --server adopt an identity together; pass both.',
     });
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(calls).toHaveLength(1);
+  });
+
+  it('still restarts on exit code 1, the code for failures that may pass', async () => {
+    const { supervisor, calls, phases } = harness();
+    supervisor.start();
+    await waitFor(() => calls.length === 1, 'the spawn');
+    calls[0]!.child.say('switch-agent-controller: fetch failed');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    calls[0]!.child.exit(1);
+    expect(phases.at(-1)).toMatchObject({
+      kind: 'restarting',
+      attempt: 1,
+      lastExit: 'exit code 1: fetch failed',
+    });
+    await waitFor(() => calls.length === 2, 'the restart');
+    await supervisor.stop(1_000);
   });
 
   it('reports a launch that cannot be prepared, and spawns nothing', async () => {

@@ -1,4 +1,5 @@
 import { AccessTokens, ControllerClient, type Fetch, isRevoked } from './api';
+import { ConfigurationError } from './errors';
 import { errorMessage, type Logger } from './log';
 import { processPendingOperations } from './operations';
 import { isSafeSegment } from './paths';
@@ -146,13 +147,13 @@ export async function runController(
   const { store, log, timing } = deps;
   const identity = store.identity();
   if (!identity)
-    throw new Error(
+    throw new ConfigurationError(
       `This controller is not enrolled: ${deps.dataDir} holds no identity. Run 'switch-agent-controller enroll --server <url> --code <code>' first.`
     );
   const credential = await deps.secrets.get(CONTROLLER_CREDENTIAL);
   if (!credential) {
     const revokedAt = store.revokedAt();
-    throw new Error(
+    throw new ConfigurationError(
       revokedAt
         ? `This controller was revoked at ${revokedAt} and its credential wiped. Enroll it again with a new code.`
         : `The controller credential is missing from ${deps.secrets.description}. Enroll again with a new code.`

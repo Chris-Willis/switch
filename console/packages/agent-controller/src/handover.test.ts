@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { ConfigurationError } from './errors';
 import {
   adoptIdentity,
   readCredential,
@@ -46,10 +47,32 @@ describe('readCredential', () => {
     await expect(readCredential(open, 20)).rejects.toThrow(/within/);
     open.destroy();
   });
+
+  it('refuses every way as a configuration error, which a restart cannot fix', async () => {
+    const open = new PassThrough();
+    const broken = new PassThrough();
+    const failures = [
+      readCredential(pipeOf(''), 1_000),
+      readCredential(Object.assign(pipeOf('swcc_x'), { isTTY: true }), 1_000),
+      readCredential(pipeOf('swcc_a swcc_b'), 1_000),
+      readCredential(open, 20),
+      readCredential(broken, 1_000),
+    ].map((failure) =>
+      failure.then(
+        () => null,
+        (error: unknown) => error
+      )
+    );
+    broken.destroy(new Error('EPIPE'));
+    const errors = await Promise.all(failures);
+    for (const error of errors) expect(error).toBeInstanceOf(ConfigurationError);
+    expect((errors[4] as Error).message).toMatch(/could not be read from stdin: EPIPE/);
+    open.destroy();
+  });
 });
 
 describe('adoptIdentity', () => {
-  it('seeds an empty store, keeps a matching one, and refuses another controller', () => {
+  it('seeds an empty store, keeps a matching one, moves it to a new server, and refuses another controller', () => {
     const store = ControllerStore.open(join(dir, 'controller.db'));
     try {
       const input = {
@@ -70,9 +93,34 @@ describe('adoptIdentity', () => {
       expect(() => adoptIdentity(store, { ...input, controllerId: 'controller-2' }, dir)).toThrow(
         /already belongs to controller controller-1/
       );
+      expect(() => adoptIdentity(store, { ...input, controllerId: 'controller-2' }, dir)).toThrow(
+        ConfigurationError
+      );
+
+      expect(
+        adoptIdentity(
+          store,
+          { ...input, server: 'https://moved.example.com/', name: 'renamed' },
+          dir
+        )
+      ).toBe('server_changed');
+      expect(store.identity()).toEqual({
+        controllerId: 'controller-1',
+        server: 'https://moved.example.com',
+        name: 'laptop',
+        enrolledAt: '2026-01-01T00:00:00.000Z',
+      });
+      expect(adoptIdentity(store, { ...input, server: 'https://moved.example.com' }, dir)).toBe(
+        'unchanged'
+      );
+      // Another controller is refused whatever server it names.
       expect(() =>
-        adoptIdentity(store, { ...input, server: 'https://other.example.com' }, dir)
-      ).toThrow(/already belongs/);
+        adoptIdentity(
+          store,
+          { ...input, controllerId: 'controller-2', server: 'https://moved.example.com' },
+          dir
+        )
+      ).toThrow(/already belongs to controller controller-1/);
     } finally {
       store.close();
     }
@@ -87,7 +135,7 @@ describe('adoptIdentity', () => {
           { controllerId: 'c', server: 'http://switch.example.com', name: 'n', now: new Date() },
           dir
         )
-      ).toThrow(/https/);
+      ).toThrow(ConfigurationError);
       expect(store.identity()).toBeNull();
     } finally {
       store.close();
@@ -111,12 +159,34 @@ describe('resolveSharedHostBundle', () => {
     expect(resolveSharedHostBundle(undefined, {}, fromWorkspace)).toBe(workspace);
   });
 
-  it('fails loud on a bundle that is not there', () => {
+  it('fails loud, as a configuration error, on a bundle that is not there', () => {
     expect(() => resolveSharedHostBundle(join(dir, 'missing.mjs'), {}, () => '')).toThrow(
       /does not exist/
     );
     expect(() => resolveSharedHostBundle(undefined, {}, () => join(dir, 'none.mjs'))).toThrow(
-      /missing at/
+      /does not exist\. Build the workspace packages first/
     );
+    expect(() => resolveSharedHostBundle(join(dir, 'missing.mjs'), {}, () => '')).toThrow(
+      ConfigurationError
+    );
+    const unresolvable = () => {
+      throw new Error("Cannot find package '@switch-console/agent-providers'");
+    };
+    expect(() => resolveSharedHostBundle(undefined, {}, unresolvable)).toThrow(ConfigurationError);
+    expect(() => resolveSharedHostBundle(undefined, {}, unresolvable)).toThrow(
+      /none could be found in the workspace: Cannot find package/
+    );
+  });
+
+  it('refuses a bundle that is a directory, or that cannot be read', () => {
+    const directory = join(dir, 'bundle-dir');
+    mkdirSync(directory);
+    expect(() => resolveSharedHostBundle(directory, {}, () => '')).toThrow(/is not a file/);
+    if (process.getuid?.() === 0) return;
+    const unreadable = join(dir, 'unreadable.mjs');
+    writeFileSync(unreadable, '');
+    chmodSync(unreadable, 0o000);
+    expect(() => resolveSharedHostBundle(unreadable, {}, () => '')).toThrow(ConfigurationError);
+    expect(() => resolveSharedHostBundle(unreadable, {}, () => '')).toThrow(/cannot be read/);
   });
 });

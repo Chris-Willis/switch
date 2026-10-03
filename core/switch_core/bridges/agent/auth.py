@@ -14,6 +14,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
+from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
 from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.bridges.agent.registration_bootstrap import REGISTRATION_KEY_TYPES
 from switch_core.bridges.collaboration.install import (
@@ -143,10 +144,16 @@ class ControllerAuthenticator(Protocol):
     which Management keeps current. The middleware reads it to let a
     controller act as the agents bound to it, and to keep a controller-backed
     agent's own credential out.
+
+    `auth_cache` memoises the rows a controller token makes the server read,
+    and is kept in step with `presence`.
     """
 
     @property
     def presence(self) -> ControllerPresence: ...
+
+    @property
+    def auth_cache(self) -> ControllerAuthCache: ...
 
     def handles(self, path: str) -> bool: ...
 
@@ -372,8 +379,11 @@ class BearerAuthMiddleware:
         own key would leave it, and the controller in `scope["controller"]`.
 
         Nothing here touches the API-key cache, which maps a token to one
-        agent. A controller token is verified on every request, and its
-        controller re-read so a revoked one is refused at once.
+        agent. A controller token is verified on every request; its
+        controller and the agent row come from the controller-token cache
+        when it holds them, which forgets a controller the moment it is
+        revoked and an agent the moment its binding changes. The binding
+        itself is checked against `presence` every time.
         """
         try:
             principal = await controller_auth.authenticate(token)
@@ -423,12 +433,18 @@ class BearerAuthMiddleware:
             )(scope, receive, send)
             return
 
-        async with tenant_session(
-            self._session_factory, principal.tenant_id
-        ) as session:
-            agent = await self._agent_store.get(session, agent_id)
+        auth_cache = controller_auth.auth_cache
+        agent = auth_cache.agent(principal.tenant_id, agent_id)
+        if agent is None:
+            generation = auth_cache.generation
+            async with tenant_session(
+                self._session_factory, principal.tenant_id
+            ) as session:
+                agent = await self._agent_store.get(session, agent_id)
+                if agent is not None:
+                    session.expunge(agent)
             if agent is not None:
-                session.expunge(agent)
+                auth_cache.put_agent(principal.tenant_id, agent, generation)
         if agent is None:
             await _controller_refusal(
                 NOT_ASSIGNED, f"Agent {agent_id} does not exist.", 403

@@ -37,6 +37,7 @@ from switch_core.bridges.agent.api.handlers import router as api_router
 from switch_core.bridges.agent.api.operations import router as operations_router
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.auth import BearerAuthMiddleware, ControllerPrincipal
+from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
@@ -138,6 +139,7 @@ class Harness:
     management: Management
     protocol: AgentCore
     cache: ApiKeyCache
+    controller_auth_cache: ControllerAuthCache
     clock: Clock
     session_factory: async_sessionmaker[AsyncSession]
 
@@ -160,15 +162,25 @@ class Harness:
         )
 
 
-def build_harness(session_factory: async_sessionmaker[AsyncSession]) -> Harness:
+def build_harness(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    controller_auth_ttl_seconds: float = 5,
+) -> Harness:
+    """The controller-token cache is on, as it is by default in production,
+    so every management test runs through it."""
     clock = Clock()
     cache = ApiKeyCache(ttl_seconds=5, max_entries=64)
+    controller_auth_cache = ControllerAuthCache(
+        ttl_seconds=controller_auth_ttl_seconds, max_entries=64
+    )
     protocol = protocol_service(session_factory, cache)
     management = build_management(
         token_secret=TOKEN_SECRET,
         status_interval_seconds=STATUS_INTERVAL,
         session_factory=session_factory,
         presence=protocol.connections.controllers,
+        auth_cache=controller_auth_cache,
         clock=clock,
     )
 
@@ -214,6 +226,7 @@ def build_harness(session_factory: async_sessionmaker[AsyncSession]) -> Harness:
         management=management,
         protocol=protocol,
         cache=cache,
+        controller_auth_cache=controller_auth_cache,
         clock=clock,
         session_factory=session_factory,
     )

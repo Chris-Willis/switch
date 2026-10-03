@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { z } from 'zod';
+import { ConfigurationError } from './errors';
 import type { Logger } from './log';
 import {
   type AgentCursor,
@@ -70,17 +71,19 @@ export function normalizeServerUrl(raw: string): string {
   try {
     url = new URL(raw);
   } catch {
-    throw new Error(
+    throw new ConfigurationError(
       `'${raw}' is not a URL. Pass the Switch agent bridge URL, e.g. https://switch.example.com.`
     );
   }
   const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback))
-    throw new Error(
+    throw new ConfigurationError(
       `The server URL must use https (plain http is accepted only for a loopback server): ${raw}`
     );
   if (url.username || url.password || url.search || url.hash)
-    throw new Error('The server URL must not contain credentials, a query or a fragment.');
+    throw new ConfigurationError(
+      'The server URL must not contain credentials, a query or a fragment.'
+    );
   return url.href.replace(/\/+$/, '');
 }
 

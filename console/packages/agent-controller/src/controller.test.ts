@@ -7,6 +7,7 @@ import { type AgentBridgeEvent, SwitchEventStream } from '@sandboxaq/switch-agen
 import { callOperation, SESSION_SELECTOR_HEADERS } from '@sandboxaq/switch-agent-runtime/hosted';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type ControllerDeps, type ControllerExit, runController } from './controller';
+import { ConfigurationError } from './errors';
 import { adoptIdentity } from './handover';
 import { silentLogger } from './log';
 import type { RelayCredentials } from './runtime';
@@ -483,18 +484,35 @@ describe('runController', () => {
     }
   });
 
+  it('runs against the server URL its parent moved it to', async () => {
+    const moved = deps('https://old-address.example.com');
+    expect(
+      adoptIdentity(
+        store,
+        { controllerId: core.controllerId, server: core.url, name: 'test-box', now: new Date() },
+        dir
+      )
+    ).toBe('server_changed');
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(moved, stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    expect(store.identity()?.server).toBe(core.url);
+  });
+
   it('refuses to run without an identity or a credential', async () => {
     const empty = ControllerStore.open(join(dir, 'empty.db'));
     try {
-      await expect(runController({ ...deps(), store: empty }, stop.signal)).rejects.toThrow(
-        /not enrolled/
-      );
+      const unenrolled = runController({ ...deps(), store: empty }, stop.signal);
+      await expect(unenrolled).rejects.toThrow(/not enrolled/);
+      await expect(unenrolled).rejects.toBeInstanceOf(ConfigurationError);
     } finally {
       empty.close();
     }
     const enrolled = deps();
     await secrets.delete(CONTROLLER_CREDENTIAL);
     store.markRevoked('2026-01-02T00:00:00Z');
-    await expect(runController(enrolled, stop.signal)).rejects.toThrow(/revoked at/);
+    const wiped = runController(enrolled, stop.signal);
+    await expect(wiped).rejects.toThrow(/revoked at/);
+    await expect(wiped).rejects.toBeInstanceOf(ConfigurationError);
   });
 });

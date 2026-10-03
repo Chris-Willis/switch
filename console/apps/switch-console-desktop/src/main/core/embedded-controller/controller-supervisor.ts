@@ -3,7 +3,7 @@ import type { Readable, Writable } from 'node:stream';
 import type { EmbeddedControllerPhase } from '@shared/core/embedded-controller/embedded-controller';
 
 /** The controller's exit codes (see the agent-controller README). */
-export const EXIT_USAGE = 2;
+export const EXIT_CONFIGURATION = 2;
 export const EXIT_REVOKED = 3;
 export const EXIT_TAKEN_OVER = 4;
 
@@ -61,6 +61,8 @@ export type SupervisorDeps = {
 };
 
 const LINE = /^\S+ (DEBUG|INFO|WARN|ERROR) /;
+/** How the CLI prefixes the reason it stopped, on the last line it writes. */
+const REASON_PREFIX = 'switch-agent-controller: ';
 const KEPT_LINES = 10;
 
 function levelOf(line: string, stream: 'stdout' | 'stderr'): ControllerLogLevel {
@@ -73,8 +75,10 @@ function levelOf(line: string, stream: 'stdout' | 'stderr'): ControllerLogLevel 
 /**
  * Runs one embedded controller process, and starts it again when it exits on
  * its own, backing off while it keeps failing. It does not restart a
- * controller that was revoked (exit 3), taken over (exit 4) or refused how it
- * was started (exit 2): those are handed to `onFinal` or reported as an error.
+ * controller that was revoked (exit 3), taken over (exit 4) or stopped on a
+ * configuration error (exit 2), which starting it again the same way would
+ * repeat: those are handed to `onFinal` or reported as an error, with the
+ * reason the controller gave.
  */
 export class ControllerSupervisor {
   private child: ControllerChild | null = null;
@@ -195,10 +199,10 @@ export class ControllerSupervisor {
     }
     if (code === EXIT_REVOKED) return this.deps.onFinal('revoked');
     if (code === EXIT_TAKEN_OVER) return this.deps.onFinal('taken_over');
-    if (code === EXIT_USAGE) {
+    if (code === EXIT_CONFIGURATION) {
       this.deps.onPhase({
         kind: 'error',
-        message: `The agents controller refused how it was started: ${this.lastWords() ?? 'it gave no reason'}`,
+        message: `The agents controller cannot run as it is set up: ${this.lastWords() ?? 'it gave no reason'}`,
       });
       return;
     }
@@ -221,8 +225,15 @@ export class ControllerSupervisor {
     }, delay);
   }
 
-  /** The last thing it said that was not routine, to say why it stopped. */
+  /**
+   * Why it stopped: the reason the CLI gave as it exited, else the last thing
+   * it said that was not routine.
+   */
   private lastWords(): string | null {
+    for (let i = this.recent.length - 1; i >= 0; i--) {
+      const line = this.recent[i]!;
+      if (line.startsWith(REASON_PREFIX)) return line.slice(REASON_PREFIX.length);
+    }
     for (let i = this.recent.length - 1; i >= 0; i--) {
       const line = this.recent[i]!;
       const level = levelOf(line, 'stderr');

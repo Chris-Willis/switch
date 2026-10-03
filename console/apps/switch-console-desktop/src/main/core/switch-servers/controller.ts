@@ -350,6 +350,9 @@ export const switchServersController = createRPCController({
     const propagatedAgents = apiUrlChanged
       ? await propagateServerApiUrl(server.id, server.apiUrl)
       : [];
+    // The managed agents this computer runs reach the server through its
+    // controller, which has to reconnect at the new address too.
+    if (apiUrlChanged) await embeddedControllerService.followServerApiUrl(server.id);
 
     return { server, propagation: { apiUrlChanged, agents: propagatedAgents } };
   },

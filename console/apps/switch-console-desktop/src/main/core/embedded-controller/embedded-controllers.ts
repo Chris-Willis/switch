@@ -8,6 +8,7 @@ import {
   resolveSharedHostBundlePath,
 } from '@main/core/agent-runtime/impl/resolve-sidecar-bundle';
 import { encryptedAppSecretsStore } from '@main/core/secrets/encrypted-app-secrets-store';
+import { getServer } from '@main/core/switch-servers/servers-store';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { embeddedControllerStateChannel } from '@shared/events/embeddedControllerEvents';
@@ -56,6 +57,7 @@ export const embeddedControllerService = new EmbeddedControllerService({
     },
   }),
   records: new EnrollmentFile(() => join(base(), 'state.json')),
+  serverApiUrl: async (serverId) => (await getServer(serverId))?.apiUrl ?? null,
   secrets: encryptedAppSecretsStore,
   management: gatewayManagementPort,
   files: {

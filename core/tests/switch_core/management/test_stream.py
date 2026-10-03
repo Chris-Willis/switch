@@ -14,10 +14,16 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.commands import room_control_frame
+from switch_core.bridges.agent.protocol.agent_detail import assemble_agent_detail
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.liveness import HEARTBEAT_TTL_SECONDS
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.models import TENANT_ZERO_ID
+from switch_core.db.stores.agent_session_store import AgentSessionStore
+from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.room_role_store import RoomRoleStore
+from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.user_store import UserStore
 from switch_core.management import controller_routes
 from switch_core.management.notifier import (
     ASSIGNMENT_CHANGED,
@@ -620,6 +626,75 @@ class TestTheConnection:
         assert missing.status_code == 422
         assert missing.json()["error"]["code"] == "validation_error"
         assert presence.placed_rooms(agent_id) == set()
+
+    async def test_the_agent_detail_lists_its_placed_sessions_with_the_controller(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await place_agent(client, controller, name="reviewer")
+            here = await add_room(harness.session_factory, agent_id, name="here")
+            opened = await client.post(
+                f"/v1/controllers/{controller.controller_id}/connection",
+                json={"cursors": {}, "placements": {agent_id: [here]}},
+                headers=controller.headers,
+            )
+            assert opened.status_code == 201, opened.text
+            stream = await open_stream(harness, controller, opened.json())
+            await take(stream, 2)
+
+            async def sessions() -> list[dict[str, object]]:
+                async with harness.session_factory() as session:
+                    agent = await AgentStore().get(session, agent_id)
+                    assert agent is not None
+                    detail = await assemble_agent_detail(
+                        session,
+                        agent=agent,
+                        agent_store=AgentStore(),
+                        room_store=RoomStore(),
+                        user_store=UserStore(),
+                        agent_session_store=AgentSessionStore(),
+                        room_role_store=RoomRoleStore(),
+                        connections=harness.protocol.connections,
+                    )
+                return [s.model_dump(exclude={"last_seen_at"}) for s in detail.sessions]
+
+            placed = await sessions()
+            await client.post(
+                f"/v1/controllers/{controller.controller_id}/connection/beat",
+                json={
+                    "connection_id": opened.json()["connection_id"],
+                    "generation": opened.json()["generation"],
+                    "cursors": {},
+                    "placements": {},
+                },
+                headers=controller.headers,
+            )
+            unplaced = await sessions()
+        await stream.aclose()
+        lapsed = await sessions()
+
+        assert placed == [
+            {
+                "room_id": here,
+                "room_name": "here",
+                "lifecycle": "controller",
+                "state": "live",
+                "controller_id": controller.controller_id,
+            }
+        ]
+        # Live with no session in a room: the controller is one room-agnostic session.
+        assert unplaced == [
+            {
+                "room_id": None,
+                "room_name": None,
+                "lifecycle": "controller",
+                "state": "live",
+                "controller_id": controller.controller_id,
+            }
+        ]
+        assert lapsed == []
 
     async def test_a_lapsed_beat_ends_the_stream_and_its_agents_are_not_live(
         self, harness: Harness, monkeypatch: pytest.MonkeyPatch

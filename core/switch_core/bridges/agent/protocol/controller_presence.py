@@ -9,7 +9,9 @@ the rooms the agent is present in.
 
 Core owns this state and never reads Management's tables. Management fills it
 through the narrow surface at the top of the class (`load`, `bind`, `unbind`,
-`revoke_controller`) at startup and after every change it commits. Everything
+`revoke_controller`) at startup and after every change it commits, and each of
+those drops what the controller-token cache (`ControllerAuthCache`) holds for
+the controller or agent it touches. Everything
 else here is read by Core: the presence readers through `AgentConnectionRegistry`,
 the bearer middleware's act-as check, and the controller stream.
 
@@ -28,7 +30,7 @@ import uuid
 from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from switch_core.bridges.agent.protocol.liveness import (
     HEARTBEAT_LAPSED,
@@ -36,6 +38,9 @@ from switch_core.bridges.agent.protocol.liveness import (
     TAKEN_OVER,
     Closure,
 )
+
+if TYPE_CHECKING:
+    from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +173,16 @@ class ControllerPresence:
         # loaded them and membership changes have kept them since.
         self._rooms: dict[str, set[str]] = {}
         self._next_generation = secrets.randbits(32)
+        self._auth_cache: ControllerAuthCache | None = None
+
+    def use_auth_cache(self, cache: ControllerAuthCache) -> None:
+        """The cache of controller-token reads to keep in step with the
+        bindings and revocations recorded here."""
+        self._auth_cache = cache
+
+    def _invalidate_agent_auth(self, agent_id: str) -> None:
+        if self._auth_cache is not None:
+            self._auth_cache.invalidate_agent(agent_id)
 
     # ------------------------------------------------------------------
     # Management's surface
@@ -185,6 +200,7 @@ class ControllerPresence:
         previous = self._bindings.get(binding.agent_id)
         if previous is not None:
             self._forget(previous)
+        self._invalidate_agent_auth(binding.agent_id)
         self._bindings[binding.agent_id] = binding
         self._by_controller.setdefault(binding.controller_id, set()).add(
             binding.agent_id
@@ -208,6 +224,7 @@ class ControllerPresence:
         """The agent is no longer controller-backed."""
         previous = self._bindings.pop(agent_id, None)
         self._rooms.pop(agent_id, None)
+        self._invalidate_agent_auth(agent_id)
         if previous is None:
             return
         self._forget(previous)
@@ -226,6 +243,8 @@ class ControllerPresence:
         live, until their owner moves or removes them.
         """
         self._revoked.add(controller_id)
+        if self._auth_cache is not None:
+            self._auth_cache.invalidate_controller(controller_id)
         conn = self._connections.pop(controller_id, None)
         if conn is not None:
             conn.closure = REVOKED

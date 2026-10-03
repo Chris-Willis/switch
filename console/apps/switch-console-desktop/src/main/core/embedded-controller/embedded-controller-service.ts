@@ -56,6 +56,8 @@ export type EmbeddedControllerDeps = {
   /** This machine as it enrolls: its host name and platform. */
   machine: () => { name: string; platform: ControllerPlatform };
   records: EnrollmentRecords;
+  /** The server's API URL as Console has it now, or null for a server Console no longer knows. */
+  serverApiUrl: (serverId: string) => Promise<string | null>;
   secrets: SecretsPort;
   management: ManagementPort;
   files: ControllerFilesPort;
@@ -237,6 +239,24 @@ export class EmbeddedControllerService {
     else this.startRunner(serverId);
   }
 
+  /**
+   * The server's API URL changed in Console. A controller that is running, or
+   * waiting to start again, is stopped and started with the new `--server`,
+   * which also moves the identity in its data directory to it. One that is
+   * off, or stopped for good, takes the new URL when it next starts.
+   */
+  async followServerApiUrl(serverId: string): Promise<void> {
+    const runner = this.runners.get(serverId);
+    if (!runner || this.disposed || this.busy.has(serverId)) return;
+    if (runner.phase.kind !== 'running' && runner.phase.kind !== 'restarting') return;
+    this.deps.log.info('The server’s API URL changed; restarting this computer’s controller', {
+      serverId,
+    });
+    await runner.supervisor.stop(this.deps.stopTimeoutMs);
+    if (this.disposed || this.runners.get(serverId) !== runner) return;
+    runner.supervisor.start();
+  }
+
   /** Clears the "removed from Switch" notice. */
   async dismiss(serverId: string): Promise<void> {
     const record = await this.deps.records.get(serverId);
@@ -292,9 +312,7 @@ export class EmbeddedControllerService {
   }
 
   private async launchFor(serverId: string): Promise<ControllerLaunch> {
-    const record = await this.deps.records.get(serverId);
-    if (record?.kind !== 'enrolled')
-      throw new Error('This computer is not enrolled to run managed agents for this server.');
+    const record = await this.followedRecord(serverId);
     let credential: string | null;
     try {
       credential = await this.deps.secrets.getSecret(credentialSecretKey(serverId));
@@ -331,6 +349,33 @@ export class EmbeddedControllerService {
       },
       credential,
     };
+  }
+
+  /**
+   * The enrollment, at the server's API URL as it is now. The URL a controller
+   * was enrolled at is not where it must connect for ever: an edited server
+   * moves it, and so does a managed stack started on other ports.
+   */
+  private async followedRecord(
+    serverId: string
+  ): Promise<Extract<EnrollmentRecord, { kind: 'enrolled' }>> {
+    const record = await this.deps.records.get(serverId);
+    if (record?.kind !== 'enrolled')
+      throw new Error('This computer is not enrolled to run managed agents for this server.');
+    const apiUrl = await this.deps.serverApiUrl(serverId);
+    if (apiUrl === null)
+      throw new Error(
+        'Console no longer knows this Switch server, so it cannot say where to connect.'
+      );
+    if (apiUrl === record.server) return record;
+    const moved = { ...record, server: apiUrl };
+    await this.deps.records.set(serverId, moved);
+    this.deps.log.info('This computer’s controller follows its server to a new API URL', {
+      serverId,
+      from: record.server,
+      to: apiUrl,
+    });
+    return moved;
   }
 
   private async onFinal(serverId: string, exit: 'revoked' | 'taken_over'): Promise<void> {

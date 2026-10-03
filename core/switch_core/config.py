@@ -437,7 +437,10 @@ class SwitchConfig(BaseSettings):
     # the entry immediately rather than waiting for it to expire. This is the
     # window in which an already-issued credential outlives its revocation, so
     # it is deliberately shorter than the agent heartbeat TTL. Set to 0 to
-    # disable the cache and read the database on every request.
+    # disable the cache and read the database on every request. With agent
+    # management on, the same TTL and bound apply to the separate cache of a
+    # controller access token's reads (its controller row, and the agent row
+    # it acts as), which a revocation or binding change also drops at once.
     agent_auth_cache_ttl_seconds: float = 5.0
     # Bound on the memo. One entry per distinct live token; the oldest is
     # evicted past this, so a flood of tokens cannot grow the process.

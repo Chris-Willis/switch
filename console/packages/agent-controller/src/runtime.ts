@@ -20,7 +20,7 @@ import {
   watcherHealthFileSchema,
   watchFlagsSchema,
 } from '@switch-console/agent-providers';
-import { ReasonedError } from './errors';
+import { ConfigurationError, ReasonedError } from './errors';
 import type { DataLayout } from './paths';
 import type { Provider } from './schemas';
 
@@ -148,6 +148,14 @@ async function recordedPid(path: string): Promise<number | null> {
 /** The owner records a watcher writes under its root: the worker's, then its supervisor's. */
 const OWNER_RECORDS = ['shared-owner.lock', join('supervisor', 'owner.json')];
 
+/** The shared host needs POSIX process control: macOS or Linux. */
+export function assertSupportedPlatform(platform: NodeJS.Platform): void {
+  if (platform === 'win32')
+    throw new ConfigurationError(
+      'The agents controller runs agents through the shared host, which needs a macOS or Linux machine.'
+    );
+}
+
 /**
  * Runs each agent as Console runs a remote one: a detached room watcher from
  * the agent-providers shared-host bundle, in a state root of its own, driven
@@ -166,10 +174,7 @@ export class SharedHostRuntime implements AgentRuntime {
       bundlePath: string;
     }
   ) {
-    if (process.platform === 'win32')
-      throw new Error(
-        'The agents controller runs agents through the shared host, which needs a macOS or Linux machine.'
-      );
+    assertSupportedPlatform(process.platform);
   }
 
   credentialsPath(agentId: string): string {

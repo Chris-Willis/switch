@@ -7,6 +7,7 @@ import {
   normalizeServerUrl,
   PROTOCOL_HEADER,
 } from './api';
+import { ConfigurationError } from './errors';
 import { silentLogger } from './log';
 import {
   type Assignment,
@@ -86,6 +87,11 @@ describe('normalizeServerUrl', () => {
     expect(() => normalizeServerUrl('https://user:pw@switch.example.com')).toThrow(/credentials/);
     expect(() => normalizeServerUrl('https://switch.example.com/?x=1')).toThrow(/query/);
     expect(() => normalizeServerUrl('switch.example.com')).toThrow(/not a URL/);
+  });
+
+  it('refuses them as configuration errors, which a restart cannot fix', () => {
+    expect(() => normalizeServerUrl('http://switch.example.com')).toThrow(ConfigurationError);
+    expect(() => normalizeServerUrl('switch.example.com')).toThrow(ConfigurationError);
   });
 });
 

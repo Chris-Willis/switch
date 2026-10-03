@@ -334,3 +334,9 @@ stream. The flag and everything else above stay as they are.
   `connection_id`, `generation` and `heartbeat_interval_s`.
 - **Revocation** leaves the agents bound to the revoked controller (still
   controller-backed, not live) until they are moved or removed.
+- **Controller-token cache.** The controller row a controller token re-reads
+  and the agent row it acts as are memoised (`ControllerAuthCache`, separate
+  from the agent API-key cache) for `AGENT_AUTH_CACHE_TTL_SECONDS` (0
+  disables it). `ControllerPresence` drops a controller's entry when it is
+  revoked and an agent's when it is bound, moved, unbound or deleted; the
+  binding check itself is never cached.
