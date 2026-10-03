@@ -334,7 +334,9 @@ class SwitchConfig(BaseSettings):
     # `switchdash://` deeplink HTTP redirect (`/deeplink/session`, served on the
     # agent-bridge app) so the "Open in Switch Console" link is clickable on platforms
     # that only linkify http(s) (Discord, and any future http-only bridge). When
-    # unset, the raw `switchdash://` deeplink is posted as-is.
+    # unset, the raw `switchdash://` deeplink is posted as-is. Also the
+    # `--server` an agents controller enrolls against, which the gateway's Add
+    # machine dialog shows; unset, it shows no enrollment command.
     gateway_public_url: str | None = None
 
     # Credentials of the distributed Slack app *we* registered — the one a

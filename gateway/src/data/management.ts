@@ -120,6 +120,12 @@ export interface Operation {
 export interface EnrollmentCode {
   code: string;
   expires_at: string;
+  /**
+   * The Switch API address a controller enrolls against, as the server is
+   * configured with it (`GATEWAY_PUBLIC_URL`); null when it is not. This
+   * page's own address is no stand-in: a gateway need not serve the agent API.
+   */
+  server_url: string | null;
 }
 
 /** A refusal from a management route, with the contract's reason code. */

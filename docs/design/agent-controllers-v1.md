@@ -111,7 +111,11 @@ Controller access token (`{id}` must match the token's `cid`, otherwise `403 for
     A controller resyncs fully on every reconnect.
 
 ### Gateway routes (cookie, `get_current_user`, owner-only)
-- `POST   /gateway/management/enrollment-codes` returns `{code, expires_at}`.
+- `POST   /gateway/management/enrollment-codes` returns `{code, expires_at, server_url}`.
+  `server_url` is the agent bridge's public origin (`GATEWAY_PUBLIC_URL`), the
+  `--server` to enroll with, or null when it is not configured; the gateway
+  page's own address is not a stand-in, since a gateway need not serve the
+  agent bridge.
 - `POST   /gateway/management/controllers`
   - Console enrollment by a signed-in user.
   - Body: `{name, kind:"console", platform, version, public_key?}`.

@@ -43,9 +43,17 @@ Protocol = Annotated[AgentCore, Depends(get_protocol)]
 @router.post("/enrollment-codes", status_code=201)
 async def create_enrollment_code(
     session: Session, user: CurrentUser, management: Management
-) -> dict[str, str]:
+) -> dict[str, str | None]:
+    """A one-time code, and the agent bridge's public origin a controller
+    enrolls against with it (`server_url`, null when `GATEWAY_PUBLIC_URL` is
+    not set: the page the owner is on is the gateway, which need not serve the
+    agent bridge, so it is no stand-in)."""
     code, expires_at = await management.issue_enrollment_code(session, owner_id=user.id)
-    return {"code": code, "expires_at": wire_time(expires_at)}
+    return {
+        "code": code,
+        "expires_at": wire_time(expires_at),
+        "server_url": management.settings.server_url,
+    }
 
 
 @router.post("/controllers", status_code=201)

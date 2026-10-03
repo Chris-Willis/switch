@@ -83,6 +83,7 @@ def build_management(
     *,
     token_secret: str,
     status_interval_seconds: int,
+    server_url: str | None,
     session_factory: async_sessionmaker[AsyncSession],
     presence: ControllerPresence,
     auth_cache: ControllerAuthCache,
@@ -94,6 +95,7 @@ def build_management(
         settings=ManagementSettings(
             token_secret=token_secret,
             status_interval_seconds=status_interval_seconds,
+            server_url=server_url,
         ),
         notifier=ControllerNotifier(),
         controllers=controllers,
@@ -131,6 +133,7 @@ def create_management(
     return build_management(
         token_secret=config.controller_token_secret,
         status_interval_seconds=config.controller_status_interval_seconds,
+        server_url=config.gateway_public_url,
         session_factory=session_factory,
         presence=presence,
         # The agent API-key cache's bound: the longest a controller revoked

@@ -96,6 +96,28 @@ describe('normalizeServerUrl', () => {
 });
 
 describe('enroll', () => {
+  it.each([
+    ['an HTML page', '<html>Not Found</html>'],
+    ['a framework 404', '{"detail":"Not Found"}'],
+  ])('says a server answering 404 with %s is probably not the Switch API', async (_label, text) => {
+    const notSwitch = async () => new Response(text, { status: 404 });
+    const error = await enroll(notSwitch, 'https://switch.example.test', {
+      proof: { kind: 'enrollment_code', code: 'swce_example' },
+      controller: {
+        kind: 'daemon',
+        name: 'host',
+        platform: { os: 'linux', arch: 'x64', os_version: '6.1' },
+        version: '0.1.0',
+      },
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ControllerApiError);
+    expect(error).toMatchObject({ status: 404, code: 'not_switch_api', retryable: false });
+    expect((error as Error).message).toContain(
+      'https://switch.example.test has no enrollment route'
+    );
+    expect((error as Error).message).toContain('probably not the Switch API URL');
+  });
+
   it('exchanges an enrollment code for an id and a credential', async () => {
     const result = await enroll(fetch, core.url, {
       proof: { kind: 'enrollment_code', code: core.enrollmentCode },

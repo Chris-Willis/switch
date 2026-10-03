@@ -89,6 +89,10 @@ V1_OPERATION_KINDS = frozenset({"agent.restart", "provider.recheck"})
 class ManagementSettings:
     token_secret: str
     status_interval_seconds: int
+    # The public origin of the agent bridge, which a controller enrolls
+    # against (`GATEWAY_PUBLIC_URL`). None when the deployment has not said,
+    # and then nothing can tell an owner what `--server` to enroll with.
+    server_url: str | None
 
 
 @dataclass(frozen=True)

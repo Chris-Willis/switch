@@ -77,8 +77,6 @@ export default function AddMachineDialog({
     };
   }, [open]);
 
-  const server = window.location.origin;
-
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
       <DialogTitle>Add a machine</DialogTitle>
@@ -96,11 +94,26 @@ export default function AddMachineDialog({
               <Typography variant="subtitle2" gutterBottom>
                 Enrollment command
               </Typography>
-              <CopyBlock text={enrollCommand(server, enrollment.code)} label="Copy command" />
-              <Typography variant="caption" color="text.secondary">
-                Uses this page's address as the server. If your agents reach Switch at a
-                different address, change <code>--server</code> to it.
-              </Typography>
+              {enrollment.server_url ? (
+                <>
+                  <CopyBlock
+                    text={enrollCommand(enrollment.server_url, enrollment.code)}
+                    label="Copy command"
+                  />
+                  <Typography variant="caption" color="text.secondary">
+                    <code>--server</code> is this Switch's API address. If the machine reaches
+                    Switch at a different address, change it to that one.
+                  </Typography>
+                </>
+              ) : (
+                <Alert severity="warning">
+                  This server does not say where its Switch API is, so no enrollment command
+                  can be shown. Set <code>GATEWAY_PUBLIC_URL</code> on the Switch server to its
+                  API address, or enroll with{" "}
+                  <code>switch-agent-controller enroll --server &lt;Switch API URL&gt; --code</code>{" "}
+                  and the code below. This page's address is not it.
+                </Alert>
+              )}
             </Box>
             <Box>
               <Typography variant="subtitle2" gutterBottom>

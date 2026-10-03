@@ -157,7 +157,21 @@ export async function enroll(
     headers: headers({ 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID() }),
     body: JSON.stringify(body),
   });
-  if (!response.ok) throw await failure(response);
+  if (!response.ok) {
+    const error = await failure(response);
+    // Every Switch refusal on this route has an envelope. A bare 404 is a
+    // server with no such route at all: most often the gateway's own page
+    // address, which serves the dashboard and not the agent API.
+    if (response.status === 404 && error.code === 'unexpected_response')
+      throw new ControllerApiError(
+        404,
+        'not_switch_api',
+        `${server} has no enrollment route (HTTP 404 without a Switch error), so it is probably not the Switch API URL. Use the address the Switch API is reached on (the server's GATEWAY_PUBLIC_URL, shown in the gateway's Add machine dialog), not the gateway page's address.`,
+        false,
+        null
+      );
+    throw error;
+  }
   return parsed(response, enrollResponseSchema);
 }
 

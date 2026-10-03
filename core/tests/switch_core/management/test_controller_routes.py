@@ -18,6 +18,7 @@ from switch_core.db.models import AgentControllerEnrollmentCode
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.management.bindings import load_bindings
 from tests.switch_core.management.harness import (
+    SERVER_URL,
     EnrolledController,
     Harness,
     add_member,
@@ -47,6 +48,32 @@ async def _code(harness: Harness, owner_cookies: dict[str, str]) -> str:
     body = response.json()
     assert body["code"].startswith("swce_")
     return str(body["code"])
+
+
+class TestEnrollmentCodes:
+    async def test_a_code_names_the_server_to_enroll_against(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            response = await client.post(
+                "/gateway/management/enrollment-codes", cookies=cookies_for(owner)
+            )
+        assert response.status_code == 201, response.text
+        assert response.json()["server_url"] == SERVER_URL
+
+    async def test_an_unconfigured_server_is_null_not_guessed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        harness = build_harness(session_factory, server_url=None)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            response = await client.post(
+                "/gateway/management/enrollment-codes", cookies=cookies_for(owner)
+            )
+        assert response.status_code == 201, response.text
+        assert response.json()["server_url"] is None
+        assert response.json()["code"].startswith("swce_")
 
 
 def _enroll_body(code: str) -> dict:

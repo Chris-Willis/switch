@@ -62,6 +62,7 @@ from switch_core.management.wiring import Management, build_management
 JWT_SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
 TOKEN_SECRET = "unit-test-controller-token-secret-0123456789"  # gitleaks:allow
 STATUS_INTERVAL = 60
+SERVER_URL = "https://switch-api.example.test"
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "agent_controllers"
 
@@ -166,6 +167,7 @@ def build_harness(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     controller_auth_ttl_seconds: float = 5,
+    server_url: str | None = SERVER_URL,
 ) -> Harness:
     """The controller-token cache is on, as it is by default in production,
     so every management test runs through it."""
@@ -178,6 +180,7 @@ def build_harness(
     management = build_management(
         token_secret=TOKEN_SECRET,
         status_interval_seconds=STATUS_INTERVAL,
+        server_url=server_url,
         session_factory=session_factory,
         presence=protocol.connections.controllers,
         auth_cache=controller_auth_cache,
