@@ -181,9 +181,19 @@ contracts:
     # attached worker alone is sent `worker_attached`, `relay`, `relay_cancel`,
     # `wake`, `mailbox_cancel`, `operation` and `credential`. Nothing changes
     # for a local agent, so `accepts` stays at 1.
+    #
+    # Revision 7 moves the connection onto one WebSocket,
+    # `/agents/{id}/connection/ws`, which carries the frames as JSON
+    # (`event`, `data`, `id`) and the heartbeat: the server sends `ping` every
+    # heartbeat interval and the client answers `pong` with its cursor. The
+    # token is checked once, when the socket opens. The Server-Sent Events
+    # stream and `POST /connection/beat` are gone, so this is the first
+    # revision that is not additive: `accepts` rises to 7 on both sides, and a
+    # client still asking for the stream is refused with 410 and told to
+    # update.
     artifacts:
-      switch-core: { speaks: 7, accepts: 1 }
-      agent-runtime: { speaks: 7, accepts: 1 }
+      switch-core: { speaks: 7, accepts: 7 }
+      agent-runtime: { speaks: 7, accepts: 7 }
 
   gateway-api:
     description: >-

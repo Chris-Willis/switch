@@ -34,7 +34,7 @@ ROOM = "room-a"
 
 class _Protocol:
     def __init__(self) -> None:
-        self.event_buffer = EventBuffer()
+        self.event_buffer = EventBuffer(sequence_base=0)
         self.connections = AgentConnectionRegistry()
         self.approval_outcomes = None
         self.sessions = SessionReporter(None)
@@ -177,3 +177,18 @@ def test_closing_the_socket_detaches_the_stream(
     conn = protocol.connections.get("c1")
     assert conn is not None
     assert not conn.stream_attached
+
+
+def test_a_socket_whose_connection_is_taken_over_is_told_so(
+    client: TestClient, protocol: _Protocol
+) -> None:
+    """Final for the client that lost it: reconnecting would take the
+    connection straight back off the winner."""
+    with client.websocket_connect(_url()) as loser:
+        loser.receive_json()
+        with client.websocket_connect(_url()) as winner:
+            winner.receive_json()
+
+            evicted = _next(loser, "evicted")
+
+            assert evicted["data"]["code"] == "taken_over"

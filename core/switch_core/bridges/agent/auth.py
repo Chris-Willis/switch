@@ -249,10 +249,9 @@ class BearerAuthMiddleware:
             return
 
         if not auth_header.startswith("Bearer "):
-            response = Response(
-                "Missing or invalid Authorization header", status_code=401
+            await _unauthorized(
+                scope, receive, send, "Missing or invalid Authorization header"
             )
-            await response(scope, receive, send)
             return
 
         token = auth_header[7:]
@@ -326,8 +325,7 @@ class BearerAuthMiddleware:
                 await self.app(scope, receive, send)
             return
 
-        response = Response("Invalid credentials", status_code=401)
-        await response(scope, receive, send)
+        await _unauthorized(scope, receive, send, "Invalid credentials")
 
     async def _serve_controller(
         self,
@@ -552,6 +550,25 @@ def _path_agent(path: str) -> tuple[str | None, str]:
     if match is None or match["segment"] in _NOT_AN_AGENT_SEGMENT:
         return None, ""
     return match["segment"], match["rest"] or ""
+
+
+async def _unauthorized(
+    scope: Scope, receive: Receive, send: Send, reason: str
+) -> None:
+    """Refuse an unauthenticated request in a form its client can read.
+
+    An HTTP 401. A WebSocket client cannot read the status of a handshake that
+    was refused (the browser-style API hides it), so it would see only a
+    failed connection and retry for ever. A WebSocket is accepted and closed at
+    once with 4401 instead: 4000 plus the status, the same mapping the agent
+    connection uses for every refusal.
+    """
+    if scope["type"] == "websocket":
+        await receive()  # the client's websocket.connect
+        await send({"type": "websocket.accept"})
+        await send({"type": "websocket.close", "code": 4401, "reason": reason})
+        return
+    await Response(reason, status_code=401)(scope, receive, send)
 
 
 def _is_public_path(path: str) -> bool:
