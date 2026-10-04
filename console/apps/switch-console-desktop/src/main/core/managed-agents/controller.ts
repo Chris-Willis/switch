@@ -4,10 +4,18 @@ import {
   deleteManagedAgent,
   fetchManagedAgents,
   fetchManagementControllers,
+  GatewayError,
+  managementErrorMessage,
   setManagedAgentDesiredState,
+  updateManagedAgent,
 } from '@main/core/switch-servers/gateway-client';
 import { withReachableServerWorkspaceSession } from '@main/core/workspaces/workspace-session';
-import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
+import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
+import type {
+  ManagedAgentChanges,
+  ManagedAgentView,
+  ManagedMachine,
+} from '@shared/core/managed-agents/managed-agents';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 
 /**
@@ -16,8 +24,9 @@ import { createRPCController } from '@shared/lib/ipc/rpc';
  */
 export const managedAgentsController = createRPCController({
   /** Null when the server does not run agent management. */
-  list: (serverId: string): Promise<ManagedAgentView[] | null> =>
-    withReachableServerWorkspaceSession(serverId, async (server) => {
+  list: async (serverId: string): Promise<ManagedAgentView[] | null> => {
+    const workspace = await requireWorkspaceForServer(serverId);
+    return withReachableServerWorkspaceSession(serverId, async (server) => {
       let agents;
       let controllers;
       try {
@@ -34,6 +43,7 @@ export const managedAgentsController = createRPCController({
         const machine = agent.controllerId ? machines.get(agent.controllerId) : undefined;
         return {
           serverId,
+          workspaceId: workspace.id,
           agentId: agent.agentId,
           name: agent.name,
           displayName: agent.displayName,
@@ -56,6 +66,37 @@ export const managedAgentsController = createRPCController({
           status: agent.status,
         };
       });
+    });
+  },
+
+  /** The owner's machines an agent can be placed on. */
+  machines: (serverId: string): Promise<ManagedMachine[]> =>
+    withReachableServerWorkspaceSession(serverId, async (server) =>
+      (await fetchManagementControllers(server))
+        .filter((controller) => controller.state !== 'revoked')
+        .map(({ id, name, kind, state }) => ({ id, name, kind, state }))
+    ),
+
+  /** Changes its settings on the server; Switch refuses a change its machine cannot run, in its own words. */
+  update: (params: {
+    serverId: string;
+    agentId: string;
+    changes: ManagedAgentChanges;
+  }): Promise<void> =>
+    withReachableServerWorkspaceSession(params.serverId, async (server) => {
+      const definition = definitionBody(params.changes.definition);
+      try {
+        await updateManagedAgent(server, params.agentId, {
+          definition: Object.keys(definition).length > 0 ? definition : null,
+          ...(params.changes.machineId !== undefined
+            ? { controllerId: params.changes.machineId }
+            : {}),
+        });
+      } catch (error) {
+        if (error instanceof GatewayError && error.status !== undefined && error.status < 500)
+          throw new Error(managementErrorMessage(error));
+        throw error;
+      }
     }),
 
   /** Starts or stops it on its machine. */
@@ -75,3 +116,15 @@ export const managedAgentsController = createRPCController({
       await deleteAgent(server, params.agentId);
     }),
 });
+
+function definitionBody(changes: ManagedAgentChanges['definition']): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (changes.provider !== undefined) body.provider = changes.provider;
+  if (changes.model !== undefined) body.model = changes.model;
+  if (changes.modelOptions !== undefined) body.model_options = changes.modelOptions;
+  if (changes.instructions !== undefined) body.instructions = changes.instructions;
+  if (changes.autoApprove !== undefined) body.auto_approve = changes.autoApprove;
+  if (changes.directory !== undefined) body.directory = changes.directory;
+  if (changes.isolation !== undefined) body.isolation = changes.isolation;
+  return body;
+}

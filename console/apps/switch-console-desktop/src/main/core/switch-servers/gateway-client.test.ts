@@ -91,6 +91,7 @@ const {
   fetchManagementControllers,
   fetchAgentManagementAccess,
   updateCanManageAgents,
+  updateManagedAgent,
 } = await import('./gateway-client');
 
 const SERVER = {
@@ -1733,6 +1734,33 @@ describe('agent management calls', () => {
     expect(url).toBe('https://switch.example.com/gateway/agents/agent-1/can-manage-agents');
     expect(init.method).toBe('PUT');
     expect(JSON.parse(String(init.body))).toEqual({ enabled: true });
+  });
+
+  it('changes a managed agent’s settings over the server’s copy, keeping fields it does not know', async () => {
+    fetchMock
+      .mockImplementationOnce(async () =>
+        respond(200, {
+          agent_id: 'agent-1',
+          definition: { provider: 'claude', model: 'opus', future_field: 7 },
+        })
+      )
+      .mockImplementationOnce(async () => respond(200, {}));
+    await updateManagedAgent(SERVER, 'agent-1', {
+      definition: { model_options: { effort: 'high' } },
+      controllerId: 'controller-2',
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/management/agents/agent-1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(String(init.body))).toEqual({
+      definition: {
+        provider: 'claude',
+        model: 'opus',
+        future_field: 7,
+        model_options: { effort: 'high' },
+      },
+      controller_id: 'controller-2',
+    });
   });
 
   it('maps managed agents, definition and last report included', async () => {

@@ -2766,6 +2766,35 @@ export async function fetchManagedAgent(
   }
 }
 
+/**
+ * Change a managed agent's settings (`PATCH /gateway/management/agents/{id}`):
+ * the definition fields given replace those on the server, the rest stay as the
+ * server holds them, including fields this build does not know. Switch checks
+ * the result against its machine and refuses it whole.
+ */
+export async function updateManagedAgent(
+  server: SwitchServer,
+  agentId: string,
+  changes: {
+    definition: Record<string, unknown> | null;
+    /** Absent leaves the machine as it is. */
+    controllerId?: string;
+  }
+): Promise<void> {
+  const path = `/agents/${encodeURIComponent(agentId)}`;
+  const body: Record<string, unknown> = {};
+  if (changes.definition !== null) {
+    const res = await managementFetch(server, path, { authenticated: true });
+    const current = ((await res.json()) as { definition: Record<string, unknown> | null })
+      .definition;
+    if (!current) throw new Error(`The server holds no definition for managed agent ${agentId}.`);
+    body.definition = { ...current, ...changes.definition };
+  }
+  if (changes.controllerId !== undefined) body.controller_id = changes.controllerId;
+  if (Object.keys(body).length === 0) return;
+  await managementFetch(server, path, { authenticated: true, method: 'PATCH', body });
+}
+
 /** The v1 managed agent definition, as `PUT`/`PATCH …/management/agents/{id}` take it. */
 export type ManagedAgentDefinitionBody = {
   provider: string;

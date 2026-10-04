@@ -5,14 +5,13 @@ import { type ReactNode, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
-import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@renderer/lib/ui/button';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
-import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
+import { ManagedAgentSettings } from './managed-agent-settings';
 import { managedAgentLabel, managedAgentState } from './managed-agent-state';
 import { MANAGED_AGENTS_KEY, useManagedAgents } from './use-managed-agents';
 
@@ -110,12 +109,6 @@ function ManagedAgentDetail({ agent }: { agent: ManagedAgentView }) {
         }),
     });
 
-  const definition = agent.definition;
-  const options = Object.entries(definition.modelOptions);
-  const machine = agent.machine
-    ? `${agent.machine.name}${agent.machine.state === 'online' ? '' : ` (${agent.machine.state})`}`
-    : 'None';
-
   return (
     <ServerPage
       title={label}
@@ -150,61 +143,28 @@ function ManagedAgentDetail({ agent }: { agent: ManagedAgentView }) {
         </div>
       }
     >
-      <div className="flex items-center gap-4">
-        <AgentAvatar name={label} iconUrl={agent.iconUrl} size={56} />
-        <div className="min-w-0">
-          <div className="text-sm font-medium text-foreground">{agent.name}</div>
-          <div
-            className={`text-sm ${state.tone === 'problem' ? 'text-destructive' : 'text-foreground-muted'}`}
-          >
-            {state.label}
-            {state.detail ? ` — ${state.detail}` : ''}
-          </div>
-        </div>
+      <div className="text-sm">
+        <span className="font-medium text-foreground">{agent.name}</span>
+        <span className="text-foreground-muted">
+          {' · '}
+          {agent.machine ? `on ${agent.machine.name}` : 'on no machine'}
+          {' · '}
+        </span>
+        <span className={state.tone === 'problem' ? 'text-destructive' : 'text-foreground-muted'}>
+          {state.label}
+          {state.detail ? ` — ${state.detail}` : ''}
+        </span>
       </div>
       {error && (
         <p role="alert" className="text-sm text-destructive">
           {error}
         </p>
       )}
-      <dl className="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 text-sm">
-        <Field label="Provider">
-          {providerDisplayName(definition.provider) ?? definition.provider}
-        </Field>
-        <Field label="Model">{definition.model ?? 'Provider default'}</Field>
-        {options.length > 0 && (
-          <Field label="Model options">
-            {options.map(([key, value]) => `${key}: ${value}`).join(', ')}
-          </Field>
-        )}
-        <Field label="Machine">{machine}</Field>
-        <Field label="Directory">{definition.directory ?? 'Chosen by the machine'}</Field>
-        <Field label="Runs">
-          {definition.isolation === 'isolated'
-            ? 'In a process of its own'
-            : 'In its machine’s controller'}
-        </Field>
-        <Field label="Tool calls">
-          {definition.autoApprove ? 'Approved automatically' : 'Asked for approval'}
-        </Field>
-        <Field label="Instructions">
-          {definition.instructions ? (
-            <pre className="font-sans whitespace-pre-wrap">{definition.instructions}</pre>
-          ) : (
-            'None'
-          )}
-        </Field>
-      </dl>
+      <ManagedAgentSettings
+        key={`${agent.revision}:${agent.displayName}:${agent.iconUrl}`}
+        agent={agent}
+      />
     </ServerPage>
-  );
-}
-
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <>
-      <dt className="text-foreground-muted">{label}</dt>
-      <dd className="min-w-0 text-foreground">{children}</dd>
-    </>
   );
 }
 

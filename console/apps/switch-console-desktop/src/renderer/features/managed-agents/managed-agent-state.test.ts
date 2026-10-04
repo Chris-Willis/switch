@@ -4,6 +4,7 @@ import { managedAgentState } from './managed-agent-state';
 
 const AGENT: ManagedAgentView = {
   serverId: 'server-1',
+  workspaceId: 'workspace-1',
   agentId: 'agent-1',
   name: 'pm-agent',
   displayName: null,

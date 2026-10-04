@@ -45,7 +45,7 @@ export function CanManageAgentsSettingsSection({
   );
 }
 
-function CanManageAgentsRow({
+export function CanManageAgentsRow({
   workspaceId,
   agentId,
   agentName,
