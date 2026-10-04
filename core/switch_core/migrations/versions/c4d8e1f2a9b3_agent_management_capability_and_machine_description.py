@@ -8,7 +8,7 @@
   machine, set at enrollment and editable by its owner.
 
 Revision ID: c4d8e1f2a9b3
-Revises: b7e2c9d4a1f6
+Revises: d2a7f4c9e1b8
 Create Date: 2026-10-03 00:00:00.000000
 
 """
@@ -19,7 +19,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "c4d8e1f2a9b3"
-down_revision: str | Sequence[str] | None = "b7e2c9d4a1f6"
+down_revision: str | Sequence[str] | None = "d2a7f4c9e1b8"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
