@@ -30,7 +30,7 @@ export type AgentHubDeps = {
   log: Logger;
   /** An agent's confirmed cursor moved; the controller persists it and beats it upstream. */
   onCursor: (agentId: string, cursor: number) => void;
-  /** Something `attached()` or `sessionRooms()` reads changed. */
+  /** Something `attached()` reads changed. */
   onChange: () => void;
   /** The most events held per agent while its agent host is not taking them; past it the oldest go, and it is told. */
   bufferLimit: number;
@@ -138,17 +138,6 @@ export class AgentHub {
     for (const agent of this.agents.values())
       if (agent.confirmed !== null) cursors[agent.agentId] = agent.confirmed;
     return cursors;
-  }
-
-  /** For each agent whose running agent host has sessions placed in rooms, those rooms, sorted. */
-  sessionRooms(): Record<string, string[]> {
-    const placements: Record<string, string[]> = {};
-    for (const agent of this.agents.values()) {
-      if (!agent.host?.started || agent.host.closed) continue;
-      const rooms = new Set(agent.placements.values());
-      if (rooms.size) placements[agent.agentId] = [...rooms].sort();
-    }
-    return placements;
   }
 
   /** The agent's events flow on the controller stream and its agent host is taking them. */
@@ -386,6 +375,8 @@ export class AgentHub {
       { once: true }
     );
     return {
+      // Switch keeps no record of an agent's sessions: the agent host says when it starts one.
+      announcesSessionStarts: true,
       start: () => {
         if (host.started || host.closed) return;
         host.started = true;

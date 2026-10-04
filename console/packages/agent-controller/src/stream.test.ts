@@ -79,24 +79,21 @@ class ScriptedClient {
   opens: Record<string, AgentCursor>[] = [];
   attaches: { connectionId: string; generation: number }[] = [];
   beats: Record<string, number>[] = [];
-  placementsSent: Record<string, string[]>[] = [];
   open: () => Promise<ControllerConnection> = async () => opened;
   events: () => Promise<Response> = async () => new Response(streamOf([], true));
   beat: () => Promise<void> = async () => {};
 
   readonly client: ControllerStreamOptions['client'] = {
-    openConnection: async (cursors, placements) => {
+    openConnection: async (cursors) => {
       this.opens.push(cursors);
-      this.placementsSent.push(placements);
       return this.open();
     },
     openEvents: async (connection) => {
       this.attaches.push(connection);
       return this.events();
     },
-    beat: async (_connection, cursors, placements) => {
+    beat: async (_connection, cursors) => {
       this.beats.push(cursors);
-      this.placementsSent.push(placements);
       return this.beat();
     },
   };
@@ -113,7 +110,6 @@ function run(
     client: scripted.client,
     cursors: () => ({ 'agent-1': 7 }),
     confirmed: () => ({ 'agent-1': 7 }),
-    placements: () => ({}),
     onOpened: (connection) => void states.push(`opened ${connection.connection_id}`),
     onConnected: () => void states.push('connected'),
     onDisconnected: () => void states.push('disconnected'),
@@ -186,21 +182,6 @@ describe('runControllerStream', () => {
     stop.abort();
     await ending;
     expect(scripted.beats[0]).toEqual({ 'agent-1': 7 });
-  });
-
-  it('states the current placements on the open and on every beat, as they change', async () => {
-    const scripted = new ScriptedClient();
-    let current: Record<string, string[]> = { 'agent-1': ['room-a'] };
-    const stop = new AbortController();
-    const { ending } = run(scripted, stop.signal, { placements: () => current });
-    await waitFor(() => scripted.beats.length >= 1, 'a beat');
-    current = {};
-    const sent = scripted.placementsSent.length;
-    await waitFor(() => scripted.placementsSent.length > sent, 'the next beat');
-    stop.abort();
-    await ending;
-    expect(scripted.placementsSent[0]).toEqual({ 'agent-1': ['room-a'] });
-    expect(scripted.placementsSent.at(-1)).toEqual({});
   });
 
   it('reattaches to the same connection after the stream ends', async () => {
@@ -446,14 +427,12 @@ describe('runControllerStream against the controller stream routes', () => {
 
   it('opens, reads, beats, reattaches, and reopens with cursors after the connection lapses', async () => {
     let confirmed = 3;
-    let placements: Record<string, string[]> = { 'agent-1': ['room-a'] };
     const frames: ControllerFrame[] = [];
     const stop = new AbortController();
     const ending = runControllerStream({
       client: client(),
       cursors: () => ({ 'agent-1': confirmed }),
       confirmed: () => ({ 'agent-1': confirmed }),
-      placements: () => placements,
       onOpened: () => {},
       onConnected: () => {},
       onDisconnected: () => {},
@@ -471,16 +450,6 @@ describe('runControllerStream against the controller stream routes', () => {
     await waitFor(() => frames.length === 1, 'the frame');
     await waitFor(() => core.beats.length > 0, 'a beat');
     expect(core.beats[0]).toEqual({ 'agent-1': 3 });
-    expect(core.openPlacements[0]).toEqual({ 'agent-1': ['room-a'] });
-    expect(core.beatPlacements[0]).toEqual({ 'agent-1': ['room-a'] });
-    placements = { 'agent-1': ['room-a', 'room-b'] };
-    // A beat already on its way still carries the old placements; the next one has the new.
-    await waitFor(
-      () =>
-        JSON.stringify(core.beatPlacements.at(-1)) ===
-        JSON.stringify({ 'agent-1': ['room-a', 'room-b'] }),
-      'a beat with the new placements'
-    );
 
     core.closeStreams();
     await waitFor(() => core.streamCount === 1, 'the stream reattached');

@@ -4,7 +4,6 @@ import { ConfigurationError } from './errors';
 import type { Logger } from './log';
 import {
   type AgentCursor,
-  type AgentPlacements,
   type Assignment,
   assignmentSchema,
   type ControllerConnection,
@@ -389,12 +388,10 @@ export class ControllerClient {
 
   /**
    * Opens a connection for the controller stream, resuming each agent from its
-   * cursor and stating where its sessions work. Opening takes over any
-   * connection this controller held before.
+   * cursor. Opening takes over any connection this controller held before.
    */
   async openConnection(
     cursors: Record<string, AgentCursor>,
-    placements: AgentPlacements,
     signal: AbortSignal
   ): Promise<ControllerConnection> {
     const response = await this.request(`${this.streamPath}/connection`, {
@@ -403,7 +400,6 @@ export class ControllerClient {
         client: CONTROLLER_CLIENT,
         client_version: this.deps.version,
         cursors,
-        placements,
       },
       signal,
     });
@@ -411,13 +407,12 @@ export class ControllerClient {
   }
 
   /**
-   * Proves the connection alive, confirms how far each agent's watcher has
-   * read, and states where each agent's sessions work now.
+   * Proves the connection alive, and confirms how far each agent's host has
+   * read.
    */
   async beat(
     connection: { connectionId: string; generation: number },
     cursors: Record<string, number>,
-    placements: AgentPlacements,
     signal: AbortSignal
   ): Promise<void> {
     const response = await this.request(`${this.streamPath}/connection/beat`, {
@@ -426,7 +421,6 @@ export class ControllerClient {
         connection_id: connection.connectionId,
         generation: connection.generation,
         cursors,
-        placements,
       },
       signal,
     });

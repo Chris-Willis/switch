@@ -49,6 +49,7 @@ import { hostParked } from './shared-state';
 import { readTakenOver, recordTakenOver } from './taken-over';
 import { awaitWatchChange, readWatchFlags } from './watch-flags';
 import {
+  announceSessionStart,
   announceStartFailure,
   type PlaceOutcome,
   sessionToolAnswerer,
@@ -700,6 +701,8 @@ export class AgentHostAssignments {
  * agents controller does for every agent on its machine.
  */
 export type AgentEventStream = {
+  /** The agent host, not Switch, tells a room when it starts a session for it. */
+  readonly announcesSessionStarts: boolean;
   start(): void;
   setSpawnCapable(capable: boolean): void;
   replacePlacements(placements: Record<string, string>): Promise<void>;
@@ -933,6 +936,30 @@ export async function runAgentHost(
      * that runs into it is answered once, however often the host is retried.
      */
     const announced = new Set<string>();
+    /** Says in the room that a session is starting for its message, once per message. */
+    const startingNoticed = new Set<string>();
+    const tellStarting = async (config: SharedHostConfig, event: Handoff) => {
+      const key = `${event.roomId}:${event.messageId}`;
+      if (startingNoticed.has(key)) return;
+      startingNoticed.add(key);
+      try {
+        await publish();
+        await announceSessionStart({
+          identity,
+          connectionId,
+          session: config.session,
+          root: sharedSessionRoot(config.session.sessionId),
+          cwd: config.start.input.cwd,
+          threadId: threadOf(event.event),
+        });
+      } catch (error) {
+        console.error(
+          `Could not tell room ${event.roomId} a session is starting for message ${event.messageId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      }
+    };
     const announce = async (config: SharedHostConfig, event: Handoff, failure: string) => {
       const sessionId = config.session.sessionId;
       const key = `${sessionId}:${event.roomId}:${event.messageId}`;
@@ -1193,6 +1220,7 @@ export async function runAgentHost(
       );
       await placements.place(config.session.sessionId, event.roomId);
       publishQuietly();
+      if (stream?.announcesSessionStarts) await tellStarting(config, event);
       await deliver(config, event, waiting);
       return true;
     };

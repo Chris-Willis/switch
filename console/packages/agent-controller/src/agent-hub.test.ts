@@ -230,13 +230,12 @@ describe('the connection', () => {
 });
 
 describe('placements', () => {
-  it('reports each running watcher’s rooms, names a session’s room, and forgets them when it stops', async () => {
+  it('names a session’s room from its agent host, and forgets it when the agent host stops', async () => {
     hub.streamAttached();
     hub.attach(AGENT, 0, ['room-a', 'room-b']);
     const { stream, stop } = watcher();
     stream.start();
     await stream.replacePlacements({ 'session-1': 'room-b', 'session-2': 'room-a' });
-    expect(hub.sessionRooms()).toEqual({ [AGENT]: ['room-a', 'room-b'] });
     expect(hub.roomFor(AGENT, 'session-1')).toBe('room-b');
     expect(hub.roomFor(AGENT, 'session-9')).toBeNull();
     expect(hub.roomFor(AGENT, null)).toBeNull();
@@ -244,7 +243,6 @@ describe('placements', () => {
     expect(hub.roomFor(AGENT, null)).toBe('room-b');
     expect(changes).toBeGreaterThan(0);
     stop();
-    expect(hub.sessionRooms()).toEqual({});
     expect(hub.roomFor(AGENT, 'session-1')).toBeNull();
   });
 

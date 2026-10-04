@@ -13,7 +13,6 @@ import {
   type AgentEventFrame,
   agentEventFrameSchema,
   type AgentGapFrame,
-  type AgentPlacements,
   agentGapFrameSchema,
   type AgentRoomsFrame,
   agentRoomsFrameSchema,
@@ -122,8 +121,6 @@ export type ControllerStreamOptions = {
   cursors: () => Record<string, AgentCursor>;
   /** How far each agent's watcher has confirmed reading, sent on every beat. */
   confirmed: () => Record<string, number>;
-  /** The rooms each agent's sessions work in, sent on the open and on every beat. */
-  placements: () => AgentPlacements;
   /** A connection was opened: Core attached these agents to it. */
   onOpened: (connection: ControllerConnection) => Promise<void> | void;
   /** The stream is attached and reading. */
@@ -253,11 +250,7 @@ class ControllerStream {
   private async attach(attempt: Attempt): Promise<void> {
     const { client, log } = this.options;
     if (!this.held) {
-      const opened = await client.openConnection(
-        this.options.cursors(),
-        this.options.placements(),
-        attempt.socket.signal
-      );
+      const opened = await client.openConnection(this.options.cursors(), attempt.socket.signal);
       this.held = {
         connectionId: opened.connection_id,
         generation: opened.generation,
@@ -352,7 +345,7 @@ class ControllerStream {
       await delay(connection.heartbeatMs, undefined, { signal }).catch(() => {});
       if (signal.aborted) return;
       try {
-        await client.beat(connection, this.options.confirmed(), this.options.placements(), signal);
+        await client.beat(connection, this.options.confirmed(), signal);
         if (failures > 0)
           log.info('The controller stream heartbeat recovered', { afterFailures: failures });
         failures = 0;

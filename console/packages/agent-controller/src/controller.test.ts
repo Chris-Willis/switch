@@ -297,19 +297,11 @@ describe('runController', () => {
     await waitFor(() => events.length === 1, 'the event');
     await waitFor(() => store.cursors().get('agent-1') === 5, 'the cursor confirmed');
 
-    expect(core.beatPlacements.at(-1) ?? {}).toEqual({});
     await stream.replacePlacements({ 'session-1': 'room-a' });
-    // A beat already on its way still carries the old placements; the next one has the new.
-    await waitFor(
-      () =>
-        JSON.stringify(core.beatPlacements.at(-1)) === JSON.stringify({ 'agent-1': ['room-a'] }),
-      'a beat with the new placement'
-    );
 
     core.forgetConnection();
     await waitFor(() => core.opens.length === 2, 'a new connection');
     expect(core.opens[1]).toEqual({ 'agent-1': 5 });
-    expect(core.openPlacements[1]).toEqual({ 'agent-1': ['room-a'] });
     await waitFor(() => core.streamCount === 1, 'the new stream attached');
     core.pushEvent('agent-1', 6, addressed(6));
     await waitFor(() => events.length === 2, 'the next event, once');

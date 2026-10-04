@@ -9,6 +9,7 @@ import type { AgentBridgeEvent, SwitchEventStreamDeps } from '@sandboxaq/switch-
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   MAX_HOST_RESTARTS,
+  type OpenAgentStream,
   stopSupersededSessions,
   openSwitchStream,
   runAgentHost,
@@ -25,7 +26,7 @@ import { ensureSharedProcess, type Supervision } from './launch';
 import { type SessionRequest, SessionLinks } from './session-channel';
 import { sharedConfigSchema } from './shared-config';
 import { clearTakenOver, recordTakenOver } from './taken-over';
-import { WatcherControl } from './watcher-tools';
+import { SESSION_STARTING_MESSAGE, WatcherControl } from './watcher-tools';
 
 const paths = vi.hoisted(() => ({ root: '' }));
 const supervisors = vi.hoisted(() => new Map<string, { build: unknown }>());
@@ -552,6 +553,12 @@ const addressed = (sequence: number, roomId: string): AgentBridgeEvent => ({
     body: 'Run the check',
     timestamp: sequence,
   },
+});
+
+/** The same event, as asked in a thread. */
+const threaded = (event: AgentBridgeEvent, threadId: string): AgentBridgeEvent => ({
+  ...event,
+  payload: { ...event.payload, thread_id: threadId } as AgentBridgeEvent['payload'],
 });
 
 it('starts no saved session at startup; each waits until it is needed', async () => {
@@ -1198,6 +1205,93 @@ it('hands a session it has just created the event that created it', async () => 
       },
     },
   ]);
+});
+
+it('tells the room it is starting a session when its stream leaves that to it, before handing the message over', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-starting-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  vi.mocked(ensureSharedProcess).mockImplementation(async ({ root: sessionRoot }) =>
+    hosts.start(sessionRoot)
+  );
+  const calls = switchOperations({ owner: 'ada' });
+  const opened: SwitchEventStreamDeps[] = [];
+  const controllerStream: OpenAgentStream = (deps) => {
+    opened.push(deps);
+    return {
+      announcesSessionStarts: true,
+      start: () => {},
+      setSpawnCapable: () => {},
+      replacePlacements: async (placements) => void published.push(structuredClone(placements)),
+      workerCall: () => Promise.reject(new Error('not a worker')),
+    };
+  };
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    controllerStream
+  );
+  try {
+    await eventually(() => opened.length === 1);
+    await opened[0]!.onEvent(threaded(addressed(1, 'room'), 'thread-1'));
+    await eventually(() => settled(root));
+    // A second message for the room it now has a session in says nothing.
+    await opened[0]!.onEvent(addressed(2, 'room'));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  const [assigned] = (await AgentHostAssignments.open(root)).sessions();
+  const notices = calls.filter((call) => call.name === 'post_message');
+  expect(notices).toEqual([
+    {
+      name: 'post_message',
+      body: { body: SESSION_STARTING_MESSAGE, thread_id: 'thread-1' },
+      session: assigned!.session.sessionId,
+    },
+  ]);
+  expect(hosts.to(join(root, assigned!.session.sessionId))).toHaveLength(2);
+});
+
+it('leaves telling the room to Switch on its own connection', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-not-starting-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  vi.mocked(ensureSharedProcess).mockImplementation(async ({ root: sessionRoot }) =>
+    hosts.start(sessionRoot)
+  );
+  const calls = switchOperations({ owner: 'ada' });
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(1, 'room'));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+  expect(calls.filter((call) => call.name === 'post_message')).toEqual([]);
 });
 
 it('holds a room nothing can take while starting sessions is off, and delivers once it is on', async () => {

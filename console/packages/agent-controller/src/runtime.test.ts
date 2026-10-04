@@ -55,6 +55,7 @@ function openStream(agentId: string): OpenAgentStream {
     }
     opened.push({ agentId, scope: deps.scope, filter: deps.filter, signal: deps.signal });
     return {
+      announcesSessionStarts: true,
       start: () => {},
       setSpawnCapable: () => {},
       replacePlacements: async () => {},

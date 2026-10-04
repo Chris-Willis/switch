@@ -375,6 +375,8 @@ export class SwitchEventStream {
    * `connection_state`, and against a server too old to send one.
    */
   private generation: number | null = null;
+  /** The server leaves telling a room a session is starting to this client (`connection_state`). */
+  private announces = false;
   /**
    * The barrier between the heartbeat and the socket it beats for.
    *
@@ -419,6 +421,15 @@ export class SwitchEventStream {
 
   get position(): number {
     return this.cursor;
+  }
+
+  /**
+   * Whether this client tells a room it is starting a session for it, rather
+   * than the server: an agents controller leaves it to the agent, Switch
+   * itself does it for an agent connected on its own.
+   */
+  get announcesSessionStarts(): boolean {
+    return this.announces;
   }
 
   start(): void {
@@ -933,6 +944,7 @@ export class SwitchEventStream {
     switch (frame.event) {
       case 'connection_state':
         if (typeof frame.data.generation === 'number') this.generation = frame.data.generation;
+        this.announces = frame.data.announce_session_starts === true;
         log.debug('SwitchEventStream: connection established', {
           event: 'switch_stream_connected',
           rooms: frame.data.rooms,

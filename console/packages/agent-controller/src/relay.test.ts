@@ -218,6 +218,8 @@ describe('the relay as the agent protocol, read by the real SwitchEventStream', 
   it('connects, then delivers addressed events in order, with their ids and missed counts', async () => {
     const watcher = watch();
     await connected(watcher);
+    // Switch keeps no record of its sessions, so the agent host says when it starts one.
+    expect(watcher.stream.announcesSessionStarts).toBe(true);
     relay.ingest(message(1, true));
     relay.ingest(message(2, false));
     relay.ingest({
@@ -414,55 +416,6 @@ describe('the relay as the agent protocol, read by the real SwitchEventStream', 
     ).rejects.toBeInstanceOf(PlacementsRefusedError);
     await delay(50);
     expect(watcher.seen.commands).toHaveLength(1);
-  });
-
-  it('reports the rooms each agent’s sessions work in, across its live connections', async () => {
-    expect(relay.sessionRooms()).toEqual({});
-    const watcher = watch();
-    await connected(watcher);
-    await watcher.stream.replacePlacements({ 'session-1': 'room-a' });
-    const other = watch({ connectionId: 'other-connection' });
-    await connected(other);
-    await other.stream.replacePlacements({ 'session-2': 'room-b' });
-    expect(relay.sessionRooms()).toEqual({ [AGENT]: ['room-a', 'room-b'] });
-    await other.stream.replacePlacements({});
-    expect(relay.sessionRooms()).toEqual({ [AGENT]: ['room-a'] });
-    await watcher.stream.replacePlacements({});
-    expect(relay.sessionRooms()).toEqual({});
-  });
-
-  it('leaves out what a connection whose heartbeat lapsed had placed', async () => {
-    await relay.close();
-    relay = new LocalRelay({
-      log: silentLogger,
-      version: '0.1.0',
-      forwarder: { forward: async () => {} },
-      onCursor: () => {},
-      onChange: () => {},
-      sharedRoomFor: () => null,
-      now: Date.now,
-      timing: { heartbeatTtlMs: 300, heartbeatIntervalS: 2, sweepMs: 20, keepaliveMs: 15_000 },
-      bufferLimit: 100,
-    });
-    await relay.start(null);
-    token = relay.mint(AGENT);
-    relay.setReady();
-    const response = await fetch(
-      `${relay.endpoint}/agents/${AGENT}/events?connection_id=quiet&scope=all&protocol=6`,
-      { headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' } }
-    );
-    const reader = response.body!.getReader();
-    const first = new TextDecoder().decode((await reader.read()).value);
-    const generation = Number(/"generation":(\d+)/.exec(first)![1]);
-    const placed = await post(`/agents/${AGENT}/connection/placements`, {
-      connection_id: 'quiet',
-      placements: { 'session-1': 'room-a' },
-      generation,
-    });
-    expect(placed.status).toBe(200);
-    expect(relay.sessionRooms()).toEqual({ [AGENT]: ['room-a'] });
-    await waitFor(() => Object.keys(relay.sessionRooms()).length === 0, 'the lapse');
-    await reader.cancel();
   });
 
   it('passes approval outcomes to the watcher', async () => {

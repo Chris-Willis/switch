@@ -283,29 +283,23 @@ describe('the controller stream routes', () => {
     core.setAssignment(assignment);
     const { client: api } = client();
     const signal = new AbortController().signal;
-    const opened = await api.openConnection(
-      { 'agent-1': 41, 'agent-2': 'head' },
-      { 'agent-1': ['room-a'] },
-      signal
-    );
+    const opened = await api.openConnection({ 'agent-1': 41, 'agent-2': 'head' }, signal);
     expect(opened.agents).toEqual(['agent-1']);
     const sent = core.requests.at(-1)!;
     expect(controllerConnectionRequestSchema.parse(sent.body)).toEqual({
       client: 'switch-agent-controller',
       client_version: '0.1.0',
       cursors: { 'agent-1': 41, 'agent-2': 'head' },
-      placements: { 'agent-1': ['room-a'] },
     });
     const connection = { connectionId: opened.connection_id, generation: opened.generation };
     const stream = new AbortController();
     const response = await api.openEvents(connection, stream.signal);
     expect(response.headers.get('content-type')).toContain('text/event-stream');
-    await api.beat(connection, { 'agent-1': 42 }, { 'agent-1': ['room-a', 'room-b'] }, signal);
+    await api.beat(connection, { 'agent-1': 42 }, signal);
     expect(controllerBeatRequestSchema.parse(core.requests.at(-1)!.body)).toEqual({
       connection_id: opened.connection_id,
       generation: opened.generation,
       cursors: { 'agent-1': 42 },
-      placements: { 'agent-1': ['room-a', 'room-b'] },
     });
     stream.abort();
   });
@@ -314,12 +308,12 @@ describe('the controller stream routes', () => {
     const { client: api } = client();
     const signal = new AbortController().signal;
     await expect(
-      api.beat({ connectionId: 'nobody', generation: 1 }, {}, {}, signal)
+      api.beat({ connectionId: 'nobody', generation: 1 }, {}, signal)
     ).rejects.toMatchObject({ status: 404, code: 'unknown_connection' });
-    const first = await api.openConnection({}, {}, signal);
-    await api.openConnection({}, {}, signal);
+    const first = await api.openConnection({}, signal);
+    await api.openConnection({}, signal);
     await expect(
-      api.beat({ connectionId: first.connection_id, generation: first.generation }, {}, {}, signal)
+      api.beat({ connectionId: first.connection_id, generation: first.generation }, {}, signal)
     ).rejects.toMatchObject({ status: 409, code: 'taken_over' });
   });
 
@@ -332,7 +326,7 @@ describe('the controller stream routes', () => {
       body: { detail: { code: 'no_stream', message: 'open the stream' } },
     });
     await expect(
-      api.beat({ connectionId: 'c', generation: 1 }, {}, {}, new AbortController().signal)
+      api.beat({ connectionId: 'c', generation: 1 }, {}, new AbortController().signal)
     ).rejects.toMatchObject({ status: 409, code: 'no_stream', message: 'open the stream' });
   });
 });

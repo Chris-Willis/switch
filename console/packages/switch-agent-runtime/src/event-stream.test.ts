@@ -297,6 +297,40 @@ describe('credentials the server rejects', () => {
     expect(log.error).toHaveBeenCalledTimes(1);
   });
 
+  it('tells a session start to the room itself only where the server says it leaves that to it', async () => {
+    for (const [said, expected] of [
+      [{ announce_session_starts: true }, true],
+      [{}, false],
+    ] as const) {
+      const fetchMock = vi.fn(async (url: string) =>
+        String(url).includes('/events')
+          ? {
+              ok: true,
+              status: 200,
+              body: frameThenClose('connection_state', {
+                connection_id: 'conn-1',
+                generation: 0,
+                ...said,
+              }),
+              text: async (): Promise<string> => '',
+            }
+          : new Promise<never>(() => {})
+      );
+      let connected = false;
+      const { stream, abort } = makeStream(fetchMock, {
+        rooms: ['room-live'],
+        onConnected: () => {
+          connected = true;
+        },
+      });
+      expect(stream.announcesSessionStarts).toBe(false);
+      for (let i = 0; i < 50 && !connected; i += 1) await flush();
+      expect(stream.announcesSessionStarts).toBe(expected);
+      abort.abort();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('tells the owner once when the stream and the heartbeat are refused together', async () => {
     vi.useFakeTimers();
     let opens = 0;
