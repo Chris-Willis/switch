@@ -3,6 +3,7 @@ import { AlertTriangle, CirclePause, Loader2 } from 'lucide-react';
 import { useEffect } from 'react';
 import { events, rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import type { Agent } from '@shared/core/agents/agents';
 import {
   connectionLabels,
@@ -52,26 +53,40 @@ export function AgentConnectionIndicator({
   showLabel?: boolean;
 }) {
   const { navigate } = useNavigate();
-  const { state } = useAgentConnection(agent);
+  const { query, health, state } = useAgentConnection(agent);
   if (!agent.switchAgentId || !state || (!showLabel && state === 'connected')) return null;
   const attention = connectionNeedsAttention(state);
   const label = connectionLabels[state];
+  const detail = query.isError
+    ? query.error instanceof Error
+      ? query.error.message
+      : String(query.error)
+    : (health?.detail ?? null);
   const Icon = state === 'connecting' ? Loader2 : state === 'stopped' ? CirclePause : AlertTriangle;
   return (
-    <button
-      type="button"
-      aria-label={`${agent.name}: ${label}. Open room watcher settings`}
-      title={`${label}. Open room watcher settings`}
-      className={`inline-flex shrink-0 items-center gap-1 text-xs ${attention ? 'text-foreground-warning' : 'text-foreground-muted'}`}
-      onClick={(event) => {
-        event.stopPropagation();
-        navigate('location', { locationId: agent.locationId, agentName: agent.name });
-      }}
-    >
-      {state !== 'connected' && (
-        <Icon className={`size-3.5 ${state === 'connecting' ? 'animate-spin' : ''}`} />
-      )}
-      {showLabel && label}
-    </button>
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-label={`${agent.name}: ${label}. Open room watcher settings`}
+            className={`inline-flex shrink-0 items-center gap-1 text-xs ${attention ? 'text-foreground-warning' : 'text-foreground-muted'}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              navigate('location', { locationId: agent.locationId, agentName: agent.name });
+            }}
+          >
+            {state !== 'connected' && (
+              <Icon className={`size-3.5 ${state === 'connecting' ? 'animate-spin' : ''}`} />
+            )}
+            {showLabel && label}
+          </button>
+        }
+      />
+      <TooltipContent>
+        {label}
+        {detail ? `: ${detail}` : ''}. Click for the room watcher settings.
+      </TooltipContent>
+    </Tooltip>
   );
 }

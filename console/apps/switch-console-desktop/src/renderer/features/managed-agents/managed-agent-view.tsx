@@ -3,6 +3,8 @@ import { Bot, Play, Square, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { ManagedAgentSection } from '@renderer/features/agent-migration/managed-agent-section';
+import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -164,9 +166,26 @@ function ManagedAgentDetail({ agent }: { agent: ManagedAgentView }) {
         key={`${agent.revision}:${agent.displayName}:${agent.iconUrl}`}
         agent={agent}
       />
+      <MovedFromConsole agent={agent} />
     </ServerPage>
   );
 }
+
+/**
+ * An agent moved to managed from this Console still has its entry here, which
+ * is what bringing it back needs: "Stop managing" lives with it.
+ */
+const MovedFromConsole = observer(function MovedFromConsole({
+  agent,
+}: {
+  agent: ManagedAgentView;
+}) {
+  const local = agentsStore
+    .agentsOnServer(agent.serverId)
+    .find((candidate) => candidate.switchAgentId === agent.agentId);
+  if (!local) return null;
+  return <ManagedAgentSection agentId={local.id} />;
+});
 
 export const managedAgentView = {
   WrapView: ({ children }: ManagedAgentParams & { children: ReactNode }) => <>{children}</>,

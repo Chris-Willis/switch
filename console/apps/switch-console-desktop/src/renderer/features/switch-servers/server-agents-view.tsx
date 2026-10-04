@@ -33,7 +33,7 @@ import {
 } from '@renderer/features/managed-agents/managed-agent-state';
 import {
   useManagedAgents,
-  withoutLocalRows,
+  withoutManaged,
 } from '@renderer/features/managed-agents/use-managed-agents';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { AgentConnectionIndicator } from '@renderer/features/switch-rooms/connection-health';
@@ -89,10 +89,10 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
     void refreshSidebarRoomState(false);
   }, [serverId]);
 
-  const agents = agentsStore.agentsOnServer(serverId);
   const cloud = useCloudAgents(serverId);
   const machines = useCloudMachines(serverId);
   const managed = useManagedAgents(serverId);
+  const agents = withoutManaged(agentsStore.agentsOnServer(serverId), managed.data);
 
   return (
     <ServerPage
@@ -137,10 +137,9 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
         {agents.map((agent) => (
           <AgentCard key={agent.id} agent={agent} serverId={serverId} />
         ))}
-        {managed.data &&
-          withoutLocalRows(serverId, managed.data).map((agent) => (
-            <ManagedAgentCard key={agent.agentId} agent={agent} />
-          ))}
+        {managed.data?.map((agent) => (
+          <ManagedAgentCard key={agent.agentId} agent={agent} />
+        ))}
         {cloud.data
           ?.filter((listed) => listed.launch.state !== 'deleted')
           .map((listed) => (

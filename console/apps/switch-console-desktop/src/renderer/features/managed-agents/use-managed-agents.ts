@@ -1,5 +1,4 @@
 import { useQuery } from '@tanstack/react-query';
-import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { rpc } from '@renderer/lib/ipc';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
@@ -24,10 +23,16 @@ export function useManagedAgents(serverId: string | null) {
 }
 
 /**
- * The managed agents Console has no row for. An agent moved to managed from
- * here keeps its row, which already shows it, so it is not listed twice.
+ * Without the agents the server manages. An agent moved to managed from here
+ * keeps a row in Console, but the server is what runs it now, so it is shown
+ * the way every managed agent is, from the server, rather than twice or as a
+ * Console agent with a room watcher that no longer runs here.
  */
-export function withoutLocalRows(serverId: string, agents: ManagedAgentView[]): ManagedAgentView[] {
-  const local = new Set(agentsStore.agentsOnServer(serverId).map((agent) => agent.switchAgentId));
-  return agents.filter((agent) => !local.has(agent.agentId));
+export function withoutManaged<T extends { switchAgentId: string | null }>(
+  agents: T[],
+  managed: ManagedAgentView[] | null | undefined
+): T[] {
+  if (!managed) return agents;
+  const ids = new Set(managed.map((agent) => agent.agentId));
+  return agents.filter((agent) => agent.switchAgentId === null || !ids.has(agent.switchAgentId));
 }
