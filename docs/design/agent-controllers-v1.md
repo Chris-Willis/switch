@@ -278,9 +278,10 @@ stream. The flag and everything else above stay as they are.
 - **Controller-backed agent:** an agent whose `agent_definitions.controller_id` is set.
   Core treats it differently from a directly connected agent:
   - It has **no per-agent connection** in `AgentConnectionRegistry`, no placements and no room claims.
-  - **Presence** comes from its controller. The agent is live while its controller's stream is
-    attached and its heartbeat is fresh. It can start sessions on demand when
-    it is a member of the room.
+  - **Presence** comes from its controller. The agent is connected while its controller's stream is
+    attached and its heartbeat is fresh, its owner has it running, and the controller is not
+    revoked. That, and which rooms it is a member of, is all Core knows: where its sessions
+    are, and whether one is running, is the controller's business.
 - **Directly connected agent:** an agent with no controller. Nothing changes for it.
 - **Its per-agent API key cannot open an event stream** while the agent is controller-backed
   (`409 managed_by_controller`). The key-fetch route
@@ -295,8 +296,9 @@ stream. The flag and everything else above stay as they are.
   a narrow API. Core never imports Management and never reads its tables.
 - Every presence reader in Core asks `ControllerPresence` for controller-backed agents and the
   `AgentConnectionRegistry` for the others:
-  - statuses (LIVE / DORMANT / NO_SESSION)
-  - the agent client's reachability replies and its "Starting a session…" promise
+  - statuses (LIVE / DISCONNECTED)
+  - the agent client's reachability replies (never a "Starting a session…" promise: the
+    agent's host posts that itself)
   - the bridges' `agent_online`
   - role leases (a lease held by a controller-backed agent lives while the agent is live)
   - probes and snapshots
@@ -345,7 +347,8 @@ stream. The flag and everything else above stay as they are.
   its events from that stream directly (`AgentHub`): in order, filtered to what addresses the
   agent, with gaps, resets, room controls and approval outcomes. Events that arrive while its
   agent host is not running are held (bounded); its cursor moves only once the agent host has taken an
-  event. The agent host states its sessions' rooms in memory; the controller beats them upstream.
+  event. The agent host states its sessions' rooms in memory, for the relay and for routing
+  session commands; none of it is sent upstream.
 - The shared agent host code (`runAgentHost`) takes the function that opens its event stream: the
   controller passes its hub, while Console and the shared daemon pass the agent host's own
   connection to Switch.
@@ -357,34 +360,33 @@ stream. The flag and everything else above stay as they are.
 
 ### Core implementation notes (decisions the spec left open)
 
-- **Placements.** The beat body carries `placements: {agent_id: [room_id, ...]}`:
-  for each bound agent, the rooms where one of its sessions works now (the
-  controller knows them from its agent hosts' placements). It is the full map each
-  beat and replaces the last; an agent left out is in no room; agents not
-  bound to the controller and rooms the agent is not a member of are ignored
-  (logged at debug). The open request may carry an initial map. Placements
-  are dropped when the controller's stream detaches, its beat lapses, it is
-  taken over or revoked, and an agent's when it is unbound or moved.
-- **Presence states.** A session-shaped controller-backed agent is `LIVE` in a
-  room it is placed in. Elsewhere it is `DORMANT` where its live controller
-  will start a session (a member of the room), `NO_SESSION`
-  where the controller is live and will not, and `DISCONNECTED` when the
-  controller is not live (`NO_SESSION` for `session_addressable`, as for any
-  agent). An `always_on` agent is `LIVE` exactly while its controller is.
-  An agent whose owner set it to `stopped` is not live however healthy its
-  controller is: it is never promised a session, it holds no placements, and
-  the agent client tells the room it is stopped and that its owner has to set
-  it running.
-  Placed rooms also answer `agents_present_in`, `rooms_occupied` (so the
-  runtime-state sweep keeps a working session's state and resets the rest),
-  a role holder's `present_here`/`session_room`, and the agent detail's
-  session rows. An addressed agent placed in the room is available, so no
-  "Starting a session…" or offline reply is posted; unplaced, the reply names
-  the rooms it is placed in elsewhere. With its controller not live the reply
-  names the machine (the controller's name, carried on the binding) as
-  offline or reconnecting, or as removed once it is revoked; a controller-
-  backed agent is never offered the terminal command or told to open Switch
-  Console.
+- **No placements.** Core does not know where a controller-backed agent's
+  sessions are. The open and the beat carry no session map; a body that still
+  sends `placements` is refused with `422 validation_error`, an exception to
+  ignoring unknown controller fields so a controller still reporting sessions
+  is noticed. Per-agent room membership (`agent.attached {rooms}`,
+  `agent.rooms`) is kept: that is membership, not sessions.
+- **Presence states.** A controller-backed agent is `LIVE` while it is
+  connected (its controller's stream attached and beating, set to running, the
+  controller not revoked), whatever its `connection_model`, and `DISCONNECTED`
+  otherwise; a `session_passive` agent is `AWAITING_MANUAL_POLL` as any other.
+  There is no `DORMANT` or `NO_SESSION` for it. An agent whose owner set it to
+  `stopped` is not connected however healthy its controller is.
+  While connected it is present (`agents_present_in`, `rooms_occupied`, so the
+  runtime-state sweep keeps its state) in every room it is a member of, and in
+  none otherwise. A role holder is `present_here` in a room it is connected to
+  and a member of; Core never names another room as its `session_room`. The
+  agent detail shows one room-agnostic session while it is connected.
+- **Room replies.** An addressed agent that is connected is available: the
+  message is delivered and Core posts nothing, neither "Starting a session…"
+  nor "I don't have a session in this room"; the agent's host posts any
+  "Starting a session…" notice itself. Not connected, the reply says why: its
+  owner stopped it and has to set it running, or its machine (the
+  controller's name, carried on the binding) is offline or reconnecting, or
+  has been removed once it is revoked. A controller-backed agent is never
+  offered the terminal command or told to open Switch Console.
+  In-room session commands (`!reset`, `!compact`) are still relayed on the
+  controller's stream with the room, and the controller picks the session.
 - **Liveness** is "stream attached and beat within 6 s"; the connection sweep
   closes lapsed controller connections.
 - **Holder id.** A controller-backed agent holds things under
@@ -404,9 +406,9 @@ stream. The flag and everything else above stay as they are.
   refused on every route with `409 managed_by_controller`, in the contract
   envelope. Binding an agent closes any connection it still held.
 - **Open/beat bodies.** `POST /connection` returns `agents: string[]` (the
-  agent ids bound now); the beat returns `{agents}`. `client`,
-  `client_version` and `placements` are optional on open; `placements` is
-  required on the beat. A beat with no stream attached is
+  agent ids bound now); the beat returns `{agents}`. `client` and
+  `client_version` are optional on open; `placements` is refused on both. A
+  beat with no stream attached is
   `409 no_stream`. Each open is a new server-generated connection id and
   generation and takes over the previous one. A second `GET /events` on the
   same connection takes the stream over and resumes every agent from its

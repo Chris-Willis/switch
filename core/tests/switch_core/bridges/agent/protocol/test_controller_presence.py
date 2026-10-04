@@ -1,9 +1,10 @@
 """Presence for agents run by an agents controller.
 
 A controller-backed agent holds no connection of its own: it is live while its
-controller's stream is attached and beating, starts sessions where its
-definition says so and it is a member, and every presence reader asks the
-controller rather than the connection registry or the heartbeat rows.
+controller's stream is attached and beating, and every presence reader asks the
+controller rather than the connection registry or the heartbeat rows. Switch
+knows only whether it is connected and which rooms it is a member of, never
+where its sessions are, so it never promises a session for it.
 """
 
 from __future__ import annotations
@@ -35,7 +36,11 @@ from switch_core.bridges.agent.protocol.presence import (
 )
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import AgentStatus
-from switch_core.clients.agent_consumer import _STARTING_SESSION_MESSAGE, AgentConsumer
+from switch_core.clients.agent_consumer import (
+    _STARTING_SESSION_MESSAGE,
+    AgentConsumer,
+    _GateOutcome,
+)
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
@@ -49,6 +54,7 @@ from switch_core.db.models import (
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.transport import InboundMessage, RoomRef
 
 CONTROLLER = "controller-1"
 ROOM = "room-1"
@@ -93,7 +99,6 @@ def _go_live(
         controller_id=CONTROLLER,
         tenant_id=TENANT_ZERO_ID,
         resume_cursors={},
-        placements={},
     )
     presence.attach_stream(conn)
     for agent_id, rooms in agent_rooms:
@@ -149,18 +154,17 @@ class TestStatuses:
         assert offline == {
             "always": AgentStatus.DISCONNECTED,
             "auto": AgentStatus.DISCONNECTED,
-            "addressable": AgentStatus.NO_SESSION,
+            "addressable": AgentStatus.DISCONNECTED,
             "passive": AgentStatus.AWAITING_MANUAL_POLL,
         }
         assert online == {
             "always": AgentStatus.LIVE,
-            "auto": AgentStatus.DORMANT,
-            "addressable": AgentStatus.DORMANT,
+            "auto": AgentStatus.LIVE,
+            "addressable": AgentStatus.LIVE,
             "passive": AgentStatus.AWAITING_MANUAL_POLL,
         }
-        # Not a member there, so nothing will start a session for it.
-        assert elsewhere["auto"] == AgentStatus.NO_SESSION
-        assert elsewhere["always"] == AgentStatus.LIVE
+        # Connected is connected: no DORMANT or NO_SESSION for any room.
+        assert elsewhere == online
         assert lapsed == offline
         # The heartbeat rows were never asked about a controller-backed agent.
         assert all(asked == [] for asked in rows.asked)
@@ -198,15 +202,14 @@ class TestTheRegistryAsksTheController:
         conn = _go_live(registry, ("agent", {ROOM}))
 
         assert registry.is_live("agent")
-        assert registry.can_spawn_for("agent", ROOM)
+        # Switch promises no session for it, wherever it is a member.
+        assert not registry.can_spawn_for("agent", ROOM)
         assert not registry.can_spawn_for("agent", ELSEWHERE)
         assert registry.live_in_room("agent", ROOM)
+        assert not registry.live_in_room("agent", ELSEWHERE)
         assert registry.live_agent_ids() == {"agent"}
         assert holder in registry.live_connection_ids()
         assert registry.live_connection_count() == 1
-        # In no room until its controller places a session there.
-        assert rooms_occupied("agent", registry) == set()
-        registry.controllers.replace_placements(conn, {"agent": [ROOM]})
         assert rooms_occupied("agent", registry) == {ROOM}
         assert registry.relay_session_command(
             "agent", {"origin": {"roomId": ROOM}}, worker_only=False
@@ -247,13 +250,11 @@ class TestTheRegistryAsksTheController:
             controller_id=CONTROLLER,
             tenant_id=TENANT_ZERO_ID,
             resume_cursors={},
-            placements={},
         )
         new = presence.open(
             controller_id=CONTROLLER,
             tenant_id=TENANT_ZERO_ID,
             resume_cursors={},
-            placements={},
         )
 
         assert old.closure is not None and old.closure.code == "taken_over"
@@ -371,7 +372,7 @@ def _client(registry: AgentConnectionRegistry, agent_id: str) -> SimpleNamespace
 
 
 class TestTheAgentClientsReplies:
-    async def test_starting_a_session_is_promised_only_where_it_will_be(
+    async def test_a_connected_agent_is_available_and_no_reply_is_owed(
         self,
     ) -> None:
         registry = AgentConnectionRegistry()
@@ -382,26 +383,57 @@ class TestTheAgentClientsReplies:
         agent = _agent("auto", "auto_session")
 
         available = await auto._is_available(object(), agent, ROOM)
-        promised = await auto._reply_when_unavailable_here(object(), agent, meta, "@u")
+        reply = await auto._reply_when_unavailable_here(object(), agent, meta, "@u")
         _lapse(conn)
         lapsed = await auto._reply_when_unavailable_here(object(), agent, meta, "@u")
 
-        assert available is False
-        assert promised == _STARTING_SESSION_MESSAGE
+        assert available is True
+        assert reply is None
+        assert lapsed is not None
         assert lapsed.startswith(
             "My machine, **machine**, is offline or reconnecting to Switch"
         )
         assert "Switch Console" not in lapsed
         assert auto._agent_session_store.asked == []
 
-    async def test_a_stopped_agent_is_not_promised_a_session(
-        self, db: AsyncSession
+    async def test_every_session_model_is_available_wherever_it_is_connected(
+        self,
     ) -> None:
+        registry = AgentConnectionRegistry()
+        models = {
+            "always": "always_on",
+            "auto": "auto_session",
+            "addressable": "session_addressable",
+        }
+        for agent_id in models:
+            _bind(registry, agent_id)
+        _go_live(registry, *((agent_id, {ROOM}) for agent_id in models))
+
+        for agent_id, model in models.items():
+            client = _client(registry, agent_id)
+            agent = _agent(agent_id, model)
+            assert await client._is_available(object(), agent, ROOM), agent_id
+            assert await client._is_available(object(), agent, ELSEWHERE), agent_id
+
+    async def test_a_passive_agent_is_never_promised_a_session(self) -> None:
+        registry = AgentConnectionRegistry()
+        _bind(registry, "passive")
+        _go_live(registry, ("passive", {ROOM}))
+        client = _client(registry, "passive")
+        agent = _agent("passive", "session_passive")
+        meta = SimpleNamespace(room_id=ROOM, name="Room", bridge_id=None)
+
+        assert not await client._is_available(object(), agent, ROOM)
+        assert (
+            await client._reply_when_unavailable_here(object(), agent, meta, "u")
+            is None
+        )
+
+    async def test_a_stopped_agent_is_told_as_stopped(self, db: AsyncSession) -> None:
         registry = AgentConnectionRegistry()
         _bind(registry, "auto", running=False)
         _bind(registry, "always", running=False)
-        conn = _go_live(registry, ("auto", {ROOM}), ("always", {ROOM}))
-        registry.controllers.replace_placements(conn, {"auto": [ROOM]})
+        _go_live(registry, ("auto", {ROOM}), ("always", {ROOM}))
         meta = SimpleNamespace(room_id=ROOM, name="Room", bridge_id=None)
         client = _client(registry, "auto")
         agent = _agent("auto", "auto_session")
@@ -417,16 +449,15 @@ class TestTheAgentClientsReplies:
         )
 
         assert available is False
-        assert reply != _STARTING_SESSION_MESSAGE
+        assert reply is not None
         assert reply.startswith("@owner — you've stopped me")
         assert "and @u needs me" in reply
         assert statuses == {
             "auto": AgentStatus.DISCONNECTED,
             "always": AgentStatus.DISCONNECTED,
         }
-        assert not registry.can_spawn_for("auto", ROOM)
         assert not registry.is_live("auto")
-        assert registry.controllers.placed_rooms("auto") == set()
+        assert rooms_occupied("auto", registry) == set()
         assert not registry.relay_session_command(
             "auto", {"origin": {"roomId": ROOM}}, worker_only=False
         )
@@ -440,10 +471,11 @@ class TestTheAgentClientsReplies:
                 running=True,
             )
         )
-        assert registry.can_spawn_for("auto", ROOM)
+        assert await client._is_available(object(), agent, ROOM)
+        assert not registry.can_spawn_for("auto", ROOM)
         assert (
             await client._reply_when_unavailable_here(object(), agent, meta, "u")
-            == _STARTING_SESSION_MESSAGE
+            is None
         )
 
     async def test_an_offline_or_removed_machine_is_named_not_console(
@@ -487,134 +519,178 @@ class TestTheAgentClientsReplies:
         assert not await client._is_available(object(), agent, ROOM)
 
 
-class TestPlacements:
-    """Where the controller says its sessions work: the agent is LIVE there."""
+class _Sent:
+    def __init__(self) -> None:
+        self.bodies: list[str] = []
 
-    def test_the_map_is_replaced_whole_and_kept_to_bound_member_rooms(
+    async def __call__(self, _room_id: str, body: str, **_kwargs: object) -> str:
+        self.bodies.append(body)
+        return "$sent"
+
+
+def _addressing_client(
+    registry: AgentConnectionRegistry, agent_id: str, connection_model: str
+) -> tuple[SimpleNamespace, _Sent, list[str]]:
+    """An agent client for `on_message`, addressed in ROOM, its availability
+    and replies the real ones over `registry`."""
+    meta = SimpleNamespace(
+        room_id=ROOM, name="Room", bridge_id=None, channel_type="channel_private"
+    )
+    sent = _Sent()
+    enqueued: list[str] = []
+
+    async def _resolve_room_meta(_transport_room_id: str) -> SimpleNamespace:
+        return meta
+
+    async def _addressed(*_args: Any) -> bool:
+        return True
+
+    async def _fresh_agent(_session: object) -> SimpleNamespace:
+        return ns.agent
+
+    async def _gate_addressed(*_args: Any) -> _GateOutcome:
+        return _GateOutcome(addressed=True, refusal=None)
+
+    async def _not_hosted(_agent: object, _event: object) -> None:
+        return None
+
+    ns = _client(registry, agent_id)
+    ns.agent = SimpleNamespace(
+        id=agent_id,
+        name="reviewer",
+        integration_profile={"connection_model": connection_model},
+    )
+    ns.session_factory = _no_session
+    ns._resolve_room_meta = _resolve_room_meta
+    ns._addressed_without_lookup = lambda _event, _meta: True
+    ns._compute_addressed = _addressed
+    ns._fresh_agent = _fresh_agent
+    ns._gate_addressed = _gate_addressed
+    ns._note_hosted_addressed = _not_hosted
+    ns._triggered_by_auto_reply = AgentConsumer._triggered_by_auto_reply
+    ns.actor = SimpleNamespace(send_message=sent)
+    ns._event_buffer = SimpleNamespace(
+        enqueue=lambda _agent_id, _room_id, event: enqueued.append(
+            event.payload.message_id
+        )
+    )
+    ns._sender_handle = AgentConsumer._sender_handle.__get__(ns)
+    ns._post_auto_reply = AgentConsumer._post_auto_reply.__get__(ns)
+    return ns, sent, enqueued
+
+
+def _addressing(message_id: str) -> InboundMessage:
+    return InboundMessage(
+        room_id="!room:test",
+        event_id=message_id,
+        sender="@someone:test",
+        timestamp=0,
+        content={"sender_name": "someone"},
+        body="@reviewer can you look at this",
+        sender_name="someone",
+        thread_root_id=None,
+    )
+
+
+class TestAddressingAControllerBackedAgent:
+    """What the room sees when someone addresses an agent its controller runs."""
+
+    async def test_a_connected_agent_gets_the_message_and_switch_says_nothing(
         self,
     ) -> None:
+        for model in ("auto_session", "session_addressable", "always_on"):
+            registry = AgentConnectionRegistry()
+            _bind(registry, "agent")
+            _go_live(registry, ("agent", {ROOM}))
+            client, sent, enqueued = _addressing_client(registry, "agent", model)
+
+            await AgentConsumer.on_message(
+                client,  # type: ignore[arg-type]
+                RoomRef(room_id="!room:test"),
+                _addressing("$asked"),
+            )
+
+            assert enqueued == ["$asked"], model
+            assert sent.bodies == [], model
+
+    async def test_a_disconnected_agent_gets_the_not_connected_reply(self) -> None:
+        cases = {
+            "offline": "My machine, **machine**, is offline or reconnecting",
+            "stopped": "@owner — you've stopped me",
+            "removed": "@owner — my machine, **machine**, has been removed",
+        }
+        for case, expected in cases.items():
+            registry = AgentConnectionRegistry()
+            _bind(registry, "agent", running=case != "stopped")
+            if case == "stopped":
+                _go_live(registry, ("agent", {ROOM}))
+            if case == "removed":
+                registry.controllers.revoke_controller(CONTROLLER)
+            client, sent, enqueued = _addressing_client(
+                registry, "agent", "auto_session"
+            )
+
+            await AgentConsumer.on_message(
+                client,  # type: ignore[arg-type]
+                RoomRef(room_id="!room:test"),
+                _addressing("$asked"),
+            )
+
+            assert len(sent.bodies) == 1, case
+            assert expected in sent.bodies[0], (case, sent.bodies[0])
+            assert _STARTING_SESSION_MESSAGE not in sent.bodies[0]
+            assert enqueued == ["$asked"], case
+
+
+class TestMembership:
+    """While connected, a controller-backed agent is in every room it belongs to."""
+
+    def test_present_and_occupied_follow_membership_while_live(self) -> None:
         registry = AgentConnectionRegistry()
         presence = registry.controllers
         _bind(registry, "agent")
         _bind(registry, "other")
-        conn = _go_live(registry, ("agent", {ROOM, ELSEWHERE}), ("other", {ROOM}))
+        _go_live(registry, ("agent", {ROOM, ELSEWHERE}), ("other", {ROOM}))
 
-        presence.replace_placements(
-            conn,
-            {"agent": [ROOM, "not-a-member"], "other": [ROOM], "stranger": [ROOM]},
-        )
-        first = (presence.placed_rooms("agent"), presence.placed_rooms("other"))
-        presence.replace_placements(conn, {"agent": [ELSEWHERE]})
-        second = (presence.placed_rooms("agent"), presence.placed_rooms("other"))
-
-        assert first == ({ROOM}, {ROOM})
-        assert "stranger" not in conn.placements
-        assert second == ({ELSEWHERE}, set())
-
-    def test_a_room_left_drops_out_and_an_unbound_agent_is_forgotten(self) -> None:
-        registry = AgentConnectionRegistry()
-        presence = registry.controllers
-        _bind(registry, "agent")
-        conn = _go_live(registry, ("agent", {ROOM, ELSEWHERE}))
-        presence.replace_placements(conn, {"agent": [ROOM, ELSEWHERE]})
+        assert agents_present_in(["agent", "other"], ROOM, registry) == {
+            "agent",
+            "other",
+        }
+        assert agents_present_in(["agent", "other"], ELSEWHERE, registry) == {"agent"}
+        assert rooms_occupied("agent", registry) == {ROOM, ELSEWHERE}
+        assert rooms_occupied("other", registry) == {ROOM}
 
         presence.room_left("agent", ELSEWHERE)
-        assert presence.placed_rooms("agent") == {ROOM}
+        assert rooms_occupied("agent", registry) == {ROOM}
+        presence.room_joined("other", ELSEWHERE)
+        assert agents_present_in(["other"], ELSEWHERE, registry) == {"other"}
         presence.unbind("agent", "unassigned")
-        assert presence.placed_rooms("agent") == set()
-        assert "agent" not in conn.placements
+        assert presence.rooms("agent") == set()
+        assert presence.live_rooms("agent") == set()
 
-    def test_lapse_and_detach_clear_it(self) -> None:
+    def test_lapse_detach_and_revoke_take_it_out_of_every_room(self) -> None:
         registry = AgentConnectionRegistry()
         presence = registry.controllers
         _bind(registry, "agent")
         conn = _go_live(registry, ("agent", {ROOM}))
-        presence.replace_placements(conn, {"agent": [ROOM]})
 
         _lapse(conn)
-        assert presence.placed_rooms("agent") == set()
         assert rooms_occupied("agent", registry) == set()
+        assert agents_present_in(["agent"], ROOM, registry) == set()
 
         conn = _go_live(registry, ("agent", {ROOM}))
-        presence.replace_placements(conn, {"agent": [ROOM]})
-        assert presence.placed_rooms("agent") == {ROOM}
+        assert rooms_occupied("agent", registry) == {ROOM}
         presence.detach_stream(conn, conn.stream_token)
-        assert conn.placements == {}
+        assert rooms_occupied("agent", registry) == set()
         presence.attach_stream(conn)
-        assert presence.placed_rooms("agent") == set()
+        assert rooms_occupied("agent", registry) == {ROOM}
 
-        presence.replace_placements(conn, {"agent": [ROOM]})
-        _lapse(conn)
-        assert presence.sweep() == [conn]
-        assert conn.placements == {}
+        presence.revoke_controller(CONTROLLER)
+        assert rooms_occupied("agent", registry) == set()
+        # Still a member: membership is not presence.
+        assert presence.rooms("agent") == {ROOM}
 
-    def test_an_initial_map_on_open_is_kept(self) -> None:
-        registry = AgentConnectionRegistry()
-        presence = registry.controllers
-        _bind(registry, "agent")
-        conn = presence.open(
-            controller_id=CONTROLLER,
-            tenant_id=TENANT_ZERO_ID,
-            resume_cursors={},
-            placements={"agent": [ROOM]},
-        )
-        presence.attach_stream(conn)
-        presence.set_rooms("agent", {ROOM})
-        assert presence.placed_rooms("agent") == {ROOM}
-
-    async def test_placed_is_live_present_and_occupied(self, db: AsyncSession) -> None:
-        registry = AgentConnectionRegistry()
-        _bind(registry, "auto")
-        _bind(registry, "addressable")
-        conn = _go_live(
-            registry, ("auto", {ROOM, ELSEWHERE}), ("addressable", {ROOM, ELSEWHERE})
-        )
-        registry.controllers.replace_placements(
-            conn, {"auto": [ROOM], "addressable": [ROOM]}
-        )
-        agents = [
-            _agent("auto", "auto_session"),
-            _agent("addressable", "session_addressable"),
-        ]
-
-        here = await compute_agent_statuses(db, agents, ROOM, _NoRows(), registry)  # type: ignore[arg-type]
-        there = await compute_agent_statuses(db, agents, ELSEWHERE, _NoRows(), registry)  # type: ignore[arg-type]
-
-        assert here == {"auto": AgentStatus.LIVE, "addressable": AgentStatus.LIVE}
-        assert there == {
-            "auto": AgentStatus.DORMANT,
-            "addressable": AgentStatus.DORMANT,
-        }
-        assert agents_present_in(["auto", "addressable"], ROOM, registry) == {
-            "auto",
-            "addressable",
-        }
-        assert agents_present_in(["auto"], ELSEWHERE, registry) == set()
-        assert rooms_occupied("auto", registry) == {ROOM}
-
-    async def test_no_starting_promise_where_a_session_already_works(self) -> None:
-        registry = AgentConnectionRegistry()
-        _bind(registry, "auto")
-        conn = _go_live(registry, ("auto", {ROOM, ELSEWHERE}))
-        registry.controllers.replace_placements(conn, {"auto": [ROOM]})
-        client = _client(registry, "auto")
-        agent = _agent("auto", "auto_session")
-
-        placed_here = await client._is_available(object(), agent, ROOM)
-        placed_elsewhere = await client._is_available(object(), agent, ELSEWHERE)
-        promise_elsewhere = await client._reply_when_unavailable_here(
-            object(),
-            agent,
-            SimpleNamespace(room_id=ELSEWHERE, name="Other", bridge_id=None),
-            "@u",
-        )
-
-        # Available here, so on_message posts no reply at all.
-        assert placed_here is True
-        assert placed_elsewhere is False
-        assert promise_elsewhere == _STARTING_SESSION_MESSAGE
-
-    async def test_a_role_holder_is_located_by_its_placement(
+    async def test_a_role_holder_is_here_only_while_connected_and_a_member(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         registry = AgentConnectionRegistry()
@@ -657,7 +733,7 @@ class TestPlacements:
             )
             binding = _bind(registry, agent.id)
             holder = registry.controllers.holder_id(binding)
-            conn = _go_live(registry, (agent.id, {here.id, there.id}))
+            _go_live(registry, (agent.id, {here.id, there.id}))
             await store.acquire_lease(
                 session, role, agent.id, holder, holder, registry.live_connection_ids()
             )
@@ -675,19 +751,14 @@ class TestPlacements:
                 )
                 return list(entry["held_by"])
 
-            registry.controllers.replace_placements(conn, {agent.id: [here.id]})
-            placed_here = await holders()
-            registry.controllers.replace_placements(conn, {agent.id: [there.id]})
-            placed_there = await holders()
-            registry.controllers.replace_placements(conn, {})
-            placed_nowhere = await holders()
+            member_here = await holders()
+            registry.controllers.room_left(agent.id, here.id)
+            left_here = await holders()
 
-        assert placed_here == [
+        assert member_here == [
             {"name": "holder", "present_here": True, "session_room": None}
         ]
-        assert placed_there == [
-            {"name": "holder", "present_here": False, "session_room": "there"}
-        ]
-        assert placed_nowhere == [
+        # Not a member here any more, and where else it works is not known.
+        assert left_here == [
             {"name": "holder", "present_here": False, "session_room": None}
         ]

@@ -260,18 +260,33 @@ class OperationResultRequest(_ControllerBody):
         return result
 
 
-class ControllerConnectionRequest(_ControllerBody):
+class _ControllerStreamBody(_ControllerBody):
+    """The connection open and beat. Unknown fields are ignored as on every
+    controller body, except `placements`: Core no longer tracks where a
+    controller's sessions are, and a controller still reporting them is
+    refused so the mismatch is seen rather than silently dropped."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _placements_refused(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "placements" in data:
+            raise ValueError(
+                "placements is not accepted: Switch tracks only whether a "
+                "controller-backed agent is connected, not where its sessions are"
+            )
+        return data
+
+
+class ControllerConnectionRequest(_ControllerStreamBody):
     """Opening the controller's stream: where to resume each of its agents.
 
     A cursor is a sequence number in that agent's own buffer, or `"head"`. An
-    agent left out starts at its head. `placements` is the initial map of
-    rooms each agent has a session working in, as on a beat; absent is none.
+    agent left out starts at its head.
     """
 
     client: str | None = None
     client_version: str | None = None
     cursors: dict[str, int | Literal["head"]]
-    placements: dict[str, list[str]] = Field(default_factory=dict)
 
     @field_validator("cursors")
     @classmethod
@@ -290,15 +305,12 @@ class ControllerConnectionRequest(_ControllerBody):
         }
 
 
-class ControllerBeatRequest(_ControllerBody):
-    """A beat. `placements` is, for each bound agent, every room where one of
-    its sessions works now: the whole map each time, replacing the last. An
-    agent left out is in no room."""
+class ControllerBeatRequest(_ControllerStreamBody):
+    """A beat: the connection is still there, and these cursors are confirmed."""
 
     connection_id: str
     generation: int
     cursors: dict[str, int]
-    placements: dict[str, list[str]]
 
 
 # ── Gateway requests ──────────────────────────────────────────────────────────

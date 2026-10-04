@@ -399,7 +399,6 @@ async def test_a_controller_backed_agent_is_sent_the_command_on_its_controllers_
         controller_id="controller-1",
         tenant_id="tenant",
         resume_cursors={},
-        placements={},
     )
     if live:
         registry.controllers.attach_stream(conn)

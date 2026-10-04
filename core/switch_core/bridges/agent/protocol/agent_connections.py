@@ -1327,9 +1327,12 @@ class AgentConnectionRegistry:
         willing right now. Promising "Starting a session…" on the strength of
         the enum alone is how a room gets told a session is coming when nothing
         is listening.
+
+        Never for a controller-backed agent: Switch does not know where its
+        sessions are, so it promises none; the agent says so itself.
         """
         if self.controllers.is_bound(agent_id):
-            return self.controllers.can_spawn_for(agent_id, room_id)
+            return False
         return any(
             conn.spawn_capable and self.covers(conn, room_id)
             for conn in self.for_agent(agent_id)

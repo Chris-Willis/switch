@@ -232,6 +232,8 @@ POST /v1/controllers/{id}/connection/beat
 
 **Attachment is automatic.** Core attaches the agents currently bound to this controller (§7), and attaches or detaches them as bindings change. There's no per-agent subscribe call.
 
+**Core knows only whether an agent is connected.** A controller-backed agent is connected while its controller's stream is attached and beating, its owner has it `running`, and the controller is not revoked. Core does not know where the agent's sessions are, or whether one is running: the open and the beat carry no session map, and a body that still sends `placements` is refused with `422 validation_error` (the one exception to ignoring unknown fields, so a controller still reporting sessions is noticed rather than silently dropped). When a connected agent is addressed, Core delivers the message and posts nothing; if a session has to start, the agent's host posts "Starting a session…" itself. When it is not connected, Core tells the room why: stopped by its owner, its machine removed, or its machine offline.
+
 **SSE frames.** `event:` is the type and `data:` is JSON.
 
 ```ts

@@ -250,7 +250,51 @@ class TestTheControllerConnection:
             room_id = await add_room(harness.session_factory, agent_id)
             body = _fixture("controller_connection_request.json")
             body["cursors"] = {agent_id: 0, "not-bound": "head"}
-            body["placements"] = {agent_id: [room_id]}
+            opened = await client.post(
+                f"/v1/controllers/{controller.controller_id}/connection",
+                json=body,
+                headers=controller.headers,
+            )
+            stream = await open_stream(harness, controller, opened.json())
+            await take(stream, 2)
+            beat_body = _fixture("controller_beat_request.json")
+            beat_body.update(
+                connection_id=opened.json()["connection_id"],
+                generation=opened.json()["generation"],
+                cursors={agent_id: 0},
+            )
+            beat = await client.post(
+                f"/v1/controllers/{controller.controller_id}/connection/beat",
+                json=beat_body,
+                headers=controller.headers,
+            )
+            present = harness.protocol.connections.controllers.live_rooms(agent_id)
+            await stream.aclose()
+
+        assert opened.status_code == 201, opened.text
+        assert_same_shape(
+            opened.json(), _fixture("controller_connection_response.json")
+        )
+        assert beat.status_code == 200, beat.text
+        assert_same_shape(beat.json(), _fixture("controller_beat_response.json"))
+        assert harness.protocol.connections.controllers.live_rooms(agent_id) == set()
+        assert present == {room_id}
+
+    async def test_placements_are_refused_on_open_and_beat(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await place_agent(client, controller, name="reviewer")
+            room_id = await add_room(harness.session_factory, agent_id)
+            body = _fixture("controller_connection_request.json")
+            body["cursors"] = {agent_id: 0}
+            refused_open = await client.post(
+                f"/v1/controllers/{controller.controller_id}/connection",
+                json={**body, "placements": {agent_id: [room_id]}},
+                headers=controller.headers,
+            )
             opened = await client.post(
                 f"/v1/controllers/{controller.controller_id}/connection",
                 json=body,
@@ -265,22 +309,17 @@ class TestTheControllerConnection:
                 cursors={agent_id: 0},
                 placements={agent_id: [room_id]},
             )
-            beat = await client.post(
+            refused_beat = await client.post(
                 f"/v1/controllers/{controller.controller_id}/connection/beat",
                 json=beat_body,
                 headers=controller.headers,
             )
-            placed = harness.protocol.connections.controllers.placed_rooms(agent_id)
             await stream.aclose()
 
-        assert opened.status_code == 201, opened.text
-        assert_same_shape(
-            opened.json(), _fixture("controller_connection_response.json")
-        )
-        assert beat.status_code == 200, beat.text
-        assert_same_shape(beat.json(), _fixture("controller_beat_response.json"))
-        assert harness.protocol.connections.controllers.placed_rooms(agent_id) == set()
-        assert placed == {room_id}
+        for refused in (refused_open, refused_beat):
+            assert refused.status_code == 422, refused.text
+            assert refused.json()["error"]["code"] == "validation_error"
+            assert "placements" in refused.json()["error"]["message"]
 
 
 class _Outcomes:

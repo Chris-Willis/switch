@@ -58,7 +58,7 @@ async def compute_agent_statuses(
     """
     controllers = connections.controllers
     backed = [agent for agent in agents if controllers.is_bound(agent.id)]
-    statuses = controller_statuses(backed, room_id, connections)
+    statuses = controller_statuses(backed, connections)
     agents = [agent for agent in agents if not controllers.is_bound(agent.id)]
 
     always_on_ids: list[str] = []
@@ -163,16 +163,15 @@ async def compute_agent_statuses(
 
 
 def controller_statuses(
-    agents: list[Agent], room_id: str, connections: AgentConnectionRegistry
+    agents: list[Agent], connections: AgentConnectionRegistry
 ) -> dict[str, AgentStatus]:
     """Presence for agents run by an agents controller.
 
-    A session-shaped agent is LIVE in a room its live controller reports a
-    session of it working in (`placed_rooms`). Elsewhere it is DORMANT where
-    the controller will start a session for the room, NO_SESSION where the
-    controller is live and will not, and DISCONNECTED (or NO_SESSION, for a
-    `session_addressable` agent, as for any other) when the controller is not
-    live. An `always_on` agent is LIVE exactly while its controller is.
+    Switch knows only whether such an agent is connected, not where its
+    sessions are: whatever its `connection_model`, it is LIVE while its
+    controller is live, it is set to running and the controller is not
+    revoked, and DISCONNECTED otherwise. A `session_passive` agent is
+    AWAITING_MANUAL_POLL, as any other.
     """
     controllers = connections.controllers
     statuses: dict[str, AgentStatus] = {}
@@ -180,27 +179,10 @@ def controller_statuses(
         model = (agent.integration_profile or {}).get(
             "connection_model", "session_passive"
         )
-        live = controllers.is_live(agent.id)
-        placed = controllers.is_placed(agent.id, room_id)
-        spawns = controllers.can_spawn_for(agent.id, room_id)
-        if model == "always_on":
-            statuses[agent.id] = AgentStatus.LIVE if live else AgentStatus.DISCONNECTED
-        elif model == "session_addressable":
-            if placed:
-                statuses[agent.id] = AgentStatus.LIVE
-            elif spawns:
-                statuses[agent.id] = AgentStatus.DORMANT
-            else:
-                statuses[agent.id] = AgentStatus.NO_SESSION
-        elif model == "auto_session":
-            if placed:
-                statuses[agent.id] = AgentStatus.LIVE
-            elif spawns:
-                statuses[agent.id] = AgentStatus.DORMANT
-            elif live:
-                statuses[agent.id] = AgentStatus.NO_SESSION
-            else:
-                statuses[agent.id] = AgentStatus.DISCONNECTED
-        else:
+        if model == "session_passive":
             statuses[agent.id] = AgentStatus.AWAITING_MANUAL_POLL
+        elif controllers.is_live(agent.id):
+            statuses[agent.id] = AgentStatus.LIVE
+        else:
+            statuses[agent.id] = AgentStatus.DISCONNECTED
     return statuses

@@ -9,9 +9,10 @@ Switch keeps no record of a session's liveness, so a session that has stopped
 without leaving its room still counts until another takes the room or the
 agent's controller connection goes.
 
-A controller-backed agent has neither placements nor claims here. Its
-controller reports, on every beat, the rooms its sessions work in
-(`ControllerPresence.placed_rooms`), and those are where it is present.
+A controller-backed agent has neither placements nor claims here, and Switch
+does not know where its sessions are. It is present in every room it is a
+member of while it is connected (`ControllerPresence.live_in_room`), and in
+none while it is not.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ def agents_present_in(
         agent_id
         for agent_id in agent_ids
         if (
-            controllers.is_placed(agent_id, room_id)
+            controllers.live_in_room(agent_id, room_id)
             if controllers.is_bound(agent_id)
             else (
                 connections.session_in_room(agent_id, room_id) is not None
@@ -42,7 +43,7 @@ def agents_present_in(
 def rooms_occupied(agent_id: str, connections: AgentConnectionRegistry) -> set[str]:
     """Every room this agent is in right now."""
     if connections.controllers.is_bound(agent_id):
-        return connections.controllers.placed_rooms(agent_id)
+        return connections.controllers.live_rooms(agent_id)
     occupied = connections.placed_rooms(agent_id)
     for conn in connections.for_agent(agent_id):
         occupied |= conn.rooms

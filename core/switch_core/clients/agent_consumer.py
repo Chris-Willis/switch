@@ -332,17 +332,6 @@ def _machine_removed_message(machine: str, owner_handle: str | None) -> str:
     return removed[0].upper() + removed[1:]
 
 
-def _no_session_here_message(elsewhere: list[str]) -> str:
-    """A managed agent whose machine is up but starts no session for it here."""
-    if elsewhere:
-        where = ", ".join(f"**{name}**" for name in elsewhere)
-        return (
-            f"I don't have a session in this room, but I'm working in {where}. "
-            "Ask me there to come here."
-        )
-    return "I don't have a session in this room."
-
-
 # The refusal wording lives with the decision that produces it. Kept under
 # these names because they are how the rest of the package and its tests refer
 # to them.
@@ -1197,8 +1186,9 @@ class AgentConsumer(Consumer[AgentActor]):
 
     async def _reply_when_unavailable_here(
         self, session: AsyncSession, agent: Agent, meta: RoomMeta, asker_handle: str
-    ) -> str:
-        """Message for an agent addressed here but not live in this room.
+    ) -> str | None:
+        """Message for an agent addressed here but not live in this room, or
+        None when there is nothing to post.
 
         If the agent has live session(s) connected to OTHER rooms, name them so
         the asker knows where to find it — a session hops rooms while keeping
@@ -1216,10 +1206,19 @@ class AgentConsumer(Consumer[AgentActor]):
         For a session_addressable agent with a session bound to THIS room but
         not live here (and no live session in a distinct room), the reply says
         so and tells the operator to relaunch with live channels.
+
+        A controller-backed agent is answered from its controller alone, before
+        anything here could promise a session: Switch does not know where its
+        sessions are, so it never says one is starting.
         """
         connection_model = (agent.integration_profile or {}).get(
             "connection_model", "session_passive"
         )
+
+        if self._connections.controllers.is_bound(self.agent.id):
+            return await self._controller_unavailable_reply(
+                session, agent, meta, asker_handle
+            )
 
         # auto_session: if a connector is actively watching (global heartbeat),
         # it will spin a session up to handle this — promise that rather than
@@ -1233,13 +1232,6 @@ class AgentConsumer(Consumer[AgentActor]):
         # right there, connected, about to spawn.
         if self._connections.can_spawn_for(self.agent.id, meta.room_id):
             return _STARTING_SESSION_MESSAGE
-
-        # A controller-backed agent is answered from its controller alone: none
-        # of the heartbeat rows, placements or room claims below is its.
-        if self._connections.controllers.is_bound(self.agent.id):
-            return await self._controller_unavailable_reply(
-                session, agent, meta, asker_handle
-            )
 
         if connection_model == "auto_session":
             # The heartbeat arm only: a client still running the
@@ -1309,14 +1301,14 @@ class AgentConsumer(Consumer[AgentActor]):
 
     async def _controller_unavailable_reply(
         self, session: AsyncSession, agent: Agent, meta: RoomMeta, asker_handle: str
-    ) -> str:
+    ) -> str | None:
         """Why an agent run by an agents controller cannot answer here.
 
         Never the terminal command or "open Switch Console": a managed agent
         is started by its controller, so the reply names what stands in the
-        way — the owner stopped it, its machine was removed or is offline, or
-        its machine is up but starts no session for it here (naming rooms a
-        session of it is working in, where the asker can find it).
+        way — the owner stopped it, or its machine was removed or is offline.
+        None while it is connected: the message is delivered, and any notice
+        that a session is starting is the agent's own to post.
         """
         controllers = self._connections.controllers
         binding = controllers.binding(self.agent.id)
@@ -1328,13 +1320,7 @@ class AgentConsumer(Consumer[AgentActor]):
             return _machine_removed_message(binding.controller_name, owner)
         if not controllers.is_live(self.agent.id):
             return _machine_offline_message(binding.controller_name, owner)
-        placed_names: list[str] = []
-        for rid in sorted(controllers.placed_rooms(self.agent.id) - {meta.room_id}):
-            placed_room = await self._room_store.get(session, rid)
-            placed_name = placed_room.name if placed_room is not None else rid
-            if placed_name != meta.name:
-                placed_names.append(placed_name)
-        return _no_session_here_message(placed_names)
+        return None
 
     async def owner_handle_in(
         self, session: AsyncSession, agent: Agent, bridge_id: str | None
@@ -1433,7 +1419,9 @@ class AgentConsumer(Consumer[AgentActor]):
 
         always_on agents heartbeat against `room_id=None`; session_addressable
         agents heartbeat against the specific room; session_passive agents
-        have no heartbeat and are never considered live in real time.
+        have no heartbeat and are never considered live in real time. A
+        controller-backed agent is available whenever it is connected, since
+        where its sessions are is its controller's business.
         """
         connection_model = (agent.integration_profile or {}).get(
             "connection_model", "session_passive"
@@ -1441,11 +1429,7 @@ class AgentConsumer(Consumer[AgentActor]):
         if connection_model == "session_passive":
             return False
         if self._connections.controllers.is_bound(self.agent.id):
-            # A session its controller reports working here answers; so does
-            # an always-on agent whose controller is live at all.
-            if connection_model == "always_on":
-                return self._connections.is_live(self.agent.id)
-            return self._connections.controllers.is_placed(self.agent.id, room_id)
+            return self._connections.controllers.is_live(self.agent.id)
         # Union of the presence sources while every kind of client exists
         # (CHOO-1857 stage B): a client on the push transport keeps only a
         # connection, one still polling keeps only the heartbeat row, and a
