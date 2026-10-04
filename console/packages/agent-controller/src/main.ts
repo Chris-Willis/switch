@@ -257,8 +257,15 @@ async function statusCommand(args: string[]): Promise<number> {
     else if (!(await secrets.get(CONTROLLER_CREDENTIAL)))
       out.push('Credential:     not in this data directory (missing, or handed over at run time)');
     const cached = store.cachedAssignment();
-    if (!cached) {
+    if (cached.kind === 'none') {
       out.push('Assignment:     not pulled yet');
+      process.stdout.write(`${out.join('\n')}\n`);
+      return 0;
+    }
+    if (cached.kind === 'unreadable') {
+      out.push(
+        `Assignment:     saved by an earlier version and not readable by this one (${cached.detail}); pulled again when the controller next runs`
+      );
       process.stdout.write(`${out.join('\n')}\n`);
       return 0;
     }

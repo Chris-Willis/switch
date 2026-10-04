@@ -92,20 +92,40 @@ describe('ControllerStore', () => {
     store.saveAssignment(assignment, '"etag-1"', '2026-01-01T00:00:00.000Z');
     store.saveServer('https://moved.example.com');
     expect(store.identity()).toEqual({ ...identity, server: 'https://moved.example.com' });
-    expect(store.cachedAssignment()?.etag).toBe('"etag-1"');
+    expect(store.cachedAssignment()).toMatchObject({ kind: 'saved', etag: '"etag-1"' });
     store.close();
   });
 
   it('caches the assignment with its ETag', () => {
     const store = ControllerStore.open(path);
-    expect(store.cachedAssignment()).toBeNull();
+    expect(store.cachedAssignment()).toEqual({ kind: 'none' });
     store.saveAssignment(assignment, '"3"', '2026-01-01T00:00:00.000Z');
-    expect(store.cachedAssignment()).toEqual({ assignment, etag: '"3"' });
+    expect(store.cachedAssignment()).toEqual({ kind: 'saved', assignment, etag: '"3"' });
     store.saveAssignment({ revision: 4, agents: [] }, null, '2026-01-01T00:00:01.000Z');
     expect(store.cachedAssignment()).toEqual({
+      kind: 'saved',
       assignment: { revision: 4, agents: [] },
       etag: null,
     });
+    store.close();
+  });
+
+  it('says an assignment saved by an earlier version is unreadable, and discards it', () => {
+    const store = ControllerStore.open(path);
+    const [entry] = assignment.agents;
+    const { model_options: _dropped, ...earlier } = entry!.definition;
+    store.saveAssignment(
+      { revision: 5, agents: [{ ...entry!, definition: earlier }] } as unknown as Parameters<
+        typeof store.saveAssignment
+      >[0],
+      '"5"',
+      '2026-01-01T00:00:00.000Z'
+    );
+    const cached = store.cachedAssignment();
+    expect(cached.kind).toBe('unreadable');
+    expect(cached.kind === 'unreadable' && cached.detail).toContain('model_options');
+    store.discardAssignment();
+    expect(store.cachedAssignment()).toEqual({ kind: 'none' });
     store.close();
   });
 

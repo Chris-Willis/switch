@@ -1,6 +1,7 @@
 import type * as Sqlite from 'node:sqlite';
 import type { DatabaseSync } from 'node:sqlite';
 import { ConfigurationError } from './errors';
+import { errorMessage } from './log';
 import { type Assignment, assignmentSchema, type ReasonCode } from './schemas';
 
 /**
@@ -17,6 +18,11 @@ export type Identity = {
   name: string;
   enrolledAt: string;
 };
+
+export type CachedAssignment =
+  | { kind: 'none' }
+  | { kind: 'saved'; assignment: Assignment; etag: string | null }
+  | { kind: 'unreadable'; detail: string };
 
 export type AgentRow = {
   agentId: string;
@@ -144,15 +150,33 @@ export class ControllerStore {
     this.setMeta('revoked_at', at);
   }
 
-  cachedAssignment(): { assignment: Assignment; etag: string | null } | null {
+  /**
+   * The assignment last pulled. One saved by an earlier version that this one
+   * no longer reads (a definition field was added since) is `unreadable`, with
+   * why; the caller discards it and pulls a fresh copy.
+   */
+  cachedAssignment(): CachedAssignment {
     const row = this.db.prepare('SELECT etag, body FROM assignment WHERE id = 1').get() as
       | Row
       | undefined;
-    if (!row) return null;
+    if (!row) return { kind: 'none' };
+    let body: unknown;
+    try {
+      body = JSON.parse(String(row.body));
+    } catch (error) {
+      return { kind: 'unreadable', detail: errorMessage(error) };
+    }
+    const parsed = assignmentSchema.safeParse(body);
+    if (!parsed.success) return { kind: 'unreadable', detail: parsed.error.message };
     return {
-      assignment: assignmentSchema.parse(JSON.parse(String(row.body))),
+      kind: 'saved',
+      assignment: parsed.data,
       etag: row.etag === null ? null : String(row.etag),
     };
+  }
+
+  discardAssignment(): void {
+    this.db.prepare('DELETE FROM assignment WHERE id = 1').run();
   }
 
   saveAssignment(assignment: Assignment, etag: string | null, at: string): void {

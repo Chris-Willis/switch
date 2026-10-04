@@ -18,6 +18,8 @@ which protocol versions this server accepts.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Annotated, Any
@@ -53,6 +55,7 @@ from switch_core.management.schemas import (
     MAX_STATUS_BYTES,
     ControllerBeatRequest,
     ControllerConnectionRequest,
+    DefinitionV1,
     EnrollRequest,
     OperationResultRequest,
     ProgressRequest,
@@ -113,8 +116,16 @@ def _path_controller(controller_id: str, principal: Principal) -> ControllerPrin
 PathController = Annotated[ControllerPrincipal, Depends(_path_controller)]
 
 
+# Part of every assignment ETag, so a controller holding an assignment saved
+# under an earlier definition format pulls it again rather than being told it
+# is unchanged.
+ASSIGNMENT_FORMAT = hashlib.sha256(
+    json.dumps(DefinitionV1.model_json_schema(), sort_keys=True).encode()
+).hexdigest()[:12]
+
+
 def _etag(revision: int) -> str:
-    return f'"{revision}"'
+    return f'"{ASSIGNMENT_FORMAT}-{revision}"'
 
 
 def _etag_matches(if_none_match: str | None, revision: int) -> bool:
@@ -126,7 +137,7 @@ def _etag_matches(if_none_match: str | None, revision: int) -> bool:
             return True
         if tag.startswith("W/"):
             tag = tag[2:]
-        if tag in (_etag(revision), str(revision)):
+        if tag == _etag(revision):
             return True
     return False
 

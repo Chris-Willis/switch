@@ -193,8 +193,14 @@ export async function runController(
   });
   const queue = new SerialQueue();
   const cached = store.cachedAssignment();
-  let assignment: Assignment | null = cached?.assignment ?? null;
-  let etag: string | null = cached?.etag ?? null;
+  if (cached.kind === 'unreadable') {
+    log.warn('The saved assignment is not one this version reads; discarding it to pull it again', {
+      detail: cached.detail,
+    });
+    store.discardAssignment();
+  }
+  let assignment: Assignment | null = cached.kind === 'saved' ? cached.assignment : null;
+  let etag: string | null = cached.kind === 'saved' ? cached.etag : null;
   let reportWithinS = timing.defaultReportWithinS;
   let revocation: Promise<void> | null = null;
   let reporter: StatusReporter | null = null;

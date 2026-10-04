@@ -17,6 +17,7 @@ from switch_core.bridges.agent.protocol.agent_connections import AgentConnection
 from switch_core.db.models import AgentControllerEnrollmentCode
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.management.bindings import load_bindings
+from switch_core.management.controller_routes import ASSIGNMENT_FORMAT
 from tests.switch_core.management.harness import (
     SERVER_URL,
     EnrolledController,
@@ -318,6 +319,10 @@ class TestAssignment:
             unchanged = await client.get(
                 path, headers={**controller.headers, "If-None-Match": etag}
             )
+            # Saved under an earlier definition format: pulled again in full.
+            earlier_format = await client.get(
+                path, headers={**controller.headers, "If-None-Match": '"0"'}
+            )
             await report_status(client, controller, 1, providers=[provider("claude")])
             created = await create_managed_agent(
                 client, owner, name="reviewer", controller_id=controller.controller_id
@@ -328,12 +333,13 @@ class TestAssignment:
 
         assert first.status_code == 200
         assert first.json() == {"revision": 0, "agents": []}
-        assert etag == '"0"'
+        assert etag == f'"{ASSIGNMENT_FORMAT}-0"'
         assert unchanged.status_code == 304
-        assert unchanged.headers["ETag"] == '"0"'
+        assert unchanged.headers["ETag"] == etag
+        assert earlier_format.status_code == 200
         assert created.status_code == 201, created.text
         assert changed.status_code == 200
-        assert changed.headers["ETag"] == '"1"'
+        assert changed.headers["ETag"] == f'"{ASSIGNMENT_FORMAT}-1"'
         [entry] = changed.json()["agents"]
         assert entry["agent_id"] == created.json()["agent_id"]
         assert entry["revision"] == 1
