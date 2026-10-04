@@ -12,6 +12,7 @@ export const VIEW_IDS = [
   'location',
   'session',
   'cloudSession',
+  'managedAgent',
   'room',
   'settings',
   'server',

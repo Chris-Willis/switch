@@ -27,6 +27,14 @@ import {
 import { useConfirmDeleteAgent } from '@renderer/features/locations/hooks/use-confirm-delete-agent';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationStore } from '@renderer/features/locations/stores/location-selectors';
+import {
+  managedAgentLabel,
+  managedAgentState,
+} from '@renderer/features/managed-agents/managed-agent-state';
+import {
+  useManagedAgents,
+  withoutLocalRows,
+} from '@renderer/features/managed-agents/use-managed-agents';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { AgentConnectionIndicator } from '@renderer/features/switch-rooms/connection-health';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -53,6 +61,7 @@ import {
   cloudAgentPhase,
   cloudMachineReady,
 } from '@shared/core/cloud-agents/cloud-agents';
+import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 import { ServerPage } from './server-page';
@@ -83,6 +92,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
   const agents = agentsStore.agentsOnServer(serverId);
   const cloud = useCloudAgents(serverId);
   const machines = useCloudMachines(serverId);
+  const managed = useManagedAgents(serverId);
 
   return (
     <ServerPage
@@ -127,12 +137,21 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
         {agents.map((agent) => (
           <AgentCard key={agent.id} agent={agent} serverId={serverId} />
         ))}
+        {managed.data &&
+          withoutLocalRows(serverId, managed.data).map((agent) => (
+            <ManagedAgentCard key={agent.agentId} agent={agent} />
+          ))}
         {cloud.data
           ?.filter((listed) => listed.launch.state !== 'deleted')
           .map((listed) => (
             <CloudAgentCard key={listed.key} listed={listed} serverId={serverId} />
           ))}
       </div>
+      {managed.error && (
+        <p role="alert" className="mt-3 text-sm text-destructive">
+          {failureText(managed.error, 'Could not load managed agents.')}
+        </p>
+      )}
       {cloud.error && (
         <p role="alert" className="mt-3 text-sm text-destructive">
           {failureText(cloud.error, 'Could not load cloud agents.')}
@@ -396,6 +415,46 @@ const CloudAgentCard = observer(function CloudAgentCard({
     </div>
   );
 });
+
+/** A managed agent Console has no row for, as its server lists it. */
+function ManagedAgentCard({ agent }: { agent: ManagedAgentView }) {
+  const { navigate } = useNavigate();
+  const label = managedAgentLabel(agent);
+  const state = managedAgentState(agent);
+  const provider = providerDisplayName(agent.definition.provider) ?? agent.definition.provider;
+  return (
+    <div className="group relative flex min-h-[184px] flex-col rounded-[11px] bg-[var(--surface-2)] transition-colors hover:bg-[var(--fill)]">
+      <button
+        type="button"
+        aria-label={`Open ${label}`}
+        className="focus-visible:ring-ring absolute inset-0 cursor-pointer rounded-[11px] focus-visible:ring-2 focus-visible:outline-none"
+        onClick={() =>
+          navigate('managedAgent', {
+            serverId: agent.serverId,
+            agentId: agent.agentId,
+            name: label,
+          })
+        }
+      />
+      <div className="pointer-events-none flex flex-1 flex-col p-[14px]">
+        <div className="flex flex-1 items-center justify-center py-3">
+          <AgentAvatar name={label} iconUrl={agent.iconUrl} size={66} />
+        </div>
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium text-foreground">{label}</div>
+          <div className="truncate text-xs text-foreground-muted">
+            {provider} · {agent.machine?.name ?? 'no machine'}
+          </div>
+        </div>
+      </div>
+      <div
+        className={`pointer-events-none px-3.5 pb-3 text-xs ${state.tone === 'problem' ? 'text-destructive' : 'text-foreground-muted'}`}
+      >
+        {state.label}
+      </div>
+    </div>
+  );
+}
 
 const AgentCard = observer(function AgentCard({
   agent,

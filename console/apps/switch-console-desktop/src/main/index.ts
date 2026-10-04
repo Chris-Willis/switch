@@ -10,10 +10,6 @@ import { flushPendingDeeplink, setupDeeplinks } from './app/deeplinks';
 import { setupApplicationMenu } from './app/menu';
 import { APP_ORIGIN, registerAppScheme, setupAppProtocol } from './app/protocol';
 import { createMainWindow, getMainWindow } from './app/window';
-import {
-  MANAGED_AGENT_SYNC_MS,
-  managedAgentAdoption,
-} from './core/agent-migration/managed-agents-sync';
 import { bridgeAgentEventsToRenderer } from './core/agents/agent-events-renderer-bridge';
 import { setAgentStorageMigrationReady } from './core/agents/agent-storage-migration-ready';
 import { migrateAgentStorage } from './core/agents/migrate-agent-storage';
@@ -252,14 +248,6 @@ void app.whenReady().then(async () => {
     } catch (e) {
       log.error('Failed to start the embedded agents controllers at startup:', e);
     }
-    // Managed agents created elsewhere (the gateway, another agent) that run
-    // on this computer or one of its SSH hosts get a row here, as if created here.
-    const adoptManagedAgents = () =>
-      void managedAgentAdoption.sync().catch((e: unknown) => {
-        log.error('Failed to look for managed agents created elsewhere:', e);
-      });
-    adoptManagedAgents();
-    setInterval(adoptManagedAgents, MANAGED_AGENT_SYNC_MS).unref();
   });
 
   // A laptop waking from sleep usually has stale (frozen) SSH sockets to remote

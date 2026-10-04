@@ -17,7 +17,8 @@ export function sidebarEmptyState(input: {
   activeServerId: string | null;
   locationCount: number;
   roomCount: number;
-  cloudAgentCount: number;
+  /** Agents listed from the server rather than Console rows: cloud and managed ones. */
+  serverListedAgentCount: number;
 }): 'no-filter-match' | 'empty' | null {
   if (input.grouping !== 'room' && input.hasActiveFilters && input.filteredLocationCount === 0)
     return 'no-filter-match';
@@ -26,7 +27,7 @@ export function sidebarEmptyState(input: {
     input.activeServerId !== null &&
     input.locationCount === 0 &&
     input.roomCount === 0 &&
-    input.cloudAgentCount === 0
+    input.serverListedAgentCount === 0
   )
     return 'empty';
   return null;

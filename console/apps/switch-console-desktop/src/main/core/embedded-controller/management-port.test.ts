@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ManagedAgent } from '@main/core/switch-servers/gateway-client';
 
 class AgentManagementUnavailableError extends Error {}
 const fetchManagementControllers = vi.hoisted(() => vi.fn());
@@ -27,13 +28,20 @@ vi.mock('@main/core/workspaces/workspace-session', () => ({
 
 const { gatewayManagementPort, placedOn } = await import('./management-port');
 
-const agent = (agentId: string, controllerId: string | null, name: string) => ({
+const agent = (agentId: string, controllerId: string | null, name: string): ManagedAgent => ({
   agentId,
   name,
   displayName: null,
+  iconUrl: null,
+  description: '',
   controllerId,
-  desiredState: 'running' as const,
+  desiredState: 'running',
+  revision: 1,
   provider: 'claude',
+  model: null,
+  modelOptions: {},
+  instructions: '',
+  isolation: 'shared',
   directory: null,
   autoApprove: false,
   status: null,

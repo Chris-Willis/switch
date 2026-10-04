@@ -1735,16 +1735,27 @@ describe('agent management calls', () => {
     expect(JSON.parse(String(init.body))).toEqual({ enabled: true });
   });
 
-  it('maps managed agents, provider and last report included', async () => {
+  it('maps managed agents, definition and last report included', async () => {
     fetchMock.mockImplementation(async () =>
       respond(200, [
         {
           agent_id: 'agent-1',
           name: 'scout',
           display_name: 'Scout',
+          icon_url: 'https://icons.example.test/scout.png',
+          description: 'Finds things',
           controller_id: 'controller-1',
           desired_state: 'running',
-          definition: { provider: 'claude' },
+          revision: 3,
+          definition: {
+            provider: 'claude',
+            model: 'opus',
+            model_options: { effort: 'high' },
+            instructions: 'Be brief.',
+            auto_approve: true,
+            directory: '/work/scout',
+            isolation: 'isolated',
+          },
           status: { process: 'failed', attached: false, reason: 'crash_loop', detail: 'x' },
         },
         {
@@ -1763,18 +1774,36 @@ describe('agent management calls', () => {
         agentId: 'agent-1',
         name: 'scout',
         displayName: 'Scout',
+        iconUrl: 'https://icons.example.test/scout.png',
+        description: 'Finds things',
         controllerId: 'controller-1',
         desiredState: 'running',
+        revision: 3,
         provider: 'claude',
+        model: 'opus',
+        modelOptions: { effort: 'high' },
+        instructions: 'Be brief.',
+        isolation: 'isolated',
+        directory: '/work/scout',
+        autoApprove: true,
         status: { process: 'failed', attached: false, reason: 'crash_loop', detail: 'x' },
       },
       {
         agentId: 'agent-2',
         name: 'idle',
         displayName: null,
+        iconUrl: null,
+        description: '',
         controllerId: null,
         desiredState: 'stopped',
+        revision: 0,
         provider: 'unknown',
+        model: null,
+        modelOptions: {},
+        instructions: '',
+        isolation: 'shared',
+        directory: null,
+        autoApprove: false,
         status: null,
       },
     ]);

@@ -1,19 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { Agent } from '@shared/core/agents/agents';
-import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
-import type { Workspace } from '@shared/core/workspaces/workspaces';
-import type { NewAgentChecks } from '../agents/add-agent';
 import type { TargetLookup } from './agent-migration-service';
-import type { ManagedAgentRecord } from './managed-agents-store';
 import {
   type AddManagedAgentParams,
   type ManagedCreateOutcome,
   type NewManagedAgentDeps,
   NewManagedAgentService,
 } from './new-managed-agent-service';
-
-const WORKSPACE = { id: 'workspace-1' } as Workspace;
-const SERVER = { id: 'server-1', apiUrl: 'https://switch.example.test' } as SwitchServer;
 
 const PARAMS: AddManagedAgentParams = {
   sshHost: null,
@@ -43,100 +35,39 @@ const READY: TargetLookup = {
   controller: { controllerId: 'controller-1', state: 'running' },
 };
 
-type Harness = {
-  deps: NewManagedAgentDeps;
-  calls: string[];
-  records: Map<string, ManagedAgentRecord>;
-  rows: Map<string, Agent>;
-  created: { body: unknown } | null;
-  set(patch: Partial<Config>): void;
-};
-
 type Config = {
-  checks: NewAgentChecks;
   lookup: TargetLookup;
   management: boolean;
   createOutcome: ManagedCreateOutcome;
-  failAt: string | null;
-  deleteFails: boolean;
+};
+
+type Harness = {
+  deps: NewManagedAgentDeps;
+  created: unknown[];
+  set(patch: Partial<Config>): void;
 };
 
 function harness(): Harness {
   const config: Config = {
-    checks: { kind: 'ok', server: SERVER, workspace: WORKSPACE, slotAgentId: null },
     lookup: READY,
     management: true,
     createOutcome: { kind: 'created', switchAgentId: 'switch-9' },
-    failAt: null,
-    deleteFails: false,
   };
-  const calls: string[] = [];
-  const records = new Map<string, ManagedAgentRecord>();
-  const rows = new Map<string, Agent>();
-  const h: Harness = {
-    calls,
-    records,
-    rows,
-    created: null,
+  const created: unknown[] = [];
+  return {
+    created,
     set: (patch) => Object.assign(config, patch),
-    deps: undefined as unknown as NewManagedAgentDeps,
-  };
-  const step = (name: string) => {
-    calls.push(name);
-    if (config.failAt === name) throw new Error(`${name} failed`);
-  };
-  h.deps = {
-    check: async () => config.checks,
-    machine: async () => config.lookup,
-    managementAvailable: async () => config.management,
-    management: {
+    deps: {
+      workspaceFor: async () => 'workspace-1',
+      machine: async () => config.lookup,
+      managementAvailable: async () => config.management,
       create: async (_workspaceId, body) => {
-        step('create');
-        h.created = { body };
+        created.push(body);
         return config.createOutcome;
       },
-      setDesiredState: async (_w, _id, state) => step(`desired ${state}`),
-      release: async () => step('release'),
-      deleteAgent: async () => {
-        calls.push('delete agent');
-        if (config.deleteFails) throw new Error('delete refused');
-      },
+      log: { info: () => {}, warn: () => {}, error: () => {} },
     },
-    writeConfig: async () => step('config'),
-    store: {
-      set: async (record) => {
-        step('record');
-        records.set(record.agentId, record);
-      },
-      delete: async (agentId) => {
-        calls.push('forget record');
-        records.delete(agentId);
-      },
-    },
-    rows: {
-      create: async ({ id, params, switchAgentId }) => {
-        step('row');
-        const agent = {
-          id,
-          locationId: 'location-1',
-          name: params.name,
-          providerId: params.providerId,
-          switchAgentId,
-        } as Agent;
-        rows.set(id, agent);
-        return agent;
-      },
-      discard: async (agentId) => {
-        calls.push('discard row');
-        rows.delete(agentId);
-      },
-    },
-    announce: async () => step('announce'),
-    newId: () => 'agent-new',
-    now: () => Date.parse('2026-10-03T12:00:00Z'),
-    log: { info: () => {}, warn: () => {}, error: () => {} },
   };
-  return h;
 }
 
 describe('NewManagedAgentService.add', () => {
@@ -145,60 +76,32 @@ describe('NewManagedAgentService.add', () => {
     h = harness();
   });
 
-  it('places the agent stopped, records it before its row, then sets it running', async () => {
+  it('creates the agent on the server, running on the machine’s controller, and keeps nothing locally', async () => {
     const result = await new NewManagedAgentService(h.deps).add(PARAMS);
 
-    expect(result.kind).toBe('created');
-    expect(h.calls).toEqual(['create', 'config', 'record', 'row', 'desired running', 'announce']);
-    expect(h.created?.body).toEqual({
-      name: 'pm-agent',
-      description: 'Writes PRDs',
-      display_name: 'PM',
-      icon_url: null,
-      controller_id: 'controller-1',
-      desired_state: 'stopped',
-      definition: {
-        provider: 'claude',
-        model: 'opus',
-        instructions: 'Be brief.',
-        auto_approve: true,
-        directory: '/work/pm',
-      },
-    });
-    expect(h.records.get('agent-new')).toEqual({
-      agentId: 'agent-new',
-      workspaceId: 'workspace-1',
-      controllerId: 'controller-1',
-      placement: { kind: 'this-computer', serverId: 'server-1' },
-      identities: [
-        {
-          switchAgentId: 'switch-9',
-          slug: 'pm-agent',
-          subagent: null,
-          credentialsStashed: false,
-          controllerRoot: '/data/watchers/switch-9',
-        },
-      ],
-      movedAt: '2026-10-03T12:00:00.000Z',
-    });
-  });
-
-  it('records an SSH host placement for an agent on that host', async () => {
-    h.set({
-      lookup: {
-        ...READY,
-        target: {
-          ...READY.target!,
-          display: { kind: 'ssh-host', sshHost: 'box', serverId: 'server-1', machineName: 'box' },
-        },
-      },
-    });
-    await new NewManagedAgentService(h.deps).add({ ...PARAMS, sshHost: 'box', dir: '/srv/pm' });
-    expect(h.records.get('agent-new')?.placement).toEqual({
-      kind: 'ssh-host',
-      sshHost: 'box',
+    expect(result).toEqual({
+      kind: 'created',
       serverId: 'server-1',
+      workspaceId: 'workspace-1',
+      switchAgentId: 'switch-9',
     });
+    expect(h.created).toEqual([
+      {
+        name: 'pm-agent',
+        description: 'Writes PRDs',
+        display_name: 'PM',
+        icon_url: null,
+        controller_id: 'controller-1',
+        desired_state: 'running',
+        definition: {
+          provider: 'claude',
+          model: 'opus',
+          instructions: 'Be brief.',
+          auto_approve: true,
+          directory: '/work/pm',
+        },
+      },
+    ]);
   });
 
   it('creates nothing when the machine cannot take the agent', async () => {
@@ -214,38 +117,26 @@ describe('NewManagedAgentService.add', () => {
       kind: 'machine-unavailable',
       message: 'This computer’s controller is not running (stopped).',
     });
-    expect(h.calls).toEqual([]);
+    expect(h.created).toEqual([]);
   });
 
   it('creates nothing on a machine enrolled for another workspace', async () => {
     h.set({ lookup: { ...READY, target: { ...READY.target!, workspaceId: 'workspace-2' } } });
     const result = await new NewManagedAgentService(h.deps).add(PARAMS);
     expect(result.kind).toBe('machine-unavailable');
-    expect(h.calls).toEqual([]);
+    expect(h.created).toEqual([]);
   });
 
-  it('passes a refusal from the checks through without asking the machine', async () => {
-    h.set({ checks: { kind: 'name-conflict' } });
-    expect(await new NewManagedAgentService(h.deps).add(PARAMS)).toEqual({
-      kind: 'name-conflict',
-    });
-    expect(h.calls).toEqual([]);
-  });
-
-  it('says a name Switch already has is taken, and keeps nothing', async () => {
+  it('says a name Switch already has is taken', async () => {
     h.set({ createOutcome: { kind: 'name-conflict' } });
     expect(await new NewManagedAgentService(h.deps).add(PARAMS)).toEqual({
       kind: 'name-conflict',
     });
-    expect(h.calls).toEqual(['create']);
   });
 
-  it('shows a placement refusal in Switch’s words', async () => {
+  it('shows a refusal in Switch’s words', async () => {
     h.set({
-      createOutcome: {
-        kind: 'refused',
-        message: 'Claude Code is not logged in on laptop.',
-      },
+      createOutcome: { kind: 'refused', message: 'Claude Code is not logged in on laptop.' },
     });
     expect(await new NewManagedAgentService(h.deps).add(PARAMS)).toEqual({
       kind: 'error',
@@ -259,32 +150,7 @@ describe('NewManagedAgentService.add', () => {
       instructions: 'x'.repeat(33 * 1024),
     });
     expect(result.kind).toBe('error');
-    expect(h.calls).toEqual([]);
-  });
-
-  it('undoes everything, the agent on Switch included, when setting it running fails', async () => {
-    h.set({ failAt: 'desired running' });
-    await expect(new NewManagedAgentService(h.deps).add(PARAMS)).rejects.toThrow(
-      /Could not finish creating pm-agent, so nothing was kept: desired running failed/
-    );
-    expect(h.calls.slice(-4)).toEqual(['discard row', 'forget record', 'release', 'delete agent']);
-    expect(h.records.size).toBe(0);
-    expect(h.rows.size).toBe(0);
-  });
-
-  it('says Switch still lists the agent when deleting it there fails', async () => {
-    h.set({ failAt: 'config', deleteFails: true });
-    await expect(new NewManagedAgentService(h.deps).add(PARAMS)).rejects.toThrow(
-      /Switch still lists the agent, which could not be deleted/
-    );
-    expect(h.calls).not.toContain('discard row');
-  });
-
-  it('keeps the agent when only showing it in Console fails', async () => {
-    h.set({ failAt: 'announce' });
-    const result = await new NewManagedAgentService(h.deps).add(PARAMS);
-    expect(result.kind).toBe('created');
-    expect(h.records.has('agent-new')).toBe(true);
+    expect(h.created).toEqual([]);
   });
 });
 

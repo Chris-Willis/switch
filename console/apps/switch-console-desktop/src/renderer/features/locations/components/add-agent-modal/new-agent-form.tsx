@@ -5,6 +5,7 @@ import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
+import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import {
@@ -468,27 +469,59 @@ export const NewAgentForm = observer(function NewAgentForm({
         autoApprove: form.autoApprove,
         entryPoint,
       };
-      const result = managedRun
-        ? await getLocationManagerStore().addManagedAgentAndOpen({
-            ...common,
-            model: managedModel.trim() || null,
-          })
-        : await getLocationManagerStore().addAgentAndOpen({
-            ...common,
-            definitionAttributes: advancedAttributesRef.current,
-            providerConfig: launchProfileConfigRef.current,
-          });
-      if (result.kind === 'machine-unavailable') {
-        toast({
-          title: `${runLocationLabel} can’t take the agent now. Nothing was created.`,
-          description: result.message,
-          variant: 'destructive',
+      if (managedRun) {
+        const created = await rpc.agentMigration.addManagedAgent({
+          ...common,
+          model: managedModel.trim() || null,
         });
-        void machineQuery.refetch();
+        if (created.kind === 'machine-unavailable') {
+          toast({
+            title: `${runLocationLabel} can’t take the agent now. Nothing was created.`,
+            description: created.message,
+            variant: 'destructive',
+          });
+          void machineQuery.refetch();
+          setCloseGuard(false);
+          setSubmitState('idle');
+          return;
+        }
+        if (created.kind !== 'created') {
+          reportProvisionError(created);
+          setCloseGuard(false);
+          setSubmitState('idle');
+          return;
+        }
+        registered = true;
+        if (form.addressingPolicy !== null) {
+          await rpc.workspaces.updateAddressingPolicy({
+            workspaceId: created.workspaceId,
+            agentId: created.switchAgentId,
+            policy: form.addressingPolicy,
+          });
+        }
+        if (canManageAgents) {
+          await rpc.workspaces.updateCanManageAgents({
+            workspaceId: created.workspaceId,
+            agentId: created.switchAgentId,
+            enabled: true,
+          });
+        }
+        await queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY] });
         setCloseGuard(false);
         setSubmitState('idle');
+        onClose();
+        navigate('managedAgent', {
+          serverId: created.serverId,
+          agentId: created.switchAgentId,
+          name: form.displayName.trim() || form.agentName,
+        });
         return;
       }
+      const result = await getLocationManagerStore().addAgentAndOpen({
+        ...common,
+        definitionAttributes: advancedAttributesRef.current,
+        providerConfig: launchProfileConfigRef.current,
+      });
       if (result.kind !== 'created') {
         reportProvisionError(result);
         setCloseGuard(false);
@@ -505,13 +538,6 @@ export const NewAgentForm = observer(function NewAgentForm({
           workspaceId: result.agent.workspaceId,
           agentId: result.agent.switchAgentId,
           policy: form.addressingPolicy,
-        });
-      }
-      if (managedRun && canManageAgents && result.agent.switchAgentId && result.agent.workspaceId) {
-        await rpc.workspaces.updateCanManageAgents({
-          workspaceId: result.agent.workspaceId,
-          agentId: result.agent.switchAgentId,
-          enabled: true,
         });
       }
       await agentsStore.load();

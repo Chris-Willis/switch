@@ -4,6 +4,11 @@ import { observer } from 'mobx-react-lite';
 import { useEffect, useRef } from 'react';
 import { CloudAgentList } from '@renderer/features/cloud-agents/cloud-agent-list';
 import { useCloudAgents } from '@renderer/features/cloud-agents/use-cloud-agents';
+import { ManagedAgentList } from '@renderer/features/managed-agents/managed-agent-list';
+import {
+  useManagedAgents,
+  withoutLocalRows,
+} from '@renderer/features/managed-agents/use-managed-agents';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { switchRoomsStore as roomConnectionsStore } from '@renderer/features/switch-rooms/switch-rooms-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
@@ -88,6 +93,12 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
   }, []);
 
   const cloudAgents = useCloudAgents(switchServersStore.activeServerId);
+  const managedAgents = useManagedAgents(switchServersStore.activeServerId);
+  const activeServerId = switchServersStore.activeServerId;
+  const managedAgentCount =
+    activeServerId && managedAgents.data
+      ? withoutLocalRows(activeServerId, managedAgents.data).length
+      : 0;
   const emptyState = sidebarEmptyState({
     grouping: sidebarStore.grouping,
     hasActiveFilters: sidebarStore.hasActiveFilters,
@@ -95,7 +106,7 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
     activeServerId: switchServersStore.activeServerId,
     locationCount: sidebarStore.orderedLocations.length,
     roomCount: switchRoomsStore.listedRoomsInActiveScope.length,
-    cloudAgentCount: cloudAgents.data?.length ?? 0,
+    serverListedAgentCount: (cloudAgents.data?.length ?? 0) + managedAgentCount,
   });
 
   return (
@@ -115,6 +126,7 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
       ) : (
         <AgentTree />
       )}
+      {sidebarStore.grouping !== 'room' && <ManagedAgentList />}
       {sidebarStore.grouping !== 'room' && <CloudAgentList />}
     </div>
   );

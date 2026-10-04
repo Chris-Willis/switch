@@ -2,6 +2,7 @@ import type { ComponentType, ReactNode } from 'react';
 import { homeView } from '@renderer/app/home-view';
 import { cloudSessionView } from '@renderer/features/cloud-agents/cloud-session-view';
 import { locationView } from '@renderer/features/locations/view';
+import { managedAgentView } from '@renderer/features/managed-agents/managed-agent-view';
 import { remoteHostView } from '@renderer/features/remote-hosts/views/remote-host-view';
 import { remoteHostsView } from '@renderer/features/remote-hosts/views/remote-hosts-view';
 import { templateCaptureView } from '@renderer/features/room-templates/room-template-capture-view';
@@ -27,6 +28,7 @@ export const views = {
   location: locationView,
   session: sessionView,
   cloudSession: cloudSessionView,
+  managedAgent: managedAgentView,
   room: roomView,
   settings: settingsView,
   server: serverView,

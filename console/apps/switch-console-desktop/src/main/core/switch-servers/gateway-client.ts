@@ -2604,9 +2604,16 @@ export type ManagedAgent = {
   agentId: string;
   name: string;
   displayName: string | null;
+  iconUrl: string | null;
+  description: string;
   controllerId: string | null;
   desiredState: 'running' | 'stopped';
+  revision: number;
   provider: string;
+  model: string | null;
+  modelOptions: Record<string, string>;
+  instructions: string;
+  isolation: 'shared' | 'isolated';
   /** The working directory on its machine; null for a workspace the machine chooses. */
   directory: string | null;
   autoApprove: boolean;
@@ -2632,9 +2639,20 @@ type ManagedAgentJson = {
   agent_id: string;
   name: string;
   display_name: string | null;
+  icon_url?: string | null;
   controller_id: string | null;
   desired_state: 'running' | 'stopped';
-  definition: { provider?: unknown; directory?: unknown; auto_approve?: unknown } | null;
+  description?: string;
+  revision?: number;
+  definition: {
+    provider?: unknown;
+    model?: unknown;
+    model_options?: unknown;
+    instructions?: unknown;
+    directory?: unknown;
+    auto_approve?: unknown;
+    isolation?: unknown;
+  } | null;
   status: {
     process: string;
     attached: boolean;
@@ -2690,14 +2708,29 @@ export async function fetchManagementControllers(
   }));
 }
 
+function stringRecord(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object') return {};
+  return Object.fromEntries(
+    Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+  );
+}
+
 function toManagedAgent(json: ManagedAgentJson): ManagedAgent {
   return {
     agentId: json.agent_id,
     name: json.name,
     displayName: json.display_name,
+    iconUrl: json.icon_url ?? null,
+    description: json.description ?? '',
     controllerId: json.controller_id,
     desiredState: json.desired_state,
+    revision: json.revision ?? 0,
     provider: typeof json.definition?.provider === 'string' ? json.definition.provider : 'unknown',
+    model: typeof json.definition?.model === 'string' ? json.definition.model : null,
+    modelOptions: stringRecord(json.definition?.model_options),
+    instructions:
+      typeof json.definition?.instructions === 'string' ? json.definition.instructions : '',
+    isolation: json.definition?.isolation === 'isolated' ? 'isolated' : 'shared',
     directory: typeof json.definition?.directory === 'string' ? json.definition.directory : null,
     autoApprove: json.definition?.auto_approve === true,
     status: json.status

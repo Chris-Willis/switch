@@ -8,7 +8,7 @@ const empty = {
   activeServerId: 'server',
   locationCount: 0,
   roomCount: 0,
-  cloudAgentCount: 0,
+  serverListedAgentCount: 0,
 };
 
 it('says a server with nothing on it is empty', () => {
@@ -16,7 +16,7 @@ it('says a server with nothing on it is empty', () => {
 });
 
 it('does not call a server empty while it lists cloud agents', () => {
-  expect(sidebarEmptyState({ ...empty, cloudAgentCount: 1 })).toBeNull();
+  expect(sidebarEmptyState({ ...empty, serverListedAgentCount: 1 })).toBeNull();
 });
 
 it('does not call a server with local sessions or rooms empty', () => {
