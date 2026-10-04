@@ -7,6 +7,7 @@ import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
 import { Field, FieldDescription, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
+import { Switch } from '@renderer/lib/ui/switch';
 import type { NewAgentMachine } from '@shared/core/agent-migration/agent-migration';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { newAgentMachineNotice } from './managed-run-location';
@@ -120,6 +121,28 @@ export function ManagedModelField({
       <FieldDescription>
         Managed agents don’t carry the reasoning effort or other provider settings yet: they run
         with the provider’s defaults.
+      </FieldDescription>
+    </Field>
+  );
+}
+
+/** Whether the new agent may create agents on the owner's machines, set as it is created. */
+export function CanManageAgentsField({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <Field>
+      <div className="flex items-center justify-between gap-3">
+        <FieldLabel>Can manage agents</FieldLabel>
+        <Switch aria-label="Can manage agents" checked={checked} onCheckedChange={onChange} />
+      </div>
+      <FieldDescription>
+        The agent can see your machines and managed agents, and create agents that run on your
+        machines and belong to you. Agents it creates do not get this permission.
       </FieldDescription>
     </Field>
   );

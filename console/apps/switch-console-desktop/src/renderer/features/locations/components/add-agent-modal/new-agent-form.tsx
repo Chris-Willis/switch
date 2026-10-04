@@ -58,7 +58,11 @@ import { AgentIdentityFields, AgentSettingsSection } from './configure-agent-pan
 import { LaunchProfileConfig } from './launch-profile-config';
 import { LocalDirectorySelector } from './local-directory-selector';
 import { machineDisabledReason } from './managed-run-location';
-import { ManagedModelField, ManagedRunLocationNotice } from './managed-run-location-notice';
+import {
+  CanManageAgentsField,
+  ManagedModelField,
+  ManagedRunLocationNotice,
+} from './managed-run-location-notice';
 import { useConfigureAgentForm, usePickMode } from './modes';
 
 export type NewAgentFormProps = {
@@ -257,6 +261,7 @@ export const NewAgentForm = observer(function NewAgentForm({
         machine,
       });
   const [managedModel, setManagedModel] = useState('');
+  const [canManageAgents, setCanManageAgents] = useState(false);
   useEffect(() => {
     setManagedModel('');
   }, [pickState.providerId, runHost]);
@@ -502,6 +507,13 @@ export const NewAgentForm = observer(function NewAgentForm({
           policy: form.addressingPolicy,
         });
       }
+      if (managedRun && canManageAgents && result.agent.switchAgentId && result.agent.workspaceId) {
+        await rpc.workspaces.updateCanManageAgents({
+          workspaceId: result.agent.workspaceId,
+          agentId: result.agent.switchAgentId,
+          enabled: true,
+        });
+      }
       await agentsStore.load();
       finishWith(result.agent);
     } catch (error) {
@@ -533,7 +545,7 @@ export const NewAgentForm = observer(function NewAgentForm({
         toast({
           title: 'Agent created, but setup is incomplete',
           description:
-            'Open the agent in Your Agents and check its addressing policy before using it. Do not create it again.',
+            'Open the agent in Your Agents and check its addressing policy, and whether it can manage agents, before using it. Do not create it again.',
           variant: 'destructive',
         });
         return;
@@ -834,6 +846,9 @@ export const NewAgentForm = observer(function NewAgentForm({
                   if (pickState.serverId) navigate('server', { serverId: pickState.serverId });
                 }}
               />
+            )}
+            {canConfigureAgent && managedRun && (
+              <CanManageAgentsField checked={canManageAgents} onChange={setCanManageAgents} />
             )}
           </DialogContentArea>
         </ModalLayout>

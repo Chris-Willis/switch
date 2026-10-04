@@ -31,6 +31,7 @@ vi.mock('@renderer/lib/ipc', () => ({
 }));
 
 import {
+  CanManageAgentsField,
   ManagedModelField,
   ManagedRunLocationNotice,
 } from '@renderer/features/locations/components/add-agent-modal/managed-run-location-notice';
@@ -155,5 +156,17 @@ describe('the managed model field', () => {
       dir: '/work/pm',
     });
     expect(el.textContent).toMatch(/don’t carry the reasoning effort/);
+  });
+});
+
+describe('can manage agents, set as the agent is created', () => {
+  it('starts off and turns on when switched', async () => {
+    const onChange = vi.fn();
+    const el = await render(<CanManageAgentsField checked={false} onChange={onChange} />);
+    const toggle = el.querySelector('[aria-label="Can manage agents"]') as HTMLElement;
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    await act(async () => toggle.click());
+    expect(onChange).toHaveBeenCalledWith(true, expect.anything());
+    expect(el.textContent).toMatch(/Agents it creates do not get this permission/);
   });
 });
