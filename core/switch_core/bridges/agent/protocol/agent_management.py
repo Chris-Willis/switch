@@ -43,6 +43,7 @@ class NewManagedAgent:
     name: str
     description: str
     display_name: str | None
+    icon_url: str | None
     machine: str
     provider: str
     model: str | None

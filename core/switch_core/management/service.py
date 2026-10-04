@@ -27,6 +27,11 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.agent_icon import (
+    InvalidIconUrl,
+    generated_icon_url,
+    normalise_icon_url,
+)
 from switch_core.bridges.agent.auth import ControllerPrincipal
 from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
 from switch_core.bridges.agent.protocol.controller_presence import (
@@ -721,6 +726,12 @@ class ManagementService:
             definition.provider,
             check_placement=True,
         )
+        try:
+            icon_url = normalise_icon_url(request.icon_url) or generated_icon_url(
+                request.name
+            )
+        except InvalidIconUrl as exc:
+            raise ManagementError(422, reason_codes.VALIDATION_ERROR, str(exc)) from exc
         spec, options, metadata = _known_agent_registration(definition, None)
         await session.commit()
         try:
@@ -729,6 +740,7 @@ class ManagementService:
                 name=request.name,
                 description=request.description,
                 display_name=request.display_name,
+                icon_url=icon_url,
                 connector_type=spec.connector_type,
                 integration_profile=spec.build_profile(options),
                 tools=spec.tools,

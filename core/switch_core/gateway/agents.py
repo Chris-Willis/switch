@@ -3,12 +3,16 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_display_name import InvalidDisplayName, normalise_display_name
-from switch_core.agent_icon import InvalidIconUrl, normalise_icon_url
+from switch_core.agent_icon import (
+    InvalidIconUrl,
+    generated_icon_choices,
+    normalise_icon_url,
+)
 from switch_core.authz import Principal, require_manage
 from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
 from switch_core.bridges.agent.protocol.agent_detail import (
@@ -158,6 +162,17 @@ async def list_known_agent_types() -> list[KnownAgentType]:
         )
         for key, spec in KNOWN_AGENTS.items()
     ]
+
+
+@router.get("/icon-choices")
+async def list_icon_choices(
+    _user: Annotated[User, Depends(get_current_user)],
+    name: Annotated[str, Query(min_length=1, max_length=128)],
+    page: Annotated[int, Query(ge=0, le=1000)] = 0,
+) -> dict[str, list[str]]:
+    """One page of generated icons for an agent called `name`: page 0 leads
+    with the one an agent of that name gets when nobody picks an icon."""
+    return {"choices": generated_icon_choices(name, page)}
 
 
 @router.post("/register")

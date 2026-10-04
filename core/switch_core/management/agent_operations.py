@@ -36,9 +36,9 @@ from switch_core.management.schemas import (
 from switch_core.management.service import ManagementService
 
 CREATED_HINT = (
-    "The agent is created and its machine has been told. Its actual state "
-    "appears once the machine reports, usually within a minute: check it with "
-    "list_managed_agents."
+    "The agent is created and its machine has been told. Check it with "
+    "list_managed_agents straight away; while its `actual` is still null, "
+    "pending or starting, check again every 2 seconds, for at most a minute."
 )
 
 
@@ -198,6 +198,7 @@ class ManagementAgentOperations:
                     name=spec.name,
                     description=spec.description,
                     display_name=spec.display_name,
+                    icon_url=spec.icon_url,
                     controller_id=controller.id,
                     desired_state="running" if spec.start else "stopped",
                     definition=DefinitionV1(

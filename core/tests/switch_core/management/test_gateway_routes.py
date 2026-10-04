@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.agent_icon import generated_icon_url
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.management.gateway_routes import router as gateway_router
@@ -289,6 +290,50 @@ class TestManagedAgents:
         assert agent.metadata_["known_agent_type"] == "codex"
         assert agent.metadata_["known_agent_options"]["auto_session"] is True
         assert agent.metadata_["known_agent_options"]["repo_dir"] == "/srv/example"
+
+    async def test_create_gives_the_generated_icon_unless_one_is_chosen(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            generated = await create_managed_agent(
+                client, owner, name="scout", controller_id=None
+            )
+            chosen = await client.post(
+                "/gateway/management/agents",
+                json={
+                    "name": "painter",
+                    "description": "Paints",
+                    "icon_url": "https://example.com/painter.png",
+                    "controller_id": None,
+                    "desired_state": "stopped",
+                    "definition": definition(),
+                },
+                cookies=cookies_for(owner),
+            )
+            unsafe = await client.post(
+                "/gateway/management/agents",
+                json={
+                    "name": "prober",
+                    "description": "Probes",
+                    "icon_url": "http://10.0.0.1/icon.png",
+                    "controller_id": None,
+                    "desired_state": "stopped",
+                    "definition": definition(),
+                },
+                cookies=cookies_for(owner),
+            )
+        assert generated.status_code == 201, generated.text
+        assert chosen.status_code == 201, chosen.text
+        assert unsafe.status_code == 422
+        async with harness.session_factory() as session:
+            scout = await AgentStore().get(session, generated.json()["agent_id"])
+            painter = await AgentStore().get(session, chosen.json()["agent_id"])
+            prober = await AgentStore().get_by_name(session, "prober")
+        assert scout is not None and scout.icon_url == generated_icon_url("scout")
+        assert painter is not None
+        assert painter.icon_url == "https://example.com/painter.png"
+        assert prober is None
 
     async def test_a_name_clash_is_refused(self, harness: Harness) -> None:
         owner = await add_member(harness.session_factory, "ada")

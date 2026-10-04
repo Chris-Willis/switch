@@ -132,6 +132,7 @@ async def create_agent(
     directory: str | None = None,
     auto_approve: bool = False,
     display_name: str | None = None,
+    icon_url: str | None = None,
     start: bool = True,
 ) -> dict[str, Any]:
     """Create a new managed agent for your owner, running on one of their machines.
@@ -163,13 +164,16 @@ async def create_agent(
             workspace the machine chooses.
         auto_approve: Let the agent run tools without asking for approval.
         display_name: A human label shown next to `name`, or null for none.
+        icon_url: An https link to the agent's icon, or null for the robot
+            its name generates, the same one Switch Console offers first.
         start: Start the agent now (true) or create it stopped (false).
 
     Returns:
         {agent_id, name, machine: {id, name}, desired_state, hint}.
-        `desired_state` is "running" or "stopped". The agent's actual state
-        appears once the machine reports, within about a minute; check it
-        with `list_managed_agents`.
+        `desired_state` is "running" or "stopped". Check the agent with
+        `list_managed_agents` straight away; while its `actual` is still
+        null, "pending" or "starting", check again every 2 seconds, for at
+        most a minute.
     """
     permitted = await _permitted()
     return await _management().create_agent(
@@ -179,6 +183,7 @@ async def create_agent(
             name=name,
             description=description,
             display_name=display_name,
+            icon_url=icon_url,
             machine=machine,
             provider=provider,
             model=model,
