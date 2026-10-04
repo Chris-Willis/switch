@@ -10,7 +10,6 @@ export type ManagedDefinition = {
   provider: AgentProviderId;
   model: string | null;
   instructions: string;
-  auto_session: boolean;
   auto_approve: boolean;
   directory: string | null;
 };
@@ -60,9 +59,8 @@ export function definitionBody(text: string): string {
  * The managed definition an agent's Console configuration amounts to, and
  * what it leaves behind. Pure.
  *
- * Automatic sessions are always on: Console starts a session for every agent
- * addressed with none running, unless its watcher was stopped by hand, which
- * moves as the desired state `stopped` rather than as sessions turned off.
+ * A managed agent always starts a session when addressed. One whose watcher
+ * was stopped by hand moves as the desired state `stopped`.
  */
 export function buildManagedDefinition(source: DefinitionSource): BuiltDefinition {
   const specialization = source.specialization ?? {};
@@ -109,7 +107,6 @@ export function buildManagedDefinition(source: DefinitionSource): BuiltDefinitio
       provider: source.providerId,
       model: specialization.model || null,
       instructions,
-      auto_session: true,
       auto_approve: source.autoApprove,
       directory: source.directory,
     },

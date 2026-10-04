@@ -2671,7 +2671,6 @@ export type ManagedAgentDefinitionBody = {
   provider: string;
   model: string | null;
   instructions: string;
-  auto_session: boolean;
   auto_approve: boolean;
   directory: string | null;
 };

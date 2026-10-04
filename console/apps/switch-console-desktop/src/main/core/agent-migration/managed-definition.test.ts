@@ -29,7 +29,6 @@ describe('the managed definition of a Console agent', () => {
         provider: 'claude',
         model: 'sonnet',
         instructions: 'Review pull requests.',
-        auto_session: true,
         auto_approve: true,
         directory: '/work/builder',
       },
@@ -38,10 +37,9 @@ describe('the managed definition of a Console agent', () => {
     });
   });
 
-  it('moves an agent stopped by hand as stopped, with sessions still on', () => {
+  it('moves an agent stopped by hand as stopped', () => {
     const built = buildManagedDefinition({ ...SOURCE, stoppedByHand: true });
     expect(built.desiredState).toBe('stopped');
-    expect(built.definition.auto_session).toBe(true);
   });
 
   it('names the effort, and OpenCode’s variant, which it cannot carry', () => {

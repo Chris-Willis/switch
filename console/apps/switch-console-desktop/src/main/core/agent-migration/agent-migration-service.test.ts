@@ -47,7 +47,6 @@ const BUILT: BuiltDefinition = {
     provider: 'claude',
     model: 'sonnet',
     instructions: 'Build things.',
-    auto_session: true,
     auto_approve: false,
     directory: '/work/builder',
   },
