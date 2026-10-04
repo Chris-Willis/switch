@@ -1,4 +1,3 @@
-import type { RepoAgentField } from '@switch-console/core/agents/plugins';
 import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
 import { z } from 'zod';
 import type { KnownAgentType } from '@main/core/agents/known-agent-type';
@@ -9,6 +8,7 @@ import {
 } from '@main/core/managed-switch-server/managed-server-status';
 import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
 import { cloudLaunchSchema, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
+import type { AdvancedConfigField } from '@shared/core/managed-agents/managed-agents';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
@@ -2862,16 +2862,6 @@ export async function updateManagedAgent(
   if (Object.keys(body).length === 0) return;
   await managementFetch(server, path, { authenticated: true, method: 'PATCH', body });
 }
-
-/**
- * One field of a provider's advanced configuration, as the server's schema
- * serves it: the shape of Console's own field descriptors, so the same form
- * renders either.
- */
-export type AdvancedConfigField = Pick<
-  RepoAgentField,
-  'key' | 'label' | 'type' | 'help' | 'placeholder' | 'options' | 'catalogue'
->;
 
 const advancedConfigFieldSchema = z.object({
   key: z.string().min(1),

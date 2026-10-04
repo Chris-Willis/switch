@@ -4,6 +4,7 @@ import {
   AgentManagementUnavailableError,
   deleteAgent,
   deleteManagedAgent,
+  fetchAdvancedConfigSchema,
   fetchManagedAgents,
   fetchManagementControllers,
   GatewayError,
@@ -14,6 +15,7 @@ import {
 import { withReachableServerWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import type {
+  AdvancedConfigField,
   ManagedAgentChanges,
   ManagedAgentView,
   OwnedMachine,
@@ -95,6 +97,10 @@ export const managedAgentsController = createRPCController({
       });
     });
   },
+
+  /** Each provider's advanced configuration fields, keyed by provider, as the server checks a definition against them. */
+  advancedConfigSchema: (serverId: string): Promise<Record<string, AdvancedConfigField[]>> =>
+    withReachableServerWorkspaceSession(serverId, (server) => fetchAdvancedConfigSchema(server)),
 
   /** Changes its settings on the server; Switch refuses a change its machine cannot run, in its own words. */
   update: (params: {

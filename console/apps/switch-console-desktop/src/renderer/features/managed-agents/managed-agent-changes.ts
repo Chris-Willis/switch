@@ -1,87 +1,147 @@
+import type { RepoAgentField } from '@switch-console/core/agents/plugins';
 import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
+import {
+  attributesFromForm,
+  emptyForm,
+  formFromAttributes,
+  type FormState,
+} from '@renderer/features/locations/components/agent-definition-fields';
 import type {
+  AdvancedConfigField,
   ManagedAgentChanges,
   ManagedAgentView,
 } from '@shared/core/managed-agents/managed-agents';
 
-/** The model option each provider takes, and its choices where they are a fixed set. */
-export const MODEL_OPTION: Record<
-  string,
-  { key: string; label: string; choices: string[] | null }
-> = {
-  claude: {
-    key: 'effort',
-    label: 'Reasoning effort',
-    choices: ['low', 'medium', 'high', 'xhigh', 'max'],
-  },
-  codex: {
-    key: 'effort',
-    label: 'Reasoning effort',
-    choices: ['minimal', 'low', 'medium', 'high', 'xhigh'],
-  },
-  opencode: { key: 'variant', label: 'Variant', choices: null },
+/**
+ * The model, a definition field of its own rather than part of the provider's
+ * advanced configuration, shown first among it. Keyed `model` because that is
+ * the key the model catalogue and a variant field's `modelField` name.
+ */
+export const MODEL_FIELD: RepoAgentField = { key: 'model', label: 'Model', type: 'text' };
+
+export const DIRECTORY_FIELD: RepoAgentField = {
+  key: 'definition-directory',
+  label: 'Directory',
+  type: 'text',
+  placeholder: 'Chosen by the machine',
+  help: 'The working directory, absolute on its machine. Leave it empty and the machine makes a fresh workspace.',
 };
 
+export const OWN_PROCESS_FIELD: RepoAgentField = {
+  key: 'definition-own-process',
+  label: 'Run in its own process',
+  type: 'boolean',
+  help: 'Isolated from the other agents on its machine, instead of inside the machine’s controller.',
+};
+
+/** Every field the managed agent page's Advanced configuration shows, in order. */
+export function managedAdvancedFields(schema: AdvancedConfigField[]): RepoAgentField[] {
+  return [MODEL_FIELD, DIRECTORY_FIELD, OWN_PROCESS_FIELD, ...schema];
+}
+
+/**
+ * The advanced configuration the form holds, as a definition carries it:
+ * unset fields left out rather than sent empty, which the server refuses.
+ */
+export function advancedConfigFromForm(
+  fields: AdvancedConfigField[],
+  form: FormState
+): Record<string, AdvancedConfigValue> {
+  const config: Record<string, AdvancedConfigValue> = {};
+  for (const [key, value] of Object.entries(attributesFromForm(fields, form))) {
+    if (value === null || value === '' || value === false) continue;
+    if (Array.isArray(value) && value.length === 0) continue;
+    config[key] = value;
+  }
+  return config;
+}
+
+/** A managed agent's page as edited: its identity, and its definition as one form. */
 export type Draft = {
   displayName: string;
   description: string;
   iconUrl: string | null;
-  machineId: string | null;
-  provider: string;
-  model: string;
-  option: string;
-  directory: string;
-  isolated: boolean;
-  autoApprove: boolean;
   instructions: string;
+  autoApprove: boolean;
+  /** The model, directory and isolation, and every field of the provider's schema. */
+  form: FormState;
 };
 
-export function draftOf(agent: ManagedAgentView): Draft {
-  const option = MODEL_OPTION[agent.definition.provider];
+export function draftOf(agent: ManagedAgentView, schema: AdvancedConfigField[]): Draft {
   return {
     displayName: agent.displayName ?? '',
     description: agent.description,
     iconUrl: agent.iconUrl,
-    machineId: agent.machine?.id ?? null,
-    provider: agent.definition.provider,
-    model: agent.definition.model ?? '',
-    option: option ? String(agent.definition.advancedConfig[option.key] ?? '') : '',
-    directory: agent.definition.directory ?? '',
-    isolated: agent.definition.isolation === 'isolated',
-    autoApprove: agent.definition.autoApprove,
     instructions: agent.definition.instructions,
+    autoApprove: agent.definition.autoApprove,
+    form: {
+      ...emptyForm(schema),
+      ...formFromAttributes(schema, agent.definition.advancedConfig),
+      [MODEL_FIELD.key]: agent.definition.model ?? '',
+      [DIRECTORY_FIELD.key]: agent.definition.directory ?? '',
+      [OWN_PROCESS_FIELD.key]: agent.definition.isolation === 'isolated',
+    },
   };
 }
 
-/** What changed between the server's copy and the draft, as the server takes it. */
-export function changesOf(
+/** What a save sends: the definition and machine to the server, and the identity fields one by one. */
+export type ManagedAgentEdit = {
+  changes: ManagedAgentChanges;
+  displayName?: string | null;
+  description?: string;
+  iconUrl?: string | null;
+};
+
+/**
+ * What changed between the saved draft and the edited one, as the server takes
+ * it. The advanced configuration goes as a whole replacement when any of its
+ * fields changed; a key the schema does not name is kept, so the server judges
+ * it rather than Console dropping it unseen.
+ */
+export function editOf(
   agent: ManagedAgentView,
+  schema: AdvancedConfigField[],
   before: Draft,
   after: Draft
-): ManagedAgentChanges {
+): ManagedAgentEdit {
   const definition: ManagedAgentChanges['definition'] = {};
-  if (after.provider !== before.provider) definition.provider = after.provider;
-  const model = after.model.trim() || null;
-  if (model !== (before.model.trim() || null)) definition.model = model;
-  const option = MODEL_OPTION[after.provider];
-  const advancedConfig: Record<string, AdvancedConfigValue> =
-    after.provider === before.provider ? { ...agent.definition.advancedConfig } : {};
-  if (option) {
-    delete advancedConfig[option.key];
-    if (after.option.trim()) advancedConfig[option.key] = after.option.trim();
+  const model = String(after.form[MODEL_FIELD.key] ?? '').trim() || null;
+  if (model !== (String(before.form[MODEL_FIELD.key] ?? '').trim() || null))
+    definition.model = model;
+  const directory = String(after.form[DIRECTORY_FIELD.key] ?? '').trim() || null;
+  if (directory !== (String(before.form[DIRECTORY_FIELD.key] ?? '').trim() || null))
+    definition.directory = directory;
+  const isolated = after.form[OWN_PROCESS_FIELD.key] === true;
+  if (isolated !== (before.form[OWN_PROCESS_FIELD.key] === true))
+    definition.isolation = isolated ? 'isolated' : 'shared';
+  const advancedConfig = advancedConfigFromForm(schema, after.form);
+  if (
+    JSON.stringify(advancedConfig) !== JSON.stringify(advancedConfigFromForm(schema, before.form))
+  ) {
+    const known = new Set(schema.map((field) => field.key));
+    const unknown = Object.entries(agent.definition.advancedConfig).filter(
+      ([key]) => !known.has(key)
+    );
+    definition.advancedConfig = { ...Object.fromEntries(unknown), ...advancedConfig };
   }
-  if (JSON.stringify(advancedConfig) !== JSON.stringify(agent.definition.advancedConfig))
-    definition.advancedConfig = advancedConfig;
-  const directory = after.directory.trim() || null;
-  if (directory !== (before.directory.trim() || null)) definition.directory = directory;
-  if (after.isolated !== before.isolated)
-    definition.isolation = after.isolated ? 'isolated' : 'shared';
   if (after.autoApprove !== before.autoApprove) definition.autoApprove = after.autoApprove;
   if (after.instructions !== before.instructions) definition.instructions = after.instructions;
-  return {
-    definition,
-    ...(after.machineId !== null && after.machineId !== before.machineId
-      ? { machineId: after.machineId }
-      : {}),
-  };
+
+  const edit: ManagedAgentEdit = { changes: { definition } };
+  const displayName = after.displayName.trim() || null;
+  if (displayName !== (before.displayName.trim() || null)) edit.displayName = displayName;
+  if (after.description.trim() !== before.description.trim())
+    edit.description = after.description.trim();
+  if (after.iconUrl !== before.iconUrl) edit.iconUrl = after.iconUrl;
+  return edit;
+}
+
+export function editIsEmpty(edit: ManagedAgentEdit): boolean {
+  return (
+    Object.keys(edit.changes.definition).length === 0 &&
+    edit.changes.machineId === undefined &&
+    edit.displayName === undefined &&
+    edit.description === undefined &&
+    edit.iconUrl === undefined
+  );
 }

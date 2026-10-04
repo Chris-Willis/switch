@@ -1,4 +1,5 @@
-import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
+import type { ManagedAgentView, OwnedMachine } from '@shared/core/managed-agents/managed-agents';
+import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 
 export type ManagedAgentState = {
   label: string;
@@ -43,4 +44,40 @@ export function managedAgentState(agent: ManagedAgentView): ManagedAgentState {
 
 export function managedAgentLabel(agent: ManagedAgentView): string {
   return agent.displayName || agent.name;
+}
+
+/**
+ * What is wrong with where the agent runs, in a sentence, or null when nothing
+ * is. `machine` is the owner's machine as the server lists it, null while that
+ * list is not in (or no longer names it), when only the agent's own copy of its
+ * machine is known.
+ */
+export function machineProblem(
+  agent: ManagedAgentView,
+  machine: OwnedMachine | null
+): string | null {
+  if (!agent.machine) return 'This agent is placed on no machine, so nothing runs it.';
+  const name = agent.machine.name;
+  if (agent.machine.state === 'revoked')
+    return `${name} was removed from your machines, so nothing runs this agent.`;
+  if (agent.machine.state !== 'online')
+    return `${name} stopped answering. The agent resumes when it reconnects.`;
+  const state = managedAgentState(agent);
+  if (state.tone === 'problem')
+    return state.detail ?? `The agent ${state.label.toLowerCase()} on ${name}.`;
+  const provider = machine?.providers.find((entry) => entry.provider === agent.definition.provider);
+  if (provider && !provider.ready) {
+    const label = providerDisplayName(provider.provider) ?? provider.provider;
+    return `${label} is not ready on ${name}${provider.problem ? `: ${provider.problem}` : ''}.`;
+  }
+  return null;
+}
+
+/** The colour of the dot beside the agent's machine: green when all is well, red on a problem. */
+export function machineTone(
+  agent: ManagedAgentView,
+  machine: OwnedMachine | null
+): 'ok' | 'problem' | 'idle' {
+  if (machineProblem(agent, machine) !== null) return 'problem';
+  return managedAgentState(agent).tone === 'ok' ? 'ok' : 'idle';
 }

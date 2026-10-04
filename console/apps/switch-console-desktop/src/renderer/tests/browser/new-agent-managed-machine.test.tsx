@@ -13,6 +13,7 @@ import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 const embeddedEnable = vi.hoisted(() => vi.fn());
 const hostEnable = vi.hoisted(() => vi.fn());
 const modelCatalogue = vi.hoisted(() => vi.fn());
+const advancedConfigSchema = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -28,6 +29,7 @@ vi.mock('@renderer/lib/ipc', () => ({
     embeddedController: { enable: embeddedEnable },
     hostControllers: { enable: hostEnable },
     agents: { modelCatalogue },
+    managedAgents: { advancedConfigSchema },
   },
 }));
 
@@ -36,7 +38,7 @@ vi.mock('@renderer/lib/components/agent-icon', () => ({ AgentIcon: () => null })
 import { MachineProviderPicker } from '@renderer/features/locations/components/add-agent-modal/machine-provider-picker';
 import {
   CanManageAgentsField,
-  ManagedModelField,
+  ManagedAdvancedConfig,
   ManagedRunLocationNotice,
 } from '@renderer/features/locations/components/add-agent-modal/managed-run-location-notice';
 
@@ -49,6 +51,20 @@ beforeEach(() => {
   modelCatalogue
     .mockReset()
     .mockResolvedValue({ kind: 'available', models: [{ id: 'opus', variants: [] }] });
+  advancedConfigSchema.mockReset().mockResolvedValue({
+    claude: [
+      {
+        key: 'effort',
+        label: 'Effort',
+        type: 'select',
+        options: [
+          { value: '', label: 'Inherit' },
+          { value: 'high', label: 'high' },
+        ],
+      },
+      { key: 'tools', label: 'Tools', type: 'list' },
+    ],
+  });
 });
 
 afterEach(async () => {
@@ -140,27 +156,84 @@ describe('where a new agent runs', () => {
   });
 });
 
-describe('the managed model field', () => {
-  it('suggests the machine’s models and says where its effort is set', async () => {
+/** Type into a controlled input the way React will notice. */
+async function type(target: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+  await act(async () => {
+    setter.call(target, value);
+    target.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+describe('a new managed agent’s advanced configuration', () => {
+  it('shows the model first, then the server’s fields for the provider, and reports them as a definition takes them', async () => {
     const onChange = vi.fn();
     const el = await render(
-      <ManagedModelField
+      <ManagedAdvancedConfig
+        serverId="server-1"
         providerId="claude"
-        sshHost={null}
-        dir="/work/pm"
-        value=""
+        host={{ kind: 'host', sshHost: null, dir: '/work/pm' }}
         onChange={onChange}
       />
     );
-    await vi.waitFor(() => expect(el.querySelector('datalist option')).not.toBeNull());
-    expect(el.querySelector('datalist option')!.getAttribute('value')).toBe('opus');
+    const disclosure = await vi.waitFor(() => {
+      const found = [...el.querySelectorAll('button')].find((b) =>
+        b.textContent?.startsWith('Advanced configuration')
+      );
+      expect(found?.textContent).toMatch(/3 fields/);
+      return found!;
+    });
+    await act(async () => disclosure.click());
+    const labels = [...el.querySelectorAll('label')].map((label) => label.textContent);
+    expect(labels).toEqual(['Model (optional)', 'Effort (optional)', 'Tools (optional)']);
     expect(modelCatalogue).toHaveBeenCalledWith({
       providerId: 'claude',
       sshHost: null,
       dir: '/work/pm',
     });
-    expect(el.textContent).toMatch(
-      /reasoning effort and other provider settings on the agent’s page/
+    expect(el.textContent).not.toMatch(/agent’s page/);
+
+    await type(el.querySelector<HTMLInputElement>('#agent-definition-model')!, 'opus');
+    await type(el.querySelector<HTMLInputElement>('#agent-definition-tools')!, 'Read, Grep');
+    expect(onChange).toHaveBeenLastCalledWith({
+      model: 'opus',
+      advancedConfig: { tools: ['Read', 'Grep'] },
+    });
+  });
+
+  it('says why it cannot suggest models for a machine this Console cannot reach', async () => {
+    const el = await render(
+      <ManagedAdvancedConfig
+        serverId="server-1"
+        providerId="claude"
+        host={{ kind: 'unavailable', reason: 'build-box is out of reach.' }}
+        onChange={vi.fn()}
+      />
+    );
+    const disclosure = await vi.waitFor(() => {
+      const found = [...el.querySelectorAll('button')].find((b) =>
+        b.textContent?.startsWith('Advanced configuration')
+      );
+      expect(found).toBeDefined();
+      return found!;
+    });
+    await act(async () => disclosure.click());
+    expect(el.textContent).toMatch(/build-box is out of reach\./);
+    expect(modelCatalogue).not.toHaveBeenCalled();
+  });
+
+  it('says so when the server’s settings cannot be read', async () => {
+    advancedConfigSchema.mockRejectedValue(new Error('The server is down for maintenance.'));
+    const el = await render(
+      <ManagedAdvancedConfig
+        serverId="server-1"
+        providerId="claude"
+        host={{ kind: 'host', sshHost: null, dir: '/work/pm' }}
+        onChange={vi.fn()}
+      />
+    );
+    await vi.waitFor(() =>
+      expect(el.querySelector('[role="alert"]')?.textContent).toMatch(/could not be read/)
     );
   });
 });

@@ -63,7 +63,8 @@ import { MachineProviderPicker } from './machine-provider-picker';
 import { machineDisabledReason } from './managed-run-location';
 import {
   CanManageAgentsField,
-  ManagedModelField,
+  ManagedAdvancedConfig,
+  type ManagedDefinitionSettings,
   ManagedRunLocationNotice,
 } from './managed-run-location-notice';
 import { useConfigureAgentForm, usePickMode } from './modes';
@@ -328,11 +329,13 @@ export const NewAgentForm = observer(function NewAgentForm({
       !!serverMachine?.providers.some(
         (entry) => entry.provider === pickState.providerId && entry.ready
       ));
-  const [managedModel, setManagedModel] = useState('');
   const [canManageAgents, setCanManageAgents] = useState(false);
-  useEffect(() => {
-    setManagedModel('');
-  }, [pickState.providerId, runHost]);
+  // The managed agent's model and advanced configuration, held in a ref for the
+  // same reason as the Console agent's attributes above.
+  const managedSettingsRef = useRef<ManagedDefinitionSettings>({ model: null, advancedConfig: {} });
+  const onManagedSettingsChange = useCallback((settings: ManagedDefinitionSettings) => {
+    managedSettingsRef.current = settings;
+  }, []);
 
   const trimmedRemoteDir = canonicalDir(remoteRepoDir);
   const dir = isCloudRun ? '' : isRemoteRun || isMachineRun ? trimmedRemoteDir : pickState.path;
@@ -546,8 +549,8 @@ export const NewAgentForm = observer(function NewAgentForm({
           ...identity,
           machineId: serverMachine.id,
           dir: trimmedRemoteDir || null,
-          model: managedModel.trim() || null,
-          advancedConfig: {},
+          model: managedSettingsRef.current.model,
+          advancedConfig: managedSettingsRef.current.advancedConfig,
         });
         if (created.kind !== 'created') {
           reportProvisionError(created);
@@ -954,19 +957,27 @@ export const NewAgentForm = observer(function NewAgentForm({
               />
             )}
 
-            {canConfigureAgent && !!pickState.providerId && managedRun && (
-              <ManagedModelField
+            {canConfigureAgent && !!pickState.providerId && managedRun && pickState.serverId && (
+              <ManagedAdvancedConfig
+                serverId={pickState.serverId}
                 providerId={pickState.providerId}
-                sshHost={
-                  isRemoteRun
-                    ? runHost
-                    : serverMachine?.local?.kind === 'ssh-host'
-                      ? serverMachine.local.sshHost
-                      : null
+                host={
+                  isMachineRun && !serverMachine?.local
+                    ? {
+                        kind: 'unavailable',
+                        reason: `${runLocationLabel} is not this computer or one of its SSH hosts, so Console cannot ask it for its models. You can enter a model alias or ID.`,
+                      }
+                    : {
+                        kind: 'host',
+                        sshHost: isRemoteRun
+                          ? runHost
+                          : serverMachine?.local?.kind === 'ssh-host'
+                            ? serverMachine.local.sshHost
+                            : null,
+                        dir,
+                      }
                 }
-                dir={isMachineRun && !serverMachine?.local ? '' : dir}
-                value={managedModel}
-                onChange={setManagedModel}
+                onChange={onManagedSettingsChange}
               />
             )}
 

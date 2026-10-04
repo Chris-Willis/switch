@@ -1,4 +1,4 @@
-import type { RepoAgentAttributes } from '@switch-console/core/agents/plugins';
+import type { RepoAgentAttributes, RepoAgentField } from '@switch-console/core/agents/plugins';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { rpc } from '@renderer/lib/ipc';
@@ -14,7 +14,7 @@ import {
   type FormState,
   type FormValue,
 } from '../agent-definition-fields';
-import { fieldCatalogueState } from '../agent-model-catalogue';
+import { fieldCatalogueState, type ModelCatalogueResult } from '../agent-model-catalogue';
 
 /**
  * Collapsed "Advanced configuration" section for the add-agent modal. Renders the
@@ -39,7 +39,6 @@ export function AgentAdvancedConfig({
   initial: RepoAgentAttributes;
   onChange: (attributes: RepoAgentAttributes) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const { data: catalogue } = useQuery({
     queryKey: ['agent-model-catalogue', providerId, sshHost ?? 'local', dir],
     queryFn: () => rpc.agents.modelCatalogue({ providerId: providerId!, sshHost, dir }),
@@ -84,6 +83,36 @@ export function AgentAdvancedConfig({
   };
 
   return (
+    <AdvancedConfigSection
+      providerLabel={providerLabel}
+      fields={fields}
+      form={state}
+      catalogue={executionCatalogue}
+      onFieldChange={setField}
+    />
+  );
+}
+
+/**
+ * The collapsed section itself, whatever supplies its fields: the provider's own
+ * definition fields for an agent this Console runs, the server's schema for a
+ * managed one.
+ */
+export function AdvancedConfigSection({
+  providerLabel,
+  fields,
+  form,
+  catalogue,
+  onFieldChange,
+}: {
+  providerLabel: string | null;
+  fields: RepoAgentField[];
+  form: FormState;
+  catalogue: ModelCatalogueResult | undefined;
+  onFieldChange: (key: string, value: FormValue) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
     <div>
       <DisclosureRow
         open={open}
@@ -97,28 +126,29 @@ export function AgentAdvancedConfig({
       />
       {open && (
         <div className="flex flex-col gap-4 pt-3">
-          {fields.map((field) => (
-            <Field key={field.key}>
-              <FieldLabel htmlFor={`agent-advanced-${field.key}`}>
-                {field.label}
-                {field.required || field.type === 'boolean' ? '' : ' (optional)'}
-              </FieldLabel>
-              <DefinitionFieldInput
-                suggestions={fieldCatalogueState(field, state, executionCatalogue).suggestions}
-                field={field}
-                value={state[field.key] ?? (field.type === 'boolean' ? false : '')}
-                onChange={(value) => setField(field.key, value)}
-              />
-              {fieldCatalogueState(field, state, executionCatalogue).note && (
-                <FieldDescription>
-                  {fieldCatalogueState(field, state, executionCatalogue).note}
-                </FieldDescription>
-              )}
-              {field.help && (
-                <FieldDescription className="text-foreground-muted">{field.help}</FieldDescription>
-              )}
-            </Field>
-          ))}
+          {fields.map((field) => {
+            const catalogueState = fieldCatalogueState(field, form, catalogue);
+            return (
+              <Field key={field.key}>
+                <FieldLabel htmlFor={`agent-advanced-${field.key}`}>
+                  {field.label}
+                  {field.required || field.type === 'boolean' ? '' : ' (optional)'}
+                </FieldLabel>
+                <DefinitionFieldInput
+                  suggestions={catalogueState.suggestions}
+                  field={field}
+                  value={form[field.key] ?? (field.type === 'boolean' ? false : '')}
+                  onChange={(value) => onFieldChange(field.key, value)}
+                />
+                {catalogueState.note && <FieldDescription>{catalogueState.note}</FieldDescription>}
+                {field.help && (
+                  <FieldDescription className="text-foreground-muted">
+                    {field.help}
+                  </FieldDescription>
+                )}
+              </Field>
+            );
+          })}
         </div>
       )}
     </div>

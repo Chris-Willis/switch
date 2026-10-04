@@ -31,6 +31,27 @@ export function useOwnedMachines(serverId: string) {
   });
 }
 
+/** The owner's machines on the server, with what each last reported. Null without agent management. */
+export function useManagedMachines(serverId: string) {
+  return useQuery({
+    queryKey: [MANAGED_AGENTS_KEY, serverId, 'machines'],
+    queryFn: () => rpc.managedAgents.machines(serverId),
+    refetchInterval: (query) => (query.state.data ? 5000 : false),
+    retry: false,
+  });
+}
+
+/** Each provider's advanced configuration fields, as the server checks a definition against them. */
+export function useAdvancedConfigSchema(serverId: string | null) {
+  return useQuery({
+    queryKey: [MANAGED_AGENTS_KEY, serverId, 'advanced-config-schema'],
+    queryFn: () => rpc.managedAgents.advancedConfigSchema(serverId!),
+    enabled: serverId !== null,
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+}
+
 /**
  * Without the agents the server manages. An agent moved to managed from here
  * keeps a row in Console, but the server is what runs it now, so it is shown

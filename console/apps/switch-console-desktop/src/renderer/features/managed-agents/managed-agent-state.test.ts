@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
-import { managedAgentState } from './managed-agent-state';
+import type { ManagedAgentView, OwnedMachine } from '@shared/core/managed-agents/managed-agents';
+import { machineProblem, machineTone, managedAgentState } from './managed-agent-state';
 
 const AGENT: ManagedAgentView = {
   serverId: 'server-1',
@@ -64,5 +64,49 @@ describe('managedAgentState', () => {
       managedAgentState({ ...AGENT, machine: { ...AGENT.machine!, state: 'revoked' } }).label
     ).toBe('Machine removed');
     expect(managedAgentState({ ...AGENT, machine: null }).label).toBe('No machine');
+  });
+});
+
+const LAPTOP: OwnedMachine = {
+  ...AGENT.machine!,
+  local: { kind: 'this-computer' },
+  providers: [{ provider: 'claude', ready: true, problem: null }],
+};
+
+describe('machineProblem', () => {
+  it('finds nothing wrong with an agent running on an answering machine', () => {
+    expect(machineProblem(AGENT, LAPTOP)).toBeNull();
+    expect(machineTone(AGENT, LAPTOP)).toBe('ok');
+  });
+
+  it('says the machine stopped answering', () => {
+    const offline = { ...AGENT, machine: { ...AGENT.machine!, state: 'unknown' as const } };
+    expect(machineProblem(offline, LAPTOP)).toBe(
+      'laptop stopped answering. The agent resumes when it reconnects.'
+    );
+    expect(machineTone(offline, LAPTOP)).toBe('problem');
+  });
+
+  it('gives the agent’s failure in its machine’s words', () => {
+    const failed = {
+      ...AGENT,
+      status: { process: 'failed', attached: false, reason: 'crash_loop', detail: 'Exited 1' },
+    };
+    expect(machineProblem(failed, LAPTOP)).toBe('Exited 1');
+  });
+
+  it('says the provider is not ready there', () => {
+    expect(
+      machineProblem(AGENT, {
+        ...LAPTOP,
+        providers: [{ provider: 'claude', ready: false, problem: 'not logged in' }],
+      })
+    ).toBe('Claude Code is not ready on laptop: not logged in.');
+  });
+
+  it('is quiet, not alarming, while the agent is stopped', () => {
+    const stopped = { ...AGENT, desiredState: 'stopped' as const, status: null };
+    expect(machineProblem(stopped, LAPTOP)).toBeNull();
+    expect(machineTone(stopped, LAPTOP)).toBe('idle');
   });
 });

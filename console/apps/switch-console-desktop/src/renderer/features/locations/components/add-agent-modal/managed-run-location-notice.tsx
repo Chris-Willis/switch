@@ -1,16 +1,27 @@
+import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
 import { useQuery } from '@tanstack/react-query';
 import { CircleAlert, Server } from 'lucide-react';
-import { useState } from 'react';
-import { describeFailure } from '@renderer/lib/errors/describe-failure';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  advancedConfigFromForm,
+  MODEL_FIELD,
+} from '@renderer/features/managed-agents/managed-agent-changes';
+import { useAdvancedConfigSchema } from '@renderer/features/managed-agents/use-managed-agents';
+import { describeFailure, failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
 import { Field, FieldDescription, FieldLabel } from '@renderer/lib/ui/field';
-import { Input } from '@renderer/lib/ui/input';
 import { Switch } from '@renderer/lib/ui/switch';
 import type { NewAgentMachine } from '@shared/core/agent-migration/agent-migration';
-import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import type { AdvancedConfigField } from '@shared/core/managed-agents/managed-agents';
+import { type AgentProviderId, getProvider } from '@shared/core/providers/agent-provider-registry';
+import { emptyForm, type FormState, type FormValue } from '../agent-definition-fields';
+import type { ModelCatalogueResult } from '../agent-model-catalogue';
+import { AdvancedConfigSection } from './agent-advanced-config';
 import { newAgentMachineNotice } from './managed-run-location';
+
+const NO_SCHEMA: AdvancedConfigField[] = [];
 
 /** Under the run location: whether the new agent runs managed there, and turning the machine on when it cannot yet. */
 export function ManagedRunLocationNotice({
@@ -77,51 +88,92 @@ export function ManagedRunLocationNotice({
   );
 }
 
+/** Where the model list for a new managed agent comes from, or why it cannot be read. */
+export type ManagedCatalogueHost =
+  | { kind: 'host'; sshHost: string | null; dir: string }
+  | { kind: 'unavailable'; reason: string };
+
+/** The model and advanced configuration a new managed agent is created with. */
+export type ManagedDefinitionSettings = {
+  model: string | null;
+  advancedConfig: Record<string, AdvancedConfigValue>;
+};
+
 /**
- * The one provider setting a managed agent carries besides its instructions.
- * Suggestions come from the machine's own provider CLI, as in the Console-run
- * form; anything typed is passed as it is.
+ * The same "Advanced configuration" the form shows for an agent this Console
+ * runs, with the fields the server checks a managed agent's definition against:
+ * the model first, then the provider's settings. Model suggestions come from
+ * the machine's own provider CLI when this Console can reach it.
  */
-export function ManagedModelField({
+export function ManagedAdvancedConfig({
+  serverId,
   providerId,
-  sshHost,
-  dir,
-  value,
+  host,
   onChange,
 }: {
+  serverId: string;
   providerId: AgentProviderId;
-  sshHost: string | null;
-  dir: string;
-  value: string;
-  onChange: (value: string) => void;
+  host: ManagedCatalogueHost;
+  onChange: (settings: ManagedDefinitionSettings) => void;
 }) {
+  const schemaQuery = useAdvancedConfigSchema(serverId);
+  const schema = schemaQuery.data?.[providerId] ?? NO_SCHEMA;
+  const fields = useMemo(() => [MODEL_FIELD, ...schema], [schema]);
+  const asked = host.kind === 'host' && host.dir.trim() !== '' ? host : null;
   const { data: catalogue } = useQuery({
-    queryKey: ['agent-model-catalogue', providerId, sshHost ?? 'local', dir],
-    queryFn: () => rpc.agents.modelCatalogue({ providerId, sshHost, dir }),
-    enabled: !!dir.trim(),
+    queryKey: ['agent-model-catalogue', providerId, asked?.sshHost ?? 'local', asked?.dir],
+    queryFn: () =>
+      rpc.agents.modelCatalogue({ providerId, sshHost: asked!.sshHost, dir: asked!.dir }),
+    enabled: asked !== null,
     staleTime: 60000,
   });
-  const listId = `managed-model-${providerId}`;
+  const hostCatalogue: ModelCatalogueResult | undefined =
+    host.kind === 'unavailable'
+      ? { kind: 'unavailable', reason: host.reason }
+      : asked === null
+        ? {
+            kind: 'unavailable',
+            reason:
+              'No directory is chosen yet, so there is nowhere to ask the machine for its models. You can enter a model alias or ID.',
+          }
+        : catalogue;
+
+  const [form, setForm] = useState<FormState>({});
+  useEffect(() => {
+    const initial = emptyForm(fields);
+    setForm(initial);
+    onChange({ model: null, advancedConfig: advancedConfigFromForm(schema, initial) });
+  }, [fields, schema, onChange]);
+
+  const setField = (key: string, value: FormValue) => {
+    setForm((prev) => {
+      const next = { ...prev, [key]: value };
+      onChange({
+        model: String(next[MODEL_FIELD.key] ?? '').trim() || null,
+        advancedConfig: advancedConfigFromForm(schema, next),
+      });
+      return next;
+    });
+  };
+
   return (
-    <Field>
-      <FieldLabel>Model</FieldLabel>
-      <Input
-        value={value}
-        list={listId}
-        placeholder="The provider’s default"
-        onChange={(e) => onChange(e.target.value)}
+    <div className="flex flex-col gap-2">
+      <AdvancedConfigSection
+        providerLabel={getProvider(providerId)?.name ?? providerId}
+        fields={fields}
+        form={form}
+        catalogue={hostCatalogue}
+        onFieldChange={setField}
       />
-      {catalogue?.kind === 'available' && (
-        <datalist id={listId}>
-          {catalogue.models.map((model) => (
-            <option key={model.id} value={model.id} />
-          ))}
-        </datalist>
+      {schemaQuery.error && (
+        <p role="alert" className="text-xs text-foreground-destructive">
+          {failureText(
+            schemaQuery.error,
+            'The server’s settings for this provider could not be read, so only the model can be set.'
+          )}
+        </p>
       )}
-      <FieldDescription>
-        Set its reasoning effort and other provider settings on the agent’s page once it is created.
-      </FieldDescription>
-    </Field>
+    </div>
   );
 }
 

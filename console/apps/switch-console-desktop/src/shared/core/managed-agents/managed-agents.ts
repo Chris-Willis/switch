@@ -1,3 +1,4 @@
+import type { RepoAgentField } from '@switch-console/core/agents/plugins';
 import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
 
 /**
@@ -73,3 +74,13 @@ export type ManagedAgentChanges = {
   /** Moves it to another of the owner's machines. */
   machineId?: string;
 };
+
+/**
+ * One field of a provider's advanced configuration, as the server's schema
+ * serves it: the shape of Console's own field descriptors, so the same form
+ * renders either.
+ */
+export type AdvancedConfigField = Pick<
+  RepoAgentField,
+  'key' | 'label' | 'type' | 'help' | 'placeholder' | 'options' | 'catalogue'
+>;
