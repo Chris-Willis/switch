@@ -39,25 +39,40 @@ const ok = (state: 'online' | 'unknown' | 'revoked' | null): EmbeddedControllerR
   agents: [],
 });
 const running: EmbeddedControllerPhase = { kind: 'running', since: '2026-01-01T00:00:00Z' };
+/** Well past the connecting grace for `running`. */
+const LATER = Date.parse('2026-01-01T01:00:00Z');
 
 describe('machineStatus', () => {
   it('says running only while the server sees the controller online', () => {
-    expect(machineStatus(overview(running, ok('online'))).label).toBe('Running');
-    expect(machineStatus(overview(running, ok('unknown')))).toMatchObject({
+    expect(machineStatus(overview(running, ok('online')), LATER).label).toBe('Running');
+    expect(machineStatus(overview(running, ok('unknown')), LATER)).toMatchObject({
       label: 'Disconnected',
       tone: 'warn',
     });
-    expect(machineStatus(overview(running, ok('revoked'))).label).toBe('Removed');
-    expect(machineStatus(overview(running, { kind: 'unavailable' })).label).toBe('Disconnected');
-    expect(machineStatus(overview(running, { kind: 'error', message: 'offline' }))).toMatchObject({
+    expect(machineStatus(overview(running, ok('revoked')), LATER).label).toBe('Removed');
+    expect(machineStatus(overview(running, { kind: 'unavailable' }), LATER).label).toBe(
+      'Disconnected'
+    );
+    expect(
+      machineStatus(overview(running, { kind: 'error', message: 'offline' }), LATER)
+    ).toMatchObject({
       label: 'Running',
       tone: 'warn',
     });
   });
 
+  it('says connecting, not disconnected, in the first minute after the controller starts', () => {
+    const justStarted = Date.parse(running.since) + 5_000;
+    expect(machineStatus(overview(running, ok('unknown')), justStarted)).toMatchObject({
+      label: 'Connecting…',
+      tone: 'busy',
+    });
+    expect(machineStatus(overview(running, ok('online')), justStarted).label).toBe('Running');
+  });
+
   it('names every other phase, with the reason where there is one', () => {
-    expect(machineStatus(overview({ kind: 'off' }, ok(null), false)).label).toBe('Off');
-    expect(machineStatus(overview({ kind: 'enrolling' }, null, false)).tone).toBe('busy');
+    expect(machineStatus(overview({ kind: 'off' }, ok(null), false), LATER).label).toBe('Off');
+    expect(machineStatus(overview({ kind: 'enrolling' }, null, false), LATER).tone).toBe('busy');
     expect(
       machineStatus(
         overview(
@@ -68,17 +83,20 @@ describe('machineStatus', () => {
             lastExit: 'exit code 1',
           },
           ok('unknown')
-        )
+        ),
+        LATER
       )
     ).toMatchObject({ label: 'Disconnected', detail: expect.stringContaining('exit code 1') });
-    expect(machineStatus(overview({ kind: 'removed', at: 'x' }, null, false))).toMatchObject({
-      label: 'Removed',
-      detail: expect.stringContaining('This computer was removed from Switch.'),
-    });
-    expect(machineStatus(overview({ kind: 'taken_over', at: 'x' }, null)).detail).toMatch(
+    expect(machineStatus(overview({ kind: 'removed', at: 'x' }, null, false), LATER)).toMatchObject(
+      {
+        label: 'Removed',
+        detail: expect.stringContaining('This computer was removed from Switch.'),
+      }
+    );
+    expect(machineStatus(overview({ kind: 'taken_over', at: 'x' }, null), LATER).detail).toMatch(
       /took over/
     );
-    expect(machineStatus(overview({ kind: 'error', message: 'boom' }, null))).toEqual({
+    expect(machineStatus(overview({ kind: 'error', message: 'boom' }, null), LATER)).toEqual({
       label: 'Error',
       tone: 'error',
       detail: 'boom',

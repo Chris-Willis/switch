@@ -23,7 +23,10 @@ function clock(iso: string): string {
   });
 }
 
-export function machineStatus(overview: EmbeddedControllerOverview): MachineStatus {
+/** How long after starting a controller that has not reached Switch reads as connecting, not disconnected. */
+export const CONNECTING_GRACE_MS = 60_000;
+
+export function machineStatus(overview: EmbeddedControllerOverview, nowMs: number): MachineStatus {
   const { phase, remote } = overview;
   switch (phase.kind) {
     case 'off':
@@ -74,6 +77,12 @@ export function machineStatus(overview: EmbeddedControllerOverview): MachineStat
           label: 'Removed',
           tone: 'error',
           detail: 'Switch has removed this computer; its controller is stopping its agents.',
+        };
+      if (nowMs - Date.parse(phase.since) < CONNECTING_GRACE_MS)
+        return {
+          label: 'Connecting…',
+          tone: 'busy',
+          detail: 'The controller has started and is connecting to Switch.',
         };
       return {
         label: 'Disconnected',

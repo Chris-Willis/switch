@@ -32,6 +32,7 @@ import {
 
 /** How often the card re-reads the server while it is on screen. */
 const REFRESH_MS = 10_000;
+const CONNECTING_REFRESH_MS = 1_000;
 
 const TONE: Record<MachineStatusTone, StatusTone> = {
   neutral: 'neutral',
@@ -67,7 +68,15 @@ export const ThisComputerMachineCard = observer(function ThisComputerMachineCard
   const overviewQuery = useQuery({
     queryKey: [...overviewKey(serverId), workspaceId],
     queryFn: () => rpc.embeddedController.getOverview({ serverId, workspaceId }),
-    refetchInterval: REFRESH_MS,
+    // Every second while the controller runs but Switch does not list it online yet.
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      const reaching =
+        data?.phase.kind === 'running' &&
+        data.remote?.kind === 'ok' &&
+        data.remote.controller?.state !== 'online';
+      return reaching ? CONNECTING_REFRESH_MS : REFRESH_MS;
+    },
   });
 
   useEffect(
@@ -118,7 +127,7 @@ export const ThisComputerMachineCard = observer(function ThisComputerMachineCard
   }
   if (!signedIn && !overview.enrollment && overview.phase.kind === 'off') return null;
 
-  const status = machineStatus(overview);
+  const status = machineStatus(overview, Date.now());
   const blocker = toggleBlocker(overview);
   const checked = toggleChecked(overview);
   const failure = enable.error ?? disable.error ?? startAgain.error ?? dismiss.error;
