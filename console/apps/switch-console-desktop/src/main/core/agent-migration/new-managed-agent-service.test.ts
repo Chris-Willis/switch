@@ -8,7 +8,7 @@ import {
 } from './new-managed-agent-service';
 
 const PARAMS: AddManagedAgentParams = {
-  sshHost: null,
+  machineId: 'controller-1',
   dir: '/work/pm',
   name: 'pm-agent',
   providerId: 'claude',
@@ -104,27 +104,19 @@ describe('NewManagedAgentService.add', () => {
     ]);
   });
 
-  it('creates nothing when the machine cannot take the agent', async () => {
-    h.set({
-      lookup: {
-        ...READY,
-        target: null,
-        blocker: 'This computer’s controller is not running (stopped).',
-      },
+  it('places it on the machine the form chose, whatever it is', async () => {
+    h.set({ lookup: { ...READY, target: null, blocker: 'Not this computer.' } });
+    const result = await new NewManagedAgentService(h.deps).add({
+      ...PARAMS,
+      machineId: 'cloud-vm-7',
     });
-    const result = await new NewManagedAgentService(h.deps).add(PARAMS);
-    expect(result).toEqual({
-      kind: 'machine-unavailable',
-      message: 'This computer’s controller is not running (stopped).',
-    });
-    expect(h.created).toEqual([]);
+    expect(result.kind).toBe('created');
+    expect(h.created).toMatchObject([{ controller_id: 'cloud-vm-7' }]);
   });
 
-  it('creates nothing on a machine enrolled for another workspace', async () => {
-    h.set({ lookup: { ...READY, target: { ...READY.target!, workspaceId: 'workspace-2' } } });
-    const result = await new NewManagedAgentService(h.deps).add(PARAMS);
-    expect(result.kind).toBe('machine-unavailable');
-    expect(h.created).toEqual([]);
+  it('asks the machine for a fresh workspace when no directory is given', async () => {
+    await new NewManagedAgentService(h.deps).add({ ...PARAMS, dir: null });
+    expect(h.created).toMatchObject([{ definition: { directory: null } }]);
   });
 
   it('says a name Switch already has is taken', async () => {
@@ -134,7 +126,7 @@ describe('NewManagedAgentService.add', () => {
     });
   });
 
-  it('shows a refusal in Switch’s words', async () => {
+  it('shows a refusal of the agent or its placement in Switch’s words', async () => {
     h.set({
       createOutcome: { kind: 'refused', message: 'Claude Code is not logged in on laptop.' },
     });

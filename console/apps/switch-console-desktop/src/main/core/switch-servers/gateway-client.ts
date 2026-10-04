@@ -2611,6 +2611,16 @@ export type ManagementController = {
   state: 'online' | 'unknown' | 'revoked';
   lastSeenAt: string | null;
   revokedAt: string | null;
+  /** Each provider as the controller last reported it; empty before it has reported. */
+  providers: ControllerProviderReport[];
+};
+
+/** A provider as a controller reports it: installed, and whether its login works. */
+export type ControllerProviderReport = {
+  /** The Switch definition provider id (`claude`, `codex`, …). */
+  provider: string;
+  installed: boolean;
+  auth: 'ok' | 'expired' | 'missing' | 'unknown';
 };
 
 /** A managed agent as the owner's list shows it. */
@@ -2647,6 +2657,7 @@ type ManagementControllerJson = {
   state: 'online' | 'unknown' | 'revoked';
   last_seen_at: string | null;
   revoked_at: string | null;
+  status?: unknown;
 };
 
 type ManagedAgentJson = {
@@ -2719,7 +2730,33 @@ export async function fetchManagementControllers(
     state: json.state,
     lastSeenAt: json.last_seen_at,
     revokedAt: json.revoked_at,
+    providers: providerReports(json.status),
   }));
+}
+
+const PROVIDER_AUTH_STATES: readonly ControllerProviderReport['auth'][] = [
+  'ok',
+  'expired',
+  'missing',
+  'unknown',
+];
+
+/**
+ * The providers in a controller's last status report. An entry that does not
+ * say which provider it is, or whether it is installed, is left out; a login
+ * state this build does not know reads as `unknown`, never as working.
+ */
+function providerReports(status: unknown): ControllerProviderReport[] {
+  if (!status || typeof status !== 'object') return [];
+  const providers = (status as { providers?: unknown }).providers;
+  if (!Array.isArray(providers)) return [];
+  return providers.flatMap((entry: unknown): ControllerProviderReport[] => {
+    if (!entry || typeof entry !== 'object') return [];
+    const { provider, installed, auth } = entry as Record<string, unknown>;
+    if (typeof provider !== 'string' || typeof installed !== 'boolean') return [];
+    const known = PROVIDER_AUTH_STATES.find((state) => state === auth);
+    return [{ provider, installed, auth: known ?? 'unknown' }];
+  });
 }
 
 function stringRecord(value: unknown): Record<string, string> {

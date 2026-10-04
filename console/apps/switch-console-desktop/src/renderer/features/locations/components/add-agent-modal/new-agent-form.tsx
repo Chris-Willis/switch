@@ -12,6 +12,7 @@ import {
   HostReadinessNotice,
   useRemoteHostReadiness,
 } from '@renderer/features/remote-hosts/host-readiness-notice';
+import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-policy-editor';
 import { ManagedGitHubStep } from '@renderer/features/switch-servers/managed-github-step';
 import { ManagedProviderConnectionStep } from '@renderer/features/switch-servers/managed-provider-connection-step';
@@ -19,7 +20,7 @@ import { switchServersStore } from '@renderer/features/switch-servers/switch-ser
 import { isSwitchCloudServer } from '@renderer/features/switch-servers/use-cloud-launches';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
-import { describeFailure } from '@renderer/lib/errors/describe-failure';
+import { describeFailure, failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
@@ -33,7 +34,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
-import { Field, FieldLabel } from '@renderer/lib/ui/field';
+import { Field, FieldDescription, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { ModalLayout } from '@renderer/lib/ui/modal-layout';
 import {
@@ -58,6 +59,7 @@ import { CloudAgentRepository } from './cloud-agent-repository';
 import { AgentIdentityFields, AgentSettingsSection } from './configure-agent-panel';
 import { LaunchProfileConfig } from './launch-profile-config';
 import { LocalDirectorySelector } from './local-directory-selector';
+import { MachineProviderPicker } from './machine-provider-picker';
 import { machineDisabledReason } from './managed-run-location';
 import {
   CanManageAgentsField,
@@ -65,6 +67,14 @@ import {
   ManagedRunLocationNotice,
 } from './managed-run-location-notice';
 import { useConfigureAgentForm, usePickMode } from './modes';
+import {
+  machineFor,
+  machineIdOf,
+  machineRunLocation,
+  machineRunLocations,
+  sshHostIsMachine,
+  thisComputerIsMachine,
+} from './server-run-locations';
 
 export type NewAgentFormProps = {
   onClose: () => void;
@@ -127,14 +137,34 @@ export const NewAgentForm = observer(function NewAgentForm({
   );
   const isManagedCloud = !!selectedServer && isSwitchCloudServer(selectedServer);
   const isCloudRun = isManagedCloud || runHost === 'cloud';
-  const isRemoteRun = runHost !== LOCAL_RUN_LOCATION && !isCloudRun;
+
+  // On a server with agent management the server lists where agents can run:
+  // every machine the user owns there. Null when it does not run management.
+  const askForMachines =
+    !isManagedCloud && !!selectedServerId && !!workspacesStore.idOnServerInScope(selectedServerId);
+  const machinesQuery = useQuery({
+    queryKey: [MANAGED_AGENTS_KEY, selectedServerId, 'machines'],
+    queryFn: () => rpc.managedAgents.machines(selectedServerId!),
+    enabled: askForMachines,
+    refetchInterval: (query) => (query.state.data ? 5000 : false),
+  });
+  const serverMachines = askForMachines ? (machinesQuery.data ?? null) : null;
+  const management = serverMachines !== null;
+  const machineId = isCloudRun ? null : machineIdOf(runHost);
+  const isMachineRun = machineId !== null;
+  const serverMachine = machineId
+    ? (serverMachines?.find((candidate) => candidate.id === machineId) ?? null)
+    : null;
+  const isRemoteRun = runHost !== LOCAL_RUN_LOCATION && !isCloudRun && !isMachineRun;
   // The trigger has to say the host's name, not the value behind it: the value
   // for this machine is the sentinel "local", which is not what it is called.
   const runLocationLabel = isCloudRun
     ? 'Switch cloud'
-    : isRemoteRun
-      ? (onboardedHosts.find((h) => h.sshHost === runHost)?.name ?? runHost)
-      : 'This computer';
+    : isMachineRun
+      ? (serverMachine?.name ?? 'Machine')
+      : isRemoteRun
+        ? (onboardedHosts.find((h) => h.sshHost === runHost)?.name ?? runHost)
+        : 'This computer';
 
   // An agent always binds to the active (scoped) server — the user does not pick
   // one here. Ensure the server list + active id are loaded when the modal opens
@@ -189,11 +219,29 @@ export const NewAgentForm = observer(function NewAgentForm({
     if (
       runHost !== LOCAL_RUN_LOCATION &&
       runHost !== 'cloud' &&
+      machineIdOf(runHost) === null &&
       !allowedHosts.some((h) => h.sshHost === runHost)
     ) {
       setRunHost(LOCAL_RUN_LOCATION);
     }
   }, [allowedHosts, runHost]);
+
+  // This computer or an SSH host that is a machine on the server is picked as
+  // that machine; a machine the server no longer lists falls back to this computer.
+  useEffect(() => {
+    if (runHost === 'cloud') return;
+    const id = machineIdOf(runHost);
+    if (!serverMachines) {
+      if (id !== null) setRunHost(LOCAL_RUN_LOCATION);
+      return;
+    }
+    if (id !== null) {
+      if (!serverMachines.some((candidate) => candidate.id === id)) setRunHost(LOCAL_RUN_LOCATION);
+      return;
+    }
+    const enrolled = machineFor(runHost, serverMachines);
+    if (enrolled) setRunHost(machineRunLocation(enrolled.id));
+  }, [serverMachines, runHost]);
 
   // Everything chosen below the run location belongs to the machine it was
   // chosen on, so changing machines clears it.
@@ -215,9 +263,11 @@ export const NewAgentForm = observer(function NewAgentForm({
   }, [runHost, isCloudRun, setProviderId]);
 
   const { suggestAutoApprove } = form;
+  const runsElsewhere =
+    isRemoteRun || isCloudRun || (isMachineRun && serverMachine?.local?.kind !== 'this-computer');
   useEffect(() => {
-    suggestAutoApprove(isRemoteRun || isCloudRun);
-  }, [isRemoteRun, isCloudRun, suggestAutoApprove]);
+    suggestAutoApprove(runsElsewhere);
+  }, [runsElsewhere, suggestAutoApprove]);
 
   // Advanced definition attributes (model, effort, tools, system prompt, …) the
   // user set in the collapsed Advanced section. Held in a ref (not state) so the
@@ -247,20 +297,37 @@ export const NewAgentForm = observer(function NewAgentForm({
         workspaceId: workspaceId!,
         sshHost: isRemoteRun ? runHost : null,
       }),
-    enabled: !isCloudRun && !!pickState.serverId && !!workspaceId,
+    enabled: !isCloudRun && !isMachineRun && !!pickState.serverId && !!workspaceId,
     // While the machine cannot take one yet, so turning it on elsewhere shows here.
     refetchInterval: (query) =>
       query.state.data?.management && query.state.data.blocker ? 3000 : false,
   });
-  const machine = isCloudRun ? undefined : machineQuery.data;
-  const managedRun = machine?.management === true;
+  const machine = isCloudRun || isMachineRun ? undefined : machineQuery.data;
+  const managedRun = isMachineRun || machine?.management === true;
   const machineReason = isCloudRun
     ? null
-    : machineDisabledReason({
-        checking: !!workspaceId && machineQuery.isPending,
-        error: machineQuery.error,
-        machine,
-      });
+    : askForMachines && machinesQuery.isPending
+      ? 'Checking whether this server runs managed agents…'
+      : askForMachines && machinesQuery.error
+        ? failureText(machinesQuery.error, 'Your machines on this server could not be listed.')
+        : isMachineRun
+          ? serverMachine === null
+            ? 'Choose a machine.'
+            : serverMachine.state !== 'online'
+              ? `${serverMachine.name} is offline. Start its controller, or choose another machine.`
+              : null
+          : (machineDisabledReason({
+              checking: !!workspaceId && machineQuery.isPending,
+              error: machineQuery.error,
+              machine,
+            }) ?? (managedRun ? `${runLocationLabel} is not a machine on this server yet.` : null));
+  const { value: defaultAgent } = useAppSettingsKey('defaultAgent');
+  const machineProviderReady =
+    !isMachineRun ||
+    (!!pickState.providerId &&
+      !!serverMachine?.providers.some(
+        (entry) => entry.provider === pickState.providerId && entry.ready
+      ));
   const [managedModel, setManagedModel] = useState('');
   const [canManageAgents, setCanManageAgents] = useState(false);
   useEffect(() => {
@@ -268,7 +335,7 @@ export const NewAgentForm = observer(function NewAgentForm({
   }, [pickState.providerId, runHost]);
 
   const trimmedRemoteDir = canonicalDir(remoteRepoDir);
-  const dir = isCloudRun ? '' : isRemoteRun ? trimmedRemoteDir : pickState.path;
+  const dir = isCloudRun ? '' : isRemoteRun || isMachineRun ? trimmedRemoteDir : pickState.path;
 
   // Never create an agent on a host we know we cannot reach — it would be born
   // into the failing state this ticket exists to surface (CHOO-1676).
@@ -292,7 +359,10 @@ export const NewAgentForm = observer(function NewAgentForm({
 
   // A relative remote dir would resolve against whatever directory the SSH
   // session starts in. Caught here so it greys the button out with a reason.
-  const remoteDirIsAbsolute = !isRemoteRun || isAbsoluteRemoteDir(trimmedRemoteDir);
+  // On a server machine the directory may be left empty: the machine makes a fresh workspace.
+  const remoteDirIsAbsolute = isMachineRun
+    ? trimmedRemoteDir === '' || isAbsoluteRemoteDir(trimmedRemoteDir)
+    : !isRemoteRun || isAbsoluteRemoteDir(trimmedRemoteDir);
 
   const canSubmit =
     form.isValid &&
@@ -300,8 +370,9 @@ export const NewAgentForm = observer(function NewAgentForm({
     !policyHasDeadRule(form.addressingPolicy) &&
     !!pickState.serverId &&
     !!pickState.providerId &&
-    (isCloudRun ? cloudRepository !== null : dir.trim().length > 0) &&
+    (isCloudRun ? cloudRepository !== null : isMachineRun || dir.trim().length > 0) &&
     remoteDirIsAbsolute &&
+    machineProviderReady &&
     runHostReachable &&
     runHostReady &&
     machineReason === null &&
@@ -335,15 +406,17 @@ export const NewAgentForm = observer(function NewAgentForm({
                           ? machineReason
                           : !pickState.providerId
                             ? 'Choose an agent type.'
-                            : !isCloudRun && dir.trim().length === 0
-                              ? isRemoteRun
-                                ? 'Enter the agent’s working directory on the host.'
-                                : 'Choose the agent’s working directory.'
-                              : !remoteDirIsAbsolute
-                                ? `Give the full path on ${runLocationLabel}, starting with “/”.`
-                                : policyHasDeadRule(form.addressingPolicy)
-                                  ? 'One addressing rule can never match — fix it under Settings.'
-                                  : null;
+                            : !machineProviderReady
+                              ? `That provider is not installed and logged in on ${runLocationLabel}.`
+                              : !isCloudRun && !isMachineRun && dir.trim().length === 0
+                                ? isRemoteRun
+                                  ? 'Enter the agent’s working directory on the host.'
+                                  : 'Choose the agent’s working directory.'
+                                : !remoteDirIsAbsolute
+                                  ? `Give the full path on ${runLocationLabel}, starting with “/”.`
+                                  : policyHasDeadRule(form.addressingPolicy)
+                                    ? 'One addressing rule can never match — fix it under Settings.'
+                                    : null;
 
   /** `agentName` is what picks the agent out of the location — a location can
    * hold several, so navigating on `locationId` alone opens the directory
@@ -456,9 +529,7 @@ export const NewAgentForm = observer(function NewAgentForm({
         });
         return;
       }
-      const common = {
-        sshHost: isRemoteRun ? runHost : null,
-        dir: isRemoteRun ? trimmedRemoteDir : pickState.path,
+      const identity = {
         name: form.agentName,
         providerId: pickState.providerId,
         serverId: pickState.serverId,
@@ -470,21 +541,13 @@ export const NewAgentForm = observer(function NewAgentForm({
         entryPoint,
       };
       if (managedRun) {
+        if (!serverMachine) throw new Error('No machine is chosen for the managed agent.');
         const created = await rpc.agentMigration.addManagedAgent({
-          ...common,
+          ...identity,
+          machineId: serverMachine.id,
+          dir: trimmedRemoteDir || null,
           model: managedModel.trim() || null,
         });
-        if (created.kind === 'machine-unavailable') {
-          toast({
-            title: `${runLocationLabel} can’t take the agent now. Nothing was created.`,
-            description: created.message,
-            variant: 'destructive',
-          });
-          void machineQuery.refetch();
-          setCloseGuard(false);
-          setSubmitState('idle');
-          return;
-        }
         if (created.kind !== 'created') {
           reportProvisionError(created);
           setCloseGuard(false);
@@ -518,7 +581,9 @@ export const NewAgentForm = observer(function NewAgentForm({
         return;
       }
       const result = await getLocationManagerStore().addAgentAndOpen({
-        ...common,
+        ...identity,
+        sshHost: isRemoteRun ? runHost : null,
+        dir: isRemoteRun ? trimmedRemoteDir : pickState.path,
         definitionAttributes: advancedAttributesRef.current,
         providerConfig: launchProfileConfigRef.current,
       });
@@ -701,6 +766,12 @@ export const NewAgentForm = observer(function NewAgentForm({
                   <SelectValue>
                     {isCloudRun ? (
                       <Cloud className="size-4 text-foreground-muted" />
+                    ) : isMachineRun ? (
+                      serverMachine?.local?.kind === 'this-computer' ? (
+                        <Monitor className="size-4 text-foreground-muted" />
+                      ) : (
+                        <Server className="size-4 text-foreground-muted" />
+                      )
                     ) : isRemoteRun ? (
                       <Server className="size-4 text-foreground-muted" />
                     ) : (
@@ -710,13 +781,30 @@ export const NewAgentForm = observer(function NewAgentForm({
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  {!isManagedCloud && (
-                    <SelectItem value={LOCAL_RUN_LOCATION}>
-                      <Monitor className="size-4 text-foreground-muted" />
-                      <span className="flex-1">This computer</span>
-                      <span className="text-xs text-foreground-muted">local</span>
-                    </SelectItem>
-                  )}
+                  {serverMachines &&
+                    machineRunLocations(serverMachines).map((option) => (
+                      <SelectItem
+                        key={option.value}
+                        value={option.value}
+                        disabled={option.disabled}
+                      >
+                        {option.icon === 'monitor' ? (
+                          <Monitor className="size-4 text-foreground-muted" />
+                        ) : (
+                          <Server className="size-4 text-foreground-muted" />
+                        )}
+                        <span className="flex-1 truncate">{option.label}</span>
+                        <span className="text-xs text-foreground-muted">{option.tag}</span>
+                      </SelectItem>
+                    ))}
+                  {!isManagedCloud &&
+                    !(serverMachines && thisComputerIsMachine(serverMachines)) && (
+                      <SelectItem value={LOCAL_RUN_LOCATION}>
+                        <Monitor className="size-4 text-foreground-muted" />
+                        <span className="flex-1">This computer</span>
+                        <span className="text-xs text-foreground-muted">local</span>
+                      </SelectItem>
+                    )}
                   {cloudAvailable && (
                     <SelectItem value="cloud">
                       <Cloud className="size-4 text-foreground-muted" />
@@ -725,16 +813,21 @@ export const NewAgentForm = observer(function NewAgentForm({
                     </SelectItem>
                   )}
                   {!isManagedCloud &&
-                    allowedHosts.map((host) => (
-                      <SelectItem key={host.sshHost} value={host.sshHost}>
-                        <Server className="size-4 text-foreground-muted" />
-                        <span className="flex-1 truncate">{host.name}</span>
-                        <span className="text-xs text-foreground-muted">ssh</span>
-                      </SelectItem>
-                    ))}
+                    allowedHosts
+                      .filter(
+                        (host) =>
+                          !(serverMachines && sshHostIsMachine(serverMachines, host.sshHost))
+                      )
+                      .map((host) => (
+                        <SelectItem key={host.sshHost} value={host.sshHost}>
+                          <Server className="size-4 text-foreground-muted" />
+                          <span className="flex-1 truncate">{host.name}</span>
+                          <span className="text-xs text-foreground-muted">ssh</span>
+                        </SelectItem>
+                      ))}
                 </SelectContent>
               </Select>
-              {!isCloudRun && runLocationConstrained && (
+              {!isCloudRun && !management && runLocationConstrained && (
                 <p className="text-xs text-foreground-muted">
                   {targetServer?.managementKind === 'remote'
                     ? `This server runs on ${targetServer.sshHost}, so its agents run on this computer or on ${targetServer.sshHost}.`
@@ -748,10 +841,23 @@ export const NewAgentForm = observer(function NewAgentForm({
                   sshHost={isRemoteRun ? runHost : null}
                   serverId={pickState.serverId}
                   workspaceId={workspaceId}
-                  onEnabled={() => void machineQuery.refetch()}
+                  onEnabled={() => {
+                    void machineQuery.refetch();
+                    void machinesQuery.refetch();
+                  }}
                 />
               )}
-              {!isCloudRun && machineQuery.error && (
+              {isMachineRun && serverMachine && (
+                <p className="flex items-start gap-1.5 text-xs text-foreground-muted">
+                  <Server className="mt-0.5 size-3.5 shrink-0" />
+                  <span>
+                    {serverMachine.state === 'online'
+                      ? `Runs as a managed agent on ${serverMachine.name}.`
+                      : machineReason}
+                  </span>
+                </p>
+              )}
+              {!isCloudRun && (machineQuery.error || (askForMachines && machinesQuery.error)) && (
                 <p className="text-xs text-destructive">{machineReason}</p>
               )}
               {isRemoteRun && <HostReachabilityNotice sshHost={runHost} />}
@@ -776,7 +882,19 @@ export const NewAgentForm = observer(function NewAgentForm({
             {canChooseAgentType && !isCloudRun && (
               <Field>
                 <FieldLabel>Directory</FieldLabel>
-                {isRemoteRun ? (
+                {isMachineRun ? (
+                  <>
+                    <Input
+                      value={remoteRepoDir}
+                      placeholder="A fresh workspace"
+                      onChange={(e) => setRemoteRepoDir(e.target.value)}
+                    />
+                    <FieldDescription>
+                      A full path on {runLocationLabel}. Leave it empty and the machine makes a
+                      fresh workspace.
+                    </FieldDescription>
+                  </>
+                ) : isRemoteRun ? (
                   // No file picker for a host: the directory is on the other end of
                   // an SSH connection, so it is typed rather than browsed.
                   <Input
@@ -795,7 +913,16 @@ export const NewAgentForm = observer(function NewAgentForm({
               </Field>
             )}
 
-            {canChooseAgentType && !isCloudRun && (
+            {isMachineRun && serverMachine && (
+              <MachineProviderPicker
+                machine={serverMachine}
+                value={pickState.providerId}
+                onChange={pickState.setProviderId}
+                defaultAgent={defaultAgent}
+              />
+            )}
+
+            {canChooseAgentType && !isCloudRun && !isMachineRun && (
               <AgentTypePicker
                 value={pickState.providerId}
                 onChange={pickState.setProviderId}
@@ -807,7 +934,7 @@ export const NewAgentForm = observer(function NewAgentForm({
             {/* No `dir`: signing in is a property of the machine, not of the folder
                 an agent will run in — which is what the provider tiles above
                 already assume. */}
-            {canChooseAgentType && !isCloudRun && pickState.providerId && (
+            {canChooseAgentType && !isCloudRun && !isMachineRun && pickState.providerId && (
               <ProviderConnectionStatus
                 providerId={pickState.providerId}
                 sshHost={isRemoteRun ? runHost : null}
@@ -829,8 +956,14 @@ export const NewAgentForm = observer(function NewAgentForm({
             {canConfigureAgent && !!pickState.providerId && managedRun && (
               <ManagedModelField
                 providerId={pickState.providerId}
-                sshHost={isRemoteRun ? runHost : null}
-                dir={dir}
+                sshHost={
+                  isRemoteRun
+                    ? runHost
+                    : serverMachine?.local?.kind === 'ssh-host'
+                      ? serverMachine.local.sshHost
+                      : null
+                }
+                dir={isMachineRun && !serverMachine?.local ? '' : dir}
                 value={managedModel}
                 onChange={setManagedModel}
               />

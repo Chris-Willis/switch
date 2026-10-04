@@ -7,10 +7,10 @@ import { buildManagedDefinition, type ManagedDefinition } from './managed-defini
 
 /** What the create form asks for when the agent runs as a managed agent on one of the user's machines. */
 export type AddManagedAgentParams = {
-  /** Where the agent runs: an `~/.ssh/config` Host alias, or null for this computer. */
-  sshHost: string | null;
-  /** The working directory, absolute on the agent's machine. */
-  dir: string;
+  /** The machine it runs on: the id of one of the owner's controllers on the server. */
+  machineId: string;
+  /** The working directory, absolute on the machine; null for a fresh workspace the machine chooses. */
+  dir: string | null;
   name: string;
   providerId: AgentProviderId;
   serverId: string;
@@ -28,8 +28,6 @@ export type AddManagedAgentParams = {
 export type AddManagedAgentResult =
   | { kind: 'created'; serverId: string; workspaceId: string; switchAgentId: string }
   | { kind: 'name-conflict' }
-  /** The machine cannot take a managed agent now. Nothing was created. */
-  | { kind: 'machine-unavailable'; message: string }
   | { kind: 'error'; message: string };
 
 export type ManagedCreateOutcome =
@@ -64,8 +62,8 @@ function message(error: unknown): string {
 }
 
 /**
- * Creates a new agent as a managed agent on one of the user's machines (this
- * computer or an SSH host), the way the gateway and the `create_agent`
+ * Creates a new agent as a managed agent on one of the user's machines on the
+ * server (this computer, an SSH host, or any other), the way the gateway and the `create_agent`
  * operation do: Switch registers it and places it on the machine's controller,
  * which runs it. The server holds all of it; Console keeps no copy, and lists
  * it from the server like any other managed agent.
@@ -84,24 +82,13 @@ export class NewManagedAgentService {
     return { management: true, target: lookup.display, blocker, canEnable: lookup.canEnable };
   }
 
+  /**
+   * Creates it on the machine the form chose. Switch checks the placement (the
+   * machine is the owner's, in this workspace, and can run the provider) and
+   * refuses it in its own words.
+   */
   async add(input: AddManagedAgentParams): Promise<AddManagedAgentResult> {
     const workspaceId = await this.deps.workspaceFor(input.serverId);
-    const lookup = await this.deps.machine({
-      serverId: input.serverId,
-      workspaceId,
-      sshHost: input.sshHost,
-    });
-    if (!lookup.target)
-      return {
-        kind: 'machine-unavailable',
-        message: lookup.blocker ?? 'There is no machine to place the agent on.',
-      };
-    if (lookup.target.workspaceId !== workspaceId)
-      return {
-        kind: 'machine-unavailable',
-        message:
-          'The machine runs managed agents for another workspace on this server; an agent can only be placed on a machine of its own workspace.',
-      };
 
     let definition: ManagedDefinition;
     try {
@@ -125,7 +112,7 @@ export class NewManagedAgentService {
       description: input.description,
       display_name: input.displayName,
       icon_url: input.iconUrl,
-      controller_id: lookup.target.controllerId,
+      controller_id: input.machineId,
       desired_state: 'running',
       definition,
     });
@@ -133,7 +120,7 @@ export class NewManagedAgentService {
     if (created.kind === 'refused') return { kind: 'error', message: created.message };
     this.deps.log.info('Created a managed agent', {
       switchAgentId: created.switchAgentId,
-      controllerId: lookup.target.controllerId,
+      controllerId: input.machineId,
     });
     return {
       kind: 'created',

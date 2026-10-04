@@ -1,3 +1,5 @@
+import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
+import { hostControllerService } from '@main/core/host-controllers/host-controllers';
 import {
   AgentManagementUnavailableError,
   deleteAgent,
@@ -14,9 +16,10 @@ import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-stor
 import type {
   ManagedAgentChanges,
   ManagedAgentView,
-  ManagedMachine,
+  OwnedMachine,
 } from '@shared/core/managed-agents/managed-agents';
 import { createRPCController } from '@shared/lib/ipc/rpc';
+import { ownedMachines } from './owned-machines';
 
 /**
  * The signed-in user's managed agents on a server, as the server holds them:
@@ -69,13 +72,29 @@ export const managedAgentsController = createRPCController({
     });
   },
 
-  /** The owner's machines an agent can be placed on. */
-  machines: (serverId: string): Promise<ManagedMachine[]> =>
-    withReachableServerWorkspaceSession(serverId, async (server) =>
-      (await fetchManagementControllers(server))
-        .filter((controller) => controller.state !== 'revoked')
-        .map(({ id, name, kind, state }) => ({ id, name, kind, state }))
-    ),
+  /**
+   * The owner's machines an agent can be placed on, with the providers each
+   * last reported. Null when the server does not run agent management.
+   */
+  machines: async (serverId: string): Promise<OwnedMachine[] | null> => {
+    const [thisComputer, hosts] = await Promise.all([
+      embeddedControllerService.enrolledControllerId(serverId),
+      hostControllerService.recordsOn(serverId),
+    ]);
+    return withReachableServerWorkspaceSession(serverId, async (server) => {
+      let controllers;
+      try {
+        controllers = await fetchManagementControllers(server);
+      } catch (error) {
+        if (error instanceof AgentManagementUnavailableError) return null;
+        throw error;
+      }
+      return ownedMachines(controllers, {
+        thisComputer,
+        sshHosts: hosts.map(({ controllerId, sshHost }) => ({ controllerId, sshHost })),
+      });
+    });
+  },
 
   /** Changes its settings on the server; Switch refuses a change its machine cannot run, in its own words. */
   update: (params: {

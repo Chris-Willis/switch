@@ -175,6 +175,11 @@ export class HostControllerService {
     return this.deps.records.get(sshHost, serverId);
   }
 
+  /** The SSH hosts enrolled as machines for a server. */
+  async recordsOn(serverId: string): Promise<HostControllerRecord[]> {
+    return (await this.deps.records.all()).filter((record) => record.serverId === serverId);
+  }
+
   /** Whether the controller process runs on the host now. */
   async process(record: HostControllerRecord): Promise<HostControllerProcess> {
     let shell: HostShell;

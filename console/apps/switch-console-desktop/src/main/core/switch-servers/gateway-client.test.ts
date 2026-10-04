@@ -1711,6 +1711,58 @@ describe('agent management calls', () => {
     expect(JSON.parse(String(init.body))).toEqual({ name: 'laptop', description: null });
   });
 
+  it("reads each machine's providers from its last status report, and invents none", async () => {
+    const controller = {
+      name: 'box',
+      description: null,
+      kind: 'daemon',
+      state: 'online',
+      last_seen_at: null,
+      revoked_at: null,
+    };
+    fetchMock.mockImplementation(async () =>
+      respond(200, [
+        {
+          ...controller,
+          id: 'reported',
+          status: {
+            providers: [
+              {
+                provider: 'claude',
+                installed: true,
+                version: '2.1.0',
+                auth: 'ok',
+                auth_source: 'local',
+                checked_at: '2026-01-01T00:00:00Z',
+              },
+              { provider: 'codex', installed: true, auth: 'something-new' },
+              { provider: 'opencode', installed: false, auth: 'unknown' },
+              { installed: true, auth: 'ok' },
+              'garbage',
+            ],
+          },
+        },
+        { ...controller, id: 'silent', status: null },
+        { ...controller, id: 'odd', status: { providers: 'none' } },
+        { ...controller, id: 'old' },
+      ])
+    );
+    const machines = await fetchManagementControllers(SERVER);
+    expect(machines.map((machine) => [machine.id, machine.providers])).toEqual([
+      [
+        'reported',
+        [
+          { provider: 'claude', installed: true, auth: 'ok' },
+          { provider: 'codex', installed: true, auth: 'unknown' },
+          { provider: 'opencode', installed: false, auth: 'unknown' },
+        ],
+      ],
+      ['silent', []],
+      ['odd', []],
+      ['old', []],
+    ]);
+  });
+
   it("reads an agent's 'can manage agents', and whether management runs at all", async () => {
     // The agent's detail, then the management probe.
     fetchMock

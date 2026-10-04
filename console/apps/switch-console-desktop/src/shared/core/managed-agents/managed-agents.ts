@@ -45,6 +45,26 @@ export type ManagedMachine = {
   state: 'online' | 'unknown' | 'revoked';
 };
 
+/** A provider on a machine, as the machine last reported it. */
+export type MachineProvider = {
+  /** The Switch definition provider id (`claude`, `codex`, …). */
+  provider: string;
+  /** Installed and logged in. */
+  ready: boolean;
+  /** Why it is not ready, in a few words; null when it is. */
+  problem: string | null;
+};
+
+/** What a machine is to this Console: this computer, one of its SSH hosts, or neither. */
+export type MachineLocal = { kind: 'this-computer' } | { kind: 'ssh-host'; sshHost: string } | null;
+
+/** One of the owner's machines on a server, with what it last reported about its providers. */
+export type OwnedMachine = ManagedMachine & {
+  /** Empty before the machine has reported. */
+  providers: MachineProvider[];
+  local: MachineLocal;
+};
+
 /** The settings a managed agent's page changes; a field left out stays as the server holds it. */
 export type ManagedAgentChanges = {
   definition: Partial<ManagedAgentView['definition']>;

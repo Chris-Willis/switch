@@ -1,13 +1,14 @@
 /**
  * The create form's word on where a new agent runs, on a server with agent
- * management: managed on the chosen machine, and a button to turn that machine
- * on when it cannot take one yet.
+ * management: managed on the chosen machine, a button to turn that machine on
+ * when it cannot take one yet, and the providers the machine reports ready.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NewAgentMachine } from '@shared/core/agent-migration/agent-migration';
+import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 
 const embeddedEnable = vi.hoisted(() => vi.fn());
 const hostEnable = vi.hoisted(() => vi.fn());
@@ -30,6 +31,9 @@ vi.mock('@renderer/lib/ipc', () => ({
   },
 }));
 
+vi.mock('@renderer/lib/components/agent-icon', () => ({ AgentIcon: () => null }));
+
+import { MachineProviderPicker } from '@renderer/features/locations/components/add-agent-modal/machine-provider-picker';
 import {
   CanManageAgentsField,
   ManagedModelField,
@@ -155,7 +159,9 @@ describe('the managed model field', () => {
       sshHost: null,
       dir: '/work/pm',
     });
-    expect(el.textContent).toMatch(/reasoning effort and other provider settings on the agent’s page/);
+    expect(el.textContent).toMatch(
+      /reasoning effort and other provider settings on the agent’s page/
+    );
   });
 });
 
@@ -168,5 +174,77 @@ describe('can manage agents, set as the agent is created', () => {
     await act(async () => toggle.click());
     expect(onChange).toHaveBeenCalledWith(true, expect.anything());
     expect(el.textContent).toMatch(/Agents it creates do not get this permission/);
+  });
+});
+
+const BOX: OwnedMachine = {
+  id: 'controller-7',
+  name: 'build-box',
+  kind: 'daemon',
+  state: 'online',
+  local: null,
+  providers: [
+    { provider: 'claude', ready: true, problem: null },
+    { provider: 'codex', ready: false, problem: 'not logged in' },
+    { provider: 'opencode', ready: false, problem: 'not installed' },
+  ],
+};
+
+function tile(el: HTMLElement, name: string): HTMLButtonElement {
+  const found = [...el.querySelectorAll('button')].find((button) =>
+    button.textContent?.startsWith(name)
+  );
+  if (!found) throw new Error(`No tile for ${name}`);
+  return found;
+}
+
+describe('the providers a server machine offers', () => {
+  it('offers only the providers the machine reports ready, and says why the others are not', async () => {
+    const onChange = vi.fn();
+    const el = await render(
+      <MachineProviderPicker
+        machine={BOX}
+        value="claude"
+        onChange={onChange}
+        defaultAgent="claude"
+      />
+    );
+    expect(tile(el, 'Claude Code').disabled).toBe(false);
+    expect(tile(el, 'Claude Code').textContent).toMatch(/Ready/);
+    expect(tile(el, 'Codex').disabled).toBe(true);
+    expect(tile(el, 'Codex').textContent).toMatch(/Not logged in/);
+    expect(tile(el, 'OpenCode').textContent).toMatch(/Not installed/);
+    expect(tile(el, 'Cursor').disabled).toBe(true);
+    expect(tile(el, 'Cursor').textContent).toMatch(/Not checked yet/);
+    await act(async () => tile(el, 'Codex').click());
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('picks the one ready provider for the user', async () => {
+    const onChange = vi.fn();
+    await render(
+      <MachineProviderPicker
+        machine={BOX}
+        value={null}
+        onChange={onChange}
+        defaultAgent={undefined}
+      />
+    );
+    expect(onChange).toHaveBeenCalledWith('claude');
+  });
+
+  it('says when the machine has not reported its providers, and picks none', async () => {
+    const onChange = vi.fn();
+    const el = await render(
+      <MachineProviderPicker
+        machine={{ ...BOX, providers: [] }}
+        value={null}
+        onChange={onChange}
+        defaultAgent="claude"
+      />
+    );
+    expect(el.textContent).toMatch(/build-box has not reported its providers yet/);
+    expect([...el.querySelectorAll('button')].every((button) => button.disabled)).toBe(true);
+    expect(onChange).not.toHaveBeenCalled();
   });
 });

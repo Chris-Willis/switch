@@ -27,8 +27,8 @@ export type DefinitionSource = {
   /** Whether the agent launches as a provider agent definition (Claude Code's `--agent`). */
   providerDefinition: boolean;
   autoApprove: boolean;
-  /** The agent's working directory, as an absolute path on its machine. */
-  directory: string;
+  /** The agent's working directory, as an absolute path on its machine; null for a workspace the machine chooses. */
+  directory: string | null;
   /** Somebody stopped the agent's watcher by hand: it moves stopped, and stays stopped. */
   stoppedByHand: boolean;
   /** A shell setup the location runs before each session. */

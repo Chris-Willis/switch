@@ -151,6 +151,12 @@ export class EmbeddedControllerService {
     };
   }
 
+  /** The controller this computer is enrolled as for a server, or null when it is not one. */
+  async enrolledControllerId(serverId: string): Promise<string | null> {
+    const record = await this.deps.records.get(serverId);
+    return record?.kind === 'enrolled' ? record.controllerId : null;
+  }
+
   /** Turns it on: enrolls through the signed-in session of `workspaceId`, then starts the controller. */
   async enable(serverId: string, workspaceId: string): Promise<void> {
     if (this.unsupportedReason) throw new Error(this.unsupportedReason);
