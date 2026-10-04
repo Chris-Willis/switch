@@ -58,7 +58,12 @@ export {
 } from './host/launch';
 export type { Supervision } from './host/launch';
 export { hostStartSources, type HostStartSource } from './host/session-start';
-export { runAgentHost } from './host/agent-host';
+export {
+  type AgentEventStream,
+  type OpenAgentStream,
+  openSwitchStream,
+  runAgentHost,
+} from './host/agent-host';
 export { clearTakenOver, readTakenOver, type TakenOver } from './host/taken-over';
 export {
   recordWatcherHealth,

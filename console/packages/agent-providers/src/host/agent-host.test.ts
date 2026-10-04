@@ -10,6 +10,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import {
   MAX_HOST_RESTARTS,
   stopSupersededSessions,
+  openSwitchStream,
   runAgentHost,
   AgentHostAssignments,
   definitionChanged,
@@ -361,7 +362,8 @@ it('stays down while a takeover marker says another client holds the connection'
       new AbortController().signal,
       supervision,
       new WatcherControl(),
-      null
+      null,
+      openSwitchStream
     )
   ).resolves.toBeUndefined();
   expect(warning.mock.calls[0]?.[0]).toContain('stood down at 2026-01-01T00:00:00.000Z');
@@ -376,7 +378,8 @@ it('stays down while a takeover marker says another client holds the connection'
       new AbortController().signal,
       supervision,
       new WatcherControl(),
-      null
+      null,
+      openSwitchStream
     )
   ).rejects.toThrow('credentials.json');
 });
@@ -568,7 +571,15 @@ it('starts no saved session at startup; each waits until it is needed', async ()
   const { supervision } = sessionHosts();
 
   const abort = new AbortController();
-  const run = runAgentHost(root, config, abort.signal, supervision, new WatcherControl(), null);
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
   try {
     await new Promise((resolve) => setTimeout(resolve, 500));
     expect(ensureSharedProcess).not.toHaveBeenCalled();
@@ -599,7 +610,15 @@ it('leaves an event queued behind earlier work unstarted once spawning is turned
   );
 
   const abort = new AbortController();
-  const run = runAgentHost(root, config, abort.signal, supervision, new WatcherControl(), null);
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
   try {
     await eventually(() => streams.length === 1);
     const stream = streams[0]!;
@@ -647,7 +666,15 @@ it('gives one room one session however close together its first messages arrive'
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 
   const abort = new AbortController();
-  const run = runAgentHost(root, config, abort.signal, supervision, new WatcherControl(), null);
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
   try {
     await eventually(() => streams.length === 1);
     await Promise.all([
@@ -687,7 +714,8 @@ it('routes a room that has a session to that session, and starts no other', asyn
     abort.signal,
     hosts.supervision,
     new WatcherControl(),
-    null
+    null,
+    openSwitchStream
   );
   try {
     await eventually(() => streams.length === 1);
@@ -732,7 +760,15 @@ it('routes to the session Console moved the room to, and tells Switch where ever
   const control = new WatcherControl();
 
   const abort = new AbortController();
-  const run = runAgentHost(root, config, abort.signal, hosts.supervision, control, null);
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    control,
+    null,
+    openSwitchStream
+  );
   try {
     await eventually(() => streams.length === 1);
     expect(await control.place(placed.sessionId, 'room')).toEqual({
@@ -777,7 +813,15 @@ it('puts a move Console asked for back when Switch refuses it', async () => {
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 
   const abort = new AbortController();
-  const run = runAgentHost(root, config, abort.signal, hosts.supervision, control, null);
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    control,
+    null,
+    openSwitchStream
+  );
   try {
     await eventually(() => streams.length === 1);
     await control.place(first.sessionId, 'room');
@@ -844,7 +888,8 @@ it('answers its sessions’ tool calls as the calling session, placing the room 
     abort.signal,
     hosts.supervision,
     new WatcherControl(),
-    null
+    null,
+    openSwitchStream
   );
   try {
     await eventually(() => streams.length === 1);
@@ -922,7 +967,8 @@ it('forgets a room another connection took over, and a session that was stopped'
     abort.signal,
     hosts.supervision,
     new WatcherControl(),
-    null
+    null,
+    openSwitchStream
   );
   try {
     await eventually(() => streams.length === 1);
@@ -989,7 +1035,8 @@ it('still owes an event its session never acknowledged', async () => {
     abort.signal,
     hosts.supervision,
     new WatcherControl(),
-    null
+    null,
+    openSwitchStream
   );
   try {
     await eventually(() => streams.length === 1);
@@ -1121,7 +1168,8 @@ it('hands a session it has just created the event that created it', async () => 
     abort.signal,
     hosts.supervision,
     new WatcherControl(),
-    null
+    null,
+    openSwitchStream
   );
   try {
     await eventually(() => streams.length === 1);
@@ -1162,7 +1210,15 @@ it('holds a room nothing can take while starting sessions is off, and delivers o
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 
   const abort = new AbortController();
-  const run = runAgentHost(root, config, abort.signal, supervision, new WatcherControl(), null);
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
   try {
     await eventually(() => streams.length === 1);
     await streams[0]!.onEvent!(addressed(1, 'room'));
@@ -1194,7 +1250,15 @@ it('keeps a held event, content and all, across a controller restart', async () 
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 
   const first = new AbortController();
-  const running = runAgentHost(root, config, first.signal, supervision, new WatcherControl(), null);
+  const running = runAgentHost(
+    root,
+    config,
+    first.signal,
+    supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
   try {
     await eventually(() => streams.length === 1);
     await streams[0]!.onEvent!(addressed(1, 'room'));
@@ -1211,7 +1275,8 @@ it('keeps a held event, content and all, across a controller restart', async () 
     second.signal,
     supervision,
     new WatcherControl(),
-    null
+    null,
+    openSwitchStream
   );
   try {
     await eventually(() => hosts.requests.length >= 1);
@@ -1252,7 +1317,8 @@ it('starts the session serving a room again when its host has gone, instead of a
     abort.signal,
     hosts.supervision,
     new WatcherControl(),
-    null
+    null,
+    openSwitchStream
   );
   try {
     await eventually(() => streams.length === 1);
@@ -1342,7 +1408,8 @@ it('restarts a room’s session under its agent’s edited definition, resuming 
     abort.signal,
     hosts.supervision,
     new WatcherControl(),
-    null
+    null,
+    openSwitchStream
   );
   try {
     await eventually(() => streams.length === 1);
@@ -1388,7 +1455,8 @@ it('gives a room a new session once the one serving it has been stopped', async 
     abort.signal,
     hosts.supervision,
     new WatcherControl(),
-    null
+    null,
+    openSwitchStream
   );
   try {
     await eventually(() => streams.length === 1);
@@ -1420,7 +1488,15 @@ it('forgets a session Console deleted, so its room starts a new one', async () =
   const control = new WatcherControl();
 
   const abort = new AbortController();
-  const run = runAgentHost(root, config, abort.signal, hosts.supervision, control, null);
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    control,
+    null,
+    openSwitchStream
+  );
   try {
     await eventually(() => streams.length === 1);
     await control.forget(owner.sessionId);
@@ -1461,7 +1537,8 @@ it('passes an approval answer to the session it is for, and only that one', asyn
     abort.signal,
     hosts.supervision,
     new WatcherControl(),
-    null
+    null,
+    openSwitchStream
   );
   const outcome = (sessionId: string) => ({
     session_id: sessionId,
@@ -1506,7 +1583,8 @@ it('hands a relayed command to the session it names, and only if it runs here', 
     abort.signal,
     hosts.supervision,
     new WatcherControl(),
-    null
+    null,
+    openSwitchStream
   );
   const command = (sessionId: string) => ({ sessionId, commandId: `command-${sessionId}` });
   try {
@@ -1546,7 +1624,15 @@ it('refuses to run without being the parent of its sessions', async () => {
     links: null,
   };
   await expect(
-    runAgentHost(root, config, new AbortController().signal, detached, new WatcherControl(), null)
+    runAgentHost(
+      root,
+      config,
+      new AbortController().signal,
+      detached,
+      new WatcherControl(),
+      null,
+      openSwitchStream
+    )
   ).rejects.toThrow('parent of its sessions');
 });
 
@@ -1564,7 +1650,8 @@ it('hands a message to its session over the IPC pipe and releases it once taken'
     abort.signal,
     hosts.supervision,
     new WatcherControl(),
-    null
+    null,
+    openSwitchStream
   );
   try {
     await eventually(() => streams.length === 1);
@@ -1613,7 +1700,8 @@ it('reports its connection and placements as they change, and why it stopped', a
     new AbortController().signal,
     hosts.supervision,
     control,
-    null
+    null,
+    openSwitchStream
   );
   await eventually(() => streams.length === 1);
   expect(control.health()).toMatchObject({ state: 'connecting', placements: {} });
@@ -1652,7 +1740,8 @@ it('reports a room connection that is turned off, and a watcher that failed', as
     new AbortController().signal,
     hosts.supervision,
     control,
-    null
+    null,
+    openSwitchStream
   );
   await eventually(() => streams.length === 1);
   await writeFlags(root, { enabled: false, spawn: false });
@@ -1662,7 +1751,15 @@ it('reports a room connection that is turned off, and a watcher that failed', as
   await writeFlags(root, { enabled: true, spawn: true });
   await rm(join(root, 'credentials.json'));
   await expect(
-    runAgentHost(root, config, new AbortController().signal, hosts.supervision, control, null)
+    runAgentHost(
+      root,
+      config,
+      new AbortController().signal,
+      hosts.supervision,
+      control,
+      null,
+      openSwitchStream
+    )
   ).rejects.toThrow('credentials.json');
   expect(control.health().state).toBe('not-running');
   expect(control.health().detail).toContain('credentials.json');
@@ -1708,7 +1805,8 @@ it('stops starting a session whose host failed, keeps its message, and tells its
     abort.signal,
     hosts.supervision,
     new WatcherControl(),
-    null
+    null,
+    openSwitchStream
   );
   try {
     await eventually(() => streams.length === 1);
@@ -1782,7 +1880,8 @@ it('tells the room without addressing anyone when the owner cannot be addressed,
     abort.signal,
     hosts.supervision,
     new WatcherControl(),
-    null
+    null,
+    openSwitchStream
   );
   try {
     await eventually(() => streams.length === 1);
@@ -1858,7 +1957,15 @@ async function hostedWatcher(
   );
   await hosted.open();
   const abort = new AbortController();
-  const run = runAgentHost(root, config, abort.signal, hosts.supervision, control, hosted);
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    control,
+    hosted,
+    openSwitchStream
+  );
   await eventually(() => streams.length === 1);
   const stream = streams[0]!;
   const attach = async (overrides: Record<string, unknown>) => {
@@ -2307,7 +2414,8 @@ it('tells the room once a session keeps not taking a message, instead of startin
     abort.signal,
     hosts.supervision,
     new WatcherControl(),
-    null
+    null,
+    openSwitchStream
   );
   try {
     await eventually(() => streams.length === 1);

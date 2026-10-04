@@ -9,6 +9,7 @@ import {
   EVICTION_LAUNCH_SUPERSEDED,
   EVICTION_TAKEN_OVER,
   SwitchEventStream,
+  type SwitchEventStreamDeps,
   WORKER_CAPABILITY_OBSOLETE,
 } from '@sandboxaq/switch-agent-runtime';
 import type { SwitchIdentity } from '@sandboxaq/switch-agent-runtime/hosted';
@@ -692,13 +693,33 @@ export class AgentHostAssignments {
   }
 }
 
+/**
+ * What a watcher hears its agent's events on, and tells Switch where its
+ * sessions are through: its own connection to Switch (`openSwitchStream`), or
+ * whatever hosts the watcher and holds the agent's connection for it, as an
+ * agents controller does for every agent on its machine.
+ */
+export type AgentEventStream = {
+  start(): void;
+  setSpawnCapable(capable: boolean): void;
+  replacePlacements(placements: Record<string, string>): Promise<void>;
+  /** For a hosted worker's calls; a stream that is not a worker's refuses them. */
+  workerCall(path: string, body: Record<string, unknown>): Promise<unknown>;
+};
+
+export type OpenAgentStream = (deps: SwitchEventStreamDeps) => AgentEventStream;
+
+/** The watcher's own connection to Switch, with the agent's credentials. */
+export const openSwitchStream: OpenAgentStream = (deps) => new SwitchEventStream(deps);
+
 export async function runAgentHost(
   root: string,
   template: SharedHostConfig,
   signal: AbortSignal,
   supervision: Supervision,
   control: WatcherControl,
-  hosted: HostedWorker | null
+  hosted: HostedWorker | null,
+  openStream: OpenAgentStream
 ): Promise<void> {
   const ownerPath = join(root, 'shared-owner.lock');
   const owner = { pid: process.pid, token: randomUUID() };
@@ -773,7 +794,7 @@ export async function runAgentHost(
     const placements = await SessionPlacements.open(root, () => assignments.placements());
     control.report({ state: 'connecting', detail: null, placements: placements.snapshot() });
     unbind.push(placements.onChange((map) => control.report({ placements: map })));
-    let stream: SwitchEventStream | null = null;
+    let stream: AgentEventStream | null = null;
     let publishing: Promise<void> = Promise.resolve();
     /**
      * Tells Switch where every session is, replacing what it held: after each
@@ -1422,7 +1443,7 @@ export async function runAgentHost(
       acks: assignments,
       fail,
     };
-    stream = new SwitchEventStream({
+    stream = openStream({
       creds: {
         agentId: credentials.SWITCH_AGENT_ID,
         apiEndpoint: credentials.SWITCH_API_ENDPOINT,
