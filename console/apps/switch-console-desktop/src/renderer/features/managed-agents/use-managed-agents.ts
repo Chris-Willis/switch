@@ -22,6 +22,15 @@ export function useManagedAgents(serverId: string | null) {
   });
 }
 
+/** The signed-in user's machines on the server, with what each reported; null without agent management. */
+export function useOwnedMachines(serverId: string) {
+  return useQuery({
+    queryKey: [MANAGED_AGENTS_KEY, serverId, 'machines'],
+    queryFn: () => rpc.managedAgents.machines(serverId),
+    refetchInterval: 15000,
+  });
+}
+
 /**
  * Without the agents the server manages. An agent moved to managed from here
  * keeps a row in Console, but the server is what runs it now, so it is shown

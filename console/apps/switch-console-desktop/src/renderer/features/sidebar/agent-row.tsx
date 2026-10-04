@@ -4,6 +4,8 @@ import type { ReactNode } from 'react';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
+import { cn } from '@renderer/utils/utils';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { AgentStatusSlot } from './agent-status-slot';
 import { SidebarMenuAction, SidebarMenuRow } from './sidebar-primitives';
@@ -22,6 +24,8 @@ export const SidebarAgentRow = observer(function SidebarAgentRow({
   isActive,
   depth,
   onOpen,
+  presence,
+  dimmed,
   marks,
   status,
   actions,
@@ -32,6 +36,10 @@ export const SidebarAgentRow = observer(function SidebarAgentRow({
   isActive: boolean;
   depth: number;
   onOpen: () => void;
+  /** Whether the agent is running, stopped or in trouble: the dot on its avatar. Null when unknown. */
+  presence: AgentPresence | null;
+  /** Its machine cannot be reached, so nothing on the row is current. */
+  dimmed: boolean;
   /** Shown after the provider mark, such as where the agent runs. */
   marks: ReactNode;
   /** Indicators in order of cause; the first that renders anything is shown. */
@@ -54,20 +62,21 @@ export const SidebarAgentRow = observer(function SidebarAgentRow({
         {/* 21px inside an 18px slot, so the larger circle reads at the same
             weight as the provider glyphs it replaced without growing the row or
             shifting the label. */}
-        <span className="flex size-[18px] shrink-0 items-center justify-center">
+        <span className="relative flex size-[18px] shrink-0 items-center justify-center">
           <AgentAvatar
             name={label}
             iconUrl={iconUrl}
             size={21}
-            className="-mx-[1.5px] bg-transparent"
+            className={cn('-mx-[1.5px] bg-transparent', dimmed && 'opacity-60')}
           />
+          {presence && <PresenceDot presence={presence} />}
         </span>
         <SidebarMenuAction
           aria-label={`Open agent ${label}`}
           className="flex-initial truncate select-none"
         >
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className="truncate">{label}</span>
+            <span className={cn('truncate', dimmed && 'text-foreground-muted')}>{label}</span>
             {/* What the agent runs on. The avatar took the leading slot, so
                 without this the row no longer says. Hideable from the Sessions
                 menu for a reader who only cares about identity. */}
@@ -86,3 +95,37 @@ export const SidebarAgentRow = observer(function SidebarAgentRow({
     </SidebarMenuRow>
   );
 });
+
+/** What the dot on an agent's avatar says. */
+export type AgentPresence = {
+  tone: 'running' | 'stopped' | 'problem' | 'pending';
+  /** Said on hover: the state, and why when there is a reason. */
+  label: string;
+};
+
+const DOT_COLOR: Record<AgentPresence['tone'], string> = {
+  running: 'bg-foreground-success',
+  stopped: 'bg-foreground-warning',
+  problem: 'bg-foreground-destructive',
+  pending: 'bg-foreground-muted',
+};
+
+function PresenceDot({ presence }: { presence: AgentPresence }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span
+            role="img"
+            aria-label={presence.label}
+            className={cn(
+              'absolute -right-[2px] -bottom-[2px] size-[7px] rounded-full ring-2 ring-[var(--material)]',
+              DOT_COLOR[presence.tone]
+            )}
+          />
+        }
+      />
+      <TooltipContent>{presence.label}</TooltipContent>
+    </Tooltip>
+  );
+}

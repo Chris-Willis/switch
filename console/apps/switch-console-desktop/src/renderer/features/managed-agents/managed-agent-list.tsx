@@ -1,16 +1,19 @@
-import { CirclePause, Loader2, Server, TriangleAlert } from 'lucide-react';
+import { Server, ServerOff } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
-import { cn } from '@renderer/utils/utils';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { isValidProviderId } from '@shared/core/providers/agent-provider-registry';
-import { SidebarAgentRow } from '../sidebar/agent-row';
-import { managedAgentLabel, managedAgentState } from './managed-agent-state';
-import { useManagedAgents } from './use-managed-agents';
+import { type AgentPresence, SidebarAgentRow } from '../sidebar/agent-row';
+import {
+  type ManagedAgentState,
+  managedAgentLabel,
+  managedAgentState,
+} from './managed-agent-state';
+import { useManagedAgents, useOwnedMachines } from './use-managed-agents';
 
 /**
  * The active server's managed agents: every one the server lists, whatever
@@ -41,8 +44,14 @@ const ManagedAgentRow = observer(function ManagedAgentRow({ agent }: { agent: Ma
   const { navigate } = useNavigate();
   const { currentView } = useWorkspaceSlots();
   const { params } = useParams('managedAgent');
+  const machines = useOwnedMachines(agent.serverId);
   const label = managedAgentLabel(agent);
   const provider = agent.definition.provider;
+  const state = managedAgentState(agent);
+  const thisComputer =
+    machines.data?.find((machine) => machine.id === agent.machine?.id)?.local?.kind ===
+    'this-computer';
+  const machineDown = agent.machine !== null && agent.machine.state !== 'online';
   return (
     <SidebarAgentRow
       label={label}
@@ -53,45 +62,40 @@ const ManagedAgentRow = observer(function ManagedAgentRow({ agent }: { agent: Ma
       onOpen={() =>
         navigate('managedAgent', { serverId: agent.serverId, agentId: agent.agentId, name: label })
       }
+      presence={{
+        tone: PRESENCE_TONE[state.tone],
+        label: state.detail ? `${state.label}: ${state.detail}` : state.label,
+      }}
+      dimmed={machineDown}
       marks={
-        <Tooltip>
-          <TooltipTrigger>
-            <Server className="h-3.5 w-3.5 shrink-0 text-foreground-muted" />
-          </TooltipTrigger>
-          <TooltipContent>
-            Managed · runs on {agent.machine?.name ?? 'no machine'}
-            {agent.definition.directory ? ` · ${agent.definition.directory}` : ''}
-          </TooltipContent>
-        </Tooltip>
+        !thisComputer && (
+          <Tooltip>
+            <TooltipTrigger>
+              {machineDown || !agent.machine ? (
+                <ServerOff className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
+              ) : (
+                <Server className="h-3.5 w-3.5 shrink-0 text-foreground-muted" />
+              )}
+            </TooltipTrigger>
+            <TooltipContent>
+              {agent.machine
+                ? machineDown
+                  ? `${agent.machine.name} is ${agent.machine.state}. The agent resumes when it reconnects.`
+                  : `Runs on ${agent.machine.name}${agent.definition.directory ? ` · ${agent.definition.directory}` : ''}`
+                : 'It has no machine to run on.'}
+            </TooltipContent>
+          </Tooltip>
+        )
       }
-      status={<ManagedAgentStateIndicator agent={agent} />}
+      status={null}
       actions={null}
     />
   );
 });
 
-/** Nothing while the agent runs; otherwise what it is doing, and why on hover. */
-function ManagedAgentStateIndicator({ agent }: { agent: ManagedAgentView }) {
-  const state = managedAgentState(agent);
-  if (state.tone === 'ok') return null;
-  const Icon =
-    state.tone === 'busy' ? Loader2 : state.tone === 'idle' ? CirclePause : TriangleAlert;
-  return (
-    <Tooltip>
-      <TooltipTrigger>
-        <Icon
-          aria-label={state.label}
-          className={cn(
-            'h-3.5 w-3.5 shrink-0',
-            state.tone === 'problem' ? 'text-foreground-destructive' : 'text-foreground-muted',
-            state.tone === 'busy' && 'animate-spin'
-          )}
-        />
-      </TooltipTrigger>
-      <TooltipContent>
-        {state.label}
-        {state.detail ? `: ${state.detail}` : ''}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
+const PRESENCE_TONE: Record<ManagedAgentState['tone'], AgentPresence['tone']> = {
+  ok: 'running',
+  idle: 'stopped',
+  problem: 'problem',
+  busy: 'pending',
+};

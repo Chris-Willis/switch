@@ -1,4 +1,12 @@
-import { ChevronRight, Plus, RotateCcw, Server, Trash2, TriangleAlert } from 'lucide-react';
+import {
+  ChevronRight,
+  Plus,
+  RotateCcw,
+  Server,
+  ServerOff,
+  Trash2,
+  TriangleAlert,
+} from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useConfirmDeleteAgent } from '@renderer/features/locations/hooks/use-confirm-delete-agent';
 import {
@@ -12,7 +20,7 @@ import {
   hasDiscardableSessionError,
   hasSessionError,
 } from '@renderer/features/sessions/stores/session-selectors';
-import { AgentConnectionIndicator } from '@renderer/features/switch-rooms/connection-health';
+import { useAgentConnection } from '@renderer/features/switch-rooms/connection-health';
 import { ProviderIssueIndicator } from '@renderer/lib/components/provider-issue-indicator';
 import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
 import { useToast } from '@renderer/lib/hooks/use-toast';
@@ -31,7 +39,11 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import type { Agent } from '@shared/core/agents/agents';
-import { SidebarAgentRow } from './agent-row';
+import {
+  type AgentConnectionState,
+  connectionLabels,
+} from '@shared/core/switch-rooms/connection-health';
+import { type AgentPresence, SidebarAgentRow } from './agent-row';
 import { DiscoveryFailureIndicator } from './discovery-failure-indicator';
 import { SidebarItemMiniButton } from './sidebar-primitives';
 import { agentExpandKey } from './sidebar-store';
@@ -65,6 +77,7 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
   const agentName = agent.name;
   const location = getLocationStore(agent.locationId);
   const iconUrl = useAgentIconUrl(agent.workspaceId, agent.switchAgentId);
+  const connection = useAgentConnection(agent);
 
   // The agent's name IS its Switch identity: Switch Console chose it, registered it
   // under that name, and keys its credentials and definition by it. Reading the
@@ -91,6 +104,12 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
   const sshHost = location.data?.sshHost ?? null;
   const hostUnreachable = hostReachabilityStore.isBlocked(sshHost);
 
+  const presence = agentPresence(
+    connection.state,
+    hostUnreachable,
+    connection.health?.detail ?? null
+  );
+
   // Opening the agent does not expand it. Expanding is the chevron's job alone,
   // so what is unfolded in the tree stays as the reader left it.
   const open = () => navigate('location', { locationId: agent.locationId, agentName });
@@ -105,31 +124,35 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
           isActive={isActive}
           depth={depth}
           onOpen={open}
+          presence={presence}
+          dimmed={hostUnreachable}
           marks={
-            <>
-              {/* A down host takes this slot over: the status below draws it
-                  as the server, disconnected, so the row carries one icon
-                  for the host rather than a server and a warning. */}
-              {location.data?.sshHost != null && !hostUnreachable && (
-                <Tooltip>
-                  <TooltipTrigger>
+            location.data?.sshHost != null && (
+              <Tooltip>
+                <TooltipTrigger>
+                  {hostUnreachable ? (
+                    <ServerOff className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
+                  ) : (
                     <Server className="h-3.5 w-3.5 shrink-0 text-foreground-muted" />
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    Runs remotely on {location.data.sshHost}
-                    {location.data.dir ? ` · ${location.data.dir}` : ''}
-                  </TooltipContent>
-                </Tooltip>
-              )}
-            </>
+                  )}
+                </TooltipTrigger>
+                <TooltipContent>
+                  {hostUnreachable
+                    ? `${location.data.sshHost} cannot be reached. The agent resumes when it reconnects.`
+                    : `Runs remotely on ${location.data.sshHost}${location.data.dir ? ` · ${location.data.dir}` : ''}`}
+                </TooltipContent>
+              </Tooltip>
+            )
           }
           status={
             <>
-              {/* Unreachable host, or one missing something this agent needs.
-                    Shared with the room-grouped rows so the two trees cannot
-                    disagree about the same agent (CHOO-1682/1809). */}
-              <HostTroubleIndicator sshHost={sshHost} agentId={agent.providerId ?? null} />
-              <AgentConnectionIndicator agent={agent} />
+              {/* A host missing something this agent needs. An unreachable one
+                    is the red server mark, and the connection is the avatar's
+                    dot, so neither repeats here. */}
+              <HostTroubleIndicator
+                sshHost={hostUnreachable ? null : sshHost}
+                agentId={agent.providerId ?? null}
+              />
               <DiscoveryFailureIndicator agentId={agent.id} label={label} />
               {agent.providerId && (
                 <ProviderIssueIndicator
@@ -259,3 +282,18 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
     </ContextMenu>
   );
 });
+
+/** The dot on a Console agent's avatar: its room connection, or its host when that is down. */
+function agentPresence(
+  state: AgentConnectionState | undefined,
+  hostUnreachable: boolean,
+  detail: string | null
+): AgentPresence | null {
+  if (hostUnreachable) return { tone: 'problem', label: 'Its host cannot be reached' };
+  if (!state) return null;
+  const label = detail ? `${connectionLabels[state]}: ${detail}` : connectionLabels[state];
+  if (state === 'connected') return { tone: 'running', label: 'Running' };
+  if (state === 'stopped') return { tone: 'stopped', label };
+  if (state === 'connecting') return { tone: 'pending', label };
+  return { tone: 'problem', label };
+}
