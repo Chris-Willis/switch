@@ -31,12 +31,13 @@ export function machineRunLocations(machines: OwnedMachine[]): RunLocationOption
     )
     .map((machine) => {
       const offline = machine.state !== 'online';
+      const name = machineLabel(machine);
       return {
         value: machineRunLocation(machine.id),
-        label: offline ? `${machine.name} (offline)` : machine.name,
+        label: offline ? `${name} (offline)` : name,
         tag:
           machine.local?.kind === 'this-computer'
-            ? 'this computer'
+            ? 'this Console'
             : machine.local?.kind === 'ssh-host'
               ? 'ssh'
               : machine.kind,
@@ -44,6 +45,14 @@ export function machineRunLocations(machines: OwnedMachine[]): RunLocationOption
         disabled: offline,
       };
     });
+}
+
+/**
+ * What a machine is called here: "This computer" for the one this Console runs
+ * on, rather than its host name; otherwise the name it has on the server.
+ */
+export function machineLabel(machine: OwnedMachine): string {
+  return machine.local?.kind === 'this-computer' ? 'This computer' : machine.name;
 }
 
 /** Whether this computer is one of the server's machines. */

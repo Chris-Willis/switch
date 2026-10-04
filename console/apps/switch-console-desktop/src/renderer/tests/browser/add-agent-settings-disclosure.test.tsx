@@ -75,7 +75,9 @@ function Panel() {
       workspaceId="ws-1"
       onAddServer={() => {}}
       onOpenMessagingApps={() => {}}
-    />
+    >
+      {null}
+    </AgentSettingsSection>
   );
 }
 

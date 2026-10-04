@@ -1,9 +1,11 @@
+import { homedir } from 'node:os';
 import type {
   EmbeddedControllerOverview,
   MachineDetailsChange,
 } from '@shared/core/embedded-controller/embedded-controller';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import { embeddedControllerService } from './embedded-controllers';
+import { defaultWorkspacePath } from './controller-files';
+import { embeddedControllerDataDir, embeddedControllerService } from './embedded-controllers';
 
 /** "Run managed agents on this computer", per Switch server. */
 export const embeddedControllerController = createRPCController({
@@ -26,4 +28,16 @@ export const embeddedControllerController = createRPCController({
     embeddedControllerService.updateDetails(params.serverId, params.changes),
 
   dismissRemoved: (serverId: string): Promise<void> => embeddedControllerService.dismiss(serverId),
+
+  /**
+   * Where this computer's controller puts a managed agent that names no
+   * directory, `~` for the home directory; null for a name that cannot be a
+   * directory, which the form refuses anyway.
+   */
+  defaultWorkspace: async (params: { serverId: string; name: string }): Promise<string | null> => {
+    const path = defaultWorkspacePath(embeddedControllerDataDir(params.serverId), params.name);
+    if (path === null) return null;
+    const home = homedir();
+    return path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+  },
 });

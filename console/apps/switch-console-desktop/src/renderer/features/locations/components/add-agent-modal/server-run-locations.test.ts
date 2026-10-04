@@ -25,8 +25,8 @@ describe('the run locations a server with agent management offers', () => {
     expect(machineRunLocations(MACHINES)).toEqual([
       {
         value: 'machine:laptop',
-        label: 'laptop',
-        tag: 'this computer',
+        label: 'This computer',
+        tag: 'this Console',
         icon: 'monitor',
         disabled: false,
       },

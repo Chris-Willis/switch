@@ -34,7 +34,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
-import { Field, FieldDescription, FieldLabel } from '@renderer/lib/ui/field';
+import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { ModalLayout } from '@renderer/lib/ui/modal-layout';
 import {
@@ -60,6 +60,7 @@ import { AgentIdentityFields, AgentSettingsSection } from './configure-agent-pan
 import { LaunchProfileConfig } from './launch-profile-config';
 import { LocalDirectorySelector } from './local-directory-selector';
 import { MachineProviderPicker } from './machine-provider-picker';
+import { ManagedDirectoryField } from './managed-directory-field';
 import { machineDisabledReason } from './managed-run-location';
 import {
   CanManageAgentsField,
@@ -71,6 +72,7 @@ import { useConfigureAgentForm, usePickMode } from './modes';
 import {
   machineFor,
   machineIdOf,
+  machineLabel,
   machineRunLocation,
   machineRunLocations,
   sshHostIsMachine,
@@ -162,7 +164,9 @@ export const NewAgentForm = observer(function NewAgentForm({
   const runLocationLabel = isCloudRun
     ? 'Switch cloud'
     : isMachineRun
-      ? (serverMachine?.name ?? 'Machine')
+      ? serverMachine
+        ? machineLabel(serverMachine)
+        : 'Machine'
       : isRemoteRun
         ? (onboardedHosts.find((h) => h.sshHost === runHost)?.name ?? runHost)
         : 'This computer';
@@ -883,22 +887,10 @@ export const NewAgentForm = observer(function NewAgentForm({
             has, so offering the tiles would be guessing. What no longer gates
             anything is the directory — nothing is scanned in it, so it can be
             filled in while the host is still being surveyed. */}
-            {canChooseAgentType && !isCloudRun && (
+            {canChooseAgentType && !isCloudRun && !isMachineRun && (
               <Field>
                 <FieldLabel>Directory</FieldLabel>
-                {isMachineRun ? (
-                  <>
-                    <Input
-                      value={remoteRepoDir}
-                      placeholder="A fresh workspace"
-                      onChange={(e) => setRemoteRepoDir(e.target.value)}
-                    />
-                    <FieldDescription>
-                      A full path on {runLocationLabel}. Leave it empty and the machine makes a
-                      fresh workspace.
-                    </FieldDescription>
-                  </>
-                ) : isRemoteRun ? (
+                {isRemoteRun ? (
                   // No file picker for a host: the directory is on the other end of
                   // an SSH connection, so it is typed rather than browsed.
                   <Input
@@ -1016,10 +1008,21 @@ export const NewAgentForm = observer(function NewAgentForm({
                   onClose();
                   if (pickState.serverId) navigate('server', { serverId: pickState.serverId });
                 }}
-              />
-            )}
-            {canConfigureAgent && managedRun && (
-              <CanManageAgentsField checked={canManageAgents} onChange={setCanManageAgents} />
+              >
+                {isMachineRun && serverMachine && pickState.serverId && (
+                  <ManagedDirectoryField
+                    serverId={pickState.serverId}
+                    machine={serverMachine}
+                    machineLabel={runLocationLabel}
+                    agentName={form.agentName}
+                    value={remoteRepoDir}
+                    onChange={setRemoteRepoDir}
+                  />
+                )}
+                {managedRun && (
+                  <CanManageAgentsField checked={canManageAgents} onChange={setCanManageAgents} />
+                )}
+              </AgentSettingsSection>
             )}
           </DialogContentArea>
         </ModalLayout>

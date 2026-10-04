@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   controllerDataDir,
+  defaultWorkspacePath,
   EnrollmentFile,
   turnOffWatchers,
   wipeControllerIdentity,
@@ -59,6 +60,11 @@ describe('controller data directory', () => {
   it('is one directory per server, and refuses an id that could leave it', () => {
     expect(controllerDataDir('/base', 'server-1')).toBe('/base/servers/server-1');
     expect(() => controllerDataDir('/base', '../escape')).toThrow(/cannot name a directory/);
+    expect(defaultWorkspacePath('/base/servers/server-1', 'pm-agent')).toBe(
+      '/base/servers/server-1/workspaces/pm-agent'
+    );
+    expect(defaultWorkspacePath('/base/servers/server-1', '../escape')).toBeNull();
+    expect(defaultWorkspacePath('/base/servers/server-1', '')).toBeNull();
   });
 
   it('turns off every watcher, and forgets the identity but not the work', async () => {

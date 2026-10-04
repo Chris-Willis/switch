@@ -17,6 +17,14 @@ import { z } from 'zod';
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 
+const WORKSPACE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
+
+/** The workspace the controller makes for an agent with no directory, as its data layout names it. */
+export function defaultWorkspacePath(dataDir: string, name: string): string | null {
+  if (!WORKSPACE_NAME.test(name) || name.includes('..')) return null;
+  return join(dataDir, 'workspaces', name);
+}
+
 export function controllerDataDir(base: string, serverId: string): string {
   if (!SAFE_ID.test(serverId) || serverId.includes('..'))
     throw new Error(`The server id '${serverId}' cannot name a directory.`);
