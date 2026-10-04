@@ -193,13 +193,14 @@ These are the codes from the contract, plus `forbidden`, `invalid_credential`, `
     2. Write them to `<data>/agents/<id>/credentials.json` (0600), outside the agent's working directory.
     3. Ensure the working directory: `definition.directory`, otherwise `<data>/workspaces/<name>`.
     4. Write the watcher root `<data>/watchers/<id>/` with `watch.json {enabled:true, spawn:true}` and a `SharedHostConfig` template, as the Console builds.
-    5. Run the agent-providers shared-host bundle with `--ensure-watch false`, or `--restart` when the revision changed.
-  - Stopped or removed: write `watch.json {enabled:false}`, and delete the credentials of removed agents.
+    5. Start the watcher (`runAgentHost`) in the controller's process, after stopping the running one when the revision changed. Its sessions are the controller's child processes.
+  - Stopped or removed: write `watch.json {enabled:false}`, stop the watcher and its sessions, and delete the credentials of removed agents.
+  - Nothing an agent runs outlives the controller: stopping the controller stops every watcher and session, and the next run starts them again from their journals and confirmed cursors.
 - **Status:** sent on every change, and every `report_within_s`.
   - Machine: os, arch, disk, memory, sessions.
   - Providers: installed via a PATH lookup, auth via the bundle's `--probe`, cached for 10 min. `provider.recheck` forces a probe.
-  - Agents: read from each watcher's `health.json` and `supervisor/failure.json`, mapped to the contract's process states and reason codes.
-- **Operations:** `agent.restart` runs `--restart`. `provider.recheck` forces a probe and reports.
+  - Agents: read from each running watcher's state and `supervisor/failure.json`, mapped to the contract's process states and reason codes.
+- **Operations:** `agent.restart` restarts the watcher. `provider.recheck` forces a probe and reports.
 
 ---
 
@@ -269,24 +270,26 @@ stream. The flag and everything else above stay as they are.
   `filter=all` (the controller filters locally). There is no buffer per controller. Bindings
   changing mid-stream attach or detach agents live.
 
-### The controller's local relay
-- One upstream stream. A loopback HTTP relay (`127.0.0.1`, random port, a per-agent bearer token
-  minted locally) is what each agent's watcher and session hosts use as `SWITCH_API_ENDPOINT`.
-- **Answered locally**, reproducing today's per-agent protocol exactly:
-  - `GET /agents/{id}/events` (SSE, demultiplexed from the upstream stream, with the frames,
-    ids, `connection_state`, `gap`, `evicted`, `subscription_changed`, `session_command`,
-    `approval_outcome` and `room_released` semantics the watcher relies on)
-  - `connection/beat`, `connection/placements`, `connection/subscribe` and `unsubscribe`
-- **Forwarded upstream**, everything else, with the controller access token, the
-  `X-Switch-Agent-Id` header, and `X-Switch-Room-Id` resolved from the local placements.
-- The watcher and session-host code does not change. The credentials file it reads names the
-  relay and its local token, never a Switch credential.
+### Watchers in the controller's process, and the local relay
+- One upstream stream. Each agent's watcher runs inside the controller's process and is handed
+  its events from that stream directly (`AgentHub`): in order, filtered to what addresses the
+  agent, with gaps, resets, room controls and approval outcomes. Events that arrive while its
+  watcher is not running are held (bounded); its cursor moves only once the watcher has taken an
+  event. The watcher states its sessions' rooms in memory; the controller beats them upstream.
+- The shared watcher code (`runAgentHost`) takes the function that opens its event stream: the
+  controller passes its hub, while Console and the shared daemon pass the watcher's own
+  connection to Switch.
+- A loopback HTTP relay (`127.0.0.1`, a per-agent bearer token minted locally) is what each
+  watcher uses as `SWITCH_API_ENDPOINT` for its calls to Switch. It forwards everything with the
+  controller access token, the `X-Switch-Agent-Id` header, and `X-Switch-Room-Id` resolved from
+  the placements. It serves no event stream and no connection bookkeeping. The credentials file
+  names the relay and its local token, never a Switch credential.
 
 ### Core implementation notes (decisions the spec left open)
 
 - **Placements.** The beat body carries `placements: {agent_id: [room_id, ...]}`:
   for each bound agent, the rooms where one of its sessions works now (the
-  relay knows them from its watchers' placements). It is the full map each
+  controller knows them from its watchers' placements). It is the full map each
   beat and replaces the last; an agent left out is in no room; agents not
   bound to the controller and rooms the agent is not a member of are ignored
   (logged at debug). The open request may carry an initial map. Placements
@@ -323,7 +326,7 @@ stream. The flag and everything else above stay as they are.
   route; on `/agents/rooms/...`, `/agents/feature-flags` and `/agent-sessions/...`
   the agent comes from `X-Switch-Agent-Id` alone. Refused for a controller
   token: registration (`403 forbidden`), any non-agent route (`403
-  forbidden`), and the connection surface the relay serves itself — `events`,
+  forbidden`), and the per-agent connection surface the controller holds for the agent — `events`,
   `notifications`, `rooms/{id}/events`, `connection/*`, `watch/heartbeat` —
   with `409 managed_by_controller`. `X-Switch-Connection-Id` and the session
   selector headers are ignored for a controller principal.

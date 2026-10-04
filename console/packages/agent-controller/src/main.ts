@@ -22,7 +22,12 @@ import {
 import { createLogger, errorMessage } from './log';
 import { dataLayout, ensureDataDir, resolveDataDir } from './paths';
 import { definitionProblem } from './reconcile';
-import { assertSupportedPlatform, emptyObservation, SharedHostRuntime } from './runtime';
+import {
+  assertSupportedPlatform,
+  emptyObservation,
+  InProcessRuntime,
+  observeOnDisk,
+} from './runtime';
 import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore } from './secrets';
 import { contractPlatform, mapAgentProcess, PathProviderLocator } from './status';
 import { ControllerStore } from './store';
@@ -180,7 +185,14 @@ async function runCommand(args: string[]): Promise<number> {
       {
         store,
         secrets,
-        runtime: new SharedHostRuntime({ layout, bundlePath: sharedHostBundle }),
+        runtime: (openStream) =>
+          new InProcessRuntime({
+            layout,
+            bundlePath: sharedHostBundle,
+            openStream,
+            log,
+            crashBackoffMs: 2_000,
+          }),
         locator: new PathProviderLocator(process.env.PATH),
         fetch,
         log,
@@ -237,15 +249,11 @@ async function statusCommand(args: string[]): Promise<number> {
     out.push(
       `Assignment:     revision ${cached.assignment.revision}, ${cached.assignment.agents.length} agent(s)`
     );
-    const runtime = new SharedHostRuntime({
-      layout,
-      bundlePath: bundlePath(values['shared-host-bundle']),
-    });
     for (const entry of cached.assignment.agents) {
       const row = store.agent(entry.agent_id);
       const observation = definitionProblem(entry)
         ? emptyObservation()
-        : await runtime.observe(entry.agent_id);
+        : await observeOnDisk(layout, entry.agent_id);
       // Whether events flow is the running controller's to know; this reads only disk.
       const mapped = mapAgentProcess({
         assignment: entry,

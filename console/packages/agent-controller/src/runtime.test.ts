@@ -1,49 +1,94 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readSharedCredentials } from '@switch-console/agent-providers';
+import { setTimeout as delay } from 'node:timers/promises';
+import { type OpenAgentStream, readSharedCredentials } from '@switch-console/agent-providers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { silentLogger } from './log';
 import { dataLayout } from './paths';
-import { SharedHostRuntime } from './runtime';
+import { InProcessRuntime, observeOnDisk } from './runtime';
 import { buildWatcherTemplate } from './template';
 
-/**
- * Stands in for the shared-host bundle: answers `--probe`, and for a launch
- * records its arguments and saves the template as `config.json`, as the real
- * launcher does on first launch.
- */
+/** Stands in for the shared-host bundle: answers `--probe`. Sessions are never started here. */
 const FAKE_BUNDLE = `
-const fs = require('node:fs'), path = require('node:path');
 const args = process.argv.slice(2);
 if (args[0] === '--probe') {
   console.log('noise first');
   console.log(JSON.stringify({ status: 'authenticated', message: args.join(' '), models: [] }));
-} else if (args[2] === '--ensure-watch') {
-  fs.appendFileSync(path.join(args[0], 'launches.log'), JSON.stringify(args) + '\\n');
-  const config = path.join(args[0], 'config.json');
-  if (!fs.existsSync(config)) fs.copyFileSync(args[1], config);
-  if (process.env.FAKE_BUNDLE_FAIL) { console.error('cannot launch'); process.exit(4); }
 }
 `;
 
+const RELAY = { endpoint: 'http://127.0.0.1:43210', token: 'swlr_relay-token-placeholder' };
+const LAUNCH = { restart: false, replaceIdentity: false, clearTakenOver: false };
+
 let dir: string;
 let bundle: string;
-let runtime: SharedHostRuntime;
+let runtime: InProcessRuntime;
+let home: string | undefined;
+let opened: { agentId: string; scope: string; filter: string; signal: AbortSignal }[];
+let attempts: number;
+let failOpens: number;
 const children: ChildProcess[] = [];
+
+/** The controller's end of each watcher's stream: it records the open and never delivers anything. */
+function openStream(agentId: string): OpenAgentStream {
+  return (deps) => {
+    attempts++;
+    if (failOpens > 0) {
+      failOpens--;
+      throw new Error('stream refused');
+    }
+    opened.push({ agentId, scope: deps.scope, filter: deps.filter, signal: deps.signal });
+    return {
+      start: () => {},
+      setSpawnCapable: () => {},
+      replacePlacements: async () => {},
+      workerCall: () => Promise.reject(new Error('not a worker')),
+    };
+  };
+}
+
+async function waitFor(condition: () => boolean, what: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}.`);
+    await delay(10);
+  }
+}
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'controller-runtime-'));
+  home = process.env.HOME;
+  process.env.HOME = join(dir, 'home');
   bundle = join(dir, 'fake-bundle.cjs');
   writeFileSync(bundle, FAKE_BUNDLE);
-  runtime = new SharedHostRuntime({ layout: dataLayout(join(dir, 'data')), bundlePath: bundle });
+  opened = [];
+  attempts = 0;
+  failOpens = 0;
+  runtime = new InProcessRuntime({
+    layout: dataLayout(join(dir, 'data')),
+    bundlePath: bundle,
+    openStream,
+    log: silentLogger,
+    crashBackoffMs: 5,
+  });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await runtime.close();
   for (const child of children) child.kill('SIGKILL');
   children.length = 0;
-  delete process.env.FAKE_BUNDLE_FAIL;
+  process.env.HOME = home;
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -58,23 +103,17 @@ function template(cwd = '/work/scout', provider: 'claude' | 'codex' = 'claude') 
   });
 }
 
-/** A process whose command line names the watcher root, and that exits when the watcher is turned off. */
+/** A process whose command line names the watcher root, as a detached watcher's does. */
 async function fakeWatcher(root: string): Promise<ChildProcess> {
-  const child = spawn(
-    process.execPath,
-    [
-      '-e',
-      `const fs=require('fs');setInterval(()=>{try{if(!JSON.parse(fs.readFileSync(process.argv[1]+'/watch.json','utf8')).enabled)process.exit(0)}catch{}},50)`,
-      root,
-    ],
-    { stdio: 'ignore' }
-  );
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', root], {
+    stdio: 'ignore',
+  });
   children.push(child);
   await once(child, 'spawn');
   return child;
 }
 
-describe('SharedHostRuntime', () => {
+describe('InProcessRuntime', () => {
   it('writes credentials the shared host reads, owner-only, outside the working directory', async () => {
     await runtime.writeCredentials('agent-1', {
       endpoint: 'http://127.0.0.1:43210',
@@ -98,113 +137,102 @@ describe('SharedHostRuntime', () => {
     expect(await runtime.readCredentials('agent-1')).toBeNull();
   });
 
-  it('launches the watcher with --ensure-watch from a template beside watch.json', async () => {
-    await runtime.launch('agent-1', template(), {
-      restart: false,
-      replaceIdentity: false,
-      clearTakenOver: false,
-    });
+  it('runs the watcher in this process, from a template written as its configuration', async () => {
+    await runtime.writeCredentials('agent-1', RELAY);
+    await runtime.launch('agent-1', template(), LAUNCH);
     const root = join(dir, 'data', 'watchers', 'agent-1');
     expect(JSON.parse(readFileSync(join(root, 'watch.json'), 'utf8'))).toEqual({
       enabled: true,
       spawn: true,
     });
-    const launches = readFileSync(join(root, 'launches.log'), 'utf8').trim().split('\n');
-    expect(JSON.parse(launches[0]!)).toEqual([
-      root,
-      join(root, 'template.json'),
-      '--ensure-watch',
-      'false',
-    ]);
-    expect(statSync(join(root, 'template.json')).mode & 0o777).toBe(0o600);
-    expect(await runtime.observe('agent-1')).toMatchObject({
-      alive: false,
+    await waitFor(() => opened.length === 1, 'the watcher to open its stream');
+    expect(opened[0]).toMatchObject({ agentId: 'agent-1', scope: 'all', filter: 'addressed' });
+    const observation = await runtime.observe('agent-1');
+    expect(observation).toMatchObject({
+      alive: true,
       configured: { provider: 'claude', cwd: '/work/scout' },
       flags: { enabled: true, spawn: true },
-      health: null,
       failure: null,
       takenOver: null,
     });
-  });
+    expect(observation.health).toMatchObject({ pid: process.pid, current: true });
+    expect((await observeOnDisk(dataLayout(join(dir, 'data')), 'agent-1')).alive).toBe(true);
 
-  it('surfaces a launcher failure with its output', async () => {
-    process.env.FAKE_BUNDLE_FAIL = '1';
-    await expect(
-      runtime.launch('agent-1', template(), {
-        restart: false,
-        replaceIdentity: false,
-        clearTakenOver: false,
-      })
-    ).rejects.toThrow(/exit 4\): cannot launch/);
-  });
-
-  it('restarts by turning the watcher off, waiting it out, and launching again', async () => {
-    const root = join(dir, 'data', 'watchers', 'agent-1');
-    await runtime.launch('agent-1', template(), {
-      restart: false,
-      replaceIdentity: false,
-      clearTakenOver: false,
+    await runtime.stop('agent-1', { wait: true });
+    expect(await runtime.observe('agent-1')).toMatchObject({
+      alive: false,
+      flags: { enabled: false, spawn: false },
+      health: null,
     });
-    const watcher = await fakeWatcher(root);
-    mkdirSync(join(root, 'supervisor'), { recursive: true });
-    writeFileSync(join(root, 'supervisor', 'owner.json'), JSON.stringify({ pid: watcher.pid }));
-    writeFileSync(
-      join(root, 'taken-over.json'),
-      JSON.stringify({ at: 'x', reason: 'y', connectionId: 'z' })
-    );
-    expect((await runtime.observe('agent-1')).alive).toBe(true);
+    expect(opened[0]!.signal.aborted).toBe(true);
+  });
+
+  it('restarts into a new provider or directory, replacing the saved configuration', async () => {
+    await runtime.writeCredentials('agent-1', RELAY);
+    await runtime.launch('agent-1', template(), LAUNCH);
+    await waitFor(() => opened.length === 1, 'the first watcher');
     await runtime.launch('agent-1', template('/work/elsewhere', 'codex'), {
       restart: true,
       replaceIdentity: true,
       clearTakenOver: true,
     });
-    expect(watcher.exitCode).toBe(0);
-    const observation = await runtime.observe('agent-1');
-    expect(observation).toMatchObject({
-      alive: false,
+    await waitFor(() => opened.length === 2, 'the second watcher');
+    expect(opened[0]!.signal.aborted).toBe(true);
+    expect(await runtime.observe('agent-1')).toMatchObject({
+      alive: true,
       configured: { provider: 'codex', cwd: '/work/elsewhere' },
-      flags: { enabled: true, spawn: true },
-      takenOver: null,
     });
   });
 
-  it('reads health and failure files, and tells a live writer from a dead one', async () => {
+  it('starts a failed watcher again, and records its failure once it keeps failing', async () => {
+    await runtime.writeCredentials('agent-1', RELAY);
+    failOpens = 10;
+    await runtime.launch('agent-1', template(), LAUNCH);
+    await waitFor(() => attempts === 4, 'four attempts');
+    await waitFor(
+      () => existsSync(join(dir, 'data', 'watchers', 'agent-1', 'supervisor', 'failure.json')),
+      'the failure recorded'
+    );
+    const observation = await runtime.observe('agent-1');
+    expect(observation.alive).toBe(false);
+    expect(observation.failure).toMatch(/stream refused/);
+    await delay(100);
+    expect(attempts).toBe(4);
+  });
+
+  it('stops a watcher an earlier controller left running as a process of its own', async () => {
     const root = join(dir, 'data', 'watchers', 'agent-1');
     mkdirSync(join(root, 'supervisor'), { recursive: true });
-    writeFileSync(join(root, 'watch.json'), JSON.stringify({ enabled: true, spawn: true }));
-    const watcher = await fakeWatcher(root);
-    const healthFile = {
-      state: 'connected',
-      detail: null,
-      since: '2026-01-01T00:00:00Z',
-      placements: { 's-1': 'room-1' },
-      pid: watcher.pid,
-      updatedAt: '2026-01-01T00:00:00Z',
-    };
-    writeFileSync(join(root, 'health.json'), JSON.stringify(healthFile));
-    writeFileSync(join(root, 'shared-owner.lock'), JSON.stringify({ pid: watcher.pid }));
-    expect(await runtime.observe('agent-1')).toMatchObject({
-      alive: true,
-      health: { state: 'connected', current: true, placements: { 's-1': 'room-1' } },
-    });
-    await runtime.stop('agent-1', { wait: true });
+    const detached = await fakeWatcher(root);
+    writeFileSync(join(root, 'supervisor', 'owner.json'), JSON.stringify({ pid: detached.pid }));
+    await runtime.writeCredentials('agent-1', RELAY);
+    await runtime.launch('agent-1', template(), LAUNCH);
+    expect(detached.exitCode !== null || detached.signalCode !== null).toBe(true);
+    await waitFor(() => opened.length === 1, 'the watcher in this process');
+  });
+
+  it('stops every watcher when closed', async () => {
+    await runtime.writeCredentials('agent-1', RELAY);
+    await runtime.launch('agent-1', template(), LAUNCH);
+    await waitFor(() => opened.length === 1, 'the watcher');
+    await runtime.close();
+    expect(opened[0]!.signal.aborted).toBe(true);
+    expect((await runtime.observe('agent-1')).alive).toBe(false);
+  });
+
+  it('reads a recorded failure and a stand-down marker', async () => {
+    const root = join(dir, 'data', 'watchers', 'agent-1');
+    mkdirSync(join(root, 'supervisor'), { recursive: true });
+    writeFileSync(join(root, 'supervisor', 'failure.json'), JSON.stringify({ message: 'boom' }));
     writeFileSync(
-      join(root, 'supervisor', 'failure.json'),
-      JSON.stringify({ message: 'Shared SDK host exited with code 1.' })
+      join(root, 'taken-over.json'),
+      JSON.stringify({ at: 'x', reason: 'y', connectionId: 'z' })
     );
     expect(await runtime.observe('agent-1')).toMatchObject({
       alive: false,
-      flags: { enabled: false, spawn: false },
-      health: { current: false },
-      failure: 'Shared SDK host exited with code 1.',
+      failure: 'boom',
+      takenOver: { reason: 'y' },
     });
-  });
-
-  it('does not count a recorded PID that now names some other process', async () => {
-    const root = join(dir, 'data', 'watchers', 'agent-1');
-    mkdirSync(root, { recursive: true });
-    writeFileSync(join(root, 'shared-owner.lock'), JSON.stringify({ pid: process.pid }));
-    expect((await runtime.observe('agent-1')).alive).toBe(false);
   });
 
   it('probes a provider through the bundle', async () => {

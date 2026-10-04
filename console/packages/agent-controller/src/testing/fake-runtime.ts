@@ -1,4 +1,8 @@
-import type { ProviderReadiness, SharedHostConfig } from '@switch-console/agent-providers';
+import type {
+  OpenAgentStream,
+  ProviderReadiness,
+  SharedHostConfig,
+} from '@switch-console/agent-providers';
 import { ReasonedError } from '../errors';
 import {
   type AgentObservation,
@@ -25,6 +29,19 @@ export class FakeRuntime implements AgentRuntime {
   probes = 0;
   /** Thrown from the next launch, once. */
   failNextLaunch: Error | null = null;
+  /** What the controller gave it to open each agent's event stream. */
+  openStream: ((agentId: string) => OpenAgentStream) | null = null;
+  closed = false;
+
+  /** For `ControllerDeps.runtime`: keeps the stream opener the controller hands over. */
+  readonly build = (openStream: (agentId: string) => OpenAgentStream): FakeRuntime => {
+    this.openStream = openStream;
+    return this;
+  };
+
+  async close(): Promise<void> {
+    this.closed = true;
+  }
 
   observation(agentId: string): AgentObservation {
     let current = this.agents.get(agentId);

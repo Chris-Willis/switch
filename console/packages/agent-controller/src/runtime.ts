@@ -1,4 +1,4 @@
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, stat, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -7,20 +7,27 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import {
   clearTakenOver,
+  ensureSharedProcess,
+  inProcessSupervision,
+  type OpenAgentStream,
   type ProviderReadiness,
   providerReadinessSchema,
   readTakenOver,
   readWatchFlags,
+  runAgentHost,
+  SessionLinks,
+  sharedConfigSchema,
   type SharedHostConfig,
+  type Supervision,
   type TakenOver,
   WATCH_FLAGS_FILE,
-  WATCHER_HEALTH_FILE,
   type WatchFlags,
+  WatcherControl,
   type WatcherHealthFile,
-  watcherHealthFileSchema,
   watchFlagsSchema,
 } from '@switch-console/agent-providers';
 import { ConfigurationError, ReasonedError } from './errors';
+import { errorMessage, type Logger } from './log';
 import type { DataLayout } from './paths';
 import type { Provider } from './schemas';
 
@@ -62,7 +69,7 @@ export type LaunchOptions = {
 };
 
 /**
- * How the controller runs agents. `SharedHostRuntime` is the real one; tests
+ * How the controller runs agents. `InProcessRuntime` is the real one; tests
  * substitute a fake.
  */
 /** What an agent's watcher reads to reach Switch: the controller's relay, and a token for it. */
@@ -81,12 +88,22 @@ export interface AgentRuntime {
   /** Turns the watcher off; with `wait`, returns once it and its sessions are gone. */
   stop(agentId: string, options: { wait: boolean }): Promise<void>;
   probe(provider: Provider, binaryPath: string, cwd: string): Promise<ProviderReadiness>;
+  /** Stops every agent and its sessions: the controller is exiting. */
+  close(): Promise<void>;
 }
 
-/** How long a watcher asked to stop is given; its supervisor allows its own children 10 s. */
+/** How long a watcher asked to stop is given; each session host is allowed 20 s of it. */
 const STOP_TIMEOUT_MS = 30_000;
-const LAUNCH_TIMEOUT_MS = 60_000;
 const PROBE_TIMEOUT_MS = 90_000;
+/** Failures a watcher is started again after, within `CRASH_WINDOW_MS`. */
+const MAX_CRASHES = 3;
+const CRASH_WINDOW_MS = 10 * 60 * 1000;
+/**
+ * What a watcher run in the controller's process records as its build: never
+ * the shared-host bundle a detached watcher records, so one left by an
+ * earlier controller is replaced rather than taken for this one.
+ */
+const IN_PROCESS_BUILD = 'switch-agent-controller:in-process';
 
 async function writeAtomic(path: string, body: string): Promise<void> {
   const temporary = `${path}.${randomUUID()}`;
@@ -144,7 +161,7 @@ async function recordedPid(path: string): Promise<number | null> {
   return typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 }
 
-/** The owner records a watcher writes under its root: the worker's, then its supervisor's. */
+/** The owner records a watcher writes under its root: the worker's, then a detached one's supervisor's. */
 const OWNER_RECORDS = ['shared-owner.lock', join('supervisor', 'owner.json')];
 
 /** The shared host needs POSIX process control: macOS or Linux. */
@@ -155,22 +172,73 @@ export function assertSupportedPlatform(platform: NodeJS.Platform): void {
     );
 }
 
+/** What is on disk for one agent's watcher, read by a process that does not run it (`status`). */
+export async function observeOnDisk(
+  layout: DataLayout,
+  agentId: string
+): Promise<AgentObservation> {
+  const root = layout.watcherRoot(agentId);
+  const pid = await recordedPid(join(root, 'shared-owner.lock'));
+  return { ...(await readRoot(root)), alive: pid !== null && alive(pid) };
+}
+
+/** Everything about a watcher root but whether it runs. */
+async function readRoot(root: string): Promise<Omit<AgentObservation, 'alive'>> {
+  const config = await readOptional(join(root, 'config.json'));
+  let configured: AgentObservation['configured'] = null;
+  if (config !== null) {
+    const parsed = JSON.parse(config) as SharedHostConfig;
+    configured = { provider: parsed.start.provider, cwd: parsed.start.input.cwd };
+  }
+  let flags: WatchFlags | null = null;
+  try {
+    flags = await readWatchFlags(root);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  const failureText = await readOptional(join(root, 'supervisor', 'failure.json'));
+  const failure =
+    failureText === null
+      ? null
+      : String((JSON.parse(failureText) as { message?: unknown }).message ?? failureText);
+  return { configured, flags, health: null, failure, takenOver: await readTakenOver(root) };
+}
+
+type RunningWatcher = {
+  stop: AbortController;
+  done: Promise<void>;
+  control: WatcherControl;
+  sessions: Supervision & { close: () => Promise<void> };
+};
+
 /**
- * Runs each agent as Console runs a remote one: a detached room watcher from
- * the agent-providers shared-host bundle, in a state root of its own, driven
- * through the files it reads (`watch.json`, `config.json`) and observed
- * through the files it writes (`health.json`, `supervisor/failure.json`).
+ * Runs each agent's room watcher inside the controller's process, as Switch
+ * Console runs its own agents' watchers: the shared host's `runAgentHost`,
+ * fed its events by `openStream` rather than by a connection of its own, in a
+ * state root of its own driven through the files it reads (`watch.json`,
+ * `config.json`). Its sessions are the controller's child processes, so
+ * nothing an agent runs outlives the controller.
  *
- * A restart is a stop and a start: the watcher is turned off, waited out, and
- * launched again from the new template. The bundle's own `--restart` mode is
- * not used because it relaunches the root as a session host, not a watcher.
+ * A watcher that fails is started again after a short wait, at most
+ * `MAX_CRASHES` times in `CRASH_WINDOW_MS`; past that its failure is recorded
+ * and it stays down until a new revision or an explicit restart.
  */
-export class SharedHostRuntime implements AgentRuntime {
+export class InProcessRuntime implements AgentRuntime {
+  private readonly watchers = new Map<string, RunningWatcher>();
+  private readonly crashes = new Map<string, number[]>();
+  private readonly links = new SessionLinks();
+  private readonly lifetime = new AbortController();
+
   constructor(
     private readonly deps: {
       layout: DataLayout;
-      /** The `shared-host-daemon.mjs` bundle from agent-providers. */
+      /** The `shared-host-daemon.mjs` bundle from agent-providers: what each session runs. */
       bundlePath: string;
+      /** The stream the agent's watcher hears its events on. */
+      openStream: (agentId: string) => OpenAgentStream;
+      log: Logger;
+      /** How long a failed watcher waits before it is started again. */
+      crashBackoffMs: number;
     }
   ) {
     assertSupportedPlatform(process.platform);
@@ -244,41 +312,19 @@ export class SharedHostRuntime implements AgentRuntime {
 
   async observe(agentId: string): Promise<AgentObservation> {
     const root = this.deps.layout.watcherRoot(agentId);
-    let living = false;
-    for (const record of OWNER_RECORDS) {
-      const pid = await recordedPid(join(root, record));
-      if (pid !== null && (await ownsRoot(pid, root))) living = true;
-    }
-    const config = await readOptional(join(root, 'config.json'));
-    let configured: AgentObservation['configured'] = null;
-    if (config !== null) {
-      const parsed = JSON.parse(config) as SharedHostConfig;
-      configured = { provider: parsed.start.provider, cwd: parsed.start.input.cwd };
-    }
-    let flags: WatchFlags | null = null;
-    try {
-      flags = await readWatchFlags(root);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-    const healthText = await readOptional(join(root, WATCHER_HEALTH_FILE));
-    let health: AgentObservation['health'] = null;
-    if (healthText !== null) {
-      const parsed = watcherHealthFileSchema.parse(JSON.parse(healthText));
-      health = { ...parsed, current: await ownsRoot(parsed.pid, root) };
-    }
-    const failureText = await readOptional(join(root, 'supervisor', 'failure.json'));
-    const failure =
-      failureText === null
-        ? null
-        : String((JSON.parse(failureText) as { message?: unknown }).message ?? failureText);
+    const running = this.watchers.get(agentId);
+    const observation = await readRoot(root);
     return {
-      alive: living,
-      configured,
-      flags,
-      health,
-      failure,
-      takenOver: await readTakenOver(root),
+      ...observation,
+      alive: running !== undefined,
+      health: running
+        ? {
+            ...running.control.health(),
+            pid: process.pid,
+            updatedAt: new Date().toISOString(),
+            current: true,
+          }
+        : null,
     };
   }
 
@@ -286,32 +332,156 @@ export class SharedHostRuntime implements AgentRuntime {
     const root = this.deps.layout.watcherRoot(agentId);
     await mkdir(root, { recursive: true, mode: 0o700 });
     if (options.restart || options.replaceIdentity) await this.stop(agentId, { wait: true });
+    await this.stopDetached(root);
     if (options.replaceIdentity) await removeOptional(join(root, 'config.json'));
     if (options.clearTakenOver) await clearTakenOver(root);
     await this.writeFlags(root, { enabled: true, spawn: true });
-    const templatePath = join(root, 'template.json');
-    await writeAtomic(templatePath, JSON.stringify(template));
-    await this.runBundle([root, templatePath, '--ensure-watch', 'false'], LAUNCH_TIMEOUT_MS);
+    this.crashes.delete(agentId);
+    await this.ensure(agentId, root, template);
   }
 
   async stop(agentId: string, options: { wait: boolean }): Promise<void> {
     const root = this.deps.layout.watcherRoot(agentId);
     await mkdir(root, { recursive: true, mode: 0o700 });
     await this.writeFlags(root, { enabled: false, spawn: false });
+    const running = this.watchers.get(agentId);
+    if (!running) return;
+    running.stop.abort();
     if (!options.wait) return;
-    const deadline = Date.now() + STOP_TIMEOUT_MS;
-    for (;;) {
-      let running = false;
-      for (const record of OWNER_RECORDS) {
-        const pid = await recordedPid(join(root, record));
-        if (pid !== null && (await ownsRoot(pid, root))) running = true;
-      }
-      if (!running) return;
-      if (Date.now() > deadline)
-        throw new Error(
-          `The watcher for agent ${agentId} has not stopped ${STOP_TIMEOUT_MS / 1000} s after being turned off; see ${join(root, 'supervisor', 'worker.log')}.`
+    const stopped = await Promise.race([
+      running.done.then(() => true),
+      delay(STOP_TIMEOUT_MS).then(() => false),
+    ]);
+    if (!stopped)
+      throw new Error(
+        `The watcher for agent ${agentId} has not stopped ${STOP_TIMEOUT_MS / 1000} s after being turned off.`
+      );
+  }
+
+  /** Stops every watcher and every session: the controller is exiting. */
+  async close(): Promise<void> {
+    this.lifetime.abort();
+    await Promise.allSettled([...this.watchers.values()].map((running) => running.done));
+  }
+
+  /** Writes the watcher's configuration from `template` and starts it, unless it runs. */
+  private async ensure(agentId: string, root: string, template: SharedHostConfig): Promise<void> {
+    await ensureSharedProcess({
+      root,
+      config: template,
+      resuming: false,
+      watcher: true,
+      restart: false,
+      startSource: null,
+      supervision: {
+        links: null,
+        build: IN_PROCESS_BUILD,
+        start: async ({ root: prepared, configPath }) => {
+          // What was written, not what was asked for: an earlier run's
+          // configuration keeps its session identity.
+          const written = sharedConfigSchema.parse(JSON.parse(await readFile(configPath, 'utf8')));
+          this.start(agentId, prepared, written);
+        },
+        stop: async () => {
+          await this.stop(agentId, { wait: true });
+        },
+      },
+    });
+  }
+
+  private start(agentId: string, root: string, config: SharedHostConfig): void {
+    if (this.watchers.has(agentId) || this.lifetime.signal.aborted) return;
+    const stop = new AbortController();
+    const signal = AbortSignal.any([stop.signal, this.lifetime.signal]);
+    const control = new WatcherControl();
+    const sessions = inProcessSupervision(this.deps.bundlePath, this.links);
+    const done = (async () => {
+      try {
+        await runAgentHost(
+          root,
+          config,
+          signal,
+          sessions,
+          control,
+          null,
+          this.deps.openStream(agentId)
         );
-      await delay(200);
+      } finally {
+        await sessions.close();
+      }
+    })()
+      .then(
+        () => {
+          this.deps.log.info('Watcher stopped', { agentId });
+          return false;
+        },
+        (error: unknown) => this.crashed(agentId, root, signal, error)
+      )
+      .then((again) => {
+        if (this.watchers.get(agentId)?.done === done) this.watchers.delete(agentId);
+        if (again) this.start(agentId, root, config);
+      });
+    this.watchers.set(agentId, { stop, done, control, sessions });
+    this.deps.log.info('Watcher started', { agentId });
+  }
+
+  /** Whether a watcher that failed is started again. */
+  private async crashed(
+    agentId: string,
+    root: string,
+    signal: AbortSignal,
+    error: unknown
+  ): Promise<boolean> {
+    const message = errorMessage(error);
+    if (signal.aborted) {
+      this.deps.log.info('Watcher stopped', { agentId, error: message });
+      return false;
+    }
+    const now = Date.now();
+    const recent = (this.crashes.get(agentId) ?? []).filter((at) => now - at < CRASH_WINDOW_MS);
+    recent.push(now);
+    this.crashes.set(agentId, recent);
+    if (recent.length > MAX_CRASHES) {
+      this.deps.log.error('Watcher failed too often; it stays down until restarted', {
+        agentId,
+        error: message,
+      });
+      await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
+      await writeAtomic(join(root, 'supervisor', 'failure.json'), JSON.stringify({ message }));
+      return false;
+    }
+    this.deps.log.warn('Watcher failed; starting it again', {
+      agentId,
+      error: message,
+      attempt: recent.length,
+    });
+    await delay(this.deps.crashBackoffMs * 2 ** (recent.length - 1), undefined, {
+      signal: this.lifetime.signal,
+    }).catch(() => {});
+    if (this.lifetime.signal.aborted) return false;
+    const flags = await readWatchFlags(root).catch(() => null);
+    return flags?.enabled === true;
+  }
+
+  /**
+   * Stops a watcher an earlier version of the controller left running as a
+   * detached process of its own, so this one can take its root.
+   */
+  private async stopDetached(root: string): Promise<void> {
+    for (const record of OWNER_RECORDS) {
+      const path = join(root, record);
+      const pid = await recordedPid(path);
+      if (pid === null || pid === process.pid || !(await ownsRoot(pid, root))) continue;
+      this.deps.log.warn('Stopping a watcher left running by an earlier controller', { root, pid });
+      process.kill(pid, 'SIGTERM');
+      const deadline = Date.now() + STOP_TIMEOUT_MS;
+      while (alive(pid)) {
+        if (Date.now() > deadline) {
+          process.kill(pid, 'SIGKILL');
+          break;
+        }
+        await delay(200);
+      }
     }
   }
 
@@ -327,30 +497,5 @@ export class SharedHostRuntime implements AgentRuntime {
 
   private async writeFlags(root: string, flags: WatchFlags): Promise<void> {
     await writeAtomic(join(root, WATCH_FLAGS_FILE), JSON.stringify(watchFlagsSchema.parse(flags)));
-  }
-
-  private async runBundle(args: string[], timeoutMs: number): Promise<string> {
-    const child = spawn(process.execPath, [this.deps.bundlePath, ...args], {
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()));
-    child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
-    const timer = setTimeout(() => child.kill('SIGTERM'), timeoutMs);
-    try {
-      const code = await new Promise<number | null>((resolve, reject) => {
-        child.once('error', reject);
-        child.once('exit', (exitCode) => resolve(exitCode));
-      });
-      if (code !== 0)
-        throw new Error(
-          `The shared host launcher failed (exit ${code ?? 'signal'}): ${(stderr || stdout).trim().slice(-2000)}`
-        );
-      return stdout;
-    } finally {
-      clearTimeout(timer);
-    }
   }
 }

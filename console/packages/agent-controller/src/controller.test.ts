@@ -3,14 +3,13 @@ import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { type AgentBridgeEvent, SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
+import type { AgentBridgeEvent } from '@sandboxaq/switch-agent-runtime';
 import { callOperation, SESSION_SELECTOR_HEADERS } from '@sandboxaq/switch-agent-runtime/hosted';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type ControllerDeps, type ControllerExit, runController } from './controller';
 import { ConfigurationError } from './errors';
 import { adoptIdentity } from './handover';
 import { silentLogger } from './log';
-import type { RelayCredentials } from './runtime';
 import type { AgentAssignment, StatusReport } from './schemas';
 import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore } from './secrets';
 import { ControllerStore } from './store';
@@ -65,7 +64,7 @@ function deps(server = core.url): ControllerDeps {
   return {
     store,
     secrets,
-    runtime,
+    runtime: runtime.build,
     locator: new FakeLocator(),
     fetch,
     log: silentLogger,
@@ -81,20 +80,20 @@ function deps(server = core.url): ControllerDeps {
       streamIdleMs: 2_000,
       streamInitialBackoffMs: 10,
       streamMaxBackoffMs: 50,
-      relay: { heartbeatTtlMs: 6_000, heartbeatIntervalS: 2, sweepMs: 50, keepaliveMs: 15_000 },
-      relayBufferLimit: 100,
+      eventBufferLimit: 100,
     },
   };
 }
 
 const quiet = { debug: () => {}, warn: () => {}, error: () => {} };
 
-/** The agent's watcher, as the shared host runs it: the runtime's client, on the credentials the controller wrote. */
-function watcher(credentials: RelayCredentials, agentId = 'agent-1') {
+/** The agent's watcher, as the runtime runs it in the controller's process: its stream comes from the controller. */
+function watcher(agentId = 'agent-1') {
   const events: AgentBridgeEvent[] = [];
   const controller = new AbortController();
   watchers.push(controller);
-  const stream = new SwitchEventStream({
+  const credentials = runtime.credentials.get(agentId)!;
+  const stream = runtime.openStream!(agentId)({
     creds: { agentId, apiEndpoint: credentials.endpoint, token: credentials.token },
     connectionId: `controller-${agentId}`,
     worker: null,
@@ -194,7 +193,7 @@ describe('runController', () => {
     // Nothing assigned yet when the stream first opened: every agent starts at head.
     expect(core.opens[0]).toEqual({});
 
-    const { events } = watcher(credentials);
+    const { events } = watcher();
     await waitFor(
       () => reportsFor('agent-1').some((entry) => entry.process === 'running' && entry.attached),
       'a status report with the agent attached'
@@ -236,6 +235,7 @@ describe('runController', () => {
     );
     expect(await secrets.get(CONTROLLER_CREDENTIAL)).toBeNull();
     expect(store.revokedAt()).not.toBeNull();
+    expect(runtime.closed).toBe(true);
     await expect(fetch(`${credentials.endpoint}/version`)).rejects.toThrow();
   }, 20_000);
 
@@ -243,13 +243,13 @@ describe('runController', () => {
     core.setAssignment({ revision: 1, agents: [agent(1)] });
     running = runController(deps(), stop.signal);
     await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
-    const { stream, events } = watcher(runtime.credentials.get('agent-1')!);
+    const { stream, events } = watcher();
     await waitFor(() => reportsFor('agent-1').at(-1)?.attached === true, 'the watcher attached');
     core.pushEvent('agent-1', 5, addressed(5));
     await waitFor(() => events.length === 1, 'the event');
     await waitFor(() => store.cursors().get('agent-1') === 5, 'the cursor confirmed');
 
-    expect(core.beatPlacements.at(-1)).toEqual({});
+    expect(core.beatPlacements.at(-1) ?? {}).toEqual({});
     await stream.replacePlacements({ 'session-1': 'room-a' });
     // A beat already on its way still carries the old placements; the next one has the new.
     await waitFor(
@@ -283,33 +283,7 @@ describe('runController', () => {
     expect(await running).toBe('stopped');
   }, 20_000);
 
-  it('keeps a watcher that outlived the controller, when the relay gets its port back', async () => {
-    const port = await freePort();
-    const kept: RelayCredentials = { endpoint: `http://127.0.0.1:${port}`, token: 'swlr_kept' };
-    core.setAssignment({ revision: 1, agents: [agent(1)] });
-    store.saveRelayPort(port);
-    store.saveAssignment(core.assignment, '"1"', '2026-01-01T00:00:00Z');
-    store.recordApplied('agent-1', 1, '2026-01-01T00:00:00Z');
-    await runtime.launch('agent-1', runtimeTemplate(), {
-      restart: false,
-      replaceIdentity: false,
-      clearTakenOver: false,
-    });
-    await runtime.writeCredentials('agent-1', kept);
-    runtime.calls.length = 0;
-    running = runController(deps(), stop.signal);
-    await waitFor(() => core.statusReports.length > 0, 'a status report');
-    expect(runtime.launches()).toEqual([]);
-    expect(runtime.credentials.get('agent-1')).toEqual(kept);
-    const response = await fetch(`${kept.endpoint}/agents/agent-1/ops`, {
-      headers: { Authorization: `Bearer ${kept.token}` },
-    });
-    expect(response.status).toBe(200);
-    stop.abort();
-    expect(await running).toBe('stopped');
-  });
-
-  it('points a running watcher at the new port, and restarts it, when its old one is taken', async () => {
+  it('points a watcher at the relay’s new port, and restarts it, when its old one is taken', async () => {
     const port = await freePort();
     const blocker = createServer();
     blockers.push(blocker);

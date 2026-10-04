@@ -298,8 +298,7 @@ app.on('before-quit', (event) => {
       ]).catch((e) => {
         log.error('Failed to stop local SDK hosts:', e);
       }),
-      // The embedded agents controllers stop; the managed agents' watchers are
-      // detached and keep running, and reconnect when Console starts them again.
+      // The embedded agents controllers stop, and their agents and sessions with them.
       embeddedControllerService.dispose().catch((e) => {
         log.error('Failed to stop the embedded agents controllers:', e);
       }),

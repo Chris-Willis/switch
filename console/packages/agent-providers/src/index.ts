@@ -53,6 +53,7 @@ export type { SharedHostOptions } from './host/shared-host';
 export {
   detachedSupervision,
   ensureSharedProcess,
+  inProcessSupervision,
   liveSupervisor,
   sharedSessionRoot,
 } from './host/launch';

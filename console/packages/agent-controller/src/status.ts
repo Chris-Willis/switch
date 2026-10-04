@@ -220,7 +220,7 @@ export function mapAgentProcess(input: {
   assignment: AgentAssignment;
   row: AgentRow | null;
   observation: AgentObservation;
-  /** The agent's events flow on the controller stream and its watcher is connected to the relay. */
+  /** The agent's events flow on the controller stream and its watcher is taking them. */
   relayAttached: boolean;
   nowMs: number;
 }): Mapped {

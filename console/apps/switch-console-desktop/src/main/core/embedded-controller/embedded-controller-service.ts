@@ -284,7 +284,7 @@ export class EmbeddedControllerService {
     this.phases.delete(serverId);
   }
 
-  /** Stops every controller (SIGTERM) at quit. Their agents keep running and reconnect next launch. */
+  /** Stops every controller (SIGTERM) at quit, and with it its agents and their sessions. */
   async dispose(): Promise<void> {
     this.disposed = true;
     await Promise.all(
