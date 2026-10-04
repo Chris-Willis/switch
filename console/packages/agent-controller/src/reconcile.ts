@@ -27,7 +27,7 @@ export type StartAction = {
 
 export type Action =
   | StartAction
-  /** `write` is false when nothing is running and the watcher is already off: only the record moves. */
+  /** `write` is false when nothing is running and the agent host is already off: only the record moves. */
   | { kind: 'stop'; agentId: string; revision: number; write: boolean }
   | { kind: 'remove'; agentId: string }
   | { kind: 'invalid'; agentId: string; revision: number; detail: string; stop: boolean }
@@ -50,11 +50,11 @@ export function definitionProblem(entry: AgentAssignment): string | null {
  *
  * Running agents are started when never applied or when their revision moved
  * (a restart, so the new definition takes effect), and started again when
- * their watcher is gone without a recorded failure (a reboot, say) once the
- * launch grace has passed, so a watcher still coming up is not launched
- * twice. A running watcher whose relay credentials were just rewritten (the
+ * their agent host is gone without a recorded failure (a reboot, say) once the
+ * launch grace has passed, so an agent host still coming up is not launched
+ * twice. A running agent host whose relay credentials were just rewritten (the
  * relay came back on another port) is restarted, since it reads them only
- * when it starts. A watcher that failed, or stood down because another client
+ * when it starts. An agent host that failed, or stood down because another client
  * took its connection, stays down until a new revision or an explicit
  * restart; one that failed on its relay token is relaunched only when the
  * credentials were rewritten since. A revision older than the one applied is
@@ -143,7 +143,7 @@ export function planReconcile(input: {
           restart: true,
           replaceIdentity: false,
           clearTakenOver: false,
-          why: 'its watcher is being turned off',
+          why: 'its agent host is being turned off',
         });
       else if (credentialsChanged)
         actions.push({
@@ -167,7 +167,7 @@ export function planReconcile(input: {
         });
       continue;
     }
-    // Launched moments ago: the watcher writes the records that show it alive
+    // Launched moments ago: the agent host writes the records that show it alive
     // only once it is up, and launching again now would race the first.
     if (row && input.nowMs - Date.parse(row.changedAt) < LAUNCH_GRACE_MS) continue;
     actions.push({
@@ -175,7 +175,7 @@ export function planReconcile(input: {
       restart: false,
       replaceIdentity: false,
       clearTakenOver: false,
-      why: 'its watcher is not running',
+      why: 'its agent host is not running',
     });
   }
   for (const row of input.rows)
@@ -278,7 +278,7 @@ export async function executeAction(action: Action, deps: ReconcileDeps): Promis
       deps.log.info('Stopped agent', { agentId: action.agentId, revision: action.revision });
       return;
     case 'remove':
-      // An id that was never safe to put in a path never got a watcher or a key.
+      // An id that was never safe to put in a path never got an agent host or a key.
       if (isSafeSegment(action.agentId)) {
         await deps.runtime.stop(action.agentId, { wait: false });
         await deps.runtime.deleteCredentials(action.agentId);

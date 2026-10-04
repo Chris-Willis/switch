@@ -1612,6 +1612,53 @@ it('hands a relayed command to the session it names, and only if it runs here', 
   }
 });
 
+it('hands a room control to the session working in its room, when Switch names only the room', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-room-control-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const placed = await existing(root, config);
+  await writeFile(
+    join(root, 'placements.json'),
+    JSON.stringify({ placements: { [placed.sessionId]: 'room-a' } })
+  );
+  const hosts = sessionHosts();
+  await hosts.start(placed.sessionRoot);
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onSessionCommand!({ sessionId: null, roomId: 'room-a', commandId: 'c1' });
+    await streams[0]!.onSessionCommand!({ sessionId: null, roomId: 'room-z', commandId: 'c2' });
+    expect(hosts.to(placed.sessionRoot)).toEqual([
+      {
+        type: 'command',
+        command: { sessionId: placed.sessionId, commandId: 'c1' },
+        requesterName: null,
+      },
+    ]);
+    expect(
+      warn.mock.calls.some((call) =>
+        String(call[0]).includes(
+          'Dropped command c2: no session of this agent works in room room-z'
+        )
+      )
+    ).toBe(true);
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
 it('refuses to run without being the parent of its sessions', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-detached-'));
   roots.push(root);

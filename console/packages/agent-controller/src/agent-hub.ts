@@ -14,15 +14,15 @@ import type {
 } from './schemas';
 
 /**
- * Hands each managed agent's events from the controller stream to its watcher,
+ * Hands each managed agent's events from the controller stream to its agent host,
  * which runs in this process, and keeps what the controller tells Switch for
- * it: how far the watcher has got (its confirmed cursor) and which room each of
+ * it: how far the agent host has got (its confirmed cursor) and which room each of
  * its sessions works in (its placements).
  *
  * Every agent's events arrive on the one controller stream, whether or not its
- * watcher is running. They are held here until the watcher takes them, up to
- * `bufferLimit`; the cursor moves only once the watcher has taken an event, so
- * a controller that restarts resumes each agent from what its watcher really
+ * host is running. They are held here until the agent host takes them, up to
+ * `bufferLimit`; the cursor moves only once the agent host has taken an event, so
+ * a controller that restarts resumes each agent from what its agent host really
  * had.
  */
 
@@ -32,7 +32,7 @@ export type AgentHubDeps = {
   onCursor: (agentId: string, cursor: number) => void;
   /** Something `attached()` or `sessionRooms()` reads changed. */
   onChange: () => void;
-  /** The most events held per agent while its watcher is not taking them; past it the oldest go, and it is told. */
+  /** The most events held per agent while its agent host is not taking them; past it the oldest go, and it is told. */
   bufferLimit: number;
 };
 
@@ -48,11 +48,11 @@ type GapData = {
   reason: string;
 };
 
-/** The agent's watcher, as the stream it opened. */
-type Watcher = {
+/** The agent host, as the stream it opened. */
+type AgentHostLink = {
   deps: SwitchEventStreamDeps;
   started: boolean;
-  /** The last sequence handed to the watcher (or skipped); null until the agent's head is known. */
+  /** The last sequence handed to the agent host (or skipped); null until the agent's head is known. */
   cursor: number | null;
   connected: boolean;
   delivering: boolean;
@@ -67,20 +67,20 @@ type AgentState = {
   rooms: Set<string> | null;
   /** The highest sequence known for this agent. */
   head: number | null;
-  /** At or below this, nothing is held: a watcher starting there is told of a gap. */
+  /** At or below this, nothing is held: an agent host starting there is told of a gap. */
   droppedThrough: number;
   /** The cursor the controller resumes the agent from upstream. */
   confirmed: number | null;
   buffer: Buffered[];
   /** Core reset the agent's numbering (it restarted). */
   reset: { reason: string; rooms: string[] } | null;
-  /** Each of its sessions' room, as its watcher last stated. */
+  /** Each of its sessions' room, as its agent host last stated. */
   placements: Map<string, string>;
-  watcher: Watcher | null;
+  host: AgentHostLink | null;
   overflowing: boolean;
 };
 
-/** Whether a watcher filtering to what addresses the agent is handed this event, as Switch decides. */
+/** Whether an agent host filtering to what addresses the agent is handed this event, as Switch decides. */
 export function isNotifiable(type: string, payload: Record<string, unknown>): boolean {
   if (type === 'message') return payload.addressed === true;
   if (type === 'room_join') return payload.listening === true;
@@ -140,20 +140,20 @@ export class AgentHub {
     return cursors;
   }
 
-  /** For each agent whose running watcher has sessions placed in rooms, those rooms, sorted. */
+  /** For each agent whose running agent host has sessions placed in rooms, those rooms, sorted. */
   sessionRooms(): Record<string, string[]> {
     const placements: Record<string, string[]> = {};
     for (const agent of this.agents.values()) {
-      if (!agent.watcher?.started || agent.watcher.closed) continue;
+      if (!agent.host?.started || agent.host.closed) continue;
       const rooms = new Set(agent.placements.values());
       if (rooms.size) placements[agent.agentId] = [...rooms].sort();
     }
     return placements;
   }
 
-  /** The agent's events flow on the controller stream and its watcher is taking them. */
+  /** The agent's events flow on the controller stream and its agent host is taking them. */
   attached(agentId: string): boolean {
-    return this.agents.get(agentId)?.watcher?.connected ?? false;
+    return this.agents.get(agentId)?.host?.connected ?? false;
   }
 
   /**
@@ -170,11 +170,11 @@ export class AgentHub {
     return rooms.size === 1 ? [...rooms][0]! : null;
   }
 
-  /** Forgets the agent: it is no longer assigned here. Its watcher has been stopped. */
+  /** Forgets the agent: it is no longer assigned here. Its host has been stopped. */
   forget(agentId: string): void {
     const agent = this.agents.get(agentId);
     if (!agent) return;
-    if (agent.watcher) agent.watcher.closed = true;
+    if (agent.host) agent.host.closed = true;
     this.agents.delete(agentId);
     this.deps.onChange();
   }
@@ -205,11 +205,11 @@ export class AgentHub {
     if (agent.head === null) agent.head = fromSeq;
     else if (fromSeq > agent.head) {
       // Switch starts the agent past what is held here: whatever lay between
-      // is not coming, and a watcher behind it is told so.
+      // is not coming, and an agent host behind it is told so.
       agent.head = fromSeq;
       agent.droppedThrough = Math.max(agent.droppedThrough, fromSeq);
     }
-    if (agent.watcher?.started && agent.watcher.cursor === null) agent.watcher.cursor = agent.head;
+    if (agent.host?.started && agent.host.cursor === null) agent.host.cursor = agent.head;
     this.deps.log.info('Agent attached to the controller stream', { agentId, fromSeq });
     this.refresh(agent);
     this.pump(agent);
@@ -228,7 +228,7 @@ export class AgentHub {
   }
 
   /**
-   * A domain event: held until the watcher takes it. One already held (Switch
+   * A domain event: held until the agent host takes it. One already held (Switch
    * replays from where the connection opened each time the stream
    * reattaches) is dropped.
    */
@@ -243,7 +243,7 @@ export class AgentHub {
       notifiable: isNotifiable(frame.event.type, frame.event.payload),
       data,
     });
-    if (agent.watcher?.started && agent.watcher.cursor === null) agent.watcher.cursor = seq - 1;
+    if (agent.host?.started && agent.host.cursor === null) agent.host.cursor = seq - 1;
     agent.head = seq;
     this.pump(agent);
     this.trim(agent);
@@ -252,8 +252,8 @@ export class AgentHub {
   /**
    * Switch could not serve the agent's cursor. A reset (Switch restarted, so
    * its numbering went back: resuming below what is held) clears what is held
-   * and goes to the watcher now. A gap resuming past what is held takes its
-   * place in the buffer, so the watcher meets it in order. One resuming at or
+   * and goes to the agent host now. A gap resuming past what is held takes its
+   * place in the buffer, so the agent host meets it in order. One resuming at or
    * below it describes events already held — a reattached stream starting
    * from where the connection opened — and is not passed on.
    */
@@ -287,10 +287,10 @@ export class AgentHub {
       agent.reset = { reason: data.reason, rooms: data.rooms ?? [] };
       agent.confirmed = resumedAt;
       this.deps.onCursor(agentId, resumedAt);
-      const watcher = agent.watcher;
-      if (watcher?.started && !watcher.closed) {
+      const host = agent.host;
+      if (host?.started && !host.closed) {
         void this.tell(agent, data);
-        watcher.cursor = resumedAt;
+        host.cursor = resumedAt;
       }
       return;
     }
@@ -300,32 +300,28 @@ export class AgentHub {
     this.trim(agent);
   }
 
-  /** A room control, for the session placed in its room. */
+  /**
+   * A room control (`!reset`, `!compact`, `!interrupt`), for whichever of the
+   * agent's sessions works in its room: the agent host decides which.
+   */
   sessionCommand(frame: AgentSessionCommandFrame): void {
     const { agent_id: agentId, command } = frame;
     const origin = command.origin as { roomId?: unknown } | undefined;
     const roomId = frame.room_id ?? (typeof origin?.roomId === 'string' ? origin.roomId : null);
     const agent = this.agents.get(agentId);
-    const sessionId = agent && roomId ? this.sessionIn(agent, roomId) : null;
-    if (!agent || !sessionId) {
+    const host = agent ? this.running(agent) : null;
+    if (!roomId || !host?.deps.onSessionCommand) {
       this.deps.log.warn(
-        'Dropped a room control: no session of the agent is placed in its room here',
+        roomId
+          ? 'Dropped a room control: the agent host is not running'
+          : 'Dropped a room control that names no room',
         { agentId, roomId, commandId: command.commandId }
       );
       return;
     }
-    const watcher = this.running(agent);
-    if (!watcher?.deps.onSessionCommand) {
-      this.deps.log.warn('Dropped a room control: the agent’s watcher is not running', {
-        agentId,
-        roomId,
-        commandId: command.commandId,
-      });
-      return;
-    }
-    const relayed = { ...command, sessionId } as unknown as SessionCommand;
-    void Promise.resolve(watcher.deps.onSessionCommand(relayed)).catch((error: unknown) =>
-      this.deps.log.error('The watcher failed a room control', {
+    const relayed = { ...command, sessionId: null, roomId } as unknown as SessionCommand;
+    void Promise.resolve(host.deps.onSessionCommand(relayed)).catch((error: unknown) =>
+      this.deps.log.error('The agent host failed a room control', {
         agentId,
         commandId: command.commandId,
         error: errorMessage(error),
@@ -336,21 +332,21 @@ export class AgentHub {
   approvalOutcome(frame: AgentApprovalOutcomeFrame): void {
     const { agent_id: agentId } = frame;
     const agent = this.agents.get(agentId);
-    const watcher = agent ? this.running(agent) : null;
+    const host = agent ? this.running(agent) : null;
     const outcome = approvalOutcome(frame.outcome);
     if (!outcome) {
       this.deps.log.warn('Dropped an unreadable approval outcome', { agentId });
       return;
     }
-    if (!watcher?.deps.onApprovalOutcome) {
+    if (!host?.deps.onApprovalOutcome) {
       this.deps.log.warn(
-        'An approval outcome arrived while the agent’s watcher is not running; Switch sends it again until it is delivered',
+        'An approval outcome arrived while the agent host is not running; Switch sends it again until it is delivered',
         { agentId, requestId: outcome.request_id }
       );
       return;
     }
-    void Promise.resolve(watcher.deps.onApprovalOutcome(outcome)).catch((error: unknown) =>
-      this.deps.log.error('The watcher failed an approval outcome', {
+    void Promise.resolve(host.deps.onApprovalOutcome(outcome)).catch((error: unknown) =>
+      this.deps.log.error('The agent host failed an approval outcome', {
         agentId,
         requestId: outcome.request_id,
         error: errorMessage(error),
@@ -358,16 +354,16 @@ export class AgentHub {
     );
   }
 
-  // -- The watcher's end ------------------------------------------------------
+  // -- The agent host's end ------------------------------------------------------
 
   /**
-   * The stream the agent's watcher hears its events on. One watcher per agent:
+   * The stream the agent's host hears its events on. One agent host per agent:
    * a newer one replaces an older still open, which hears nothing more.
    */
   open(agentId: string, deps: SwitchEventStreamDeps): AgentEventStream {
     const agent = this.agent(agentId);
-    if (agent.watcher) agent.watcher.closed = true;
-    const watcher: Watcher = {
+    if (agent.host) agent.host.closed = true;
+    const host: AgentHostLink = {
       deps,
       started: false,
       cursor: null,
@@ -375,14 +371,14 @@ export class AgentHub {
       delivering: false,
       closed: false,
     };
-    agent.watcher = watcher;
+    agent.host = host;
     agent.placements.clear();
     deps.signal.addEventListener(
       'abort',
       () => {
-        watcher.closed = true;
-        if (agent.watcher === watcher) {
-          agent.watcher = null;
+        host.closed = true;
+        if (agent.host === host) {
+          agent.host = null;
           agent.placements.clear();
         }
         this.deps.onChange();
@@ -391,14 +387,14 @@ export class AgentHub {
     );
     return {
       start: () => {
-        if (watcher.started || watcher.closed) return;
-        watcher.started = true;
-        watcher.cursor = deps.startCursor ?? agent.head;
+        if (host.started || host.closed) return;
+        host.started = true;
+        host.cursor = deps.startCursor ?? agent.head;
         if (
           agent.reset &&
-          watcher.cursor !== null &&
+          host.cursor !== null &&
           agent.head !== null &&
-          watcher.cursor > agent.head
+          host.cursor > agent.head
         ) {
           void this.tell(agent, {
             from_sequence: agent.head,
@@ -407,16 +403,16 @@ export class AgentHub {
             all_rooms: true,
             reason: agent.reset.reason,
           });
-          watcher.cursor = agent.head;
+          host.cursor = agent.head;
         }
         this.refresh(agent);
         this.pump(agent);
       },
       // Switch decides who may start a session from the agent's binding, not
-      // from what a watcher on this machine declares.
+      // from what an agent host on this machine declares.
       setSpawnCapable: () => {},
       replacePlacements: async (placements) => {
-        if (watcher.closed || agent.watcher !== watcher) return;
+        if (host.closed || agent.host !== host) return;
         const rooms = Object.values(placements);
         for (const roomId of new Set(rooms))
           if (agent.rooms && !agent.rooms.has(roomId))
@@ -449,7 +445,7 @@ export class AgentHub {
         buffer: [],
         reset: null,
         placements: new Map(),
-        watcher: null,
+        host: null,
         overflowing: false,
       };
       this.agents.set(agentId, agent);
@@ -457,14 +453,9 @@ export class AgentHub {
     return agent;
   }
 
-  private running(agent: AgentState): Watcher | null {
-    const watcher = agent.watcher;
-    return watcher && watcher.started && !watcher.closed ? watcher : null;
-  }
-
-  private sessionIn(agent: AgentState, roomId: string): string | null {
-    for (const [sessionId, placed] of agent.placements) if (placed === roomId) return sessionId;
-    return null;
+  private running(agent: AgentState): AgentHostLink | null {
+    const host = agent.host;
+    return host && host.started && !host.closed ? host : null;
   }
 
   private refreshAll(): void {
@@ -472,16 +463,16 @@ export class AgentHub {
     this.deps.onChange();
   }
 
-  /** Tells the watcher when it gains or loses the agent's connection. */
+  /** Tells the agent host when it gains or loses the agent's connection. */
   private refresh(agent: AgentState): void {
-    const watcher = this.running(agent);
-    if (!watcher) return;
+    const host = this.running(agent);
+    if (!host) return;
     const connected = this.upstream && agent.attached;
-    if (connected === watcher.connected) return;
-    watcher.connected = connected;
-    if (connected) watcher.deps.onConnected?.();
+    if (connected === host.connected) return;
+    host.connected = connected;
+    if (connected) host.deps.onConnected?.();
     else
-      watcher.deps.onDisconnected?.({
+      host.deps.onDisconnected?.({
         error: this.upstream
           ? 'Switch detached the agent from this controller.'
           : 'The controller is reconnecting to Switch.',
@@ -490,20 +481,20 @@ export class AgentHub {
   }
 
   private async tell(agent: AgentState, data: GapData): Promise<void> {
-    const watcher = this.running(agent);
-    if (!watcher) return;
+    const host = this.running(agent);
+    if (!host) return;
     const resumedAt = data.resumed_at;
     try {
-      await watcher.deps.onGap({
+      await host.deps.onGap({
         fromSequence: data.from_sequence,
         reason: data.reason,
         ...(data.rooms === undefined ? {} : { rooms: data.rooms }),
         ...(resumedAt === undefined
           ? {}
-          : { resumedAt, cursorReset: resumedAt < (watcher.cursor ?? 0) }),
+          : { resumedAt, cursorReset: resumedAt < (host.cursor ?? 0) }),
       });
     } catch (error) {
-      this.deps.log.error('The watcher failed a gap', {
+      this.deps.log.error('The agent host failed a gap', {
         agentId: agent.agentId,
         error: errorMessage(error),
       });
@@ -511,46 +502,49 @@ export class AgentHub {
   }
 
   /**
-   * Hands the watcher, one at a time and in order, everything past its cursor.
-   * Each event counts as taken once the watcher's handler resolves: it has
+   * Hands the agent host, one at a time and in order, everything past its cursor.
+   * Each event counts as taken once the agent host's handler resolves: it has
    * queued or journalled it by then.
    */
   private pump(agent: AgentState): void {
-    const watcher = this.running(agent);
-    if (!watcher || watcher.delivering || watcher.cursor === null) return;
-    watcher.delivering = true;
+    const host = this.running(agent);
+    if (!host || host.delivering || host.cursor === null) return;
+    host.delivering = true;
     void (async () => {
       try {
-        while (agent.watcher === watcher && !watcher.closed) {
-          if (watcher.cursor! < agent.droppedThrough) {
+        while (agent.host === host && !host.closed) {
+          if (host.cursor! < agent.droppedThrough) {
             await this.tell(agent, {
-              from_sequence: watcher.cursor!,
+              from_sequence: host.cursor!,
               resumed_at: agent.droppedThrough,
               rooms: [...(agent.rooms ?? [])].sort(),
               all_rooms: true,
               reason:
                 'the agents controller no longer holds events this far back; re-read room context',
             });
-            watcher.cursor = agent.droppedThrough;
+            host.cursor = agent.droppedThrough;
           }
-          const index = firstAfter(agent.buffer, watcher.cursor!);
+          const index = firstAfter(agent.buffer, host.cursor!);
           const item = agent.buffer[index];
           if (!item) break;
           if (item.kind === 'gap')
-            await this.tell(agent, { ...item.data, from_sequence: watcher.cursor! });
-          else if (item.notifiable) await watcher.deps.onEvent(item.data);
-          if (agent.watcher !== watcher || watcher.closed) break;
-          watcher.cursor = item.seq;
+            await this.tell(agent, { ...item.data, from_sequence: host.cursor! });
+          else if (item.notifiable) await host.deps.onEvent(item.data);
+          if (agent.host !== host || host.closed) break;
+          host.cursor = item.seq;
           this.confirm(agent, item.seq);
         }
       } catch (error) {
-        // The watcher has already recorded its own failure and is ending.
-        this.deps.log.error('The watcher failed an event; it stops, and resumes from its cursor', {
-          agentId: agent.agentId,
-          error: errorMessage(error),
-        });
+        // The agent host has already recorded its own failure and is ending.
+        this.deps.log.error(
+          'The agent host failed an event; it stops, and resumes from its cursor',
+          {
+            agentId: agent.agentId,
+            error: errorMessage(error),
+          }
+        );
       } finally {
-        watcher.delivering = false;
+        host.delivering = false;
         this.trim(agent);
       }
     })();
@@ -562,7 +556,7 @@ export class AgentHub {
     this.deps.onCursor(agent.agentId, cursor);
   }
 
-  /** Drops what the watcher has taken, and the oldest past the limit. */
+  /** Drops what the agent host has taken, and the oldest past the limit. */
   private trim(agent: AgentState): void {
     const floor = agent.confirmed ?? -1;
     let drop = 0;
@@ -578,7 +572,7 @@ export class AgentHub {
     }
     if (overflow && !agent.overflowing)
       this.deps.log.warn(
-        'The controller is holding more events than it keeps for an agent whose watcher is not taking them; the oldest are dropped, and the watcher is told when it starts',
+        'The controller is holding more events than it keeps for an agent whose host is not taking them; the oldest are dropped, and the agent host is told when it starts',
         { agentId: agent.agentId, limit: this.deps.bufferLimit }
       );
     agent.overflowing = overflow;

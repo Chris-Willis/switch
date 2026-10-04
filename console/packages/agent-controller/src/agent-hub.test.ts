@@ -263,12 +263,11 @@ describe('placements', () => {
 });
 
 describe('room controls and approvals', () => {
-  it('routes a room control to the session placed in its room, and drops one for a room with none', async () => {
+  it('hands a room control to the agent host with its room, for it to pick the session', async () => {
     hub.streamAttached();
     hub.attach(AGENT, 0, ['room-a', 'room-b']);
     const { stream, seen } = watcher();
     stream.start();
-    await stream.replacePlacements({ 'session-1': 'room-a' });
     hub.sessionCommand({
       agent_id: AGENT,
       room_id: 'room-a',
@@ -279,14 +278,16 @@ describe('room controls and approvals', () => {
       room_id: null,
       command: { commandId: 'command-2', origin: { roomId: 'room-b' } },
     });
-    await waitFor(() => seen.commands.length === 1, 'the room control');
+    hub.sessionCommand({ agent_id: AGENT, room_id: null, command: { commandId: 'command-3' } });
+    await waitFor(() => seen.commands.length === 2, 'both room controls');
     await delay(20);
     expect(seen.commands).toEqual([
-      expect.objectContaining({ commandId: 'command-1', sessionId: 'session-1' }),
+      expect.objectContaining({ commandId: 'command-1', sessionId: null, roomId: 'room-a' }),
+      expect.objectContaining({ commandId: 'command-2', sessionId: null, roomId: 'room-b' }),
     ]);
   });
 
-  it('passes approval outcomes to the running watcher', async () => {
+  it('passes approval outcomes to the running agent host', async () => {
     hub.streamAttached();
     hub.attach(AGENT, 0, ['room-a']);
     hub.approvalOutcome({

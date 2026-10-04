@@ -6,15 +6,15 @@ machine and reports their status. Run one per machine. It is the headless half o
 `docs/design/agent-controllers-v1.md`, and the wire contract in
 `docs/design/controller-contract-v1.md`.
 
-Each assigned agent runs as a room watcher inside the controller's process, the
-same watcher code (`runAgentHost` from `@switch-console/agent-providers`) Switch
+Each assigned agent runs as an agent host inside the controller's process, the
+same agent host code (`runAgentHost` from `@switch-console/agent-providers`) Switch
 Console runs for its own agents. Its sessions are the controller's child
 processes, started from the shared-host bundle
 (`@switch-console/agent-providers/shared-host-daemon`). The controller decides what
-runs, and the watchers do the running.
+runs, and the agent hosts do the running.
 
 The controller holds **one** event stream to Switch for all of its agents and hands
-each agent's events to its watcher directly. Each watcher makes its calls to Switch
+each agent's events to its agent host directly. Each agent host makes its calls to Switch
 through a **local relay** on a loopback port, which adds the controller's
 credentials. No agent holds a Switch credential: each is given a token that only the
 relay accepts.
@@ -75,14 +75,14 @@ node packages/agent-controller/dist/cli.mjs status [--data-dir <dir>]
   it.
 
 Stopping the controller stops its agents and their sessions: nothing an agent runs
-outlives the controller. The next `run` starts them again from where each watcher
+outlives the controller. The next `run` starts them again from where each agent host
 left off: its journal is on disk, and the controller resumes each agent's events
 from the cursor it last confirmed. A session that was mid-turn is reported as
 interrupted, and the next message resumes its conversation.
 
-A watcher that fails is started again on its own, after 2, 4 and 8 seconds; a fourth
+An agent host that fails is started again on its own, after 2, 4 and 8 seconds; a fourth
 failure within ten minutes is recorded, and the agent stays down until a new
-revision or an explicit restart. The other agents are not affected. A watcher left
+revision or an explicit restart. The other agents are not affected. An agent host left
 running as a separate process by an earlier version of the controller is stopped
 before this one starts its own.
 
@@ -125,7 +125,7 @@ switch-agent-controller run \
   the pipe, and keeps it in memory only (the memory secret store). The parent
   writes it and closes the pipe; the controller gives up after 10 s, and refuses a
   terminal. Nothing is written to `secrets/`, and nothing goes into the
-  environment, so the watchers and sessions the controller starts never inherit
+  environment, so the agent hosts and sessions the controller starts never inherit
   it. On revocation the controller forgets it, records the revocation in
   `controller.db` and exits with code `3`; the parent deletes its own copy.
 - `--shared-host-bundle` (or `SWITCH_CONTROLLER_SHARED_HOST_BUNDLE`) names the
@@ -135,7 +135,7 @@ switch-agent-controller run \
 
 Under Console the controller runs on Electron's own binary with
 `ELECTRON_RUN_AS_NODE=1`, as Console runs its local hosts. That variable stays in
-the environment the controller passes to the shared host, so the watchers and
+the environment the controller passes to the shared host, so the agent hosts and
 session hosts it launches with `process.execPath` run as Node too.
 
 ## How it works
@@ -147,7 +147,7 @@ session hosts it launches with `process.execPath` run as Node too.
 ### The controller stream
 
 - Opens a connection (`POST /v1/controllers/{id}/connection`) with each agent's
-  cursor (the last sequence its watcher confirmed, or `"head"`), then attaches the
+  cursor (the last sequence its agent host confirmed, or `"head"`), then attaches the
   stream (`GET /v1/controllers/{id}/events`). The stream carries every bound agent's
   events (`agent.event`, `agent.gap`, `agent.session_command`,
   `agent.approval_outcome`), its attachment and room membership (`agent.attached`,
@@ -156,9 +156,9 @@ session hosts it launches with `process.execPath` run as Node too.
 - Beats the connection (`POST .../connection/beat`) every `heartbeat_interval_s`
   (2 s) while the stream is attached, with each agent's confirmed cursor.
 - The open and every beat also carry `placements`: for each agent whose running
-  watcher has a session placed in a room, those rooms. It is the
+  agent host has a session placed in a room, those rooms. It is the
   whole current map each time (Switch replaces what it held), and agents with no
-  placement are left out, so a placement the watcher makes reaches Switch on the
+  placement are left out, so a placement the agent host makes reaches Switch on the
   next beat.
 - A dropped stream is reattached to the same connection. A connection Switch no
   longer knows (`unknown_connection`, `stale_generation`, or any `evicted` but
@@ -167,13 +167,13 @@ session hosts it launches with `process.execPath` run as Node too.
   15 s) counts as dropped.
 - `taken_over`, as a frame or a refusal, means another instance of this controller
   opened the stream. This one stops its agents and exits with code `4`.
-- Each agent's events are handed to its watcher one at a time, in order, and only
+- Each agent's events are handed to its agent host one at a time, in order, and only
   the events that address the agent (the `addressed` filter Switch applies to a
-  watcher). Events that arrive while its watcher is not running are held, up to
-  5,000; past that the oldest are dropped and the watcher is told of the gap when
+  agent host). Events that arrive while its agent host is not running are held, up to
+  5,000; past that the oldest are dropped and the agent host is told of the gap when
   it starts.
-- An agent's cursor moves only once its watcher has taken an event. It is kept in
-  `controller.db`, so a restarted controller resumes each agent where its watcher
+- An agent's cursor moves only once its agent host has taken an event. It is kept in
+  `controller.db`, so a restarted controller resumes each agent where its agent host
   stopped.
 - Placements say which room each session works in. An in-room command
   (`!reset`, `!compact`, `!interrupt`) arrives for a room and is handed to the
@@ -194,7 +194,7 @@ session hosts it launches with `process.execPath` run as Node too.
   typing, history, session activity and approvals. The relay sends them with the
   controller's access token, `X-Switch-Agent-Id`, and `X-Switch-Room-Id`: the room
   the calling session is placed in (from `X-Switch-Session-Id`), or else the
-  agent's only placed room. The watcher's connection id is not passed on.
+  agent's only placed room. The agent host's connection id is not passed on.
   Bodies are streamed both ways; a request body up to 1 MiB is read first so it can
   be sent once more if Switch refuses an access token that went stale early.
   Switch's answer, refusals included, is passed back as it came.
@@ -209,21 +209,21 @@ session hosts it launches with `process.execPath` run as Node too.
 - Reconciles each agent:
   - **Desired `running`, not yet applied:** writes the agent's relay credentials to
     `<data>/agents/<id>/credentials.json` (0600), prepares the working directory,
-    writes the watcher root `<data>/watchers/<id>/` (`watch.json`, `config.json`),
-    and starts the watcher in the controller's process.
+    writes the agent host root `<data>/agent hosts/<id>/` (`watch.json`, `config.json`),
+    and starts the agent host in the controller's process.
   - **Desired `running`, at a newer revision:** the same, as a restart. The
-    watcher is turned off and waited out, then launched again with the new
+    agent host is turned off and waited out, then launched again with the new
     template.
-  - **Desired `running`, watcher gone with no recorded failure** (after a
-    reboot, say): the watcher is launched again, once 15 s have passed since it
-    was last launched, so a watcher still coming up is not launched twice.
+  - **Desired `running`, agent host gone with no recorded failure** (after a
+    reboot, say): the agent host is launched again, once 15 s have passed since it
+    was last launched, so an agent host still coming up is not launched twice.
   - **Desired `running`, relay credentials rewritten** (the relay came back on
-    another port): a running watcher is restarted so it reads them.
-  - **Watcher failed or was taken over:** it is left down, and reported as
+    another port): a running agent host is restarted so it reads them.
+  - **Agent host failed or was taken over:** it is left down, and reported as
     `failed`. A new revision or an `agent.restart` brings it back. One that failed
     because the relay refused its token is relaunched once it has a new one.
   - **Desired `stopped`:** `watch.json` is set to `{enabled: false}`, and the
-    watcher and its sessions are stopped.
+    agent host and its sessions are stopped.
   - **Removed from the assignment:** it is stopped, the relay stops accepting its
     token, and its credentials file and cursor are deleted.
   - **Revision older than the one already applied:** the controller refuses it
@@ -233,10 +233,10 @@ session hosts it launches with `process.execPath` run as Node too.
   - **Machine:** platform, disk, memory, sessions.
   - **Providers:** installed (a `PATH` lookup and `--version`), and login (the
     bundle's `--probe`, cached for 10 minutes).
-  - **Agents:** each one read from its running watcher's state and
+  - **Agents:** each one read from its running agent host's state and
     `supervisor/failure.json`. `attached` means the agent's events are flowing on
     the controller stream (Switch attached it, and the stream is up) and its
-    watcher is taking them.
+    agent host is taking them.
 - Operations:
   - `agent.restart` and `provider.recheck` run.
   - Every other kind is answered `failed` with `operation_unsupported`.
@@ -248,7 +248,7 @@ session hosts it launches with `process.execPath` run as Node too.
 
 - No connector tokens and no sealed provider logins.
 - An in-room command for a room with no session placed here, or arriving while the
-  watcher is not connected, is dropped with a warning in the log. Switch keeps no
+  agent host is not connected, is dropped with a warning in the log. Switch keeps no
   copy to send again.
 - Only enrollment by one-time code, or adoption of an identity a parent process
   enrolled (see "Run by a parent process"). There is no EC2 machine secret, and
@@ -256,7 +256,7 @@ session hosts it launches with `process.execPath` run as Node too.
 - No session limit is enforced. `sessions_max` is reported as `0`.
 - OOM kills are not detected. `oom_kills` is always `0`.
 - `restarts_10m` counts the relaunches reconciling made, not the restarts after a
-  watcher failure.
+  agent host failure.
 - Windows is not supported.
 
 ## Where data lives
@@ -278,10 +278,10 @@ It holds:
 | `controller.db` | SQLite: identity, cached assignment, per-agent applied revision and local failures, restart times, each agent's stream cursor, the relay's port, status seq. Everything except the identity can be rebuilt from the server. |
 | `secrets/controller-credential` | The controller credential (see below). Absent when the credential is handed over with `--credential-stdin`. |
 | `agents/<id>/credentials.json` | Each agent's relay endpoint and relay token, in the layout the shared host reads. No Switch credential. |
-| `watchers/<id>/` | Each agent's watcher state root: `watch.json`, `config.json`, `health.json` (what `status` reads), its journal, and `supervisor/failure.json` once it has failed for good. |
+| `agent hosts/<id>/` | Each agent's agent host state root: `watch.json`, `config.json`, `health.json` (what `status` reads), its journal, and `supervisor/failure.json` once it has failed for good. |
 | `workspaces/<name>/` | The working directory of an agent whose definition sets none. |
 
-Sessions a watcher starts keep their state where the shared host puts it
+Sessions an agent host starts keep their state where the shared host puts it
 (`~/.local/state/switch/sdk-sessions/`), as they do under Console.
 
 ## The file secret store

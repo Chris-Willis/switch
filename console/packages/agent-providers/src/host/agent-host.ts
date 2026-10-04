@@ -1494,9 +1494,18 @@ export async function runAgentHost(
       // A room control (!reset, !interrupt) typed in one of the agent's rooms,
       // which only Switch sees. Handed to the session's host like any other.
       onSessionCommand: async (relayed) => {
-        const { requesterName, ...command } = relayed;
+        const { requesterName, roomId, ...rest } = relayed;
+        const sessionId =
+          rest.sessionId ?? (typeof roomId === 'string' ? placements.sessionIn(roomId) : null);
+        if (!sessionId) {
+          console.warn(
+            `Dropped command ${rest.commandId}: no session of this agent works in room ${String(roomId)}.`
+          );
+          return;
+        }
+        const command = { ...rest, sessionId };
         const taken = await askSession(
-          command.sessionId,
+          sessionId,
           {
             type: 'command',
             command,
@@ -1506,7 +1515,7 @@ export async function runAgentHost(
         );
         if (!taken)
           console.warn(
-            `Dropped command ${command.commandId}: session ${command.sessionId} is not running here.`
+            `Dropped command ${command.commandId}: session ${sessionId} is not running here.`
           );
       },
       onEvent: (event) => {

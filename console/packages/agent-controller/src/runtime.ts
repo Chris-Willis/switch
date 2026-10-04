@@ -36,21 +36,21 @@ import type { Provider } from './schemas';
 
 const execute = promisify(execFile);
 
-/** What is on disk and alive for one agent's watcher. */
+/** What is on disk and alive for one agent's agent host. */
 export type AgentObservation = {
-  /** The watcher or its supervisor is running. */
+  /** The agent host or its supervisor is running. */
   alive: boolean;
   /** The provider and working directory its saved configuration was created with. */
   configured: { provider: string; cwd: string } | null;
   flags: WatchFlags | null;
   /** `current` is false when the process that wrote it is gone. */
   health: (WatcherHealthFile & { current: boolean }) | null;
-  /** `supervisor/failure.json`: why the watcher stopped and was not restarted. */
+  /** `supervisor/failure.json`: why the agent host stopped and was not restarted. */
   failure: string | null;
   takenOver: TakenOver | null;
 };
 
-/** What an agent with no watcher root at all looks like. */
+/** What an agent with no agent host root at all looks like. */
 export function emptyObservation(): AgentObservation {
   return {
     alive: false,
@@ -63,11 +63,11 @@ export function emptyObservation(): AgentObservation {
 }
 
 export type LaunchOptions = {
-  /** Stop a running watcher first, so the new configuration takes effect. */
+  /** Stop a running agent host first, so the new configuration takes effect. */
   restart: boolean;
   /** Restart into a different provider or working directory: the saved configuration goes. */
   replaceIdentity: boolean;
-  /** Someone asked for this watcher on purpose: a standing-down marker is cleared. */
+  /** Someone asked for this agent host on purpose: a standing-down marker is cleared. */
   clearTakenOver: boolean;
 };
 
@@ -75,7 +75,7 @@ export type LaunchOptions = {
  * How the controller runs agents. `InProcessRuntime` is the real one; tests
  * substitute a fake.
  */
-/** What an agent's watcher reads to reach Switch: the controller's relay, and a token for it. */
+/** What an agent's agent host reads to reach Switch: the controller's relay, and a token for it. */
 export type RelayCredentials = { endpoint: string; token: string };
 
 export interface AgentRuntime {
@@ -88,22 +88,22 @@ export interface AgentRuntime {
   /** `directory` from the definition, or a workspace under the data directory. */
   workingDirectory(name: string, directory: string | null): Promise<string>;
   launch(agentId: string, template: SharedHostConfig, options: LaunchOptions): Promise<void>;
-  /** Turns the watcher off; with `wait`, returns once it and its sessions are gone. */
+  /** Turns the agent host off; with `wait`, returns once it and its sessions are gone. */
   stop(agentId: string, options: { wait: boolean }): Promise<void>;
   probe(provider: Provider, binaryPath: string, cwd: string): Promise<ProviderReadiness>;
   /** Stops every agent and its sessions: the controller is exiting. */
   close(): Promise<void>;
 }
 
-/** How long a watcher asked to stop is given; each session host is allowed 20 s of it. */
+/** How long an agent host asked to stop is given; each session host is allowed 20 s of it. */
 const STOP_TIMEOUT_MS = 30_000;
 const PROBE_TIMEOUT_MS = 90_000;
-/** Failures a watcher is started again after, within `CRASH_WINDOW_MS`. */
+/** Failures an agent host is started again after, within `CRASH_WINDOW_MS`. */
 const MAX_CRASHES = 3;
 const CRASH_WINDOW_MS = 10 * 60 * 1000;
 /**
- * What a watcher run in the controller's process records as its build: never
- * the shared-host bundle a detached watcher records, so one left by an
+ * What an agent host run in the controller's process records as its build: never
+ * the shared-host bundle a detached agent host records, so one left by an
  * earlier controller is replaced rather than taken for this one.
  */
 const IN_PROCESS_BUILD = 'switch-agent-controller:in-process';
@@ -164,7 +164,7 @@ async function recordedPid(path: string): Promise<number | null> {
   return typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 }
 
-/** The owner records a watcher writes under its root: the worker's, then a detached one's supervisor's. */
+/** The owner records an agent host writes under its root: the worker's, then a detached one's supervisor's. */
 const OWNER_RECORDS = ['shared-owner.lock', join('supervisor', 'owner.json')];
 
 /** The shared host needs POSIX process control: macOS or Linux. */
@@ -175,7 +175,7 @@ export function assertSupportedPlatform(platform: NodeJS.Platform): void {
     );
 }
 
-/** What is on disk for one agent's watcher, read by a process that does not run it (`status`). */
+/** What is on disk for one agent's agent host, read by a process that does not run it (`status`). */
 export async function observeOnDisk(
   layout: DataLayout,
   agentId: string
@@ -191,7 +191,7 @@ export async function observeOnDisk(
   return { ...(await readRoot(root)), alive: running, health };
 }
 
-/** Everything about a watcher root but whether it runs. */
+/** Everything about an agent host root but whether it runs. */
 async function readRoot(root: string): Promise<Omit<AgentObservation, 'alive'>> {
   const config = await readOptional(join(root, 'config.json'));
   let configured: AgentObservation['configured'] = null;
@@ -213,7 +213,7 @@ async function readRoot(root: string): Promise<Omit<AgentObservation, 'alive'>> 
   return { configured, flags, health: null, failure, takenOver: await readTakenOver(root) };
 }
 
-type RunningWatcher = {
+type RunningAgentHost = {
   stop: AbortController;
   done: Promise<void>;
   control: WatcherControl;
@@ -221,19 +221,19 @@ type RunningWatcher = {
 };
 
 /**
- * Runs each agent's room watcher inside the controller's process, as Switch
- * Console runs its own agents' watchers: the shared host's `runAgentHost`,
+ * Runs each agent's agent host inside the controller's process, as Switch
+ * Console runs its own agents' agent hosts: the shared host's `runAgentHost`,
  * fed its events by `openStream` rather than by a connection of its own, in a
  * state root of its own driven through the files it reads (`watch.json`,
  * `config.json`). Its sessions are the controller's child processes, so
  * nothing an agent runs outlives the controller.
  *
- * A watcher that fails is started again after a short wait, at most
+ * An agent host that fails is started again after a short wait, at most
  * `MAX_CRASHES` times in `CRASH_WINDOW_MS`; past that its failure is recorded
  * and it stays down until a new revision or an explicit restart.
  */
 export class InProcessRuntime implements AgentRuntime {
-  private readonly watchers = new Map<string, RunningWatcher>();
+  private readonly hosts = new Map<string, RunningAgentHost>();
   private readonly crashes = new Map<string, number[]>();
   private readonly links = new SessionLinks();
   private readonly lifetime = new AbortController();
@@ -243,10 +243,10 @@ export class InProcessRuntime implements AgentRuntime {
       layout: DataLayout;
       /** The `shared-host-daemon.mjs` bundle from agent-providers: what each session runs. */
       bundlePath: string;
-      /** The stream the agent's watcher hears its events on. */
+      /** The stream the agent's agent host hears its events on. */
       openStream: (agentId: string) => OpenAgentStream;
       log: Logger;
-      /** How long a failed watcher waits before it is started again. */
+      /** How long a failed agent host waits before it is started again. */
       crashBackoffMs: number;
     }
   ) {
@@ -321,7 +321,7 @@ export class InProcessRuntime implements AgentRuntime {
 
   async observe(agentId: string): Promise<AgentObservation> {
     const root = this.deps.layout.watcherRoot(agentId);
-    const running = this.watchers.get(agentId);
+    const running = this.hosts.get(agentId);
     const observation = await readRoot(root);
     return {
       ...observation,
@@ -353,7 +353,7 @@ export class InProcessRuntime implements AgentRuntime {
     const root = this.deps.layout.watcherRoot(agentId);
     await mkdir(root, { recursive: true, mode: 0o700 });
     await this.writeFlags(root, { enabled: false, spawn: false });
-    const running = this.watchers.get(agentId);
+    const running = this.hosts.get(agentId);
     if (!running) return;
     running.stop.abort();
     if (!options.wait) return;
@@ -363,17 +363,17 @@ export class InProcessRuntime implements AgentRuntime {
     ]);
     if (!stopped)
       throw new Error(
-        `The watcher for agent ${agentId} has not stopped ${STOP_TIMEOUT_MS / 1000} s after being turned off.`
+        `The agent host for agent ${agentId} has not stopped ${STOP_TIMEOUT_MS / 1000} s after being turned off.`
       );
   }
 
-  /** Stops every watcher and every session: the controller is exiting. */
+  /** Stops every agent host and every session: the controller is exiting. */
   async close(): Promise<void> {
     this.lifetime.abort();
-    await Promise.allSettled([...this.watchers.values()].map((running) => running.done));
+    await Promise.allSettled([...this.hosts.values()].map((running) => running.done));
   }
 
-  /** Writes the watcher's configuration from `template` and starts it, unless it runs. */
+  /** Writes the agent host's configuration from `template` and starts it, unless it runs. */
   private async ensure(agentId: string, root: string, template: SharedHostConfig): Promise<void> {
     await ensureSharedProcess({
       root,
@@ -399,7 +399,7 @@ export class InProcessRuntime implements AgentRuntime {
   }
 
   private start(agentId: string, root: string, config: SharedHostConfig): void {
-    if (this.watchers.has(agentId) || this.lifetime.signal.aborted) return;
+    if (this.hosts.has(agentId) || this.lifetime.signal.aborted) return;
     const stop = new AbortController();
     const signal = AbortSignal.any([stop.signal, this.lifetime.signal]);
     const control = new WatcherControl();
@@ -424,20 +424,20 @@ export class InProcessRuntime implements AgentRuntime {
     })()
       .then(
         () => {
-          this.deps.log.info('Watcher stopped', { agentId });
+          this.deps.log.info('Agent host stopped', { agentId });
           return false;
         },
         (error: unknown) => this.crashed(agentId, root, signal, error)
       )
       .then((again) => {
-        if (this.watchers.get(agentId)?.done === done) this.watchers.delete(agentId);
+        if (this.hosts.get(agentId)?.done === done) this.hosts.delete(agentId);
         if (again) this.start(agentId, root, config);
       });
-    this.watchers.set(agentId, { stop, done, control, sessions });
-    this.deps.log.info('Watcher started', { agentId });
+    this.hosts.set(agentId, { stop, done, control, sessions });
+    this.deps.log.info('Agent host started', { agentId });
   }
 
-  /** Whether a watcher that failed is started again. */
+  /** Whether an agent host that failed is started again. */
   private async crashed(
     agentId: string,
     root: string,
@@ -446,7 +446,7 @@ export class InProcessRuntime implements AgentRuntime {
   ): Promise<boolean> {
     const message = errorMessage(error);
     if (signal.aborted) {
-      this.deps.log.info('Watcher stopped', { agentId, error: message });
+      this.deps.log.info('Agent host stopped', { agentId, error: message });
       return false;
     }
     const now = Date.now();
@@ -454,7 +454,7 @@ export class InProcessRuntime implements AgentRuntime {
     recent.push(now);
     this.crashes.set(agentId, recent);
     if (recent.length > MAX_CRASHES) {
-      this.deps.log.error('Watcher failed too often; it stays down until restarted', {
+      this.deps.log.error('Agent host failed too often; it stays down until restarted', {
         agentId,
         error: message,
       });
@@ -462,7 +462,7 @@ export class InProcessRuntime implements AgentRuntime {
       await writeAtomic(join(root, 'supervisor', 'failure.json'), JSON.stringify({ message }));
       return false;
     }
-    this.deps.log.warn('Watcher failed; starting it again', {
+    this.deps.log.warn('Agent host failed; starting it again', {
       agentId,
       error: message,
       attempt: recent.length,
@@ -476,7 +476,7 @@ export class InProcessRuntime implements AgentRuntime {
   }
 
   /**
-   * Stops a watcher an earlier version of the controller left running as a
+   * Stops an agent host an earlier version of the controller left running as a
    * detached process of its own, so this one can take its root.
    */
   private async stopDetached(root: string): Promise<void> {
@@ -484,7 +484,10 @@ export class InProcessRuntime implements AgentRuntime {
       const path = join(root, record);
       const pid = await recordedPid(path);
       if (pid === null || pid === process.pid || !(await ownsRoot(pid, root))) continue;
-      this.deps.log.warn('Stopping a watcher left running by an earlier controller', { root, pid });
+      this.deps.log.warn('Stopping an agent host left running by an earlier controller', {
+        root,
+        pid,
+      });
       process.kill(pid, 'SIGTERM');
       const deadline = Date.now() + STOP_TIMEOUT_MS;
       while (alive(pid)) {

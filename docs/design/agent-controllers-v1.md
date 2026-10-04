@@ -14,17 +14,17 @@ where it deliberately stops short.
   controller status, and operations.
 - **Agents controller** (`console/packages/agent-controller`, a Node CLI): one per
   machine. It pulls its assignment, runs each assigned agent through the existing
-  shared-host watcher (the same `--watch-*` runtime the Console sidecar uses), and reports
+  shared-host agent host (the same `--watch-*` runtime the Console sidecar uses), and reports
   status.
 - Core's messaging path is unchanged. Each managed agent still holds its own per-agent
-  watcher connection to the agent bridge.
+  agent host connection to the agent bridge.
 
 ## v1 scope and deliberate deviations from the target contract
 
 | Target contract | v1 | Why |
 |---|---|---|
-| Controllers act as agents on `/agents/{id}/...` with a controller token | **Not in v1.** The controller fetches a per-agent API key from Management for each bound agent. Every fetch **rotates** the key, which invalidates any earlier holder | The watcher and session hosts read the agent token once, from the credentials file, and cannot refresh a short-lived token. Moving to scoped tokens needs a runtime change first |
-| One SSE stream per controller carrying agent events | **The controller stream carries only nudges** (`assignment.changed`, `operation.pending`, `credential.revoked`). Agent events stay on per-agent watcher streams | Avoids touching message delivery. That is roadmap step 7 |
+| Controllers act as agents on `/agents/{id}/...` with a controller token | **Not in v1.** The controller fetches a per-agent API key from Management for each bound agent. Every fetch **rotates** the key, which invalidates any earlier holder | The agent host and session hosts read the agent token once, from the credentials file, and cannot refresh a short-lived token. Moving to scoped tokens needs a runtime change first |
+| One SSE stream per controller carrying agent events | **The controller stream carries only nudges** (`assignment.changed`, `operation.pending`, `credential.revoked`). Agent events stay on per-agent agent host streams | Avoids touching message delivery. That is roadmap step 7 |
 | Connector tokens, sealed provider logins | Not in v1 | Later steps |
 | Enrollment by EC2 machine secret | Not in v1. Supported: Console sign-in (gateway) and one-time code (headless) | |
 | Operations | `agent.restart` and `provider.recheck` only. Core rejects other kinds with `400 operation_unsupported` | |
@@ -192,15 +192,15 @@ These are the codes from the contract, plus `forbidden`, `invalid_credential`, `
     1. Ensure the credentials: fetch from the credentials endpoint if there is no local file, or after an auth failure.
     2. Write them to `<data>/agents/<id>/credentials.json` (0600), outside the agent's working directory.
     3. Ensure the working directory: `definition.directory`, otherwise `<data>/workspaces/<name>`.
-    4. Write the watcher root `<data>/watchers/<id>/` with `watch.json {enabled:true, spawn:true}` and a `SharedHostConfig` template, as the Console builds.
-    5. Start the watcher (`runAgentHost`) in the controller's process, after stopping the running one when the revision changed. Its sessions are the controller's child processes.
-  - Stopped or removed: write `watch.json {enabled:false}`, stop the watcher and its sessions, and delete the credentials of removed agents.
-  - Nothing an agent runs outlives the controller: stopping the controller stops every watcher and session, and the next run starts them again from their journals and confirmed cursors.
+    4. Write the agent host root `<data>/agent hosts/<id>/` with `watch.json {enabled:true, spawn:true}` and a `SharedHostConfig` template, as the Console builds.
+    5. Start the agent host (`runAgentHost`) in the controller's process, after stopping the running one when the revision changed. Its sessions are the controller's child processes.
+  - Stopped or removed: write `watch.json {enabled:false}`, stop the agent host and its sessions, and delete the credentials of removed agents.
+  - Nothing an agent runs outlives the controller: stopping the controller stops every agent host and session, and the next run starts them again from their journals and confirmed cursors.
 - **Status:** sent on every change, and every `report_within_s`.
   - Machine: os, arch, disk, memory, sessions.
   - Providers: installed via a PATH lookup, auth via the bundle's `--probe`, cached for 10 min. `provider.recheck` forces a probe.
-  - Agents: read from each running watcher's state and `supervisor/failure.json`, mapped to the contract's process states and reason codes.
-- **Operations:** `agent.restart` restarts the watcher. `provider.recheck` forces a probe and reports.
+  - Agents: read from each running agent host's state and `supervisor/failure.json`, mapped to the contract's process states and reason codes.
+- **Operations:** `agent.restart` restarts the agent host. `provider.recheck` forces a probe and reports.
 
 ---
 
@@ -270,17 +270,17 @@ stream. The flag and everything else above stay as they are.
   `filter=all` (the controller filters locally). There is no buffer per controller. Bindings
   changing mid-stream attach or detach agents live.
 
-### Watchers in the controller's process, and the local relay
-- One upstream stream. Each agent's watcher runs inside the controller's process and is handed
+### Agent hosts in the controller's process, and the local relay
+- One upstream stream. Each agent's agent host runs inside the controller's process and is handed
   its events from that stream directly (`AgentHub`): in order, filtered to what addresses the
   agent, with gaps, resets, room controls and approval outcomes. Events that arrive while its
-  watcher is not running are held (bounded); its cursor moves only once the watcher has taken an
-  event. The watcher states its sessions' rooms in memory; the controller beats them upstream.
-- The shared watcher code (`runAgentHost`) takes the function that opens its event stream: the
-  controller passes its hub, while Console and the shared daemon pass the watcher's own
+  agent host is not running are held (bounded); its cursor moves only once the agent host has taken an
+  event. The agent host states its sessions' rooms in memory; the controller beats them upstream.
+- The shared agent host code (`runAgentHost`) takes the function that opens its event stream: the
+  controller passes its hub, while Console and the shared daemon pass the agent host's own
   connection to Switch.
 - A loopback HTTP relay (`127.0.0.1`, a per-agent bearer token minted locally) is what each
-  watcher uses as `SWITCH_API_ENDPOINT` for its calls to Switch. It forwards everything with the
+  agent host uses as `SWITCH_API_ENDPOINT` for its calls to Switch. It forwards everything with the
   controller access token, the `X-Switch-Agent-Id` header, and `X-Switch-Room-Id` resolved from
   the placements. It serves no event stream and no connection bookkeeping. The credentials file
   names the relay and its local token, never a Switch credential.
@@ -289,7 +289,7 @@ stream. The flag and everything else above stay as they are.
 
 - **Placements.** The beat body carries `placements: {agent_id: [room_id, ...]}`:
   for each bound agent, the rooms where one of its sessions works now (the
-  controller knows them from its watchers' placements). It is the full map each
+  controller knows them from its agent hosts' placements). It is the full map each
   beat and replaces the last; an agent left out is in no room; agents not
   bound to the controller and rooms the agent is not a member of are ignored
   (logged at debug). The open request may carry an initial map. Placements

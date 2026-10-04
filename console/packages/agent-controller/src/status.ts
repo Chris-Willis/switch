@@ -197,7 +197,7 @@ function fingerprintProvider(status: ProviderStatus): string {
   return JSON.stringify([status.installed, status.version, status.auth, status.reason ?? null]);
 }
 
-/** A watcher that stopped because its token was refused (by the relay, now). */
+/** An agent host that stopped because its token was refused (by the relay, now). */
 export function isCredentialFailure(message: string): boolean {
   return /rejected the agent credentials|credentials belong to a different agent/i.test(message);
 }
@@ -211,7 +211,7 @@ type Mapped = {
   attached: boolean;
   reason?: ReasonCode;
   detail?: string;
-  /** When the watcher itself says the state began. */
+  /** When the agent host itself says the state began. */
   since?: string;
 };
 
@@ -220,7 +220,7 @@ export function mapAgentProcess(input: {
   assignment: AgentAssignment;
   row: AgentRow | null;
   observation: AgentObservation;
-  /** The agent's events flow on the controller stream and its watcher is taking them. */
+  /** The agent's events flow on the controller stream and its agent host is taking them. */
   relayAttached: boolean;
   nowMs: number;
 }): Mapped {
@@ -283,13 +283,13 @@ export function mapAgentProcess(input: {
     process: 'crashed',
     attached: false,
     reason: 'internal',
-    detail: 'The room watcher is not running and recorded no failure.',
+    detail: 'The agent host is not running and recorded no failure.',
   };
 }
 
 /**
  * Builds status reports: the machine, the providers as last checked, and every
- * assigned agent as its watcher's files describe it. `since` is kept across
+ * assigned agent as its agent host's files describe it. `since` is kept across
  * reports so it marks when an agent entered its current state.
  */
 export class StatusCollector {

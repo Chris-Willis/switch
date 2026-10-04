@@ -4,11 +4,11 @@ import type { AddressInfo, Socket } from 'node:net';
 import { errorMessage, type Logger } from './log';
 
 /**
- * The controller's local relay: what each managed agent's watcher uses as
+ * The controller's local relay: what each managed agent's agent host uses as
  * `SWITCH_API_ENDPOINT` for its calls to Switch, on a loopback port, with a
  * token minted here for each agent.
  *
- * Each watcher runs in the controller's process and hears its events from the
+ * Each agent host runs in the controller's process and hears its events from the
  * controller stream (`AgentHub`), so the relay serves no event stream and no
  * connection bookkeeping. Every call is forwarded to Switch with the
  * controller's access token, the agent named in `X-Switch-Agent-Id`, and the
@@ -70,7 +70,7 @@ export class LocalRelay {
 
   constructor(private readonly deps: RelayDeps) {}
 
-  /** Listens on 127.0.0.1: on `preferredPort` when it is free, so running watchers find it again. */
+  /** Listens on 127.0.0.1: on `preferredPort` when it is free, so running agent hosts find it again. */
   async start(preferredPort: number | null): Promise<number> {
     const server = createServer((req, res) => {
       void this.handle(req, res).catch((error: unknown) => {
@@ -125,7 +125,7 @@ export class LocalRelay {
 
   /**
    * Unknown tokens are told to retry (503) until this is called: right after
-   * a restart a watcher can reach the relay before the controller has read
+   * a restart an agent host can reach the relay before the controller has read
    * back its token, and a 401 would stop it for good.
    */
   setReady(): void {

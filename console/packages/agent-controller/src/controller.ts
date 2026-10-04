@@ -41,7 +41,7 @@ export type ControllerTiming = {
    * every agent on the controller is offline while the stream is down.
    */
   streamMaxBackoffMs: number;
-  /** The most events held per agent while its watcher is not taking them. */
+  /** The most events held per agent while its agent host is not taking them. */
   eventBufferLimit: number;
 };
 
@@ -60,7 +60,7 @@ export const DEFAULT_TIMING: ControllerTiming = {
 export type ControllerDeps = {
   store: ControllerStore;
   secrets: SecretStore;
-  /** Builds how agents run here, given the stream each agent's watcher hears its events on. */
+  /** Builds how agents run here, given the stream each agent's agent host hears its events on. */
   runtime: (openStream: (agentId: string) => OpenAgentStream) => AgentRuntime;
   locator: ProviderLocator;
   fetch: Fetch;
@@ -84,7 +84,7 @@ export type ControllerExit = 'stopped' | 'revoked' | 'taken_over';
  * Makes an agent's credentials file name the relay and a token it accepts:
  * the token already in the file when it names the relay as it listens now, a
  * new one otherwise. Resolves true when the file was (re)written, which a running
- * watcher only reads when it starts.
+ * agent host only reads when it starts.
  */
 export async function ensureRelayCredentials(
   agentId: string,
@@ -128,9 +128,9 @@ class SerialQueue {
  * The controller's run loop, until `signal` fires, the server revokes it, or
  * another instance takes its stream over.
  *
- * It starts the local relay its agents' watchers make their Switch calls
+ * It starts the local relay its agents' agent hosts make their Switch calls
  * through, exchanges its credential for an access token, and holds the
- * controller stream open: agent frames go to each agent's watcher, which runs
+ * controller stream open: agent frames go to each agent's agent host, which runs
  * in this process (`AgentHub`), each connect and each `assignment.changed`
  * pulls the assignment (with its ETag) and reconciles, each
  * `operation.pending` runs the pending operations, and `credential.revoked`
@@ -375,7 +375,7 @@ export async function runController(
   let localQueued = false;
   /**
    * Reconciles the assignment already held, without asking the server: at
-   * startup, and whenever an agent's observed state changes, so a watcher
+   * startup, and whenever an agent's observed state changes, so an agent host
    * that died is dealt with now rather than at the next nudge or resync.
    */
   const reconcileLocally = (): Promise<void> => {
