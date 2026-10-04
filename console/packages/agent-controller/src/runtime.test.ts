@@ -100,7 +100,6 @@ describe('SharedHostRuntime', () => {
 
   it('launches the watcher with --ensure-watch from a template beside watch.json', async () => {
     await runtime.launch('agent-1', template(), {
-      spawn: false,
       restart: false,
       replaceIdentity: false,
       clearTakenOver: false,
@@ -108,7 +107,7 @@ describe('SharedHostRuntime', () => {
     const root = join(dir, 'data', 'watchers', 'agent-1');
     expect(JSON.parse(readFileSync(join(root, 'watch.json'), 'utf8'))).toEqual({
       enabled: true,
-      spawn: false,
+      spawn: true,
     });
     const launches = readFileSync(join(root, 'launches.log'), 'utf8').trim().split('\n');
     expect(JSON.parse(launches[0]!)).toEqual([
@@ -121,7 +120,7 @@ describe('SharedHostRuntime', () => {
     expect(await runtime.observe('agent-1')).toMatchObject({
       alive: false,
       configured: { provider: 'claude', cwd: '/work/scout' },
-      flags: { enabled: true, spawn: false },
+      flags: { enabled: true, spawn: true },
       health: null,
       failure: null,
       takenOver: null,
@@ -132,7 +131,6 @@ describe('SharedHostRuntime', () => {
     process.env.FAKE_BUNDLE_FAIL = '1';
     await expect(
       runtime.launch('agent-1', template(), {
-        spawn: true,
         restart: false,
         replaceIdentity: false,
         clearTakenOver: false,
@@ -143,7 +141,6 @@ describe('SharedHostRuntime', () => {
   it('restarts by turning the watcher off, waiting it out, and launching again', async () => {
     const root = join(dir, 'data', 'watchers', 'agent-1');
     await runtime.launch('agent-1', template(), {
-      spawn: true,
       restart: false,
       replaceIdentity: false,
       clearTakenOver: false,
@@ -157,7 +154,6 @@ describe('SharedHostRuntime', () => {
     );
     expect((await runtime.observe('agent-1')).alive).toBe(true);
     await runtime.launch('agent-1', template('/work/elsewhere', 'codex'), {
-      spawn: true,
       restart: true,
       replaceIdentity: true,
       clearTakenOver: true,

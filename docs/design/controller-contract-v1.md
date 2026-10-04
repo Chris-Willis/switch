@@ -84,7 +84,6 @@ type AgentDefinition = {
   model: string | null                // null = provider default
   instructions: string                // ≤ 32 KiB
   provider_definition: string | null  // e.g. the Claude agent definition file
-  auto_session: boolean               // start a session when addressed with none running
   auto_approve: boolean               // CLI runs with its bypass-permissions flag
   session_limit: number
   repo: { kind: "github"; installation_id: number; repository_id: number } | null

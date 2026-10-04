@@ -34,7 +34,6 @@ interface Form {
   model: string;
   instructions: string;
   directory: string;
-  autoSession: boolean;
   autoApprove: boolean;
   running: boolean;
 }
@@ -49,7 +48,6 @@ function initialForm(agent: ManagedAgent | null, controllers: Controller[]): For
       model: agent.definition.model ?? "",
       instructions: agent.definition.instructions,
       directory: agent.definition.directory ?? "",
-      autoSession: agent.definition.auto_session,
       autoApprove: agent.definition.auto_approve,
       running: agent.desired_state === "running",
     };
@@ -62,7 +60,6 @@ function initialForm(agent: ManagedAgent | null, controllers: Controller[]): For
     model: "",
     instructions: "",
     directory: "",
-    autoSession: true,
     autoApprove: false,
     running: true,
   };
@@ -73,7 +70,6 @@ function definitionFrom(form: Form): Definition {
     provider: form.provider,
     model: form.model.trim() || null,
     instructions: form.instructions,
-    auto_session: form.autoSession,
     auto_approve: form.autoApprove,
     directory: form.directory.trim() || null,
   };
@@ -225,15 +221,6 @@ export default function ManagedAgentDialog({
             value={form.directory}
             onChange={(e) => set("directory", e.target.value)}
             helperText="An absolute path that exists on the machine. Empty uses a workspace the controller creates."
-          />
-          <FormControlLabel
-            control={
-              <Switch
-                checked={form.autoSession}
-                onChange={(e) => set("autoSession", e.target.checked)}
-              />
-            }
-            label="Start a session when addressed"
           />
           <FormControlLabel
             control={

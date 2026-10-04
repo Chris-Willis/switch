@@ -243,7 +243,6 @@ export async function startAgent(
       (observation.configured !== null &&
         (observation.configured.provider !== provider || observation.configured.cwd !== cwd));
     await deps.runtime.launch(agentId, template, {
-      spawn: definition.auto_session,
       restart: action.restart || replaceIdentity,
       replaceIdentity,
       clearTakenOver: action.clearTakenOver,

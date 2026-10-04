@@ -609,12 +609,6 @@ class TestPlacementBindsTheAgentInCore:
                 cookies=cookies_for(owner),
             )
             after_move = presence.binding(agent_id)
-            no_auto = await client.patch(
-                f"/gateway/management/agents/{agent_id}",
-                json={"definition": definition(auto_session=False)},
-                cookies=cookies_for(owner),
-            )
-            after_edit = presence.binding(agent_id)
             first_assignment = await client.get(
                 f"/v1/management/controllers/{first.controller_id}/assignment",
                 headers=first.headers,
@@ -628,17 +622,12 @@ class TestPlacementBindsTheAgentInCore:
             )
 
         assert placed is not None
-        assert (placed.controller_id, placed.auto_session) == (
-            first.controller_id,
-            True,
-        )
+        assert placed.controller_id == first.controller_id
         assert moved.status_code == 200, moved.text
         assert moved.json()["revision"] == 2
         assert (
             after_move is not None and after_move.controller_id == second.controller_id
         )
-        assert no_auto.status_code == 200, no_auto.text
-        assert after_edit is not None and after_edit.auto_session is False
         assert first_assignment.json() == {"revision": 2, "agents": []}
         assert [a["agent_id"] for a in second_assignment.json()["agents"]] == [agent_id]
         assert removed.status_code == 200, removed.text
@@ -705,7 +694,6 @@ class TestPlacementBindsTheAgentInCore:
         assert binding is not None
         assert binding.controller_id == controller.controller_id
         assert binding.controller_name == "laptop"
-        assert binding.auto_session is True
         assert not presence.is_revoked(controller.controller_id)
 
     async def test_a_revoked_controller_reads_as_revoked_after_a_restart(
@@ -743,7 +731,6 @@ def test_definition_helper_is_the_v1_shape() -> None:
         "provider",
         "model",
         "instructions",
-        "auto_session",
         "auto_approve",
         "directory",
     }

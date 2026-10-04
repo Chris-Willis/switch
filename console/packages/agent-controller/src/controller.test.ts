@@ -30,7 +30,6 @@ function agent(revision: number, overrides: Partial<AgentAssignment> = {}): Agen
       provider: 'claude',
       model: null,
       instructions: '',
-      auto_session: true,
       auto_approve: false,
       directory: null,
     },
@@ -292,7 +291,6 @@ describe('runController', () => {
     store.saveAssignment(core.assignment, '"1"', '2026-01-01T00:00:00Z');
     store.recordApplied('agent-1', 1, '2026-01-01T00:00:00Z');
     await runtime.launch('agent-1', runtimeTemplate(), {
-      spawn: true,
       restart: false,
       replaceIdentity: false,
       clearTakenOver: false,
@@ -321,7 +319,6 @@ describe('runController', () => {
     store.saveAssignment(core.assignment, '"1"', '2026-01-01T00:00:00Z');
     store.recordApplied('agent-1', 1, '2026-01-01T00:00:00Z');
     await runtime.launch('agent-1', runtimeTemplate(), {
-      spawn: true,
       restart: false,
       replaceIdentity: false,
       clearTakenOver: false,

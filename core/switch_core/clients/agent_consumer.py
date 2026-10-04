@@ -332,24 +332,15 @@ def _machine_removed_message(machine: str, owner_handle: str | None) -> str:
     return removed[0].upper() + removed[1:]
 
 
-def _no_session_here_message(
-    auto_session: bool, elsewhere: list[str], owner_handle: str | None
-) -> str:
+def _no_session_here_message(elsewhere: list[str]) -> str:
     """A managed agent whose machine is up but starts no session for it here."""
     if elsewhere:
         where = ", ".join(f"**{name}**" for name in elsewhere)
-        opening = (
+        return (
             f"I don't have a session in this room, but I'm working in {where}. "
             "Ask me there to come here."
         )
-    else:
-        opening = "I don't have a session in this room."
-    if auto_session:
-        return opening
-    return (
-        f"{opening} My machine doesn't start sessions for me on its own: "
-        f"{_owner_ref(owner_handle)} can turn on automatic starts in Switch."
-    )
+    return "I don't have a session in this room."
 
 
 # The refusal wording lives with the decision that produces it. Kept under
@@ -1343,7 +1334,7 @@ class AgentConsumer(Consumer[AgentActor]):
             placed_name = placed_room.name if placed_room is not None else rid
             if placed_name != meta.name:
                 placed_names.append(placed_name)
-        return _no_session_here_message(binding.auto_session, placed_names, owner)
+        return _no_session_here_message(placed_names)
 
     async def owner_handle_in(
         self, session: AsyncSession, agent: Agent, bridge_id: str | None

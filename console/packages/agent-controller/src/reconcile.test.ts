@@ -25,7 +25,6 @@ function agent(overrides: Partial<AgentAssignment> = {}, definition = {}): Agent
       provider: 'claude',
       model: null,
       instructions: '',
-      auto_session: true,
       auto_approve: false,
       directory: null,
       ...definition,
@@ -87,7 +86,6 @@ describe('reconcile', () => {
     expect(runtime.credentials.get('agent-1')).toEqual({ endpoint: RELAY, token: 'swlr_1' });
     const [launch] = runtime.launches();
     expect(launch!.options).toEqual({
-      spawn: true,
       restart: false,
       replaceIdentity: false,
       clearTakenOver: true,
@@ -111,15 +109,11 @@ describe('reconcile', () => {
 
   it('restarts on a revision bump, keeping the relay token it already has', async () => {
     await reconcile(assignment(agent()), deps());
-    await reconcile(
-      assignment(agent({ revision: 2 }, { model: 'opus', auto_session: false })),
-      deps()
-    );
+    await reconcile(assignment(agent({ revision: 2 }, { model: 'opus' })), deps());
     const launches = runtime.launches();
     expect(launches).toHaveLength(2);
     expect(launches[1]!.options).toMatchObject({
       restart: true,
-      spawn: false,
       replaceIdentity: false,
     });
     expect(launches[1]!.template.start.input.model).toEqual({ id: 'opus' });

@@ -32,7 +32,6 @@ const assignment = {
         provider: 'claude',
         model: null,
         instructions: '',
-        auto_session: true,
         auto_approve: false,
         directory: null,
       },

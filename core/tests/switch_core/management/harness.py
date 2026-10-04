@@ -351,7 +351,6 @@ def definition(provider_name: str = "claude", **overrides: Any) -> dict[str, Any
         "provider": provider_name,
         "model": None,
         "instructions": "",
-        "auto_session": True,
         "auto_approve": False,
         "directory": None,
         **overrides,
@@ -385,7 +384,6 @@ async def place_agent(
     controller: EnrolledController,
     *,
     name: str,
-    auto_session: bool = True,
 ) -> str:
     """Create a managed agent on `controller`, which must accept placements."""
     await report_status(client, controller, 1, providers=[provider("claude")])
@@ -394,7 +392,7 @@ async def place_agent(
         controller.owner,
         name=name,
         controller_id=controller.controller_id,
-        definition_body=definition(auto_session=auto_session),
+        definition_body=definition(),
     )
     assert created.status_code == 201, created.text
     return str(created.json()["agent_id"])

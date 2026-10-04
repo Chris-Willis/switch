@@ -217,7 +217,6 @@ class TestTheAuthorizationMatrix:
                 agent_id=agent_id,
                 controller_id=controller.controller_id,
                 tenant_id="another-tenant",
-                auto_session=True,
                 controller_name="machine",
                 running=True,
             )
@@ -393,7 +392,6 @@ class TestTheAgentsOwnCredential:
                 agent_id=agent_id,
                 controller_id="c",
                 tenant_id=TENANT_ZERO_ID,
-                auto_session=True,
                 controller_name="machine",
                 running=True,
             )

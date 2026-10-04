@@ -274,9 +274,7 @@ class TestManagedAgents:
                 owner,
                 name="builder",
                 controller_id=controller.controller_id,
-                definition_body=definition(
-                    "codex", auto_session=False, directory="/srv/example"
-                ),
+                definition_body=definition("codex", directory="/srv/example"),
             )
         assert response.status_code == 201, response.text
         body = response.json()
@@ -288,7 +286,7 @@ class TestManagedAgents:
         assert agent.owner_id == owner.id
         assert agent.addressing_policy is not None
         assert agent.metadata_["known_agent_type"] == "codex"
-        assert agent.metadata_["known_agent_options"]["auto_session"] is False
+        assert agent.metadata_["known_agent_options"]["auto_session"] is True
         assert agent.metadata_["known_agent_options"]["repo_dir"] == "/srv/example"
 
     async def test_a_name_clash_is_refused(self, harness: Harness) -> None:

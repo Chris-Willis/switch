@@ -128,7 +128,7 @@ Controller access token (`{id}` must match the token's `cid`, otherwise `403 for
 - `POST   /gateway/management/agents` creates and places a new agent.
   - Body: `{name, description, display_name?, controller_id, desired_state, definition}`.
   - It registers the agent through `AgentCore.register_agent`, using the known-agent spec for the provider
-    (`claude→claude-code`, `codex`, `opencode`, `antigravity`, `cursor`), with `auto_session` taken from the definition and `owner_only=True`.
+    (`claude→claude-code`, `codex`, `opencode`, `antigravity`, `cursor`), with `owner_only=True`. A managed agent always starts a session when addressed; there is no setting for it.
 - `PUT    /gateway/management/agents/{agent_id}`
   - Adopts an agent the user already owns, or replaces its definition and placement.
 - `PATCH  /gateway/management/agents/{agent_id}`
@@ -151,7 +151,7 @@ Any change that affects a controller bumps its `assignment_revision` and nudges 
 ### Definition (v1)
 ```json
 {"provider": "claude|codex|opencode|antigravity|cursor",
- "model": null, "instructions": "", "auto_session": true, "auto_approve": false,
+ "model": null, "instructions": "", "auto_approve": false,
  "directory": null}
 ```
 
@@ -192,7 +192,7 @@ These are the codes from the contract, plus `forbidden`, `invalid_credential`, `
     1. Ensure the credentials: fetch from the credentials endpoint if there is no local file, or after an auth failure.
     2. Write them to `<data>/agents/<id>/credentials.json` (0600), outside the agent's working directory.
     3. Ensure the working directory: `definition.directory`, otherwise `<data>/workspaces/<name>`.
-    4. Write the watcher root `<data>/watchers/<id>/` with `watch.json {enabled:true, spawn:auto_session}` and a `SharedHostConfig` template, as the Console builds.
+    4. Write the watcher root `<data>/watchers/<id>/` with `watch.json {enabled:true, spawn:true}` and a `SharedHostConfig` template, as the Console builds.
     5. Run the agent-providers shared-host bundle with `--ensure-watch false`, or `--restart` when the revision changed.
   - Stopped or removed: write `watch.json {enabled:false}`, and delete the credentials of removed agents.
 - **Status:** sent on every change, and every `report_within_s`.
@@ -214,7 +214,7 @@ stream. The flag and everything else above stay as they are.
   - It has **no per-agent connection** in `AgentConnectionRegistry`, no placements and no room claims.
   - **Presence** comes from its controller. The agent is live while its controller's stream is
     attached and its heartbeat is fresh. It can start sessions on demand when
-    `definition.auto_session` is set and it is a member of the room.
+    it is a member of the room.
 - **Directly connected agent:** an agent with no controller. Nothing changes for it.
 - **Its per-agent API key cannot open an event stream** while the agent is controller-backed
   (`409 managed_by_controller`). The key-fetch route
@@ -223,7 +223,7 @@ stream. The flag and everything else above stay as they are.
 
 ### The Core / Management boundary
 - Core owns an in-memory `ControllerPresence`, in `bridges/agent/protocol/`. It records which
-  controller each agent is bound to, with `auto_session`, and whether each controller's
+  controller each agent is bound to, and whether each controller's
   stream is attached and when it last beat.
 - Management fills it at startup (all bindings) and on every binding change, through
   a narrow API. Core never imports Management and never reads its tables.
@@ -294,7 +294,7 @@ stream. The flag and everything else above stay as they are.
   taken over or revoked, and an agent's when it is unbound or moved.
 - **Presence states.** A session-shaped controller-backed agent is `LIVE` in a
   room it is placed in. Elsewhere it is `DORMANT` where its live controller
-  will start a session (`auto_session` and a member of the room), `NO_SESSION`
+  will start a session (a member of the room), `NO_SESSION`
   where the controller is live and will not, and `DISCONNECTED` when the
   controller is not live (`NO_SESSION` for `session_addressable`, as for any
   agent). An `always_on` agent is `LIVE` exactly while its controller is.

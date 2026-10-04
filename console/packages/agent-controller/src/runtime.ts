@@ -53,7 +53,6 @@ export function emptyObservation(): AgentObservation {
 }
 
 export type LaunchOptions = {
-  spawn: boolean;
   /** Stop a running watcher first, so the new configuration takes effect. */
   restart: boolean;
   /** Restart into a different provider or working directory: the saved configuration goes. */
@@ -289,7 +288,7 @@ export class SharedHostRuntime implements AgentRuntime {
     if (options.restart || options.replaceIdentity) await this.stop(agentId, { wait: true });
     if (options.replaceIdentity) await removeOptional(join(root, 'config.json'));
     if (options.clearTakenOver) await clearTakenOver(root);
-    await this.writeFlags(root, { enabled: true, spawn: options.spawn });
+    await this.writeFlags(root, { enabled: true, spawn: true });
     const templatePath = join(root, 'template.json');
     await writeAtomic(templatePath, JSON.stringify(template));
     await this.runBundle([root, templatePath, '--ensure-watch', 'false'], LAUNCH_TIMEOUT_MS);

@@ -1006,7 +1006,6 @@ def binding_of(
         agent_id=row.agent_id,
         controller_id=controller.id,
         tenant_id=tenant_id,
-        auto_session=DefinitionV1.model_validate(row.definition).auto_session,
         controller_name=controller.name,
         running=row.desired_state == "running",
     )
@@ -1044,7 +1043,7 @@ def _known_agent_registration(
     spec = KNOWN_AGENTS[known_type]
     current_options = metadata.get("known_agent_options")
     raw_options = dict(current_options) if isinstance(current_options, dict) else {}
-    raw_options["auto_session"] = definition.auto_session
+    raw_options["auto_session"] = True
     raw_options["repo_dir"] = definition.directory
     options = spec.parse_options(raw_options)
     metadata["known_agent_type"] = known_type

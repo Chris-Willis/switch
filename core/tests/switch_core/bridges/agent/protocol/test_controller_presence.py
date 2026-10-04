@@ -72,14 +72,12 @@ def _bind(
     registry: AgentConnectionRegistry,
     agent_id: str,
     *,
-    auto_session: bool = True,
     running: bool = True,
 ) -> Binding:
     binding = Binding(
         agent_id=agent_id,
         controller_id=CONTROLLER,
         tenant_id=TENANT_ZERO_ID,
-        auto_session=auto_session,
         controller_name="machine",
         running=running,
     )
@@ -128,14 +126,12 @@ class TestStatuses:
         registry = AgentConnectionRegistry()
         _bind(registry, "always")
         _bind(registry, "auto")
-        _bind(registry, "manual", auto_session=False)
         _bind(registry, "addressable")
         _bind(registry, "passive")
         rows = _NoRows()
         agents = [
             _agent("always", "always_on"),
             _agent("auto", "auto_session"),
-            _agent("manual", "auto_session"),
             _agent("addressable", "session_addressable"),
             _agent("passive", "session_passive"),
         ]
@@ -153,14 +149,12 @@ class TestStatuses:
         assert offline == {
             "always": AgentStatus.DISCONNECTED,
             "auto": AgentStatus.DISCONNECTED,
-            "manual": AgentStatus.DISCONNECTED,
             "addressable": AgentStatus.NO_SESSION,
             "passive": AgentStatus.AWAITING_MANUAL_POLL,
         }
         assert online == {
             "always": AgentStatus.LIVE,
             "auto": AgentStatus.DORMANT,
-            "manual": AgentStatus.NO_SESSION,
             "addressable": AgentStatus.DORMANT,
             "passive": AgentStatus.AWAITING_MANUAL_POLL,
         }
@@ -235,7 +229,6 @@ class TestTheRegistryAsksTheController:
             agent_id="agent",
             controller_id="controller-2",
             tenant_id=TENANT_ZERO_ID,
-            auto_session=True,
             controller_name="machine",
             running=True,
         )
@@ -383,29 +376,22 @@ class TestTheAgentClientsReplies:
     ) -> None:
         registry = AgentConnectionRegistry()
         _bind(registry, "auto")
-        _bind(registry, "manual", auto_session=False)
-        conn = _go_live(registry, ("auto", {ROOM}), ("manual", {ROOM}))
+        conn = _go_live(registry, ("auto", {ROOM}))
         meta = SimpleNamespace(room_id=ROOM, name="Room", bridge_id=None)
-        auto, manual = _client(registry, "auto"), _client(registry, "manual")
+        auto = _client(registry, "auto")
         agent = _agent("auto", "auto_session")
 
         available = await auto._is_available(object(), agent, ROOM)
         promised = await auto._reply_when_unavailable_here(object(), agent, meta, "@u")
-        declined = await manual._reply_when_unavailable_here(
-            object(), _agent("manual", "auto_session"), meta, "@u"
-        )
         _lapse(conn)
         lapsed = await auto._reply_when_unavailable_here(object(), agent, meta, "@u")
 
         assert available is False
         assert promised == _STARTING_SESSION_MESSAGE
-        assert declined.startswith("I don't have a session in this room.")
-        assert "my owner (@owner) can turn on automatic starts" in declined
         assert lapsed.startswith(
             "My machine, **machine**, is offline or reconnecting to Switch"
         )
-        for reply in (declined, lapsed):
-            assert "Switch Console" not in reply
+        assert "Switch Console" not in lapsed
         assert auto._agent_session_store.asked == []
 
     async def test_a_stopped_agent_is_not_promised_a_session(
@@ -450,7 +436,6 @@ class TestTheAgentClientsReplies:
                 agent_id="auto",
                 controller_id=CONTROLLER,
                 tenant_id=TENANT_ZERO_ID,
-                auto_session=True,
                 controller_name="machine",
                 running=True,
             )
@@ -580,7 +565,7 @@ class TestPlacements:
     async def test_placed_is_live_present_and_occupied(self, db: AsyncSession) -> None:
         registry = AgentConnectionRegistry()
         _bind(registry, "auto")
-        _bind(registry, "addressable", auto_session=False)
+        _bind(registry, "addressable")
         conn = _go_live(
             registry, ("auto", {ROOM, ELSEWHERE}), ("addressable", {ROOM, ELSEWHERE})
         )
@@ -598,7 +583,7 @@ class TestPlacements:
         assert here == {"auto": AgentStatus.LIVE, "addressable": AgentStatus.LIVE}
         assert there == {
             "auto": AgentStatus.DORMANT,
-            "addressable": AgentStatus.NO_SESSION,
+            "addressable": AgentStatus.DORMANT,
         }
         assert agents_present_in(["auto", "addressable"], ROOM, registry) == {
             "auto",

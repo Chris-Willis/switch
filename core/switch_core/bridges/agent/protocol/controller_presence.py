@@ -112,13 +112,12 @@ class ControllerRevokedError(ControllerConnectionError):
 
 @dataclass(frozen=True)
 class Binding:
-    """Which controller may act for an agent, whether its owner wants it
-    running, and whether it starts sessions."""
+    """Which controller may act for an agent, and whether its owner wants it
+    running. A managed agent always starts a session when it is addressed."""
 
     agent_id: str
     controller_id: str
     tenant_id: str
-    auto_session: bool
     # The controller's name as its owner knows it ("the machine"), for the
     # room to be told which machine is offline.
     controller_name: str
@@ -219,10 +218,9 @@ class ControllerPresence:
             self._rooms.pop(binding.agent_id, None)
         if previous is None or previous.controller_id != binding.controller_id:
             logger.info(
-                "[CONTROLLER] agent=%s bound to controller=%s auto_session=%s running=%s",
+                "[CONTROLLER] agent=%s bound to controller=%s running=%s",
                 binding.agent_id,
                 binding.controller_id,
-                binding.auto_session,
                 binding.running,
             )
             self._on_bound(binding.agent_id)
@@ -345,12 +343,7 @@ class ControllerPresence:
 
     def can_spawn_for(self, agent_id: str, room_id: str) -> bool:
         """Live, starting sessions on demand, and a member of the room."""
-        binding = self._bindings.get(agent_id)
-        return (
-            binding is not None
-            and binding.auto_session
-            and self.live_in_room(agent_id, room_id)
-        )
+        return agent_id in self._bindings and self.live_in_room(agent_id, room_id)
 
     def live_agent_ids(self) -> set[str]:
         return {agent_id for agent_id in self._bindings if self.is_live(agent_id)}

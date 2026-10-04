@@ -118,7 +118,6 @@ export const agentDefinitionSchema = z.object({
   provider: z.string().min(1),
   model: z.string().nullable(),
   instructions: z.string(),
-  auto_session: z.boolean(),
   auto_approve: z.boolean(),
   directory: z.string().nullable(),
 });

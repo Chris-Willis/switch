@@ -83,7 +83,6 @@ class DefinitionV1(_GatewayBody):
     provider: Provider
     model: str | None = None
     instructions: str = ""
-    auto_session: bool = True
     auto_approve: bool = False
     directory: str | None = None
 
@@ -326,7 +325,6 @@ def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
             "provider": definition["provider"],
             "model": definition.get("model"),
             "instructions": definition.get("instructions", ""),
-            "auto_session": definition.get("auto_session", True),
             "auto_approve": definition.get("auto_approve", False),
             "directory": definition.get("directory"),
         },
