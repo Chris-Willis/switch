@@ -83,6 +83,8 @@ const {
   updateCloudLaunchConfiguration,
   AgentManagementUnavailableError,
   enrollConsoleController,
+  fetchAdvancedConfigSchema,
+  fetchManagedAgent,
   fetchManagedAgents,
   managementErrorCode,
   managementErrorMessage,
@@ -1798,7 +1800,7 @@ describe('agent management calls', () => {
       )
       .mockImplementationOnce(async () => respond(200, {}));
     await updateManagedAgent(SERVER, 'agent-1', {
-      definition: { model_options: { effort: 'high' } },
+      definition: { advanced_config: { effort: 'high', tools: ['Read'] } },
       controllerId: 'controller-2',
     });
     const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
@@ -1809,7 +1811,7 @@ describe('agent management calls', () => {
         provider: 'claude',
         model: 'opus',
         future_field: 7,
-        model_options: { effort: 'high' },
+        advanced_config: { effort: 'high', tools: ['Read'] },
       },
       controller_id: 'controller-2',
     });
@@ -1830,7 +1832,7 @@ describe('agent management calls', () => {
           definition: {
             provider: 'claude',
             model: 'opus',
-            model_options: { effort: 'high' },
+            advanced_config: { effort: 'high', maxTurns: 4, background: true, tools: ['Read'] },
             instructions: 'Be brief.',
             auto_approve: true,
             directory: '/work/scout',
@@ -1861,7 +1863,7 @@ describe('agent management calls', () => {
         revision: 3,
         provider: 'claude',
         model: 'opus',
-        modelOptions: { effort: 'high' },
+        advancedConfig: { effort: 'high', maxTurns: 4, background: true, tools: ['Read'] },
         instructions: 'Be brief.',
         isolation: 'isolated',
         directory: '/work/scout',
@@ -1879,7 +1881,7 @@ describe('agent management calls', () => {
         revision: 0,
         provider: 'unknown',
         model: null,
-        modelOptions: {},
+        advancedConfig: {},
         instructions: '',
         isolation: 'shared',
         directory: null,
@@ -1887,5 +1889,103 @@ describe('agent management calls', () => {
         status: null,
       },
     ]);
+  });
+
+  it('refuses an advanced configuration of a shape no field takes rather than dropping it', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(200, {
+        agent_id: 'agent-1',
+        name: 'scout',
+        display_name: null,
+        controller_id: null,
+        desired_state: 'running',
+        definition: { provider: 'claude', advanced_config: { tools: [1, 2] } },
+        status: null,
+      })
+    );
+    await expect(fetchManagedAgent(SERVER, 'agent-1')).rejects.toThrow(
+      /advanced configuration for managed agent agent-1/
+    );
+  });
+
+  it('reads each provider’s advanced configuration fields in Console’s field shape', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(200, {
+        providers: {
+          opencode: {
+            fields: [
+              {
+                key: 'variant',
+                label: 'Reasoning variant',
+                type: 'text',
+                help: 'Follows the model.',
+                placeholder: null,
+                options: null,
+                catalogue: { kind: 'model-variant', model_field: 'model' },
+              },
+              {
+                key: 'smallModel',
+                label: 'Utility model',
+                type: 'text',
+                help: null,
+                placeholder: 'e.g. local/model',
+                options: null,
+                catalogue: { kind: 'model' },
+              },
+              {
+                key: 'webSearch',
+                label: 'Web search',
+                type: 'select',
+                help: null,
+                placeholder: null,
+                options: [
+                  { value: '', label: 'Default' },
+                  { value: 'true', label: 'On' },
+                ],
+                catalogue: null,
+              },
+            ],
+          },
+          cursor: { fields: [] },
+        },
+      })
+    );
+    expect(await fetchAdvancedConfigSchema(SERVER)).toEqual({
+      opencode: [
+        {
+          key: 'variant',
+          label: 'Reasoning variant',
+          type: 'text',
+          help: 'Follows the model.',
+          catalogue: { kind: 'model-variant', modelField: 'model' },
+        },
+        {
+          key: 'smallModel',
+          label: 'Utility model',
+          type: 'text',
+          placeholder: 'e.g. local/model',
+          catalogue: { kind: 'model' },
+        },
+        {
+          key: 'webSearch',
+          label: 'Web search',
+          type: 'select',
+          options: [
+            { value: '', label: 'Default' },
+            { value: 'true', label: 'On' },
+          ],
+        },
+      ],
+      cursor: [],
+    });
+    const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/management/advanced-config');
+  });
+
+  it('refuses an advanced configuration schema it cannot read', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(200, { providers: { claude: { fields: [{ key: 'tools', type: 'grid' }] } } })
+    );
+    await expect(fetchAdvancedConfigSchema(SERVER)).rejects.toThrow();
   });
 });

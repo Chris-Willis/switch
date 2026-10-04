@@ -149,7 +149,7 @@ class TestControllerMessages:
                 controller_id=controller.controller_id,
                 definition_body=definition(
                     model="opus",
-                    model_options={"effort": "high"},
+                    advanced_config={"effort": "high"},
                     instructions="Review pull requests.",
                     directory="/home/example/src/project",
                 ),

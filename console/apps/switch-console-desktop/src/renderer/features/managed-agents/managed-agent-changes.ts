@@ -1,3 +1,4 @@
+import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
 import type {
   ManagedAgentChanges,
   ManagedAgentView,
@@ -44,7 +45,7 @@ export function draftOf(agent: ManagedAgentView): Draft {
     machineId: agent.machine?.id ?? null,
     provider: agent.definition.provider,
     model: agent.definition.model ?? '',
-    option: option ? (agent.definition.modelOptions[option.key] ?? '') : '',
+    option: option ? String(agent.definition.advancedConfig[option.key] ?? '') : '',
     directory: agent.definition.directory ?? '',
     isolated: agent.definition.isolation === 'isolated',
     autoApprove: agent.definition.autoApprove,
@@ -63,18 +64,14 @@ export function changesOf(
   const model = after.model.trim() || null;
   if (model !== (before.model.trim() || null)) definition.model = model;
   const option = MODEL_OPTION[after.provider];
-  const modelOptions: Record<string, string> =
-    model === null
-      ? {}
-      : after.provider === before.provider
-        ? { ...agent.definition.modelOptions }
-        : {};
-  if (option && model !== null) {
-    delete modelOptions[option.key];
-    if (after.option.trim()) modelOptions[option.key] = after.option.trim();
+  const advancedConfig: Record<string, AdvancedConfigValue> =
+    after.provider === before.provider ? { ...agent.definition.advancedConfig } : {};
+  if (option) {
+    delete advancedConfig[option.key];
+    if (after.option.trim()) advancedConfig[option.key] = after.option.trim();
   }
-  if (JSON.stringify(modelOptions) !== JSON.stringify(agent.definition.modelOptions))
-    definition.modelOptions = modelOptions;
+  if (JSON.stringify(advancedConfig) !== JSON.stringify(agent.definition.advancedConfig))
+    definition.advancedConfig = advancedConfig;
   const directory = after.directory.trim() || null;
   if (directory !== (before.directory.trim() || null)) definition.directory = directory;
   if (after.isolated !== before.isolated)

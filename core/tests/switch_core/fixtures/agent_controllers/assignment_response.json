@@ -11,7 +11,7 @@
         "icon_url": "https://example.com/icons/reviewer.png",
         "provider": "claude",
         "model": "opus",
-        "model_options": {
+        "advanced_config": {
           "effort": "high"
         },
         "instructions": "Review pull requests in this repository.",

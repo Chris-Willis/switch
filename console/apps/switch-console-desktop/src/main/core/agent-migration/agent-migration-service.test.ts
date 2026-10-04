@@ -46,14 +46,13 @@ const BUILT: BuiltDefinition = {
   definition: {
     provider: 'claude',
     model: 'sonnet',
+    advanced_config: { effort: 'high' },
     instructions: 'Build things.',
     auto_approve: false,
     directory: '/work/builder',
   },
   desiredState: 'running',
-  notCarried: [
-    'The reasoning effort “high”: the managed agent runs at the provider’s default effort.',
-  ],
+  notCarried: ['The location’s shell setup: managed sessions start without running it first.'],
 };
 
 function emptyHandoff(): HandoffResult {

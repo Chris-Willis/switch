@@ -1,12 +1,18 @@
 import { controllerConnectionId, sharedConfigSchema } from '@switch-console/agent-providers';
+import { sessionLaunchConfig } from '@switch-console/plugins/agents';
 import { SWITCH_SKILL_CONTEXT, SWITCH_SKILL_FILE } from '@switch-console/plugins/switch-skill';
 import { describe, expect, it } from 'vitest';
 import { PROVIDERS } from './schemas';
-import { buildWatcherTemplate, watcherSessionId } from './template';
+import {
+  advancedConfigDefinitionProblem,
+  buildWatcherTemplate,
+  watcherSessionId,
+} from './template';
 
 const definition = {
+  name: 'scout',
   model: null,
-  model_options: {},
+  advanced_config: {},
   instructions: 'Review pull requests.',
   auto_approve: false,
 };
@@ -41,7 +47,7 @@ describe('buildWatcherTemplate', () => {
     expect(template.execution).toMatchObject({
       credentialsPath: '/data/agents/agent-1/credentials.json',
       binaryPath: `/usr/bin/${provider}`,
-      codexConfig: '',
+      codexConfig: provider === 'codex' ? 'developer_instructions = "Review pull requests."\n' : '',
     });
     expect(template.execution!.inheritEnv).toEqual(
       expect.arrayContaining(['PATH', 'HOME', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY'])
@@ -59,7 +65,13 @@ describe('buildWatcherTemplate', () => {
     const template = buildWatcherTemplate({
       agentId: 'agent-1',
       provider: 'claude',
-      definition: { model: 'opus', model_options: {}, instructions: '', auto_approve: true },
+      definition: {
+        name: 'scout',
+        model: 'opus',
+        advanced_config: {},
+        instructions: '',
+        auto_approve: true,
+      },
       cwd: '/work/scout',
       credentialsPath: '/data/c.json',
       binaryPath: null,
@@ -70,13 +82,83 @@ describe('buildWatcherTemplate', () => {
     expect(template.execution!.context).toBe(SWITCH_SKILL_CONTEXT);
   });
 
-  it('runs the model with the options its definition gives it', () => {
+  it('applies a Codex agent’s advanced configuration as Console does: model options and profile', () => {
+    const advanced = {
+      model: 'gpt-5.5',
+      advancedConfig: { effort: 'high', verbosity: 'low', webSearch: 'true' },
+    };
     const template = buildWatcherTemplate({
       agentId: 'agent-1',
       provider: 'codex',
       definition: {
-        model: 'gpt-5.5',
-        model_options: { effort: 'high' },
+        name: 'scout',
+        model: advanced.model,
+        advanced_config: advanced.advancedConfig,
+        instructions: 'Review pull requests.',
+        auto_approve: false,
+      },
+      cwd: '/work/scout',
+      credentialsPath: '/data/c.json',
+      binaryPath: null,
+    });
+    const console = sessionLaunchConfig({
+      provider: 'codex',
+      slug: 'scout',
+      description: '',
+      cwd: '/work/scout',
+      instructions: 'Review pull requests.',
+      ...advanced,
+    });
+    expect(template.start.input.model).toEqual({ id: 'gpt-5.5', options: { effort: 'high' } });
+    expect(template.execution!.codexConfig).toBe(console.codexConfig);
+    expect(template.execution!.codexConfig).toContain('model_verbosity = "low"');
+    expect(template.execution!.codexConfig).toContain('web_search = true');
+    expect(template.start.input).not.toHaveProperty('agentDefinition');
+  });
+
+  it('runs a Claude Code agent as the definition its advanced configuration amounts to', () => {
+    const template = buildWatcherTemplate({
+      agentId: 'agent-1',
+      provider: 'claude',
+      definition: {
+        name: 'scout',
+        model: 'opus',
+        advanced_config: {
+          tools: ['Read'],
+          permissionMode: 'plan',
+          maxTurns: 5,
+          isolation: 'worktree',
+          effort: 'max',
+        },
+        instructions: 'Review pull requests.',
+        auto_approve: false,
+      },
+      cwd: '/work/scout',
+      credentialsPath: '/data/c.json',
+      binaryPath: null,
+    });
+    expect(template.start.input.model).toEqual({ id: 'opus', options: { effort: 'max' } });
+    expect(template.start.input.agentName).toBe('scout');
+    expect(template.start.input.agentDefinition).toEqual({
+      description: 'scout',
+      prompt: 'Review pull requests.',
+      model: 'opus',
+      tools: ['Read', 'mcp__switch'],
+      permissionMode: 'plan',
+      maxTurns: 5,
+      effort: 'max',
+    });
+    expect(template.execution).not.toHaveProperty('agentDefinition');
+  });
+
+  it('gives an OpenCode agent its variant with the model', () => {
+    const template = buildWatcherTemplate({
+      agentId: 'agent-1',
+      provider: 'opencode',
+      definition: {
+        name: 'scout',
+        model: 'anthropic/claude-sonnet-4-5',
+        advanced_config: { variant: 'high', temperature: 0.2 },
         instructions: '',
         auto_approve: false,
       },
@@ -84,7 +166,10 @@ describe('buildWatcherTemplate', () => {
       credentialsPath: '/data/c.json',
       binaryPath: null,
     });
-    expect(template.start.input.model).toEqual({ id: 'gpt-5.5', options: { effort: 'high' } });
+    expect(template.start.input.model).toEqual({
+      id: 'anthropic/claude-sonnet-4-5',
+      options: { variant: 'high' },
+    });
   });
 
   it('advertises the adapter’s own approval and question capabilities', () => {
@@ -106,5 +191,40 @@ describe('buildWatcherTemplate', () => {
     });
     expect(codex.session.capabilities).toMatchObject({ approvals: true, questions: false });
     expect(claude.session.capabilities).toMatchObject({ approvals: true, questions: true });
+  });
+});
+
+describe('advancedConfigDefinitionProblem', () => {
+  it('accepts the advanced configuration a provider offers', () => {
+    expect(
+      advancedConfigDefinitionProblem('opencode', {
+        ...definition,
+        advanced_config: { variant: 'high', maxSteps: 40, webSearch: 'false' },
+      })
+    ).toBeNull();
+  });
+
+  it('names a field this controller does not know for the provider', () => {
+    expect(
+      advancedConfigDefinitionProblem('codex', {
+        ...definition,
+        advanced_config: { sandbox: 'workspace-write' },
+      })
+    ).toMatch(/'sandbox'/);
+    expect(
+      advancedConfigDefinitionProblem('cursor', {
+        ...definition,
+        advanced_config: { effort: 'high' },
+      })
+    ).toMatch(/'effort'/);
+  });
+
+  it('names a Claude Code setting its session cannot start with', () => {
+    expect(
+      advancedConfigDefinitionProblem('claude', {
+        ...definition,
+        advanced_config: { maxTurns: 1.5 },
+      })
+    ).toMatch(/maxTurns/);
   });
 });

@@ -88,6 +88,8 @@ export interface Definition {
   auto_approve: boolean;
   directory: string | null;
   isolation: Isolation;
+  /** The provider's advanced configuration, as Switch Console edits it; unset fields are absent. */
+  advanced_config: Record<string, string | number | boolean | string[]>;
 }
 
 export interface ManagedAgent {

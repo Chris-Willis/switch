@@ -1,9 +1,10 @@
+import { type AdvancedConfig, advancedConfigProblem } from '@switch-console/plugins/agents';
 import type { NewAgentMachine } from '@shared/core/agent-migration/agent-migration';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import type { MachineRef } from './agent-migration';
 import type { MigrationLog, TargetLookup } from './agent-migration-service';
-import { buildManagedDefinition, type ManagedDefinition } from './managed-definition';
+import { assertInstructionsFit, type ManagedDefinition } from './managed-definition';
 
 /** What the create form asks for when the agent runs as a managed agent on one of the user's machines. */
 export type AddManagedAgentParams = {
@@ -22,6 +23,8 @@ export type AddManagedAgentParams = {
   instructions: string;
   /** Null runs the provider's default model. */
   model: string | null;
+  /** The provider's advanced configuration, keyed by its field keys; unset fields are absent. */
+  advancedConfig: AdvancedConfig;
   entryPoint: UiEntryPoint;
 };
 
@@ -90,22 +93,21 @@ export class NewManagedAgentService {
   async add(input: AddManagedAgentParams): Promise<AddManagedAgentResult> {
     const workspaceId = await this.deps.workspaceFor(input.serverId);
 
-    let definition: ManagedDefinition;
+    const problem = advancedConfigProblem(input.providerId, input.advancedConfig);
+    if (problem) return { kind: 'error', message: problem };
     try {
-      definition = buildManagedDefinition({
-        providerId: input.providerId,
-        specialization: { model: input.model ?? undefined, instructions: input.instructions },
-        providerDefinition: false,
-        autoApprove: input.autoApprove,
-        directory: input.dir,
-        stoppedByHand: false,
-        shellSetup: false,
-        chosenBinary: null,
-        subagentDefinition: null,
-      }).definition;
+      assertInstructionsFit(input.instructions);
     } catch (error) {
       return { kind: 'error', message: message(error) };
     }
+    const definition: ManagedDefinition = {
+      provider: input.providerId,
+      model: input.model || null,
+      advanced_config: input.advancedConfig,
+      instructions: input.instructions,
+      auto_approve: input.autoApprove,
+      directory: input.dir,
+    };
 
     const created = await this.deps.create(workspaceId, {
       name: input.name,

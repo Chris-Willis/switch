@@ -89,6 +89,7 @@ describe("createManagedAgent", () => {
           auto_approve: false,
           directory: null,
           isolation: "shared",
+          advanced_config: {},
         },
       }),
     ).rejects.toMatchObject({ code: "controller_offline" });

@@ -19,6 +19,7 @@ const PARAMS: AddManagedAgentParams = {
   autoApprove: true,
   instructions: 'Be brief.',
   model: 'opus',
+  advancedConfig: { effort: 'high', tools: ['Read'] },
   entryPoint: 'sidebar',
 };
 
@@ -96,6 +97,7 @@ describe('NewManagedAgentService.add', () => {
         definition: {
           provider: 'claude',
           model: 'opus',
+          advanced_config: { effort: 'high', tools: ['Read'] },
           instructions: 'Be brief.',
           auto_approve: true,
           directory: '/work/pm',
@@ -134,6 +136,16 @@ describe('NewManagedAgentService.add', () => {
       kind: 'error',
       message: 'Claude Code is not logged in on laptop.',
     });
+  });
+
+  it('refuses an advanced configuration field the provider does not offer, naming it', async () => {
+    const result = await new NewManagedAgentService(h.deps).add({
+      ...PARAMS,
+      providerId: 'codex',
+      advancedConfig: { tools: ['Read'] },
+    });
+    expect(result).toEqual({ kind: 'error', message: expect.stringContaining("'tools'") });
+    expect(h.created).toEqual([]);
   });
 
   it('refuses instructions longer than a managed agent takes, before creating anything', async () => {

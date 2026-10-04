@@ -24,7 +24,7 @@ function agent(overrides: Partial<AgentAssignment> = {}, definition = {}): Agent
       icon_url: null,
       provider: 'claude',
       model: null,
-      model_options: {},
+      advanced_config: {},
       instructions: '',
       auto_approve: false,
       directory: null,
@@ -248,6 +248,25 @@ describe('reconcile', () => {
     });
     expect(runtime.calls).toEqual([]);
     expect(await reconcile(assignment(agent({}, { provider: 'gemini' })), deps())).toEqual([]);
+  });
+
+  it('records an advanced configuration field it does not know as invalid, naming it', async () => {
+    const entry = agent({}, { advanced_config: { effort: 'high', sandbox: 'workspace-write' } });
+    await reconcile(assignment(entry), deps());
+    expect(store.agent('agent-1')?.failure).toMatchObject({
+      reason: 'definition_invalid',
+      detail: expect.stringContaining("'sandbox'"),
+    });
+    expect(runtime.calls).toEqual([]);
+  });
+
+  it('records an advanced configuration value a session cannot start with as invalid', async () => {
+    await reconcile(assignment(agent({}, { advanced_config: { maxTurns: 2.5 } })), deps());
+    expect(store.agent('agent-1')?.failure).toMatchObject({
+      reason: 'definition_invalid',
+      detail: expect.stringContaining('maxTurns'),
+    });
+    expect(runtime.calls).toEqual([]);
   });
 
   it('records an agent id that cannot be a directory name as invalid', async () => {

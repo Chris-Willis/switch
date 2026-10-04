@@ -2155,7 +2155,7 @@ async def update_agent_detail(
     addressing: str | None = None,
     provider: str | None = None,
     model: str | None = None,
-    model_options: dict[str, str] | None = None,
+    advanced_config: dict[str, Any] | None = None,
     instructions: str | None = None,
     auto_approve: bool | None = None,
     directory: str | None = None,
@@ -2180,9 +2180,10 @@ async def update_agent_detail(
     "can manage agents" capability:
         provider: "claude", "codex", "opencode", "antigravity" or "cursor".
         model: The model to run; "" for the provider's default.
-        model_options: The provider's options for the model, replacing the
-            current ones, e.g. {"effort": "high"} (Claude Code, Codex) or
-            {"variant": ...} (OpenCode); {} clears them. Needs a model.
+        advanced_config: The provider's advanced settings, replacing the
+            current ones whole, keyed by the fields `get_advanced_config`
+            lists, e.g. {"effort": "high"}; {} clears them. When changing
+            `provider`, pass the new provider's settings (or {}) too.
         instructions: Its system prompt (at most 32 KiB).
         auto_approve: Bypass mode: run tools without asking for approval.
         directory: Working directory on its machine; "" for a fresh workspace.
@@ -2197,7 +2198,7 @@ async def update_agent_detail(
     Returns:
         The `get_agent_detail` shape plus `managed`: for a managed agent, the
         entry `list_managed_agents` shows for it (provider, model,
-        model_options, machine, desired_state, actual, revision); null when
+        advanced_config, machine, desired_state, actual, revision); null when
         the agent is not managed or you cannot manage agents.
     """
     caller_id = get_agent_id()
@@ -2212,7 +2213,7 @@ async def update_agent_detail(
     changes = ManagedAgentChanges(
         provider=provider,
         model=model,
-        model_options=model_options,
+        advanced_config=advanced_config,
         instructions=instructions,
         auto_approve=auto_approve,
         directory=directory,

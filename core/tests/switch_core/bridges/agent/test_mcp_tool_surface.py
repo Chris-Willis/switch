@@ -36,7 +36,12 @@ TASK_PROTOCOL_TOOLS = {
 # Tools that exist only on a server running agent management. The skill
 # documents them for those servers (and says they are absent elsewhere), so the
 # surface is read here with their group enabled.
-AGENT_MANAGEMENT_TOOLS = {"list_machines", "create_agent", "list_managed_agents"}
+AGENT_MANAGEMENT_TOOLS = {
+    "list_machines",
+    "get_advanced_config",
+    "create_agent",
+    "list_managed_agents",
+}
 
 
 @pytest.fixture

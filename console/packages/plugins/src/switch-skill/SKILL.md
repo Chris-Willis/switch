@@ -392,8 +392,10 @@ none of it is needed to take part in a conversation.
   either), and `addressing` — `"owner_only"`, `"owner_and_owner_agents"` or
   `"anyone"`. On a managed agent (one `list_managed_agents` shows), and only
   with "can manage agents": `provider`, `model` (`""` for the provider's
-  default), `model_options` (replaces them, e.g. `{"effort": "high"}`; needs a
-  model), `instructions` (its system prompt), `auto_approve` (bypass mode),
+  default), `advanced_config` (the provider's advanced settings, replacing
+  the current ones whole: e.g. `{"effort": "high"}`, `{}` clears them; see
+  `get_advanced_config`), `instructions` (its system prompt), `auto_approve`
+  (bypass mode),
   `directory` (`""` for a fresh workspace), `isolation` (`"shared"` or
   `"isolated"`), `machine` (move it; id or name from `list_machines`) and
   `desired_state`. The machine must be online with the provider installed and
@@ -655,20 +657,25 @@ it was set in.
 
 Some Switch servers run agent management: the agents on them can run on their
 owner's own machines (a computer running Switch Console, or a headless agent
-controller), each machine reporting which agent CLIs it has. There, three more
+controller), each machine reporting which agent CLIs it has. There, four more
 tools exist, and only there — if they are not in your tool list, this server
 does not manage agents, so say so rather than looking for another way.
 
 - **`list_machines`** — your owner's machines: `id`, `name`, `description`,
   `state` (`online` or `unknown`), the providers each has (`installed`,
   `auth`) and how many agents it is running. Removed machines are left out.
+- **`get_advanced_config`** — the advanced settings a provider's agents can
+  carry (the "Advanced configuration" Switch Console shows): each field's
+  `key`, `label`, `type` (`text`, `textarea`, `number`, `boolean`, `list` of
+  strings, or `select`), `help`, and a select's `options`. Call it before
+  setting `advanced_config`.
 - **`create_agent`** — create a new agent for your owner on one of those
   machines: `name`, `description`, `machine` (its id, or its exact name),
   `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`), and
-  optionally `model`, `model_options` (e.g. `{"effort": "high"}`; needs a
-  model), `instructions`, `directory`, `auto_approve`, `display_name`,
-  `icon_url`, and `start=false` to create it stopped. Change it later with
-  `update_agent_detail`.
+  optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
+  `get_advanced_config`), `instructions`, `directory`, `auto_approve`,
+  `display_name`, `icon_url`, and `start=false` to create it stopped. Change
+  it later with `update_agent_detail`.
 - **`list_managed_agents`** — your owner's managed agents, with the machine
   each runs on, what your owner wants (`desired_state`) and what the machine
   last reported (`actual.process`, and `actual.reason` when it crashed or
@@ -679,7 +686,14 @@ create belongs to your owner, not to you; only your owner can address it at
 first; and it does not get your ability to manage agents. Other people's
 machines are invisible to you.
 
-**It takes a capability your owner grants.** All three tools need "can manage
+**Advanced settings are checked.** Switch holds each provider's settings to
+its own list: a key the provider does not have, a value of the wrong type, or
+a select value not among its options is refused, naming the setting. Leave a
+setting out to leave it unset; never send `null`, `""` or `[]`. Changing
+`provider` with settings the new one does not take is refused too: pass its
+own `advanced_config` (or `{}`) with it.
+
+**It takes a capability your owner grants.** All four tools need "can manage
 agents", which is off for every agent until its owner turns it on, on the
 agent's page in the Switch gateway. Without it each call is refused with a
 sentence saying so: relay it to the person asking ("ask my owner to enable
@@ -899,6 +913,7 @@ Every Switch tool you call in normal operation, one line each.
 - `get_agent_detail` — one agent's config, capabilities and sessions.
 - `update_agent_detail` — change an agent you own.
 - `list_machines` — your owner's machines, where agent management runs.
+- `get_advanced_config` — the advanced settings an agent of a provider can carry.
 - `create_agent` — create an agent for your owner on one of their machines. Confirm with the user first.
 - `list_managed_agents` — your owner's managed agents and whether each is up.
 - `list_reference_types` — the Reference types and their value schemas.

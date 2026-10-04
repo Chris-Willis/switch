@@ -25,7 +25,7 @@ import {
   sharedSessionRoot,
   type SharedHostConfig,
 } from '@switch-console/agent-providers';
-import { SWITCH_SKILL_CONTEXT, SWITCH_SKILL_FILE } from '@switch-console/plugins/switch-skill';
+import { sessionLaunchFrom } from '@switch-console/plugins/agents';
 import { commandStatusSchema, type Snapshot } from '@switch-console/shared/session-v1';
 import {
   AgentManagedByControllerError,
@@ -401,7 +401,6 @@ export async function buildSharedHostConfig(
   const agent = await getAgentById(session.agentId);
   if (!agent?.switchAgentId) throw new Error('Link the agent to Switch before launching its host.');
   const launch = await agentLaunchConfig(session.agentId);
-  const specialization = launch.specialization ?? {};
   if (!providerAdapterRegistry.supports(session.providerId))
     throw new Error(
       'SDK sessions support Claude Code, Codex, OpenCode, Antigravity and Cursor. Choose one of these providers.'
@@ -427,16 +426,15 @@ export async function buildSharedHostConfig(
   const slug = session.agentName ?? agent.name ?? agent.id;
   const subagent = slug !== agent.name;
   const repoAgents = getPlugin(provider).behavior.repoAgents;
-  const profile =
-    provider === 'codex'
-      ? getPlugin(provider).behavior.mcp?.launchProfile?.({
-          slug,
-          workingDir: params.sessionPath,
-          values: specialization,
-        })
-      : undefined;
-  const optionKey = provider === 'opencode' ? 'variant' : 'effort';
-  const optionValue = specialization[optionKey];
+  const sessionLaunch = sessionLaunchFrom({
+    provider,
+    slug,
+    cwd: params.sessionPath,
+    sources: {
+      specialization: launch.specialization,
+      definition: subagent ? undefined : launch.definition,
+    },
+  });
   const persistedRoom = await getPersistedRoomConnection(session.id);
   const config: SharedHostConfig = {
     session: {
@@ -470,20 +468,13 @@ export async function buildSharedHostConfig(
         ...(session.providerSessionId
           ? { resume: { nativeSessionId: session.providerSessionId } }
           : {}),
-        ...(launch.definition && !subagent
+        ...(sessionLaunch.agent
           ? {
-              agentName: slug,
-              agentDefinition: parseLaunchDefinition(slug, launch.definition),
+              agentName: sessionLaunch.agent.name,
+              agentDefinition: parseLaunchDefinition(slug, sessionLaunch.agent.definition),
             }
           : {}),
-        ...(specialization.model
-          ? {
-              model: {
-                id: specialization.model,
-                ...(optionValue ? { options: { [optionKey]: optionValue } } : {}),
-              },
-            }
-          : {}),
+        ...(sessionLaunch.model ? { model: sessionLaunch.model } : {}),
       },
     },
     // Every session of an agent is reached over that agent's one connection,
@@ -508,14 +499,9 @@ export async function buildSharedHostConfig(
       ...(subagent && repoAgents
         ? { agentDefinition: { name: slug, path: repoAgents.definitionPath(slug) } }
         : {}),
-      codexConfig: profile?.files.map((file) => file.content).join('\n') ?? '',
-      // OpenCode loads the skill as a file through its own skill tool; the
-      // others take it as system context. Codex has no skill tool, so a skill
-      // file would be read with a shell command that needs approval.
-      skill: provider === 'opencode' ? SWITCH_SKILL_FILE : '',
-      context: [provider === 'opencode' ? '' : SWITCH_SKILL_CONTEXT, specialization.instructions]
-        .filter(Boolean)
-        .join('\n\n'),
+      codexConfig: sessionLaunch.codexConfig,
+      skill: sessionLaunch.skill,
+      context: sessionLaunch.context,
     },
   };
   return config;

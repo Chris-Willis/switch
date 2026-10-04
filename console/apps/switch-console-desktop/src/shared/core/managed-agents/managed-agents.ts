@@ -1,3 +1,5 @@
+import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
+
 /**
  * An agent whose configuration lives on its Switch server: what it is, the
  * machine it runs on, and how it is doing there. The server is the source of
@@ -20,8 +22,8 @@ export type ManagedAgentView = {
   definition: {
     provider: string;
     model: string | null;
-    /** The provider's options for the model (`effort`, `variant`). */
-    modelOptions: Record<string, string>;
+    /** The provider's advanced configuration, keyed by its field keys; unset fields are absent. */
+    advancedConfig: Record<string, AdvancedConfigValue>;
     instructions: string;
     autoApprove: boolean;
     /** The working directory on its machine; null for a workspace the machine chooses. */

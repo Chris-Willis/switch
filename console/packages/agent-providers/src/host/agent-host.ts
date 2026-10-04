@@ -354,11 +354,17 @@ export async function stopSupersededSessions(
 
 /**
  * `config` with what its agent's definition decides — the model, the approval
- * mode, and the instructions and skill the provider is given — taken from the
- * watcher's `template` as it stands now. Everything else stays the session's
- * own: its identity, directory and native conversation, so a session started
- * after its agent was edited resumes its conversation under the edit instead
- * of under what the agent was when the session was first created.
+ * mode, the instructions and skill the provider is given, and what the
+ * agent's advanced configuration becomes: the agent definition Claude Code
+ * runs as and the Codex profile — taken from the watcher's `template` as it
+ * stands now. Everything else stays the session's own: its identity,
+ * directory and native conversation, so a session started after its agent was
+ * edited resumes its conversation under the edit instead of under what the
+ * agent was when the session was first created.
+ *
+ * A session that runs as a definition file on the host's disk
+ * (`execution.agentDefinition`, a subagent watched under its parent) keeps the
+ * agent it runs as: the template's definition is its parent's.
  */
 export function withDefinitionOf(
   config: SharedHostConfig,
@@ -369,9 +375,17 @@ export function withDefinitionOf(
   if (model) next.start.input.model = structuredClone(model);
   else delete next.start.input.model;
   next.start.input.runtimeMode = template.start.input.runtimeMode;
+  if (!next.execution?.agentDefinition) {
+    const { agentName, agentDefinition } = template.start.input;
+    if (agentName) next.start.input.agentName = agentName;
+    else delete next.start.input.agentName;
+    if (agentDefinition) next.start.input.agentDefinition = structuredClone(agentDefinition);
+    else delete next.start.input.agentDefinition;
+  }
   if (next.execution && template.execution) {
     next.execution.context = template.execution.context;
     next.execution.skill = template.execution.skill;
+    next.execution.codexConfig = template.execution.codexConfig;
   }
   return next;
 }
@@ -428,7 +442,7 @@ export async function stopRedefinedSessions(
 ): Promise<void> {
   for (const { root, config } of redefined) {
     console.warn(
-      `Session ${config.session.sessionId} runs under an earlier definition of its agent (model, instructions or approval mode); stopping it so it resumes under the current one when it is next needed.`
+      `Session ${config.session.sessionId} runs under an earlier definition of its agent (model, instructions, advanced configuration or approval mode); stopping it so it resumes under the current one when it is next needed.`
     );
     await supervision.stop(root);
   }
@@ -1724,7 +1738,7 @@ export async function runAgentHost(
           continue;
         }
         console.warn(
-          `Session ${saved.session.sessionId} runs under an earlier definition of its agent (model, instructions or approval mode); restarting it on the same conversation under the current one.`
+          `Session ${saved.session.sessionId} runs under an earlier definition of its agent (model, instructions, advanced configuration or approval mode); restarting it on the same conversation under the current one.`
         );
         try {
           await ensureSharedProcess({

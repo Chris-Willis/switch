@@ -27,6 +27,7 @@ from switch_core.db.models import Agent, AgentController
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.db.session_scope import tenant_session
 from switch_core.management import reason_codes
+from switch_core.management.advanced_config import provider_fields
 from switch_core.management.errors import ManagementError
 from switch_core.management.placement import provider_auth
 from switch_core.management.schemas import (
@@ -154,6 +155,14 @@ class ManagementAgentOperations:
             )
         return machines
 
+    def advanced_config_fields(self, provider: str) -> list[dict[str, Any]]:
+        try:
+            return provider_fields(provider)
+        except ValueError as exc:
+            raise AgentManagementRefused(
+                reason_codes.VALIDATION_ERROR, str(exc)
+            ) from exc
+
     async def _resolve_machine(
         self,
         session: AsyncSession,
@@ -216,7 +225,7 @@ class ManagementAgentOperations:
                     definition=DefinitionV1(
                         provider=spec.provider,  # type: ignore[arg-type]
                         model=spec.model,
-                        model_options=spec.model_options,
+                        advanced_config=spec.advanced_config,
                         instructions=spec.instructions,
                         auto_approve=spec.auto_approve,
                         directory=spec.directory,
@@ -259,7 +268,7 @@ class ManagementAgentOperations:
             "description": agent.description,
             "provider": row.definition.get("provider"),
             "model": row.definition.get("model"),
-            "model_options": row.definition.get("model_options", {}),
+            "advanced_config": row.definition.get("advanced_config", {}),
             "machine": None
             if controller is None
             else {

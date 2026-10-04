@@ -1438,12 +1438,19 @@ it('starts the session serving a room again when its host has gone, instead of a
   expect((await AgentHostAssignments.open(root)).sessions()).toHaveLength(1);
 });
 
-it('takes the model, approval mode and instructions from the template, and nothing else', () => {
+it('takes the model, approval mode, instructions and advanced configuration from the template, and nothing else', () => {
   const root = '/state';
   const edited = watchable(root);
-  edited.start.input.model = { id: 'claude-sonnet-4-6' };
+  edited.start.input.model = { id: 'claude-sonnet-4-6', options: { effort: 'high' } };
   edited.start.input.runtimeMode = 'full-access';
+  edited.start.input.agentName = 'scout';
+  edited.start.input.agentDefinition = {
+    description: 'scout',
+    prompt: 'Answer in one word.',
+    permissionMode: 'plan',
+  };
   edited.execution!.context = 'Answer in one word.';
+  edited.execution!.codexConfig = 'model_verbosity = "low"\n';
   const saved = watchable(root);
   saved.session = { ...saved.session, agentId: edited.session.agentId, sessionId: 'room-session' };
   saved.start.input.sessionId = 'room-session';
@@ -1456,14 +1463,51 @@ it('takes the model, approval mode and instructions from the template, and nothi
   expect(definitionChanged(refreshed, edited)).toBe(false);
   expect(refreshed.start.input).toMatchObject({
     sessionId: 'room-session',
-    model: { id: 'claude-sonnet-4-6' },
+    model: { id: 'claude-sonnet-4-6', options: { effort: 'high' } },
     runtimeMode: 'full-access',
+    agentName: 'scout',
+    agentDefinition: {
+      description: 'scout',
+      prompt: 'Answer in one word.',
+      permissionMode: 'plan',
+    },
     resume: { nativeSessionId: 'native' },
   });
-  expect(refreshed.execution!.context).toBe('Answer in one word.');
+  expect(refreshed.execution).toMatchObject({
+    context: 'Answer in one word.',
+    codexConfig: 'model_verbosity = "low"\n',
+  });
   expect(refreshed.session.sessionId).toBe('room-session');
   delete edited.start.input.model;
-  expect(withDefinitionOf(saved, edited).start.input.model).toBeUndefined();
+  delete edited.start.input.agentName;
+  delete edited.start.input.agentDefinition;
+  const cleared = withDefinitionOf(refreshed, edited);
+  expect(cleared.start.input.model).toBeUndefined();
+  expect(cleared.start.input).not.toHaveProperty('agentName');
+  expect(cleared.start.input).not.toHaveProperty('agentDefinition');
+});
+
+it('leaves a session that runs as a definition file on disk as the agent it runs as', () => {
+  const root = '/state';
+  const edited = watchable(root);
+  edited.start.input.agentName = 'parent';
+  edited.start.input.agentDefinition = { description: 'parent', prompt: 'Lead.' };
+  const saved = watchable(root);
+  saved.session = {
+    ...saved.session,
+    agentId: edited.session.agentId,
+    sessionId: 'helper-session',
+  };
+  saved.execution!.agentDefinition = { name: 'helper', path: '.claude/agents/helper.md' };
+
+  const refreshed = withDefinitionOf(saved, edited);
+
+  expect(refreshed.start.input).not.toHaveProperty('agentName');
+  expect(refreshed.start.input).not.toHaveProperty('agentDefinition');
+  expect(refreshed.execution!.agentDefinition).toEqual({
+    name: 'helper',
+    path: '.claude/agents/helper.md',
+  });
 });
 
 it('restarts a room’s session under its agent’s edited definition, resuming the same session', async () => {

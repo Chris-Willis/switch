@@ -128,7 +128,7 @@ class TestOwnerIsolation:
             return found
 
         routes = [r for r in gateway_router.routes if hasattr(r, "dependant")]
-        assert len(routes) == 13
+        assert len(routes) == 14
         for route in routes:
             assert get_current_user in calls(route.dependant), route.path  # type: ignore[attr-defined]
 
@@ -375,6 +375,74 @@ class TestManagedAgents:
         for response in (unknown_provider, extra_key, too_long):
             assert response.status_code == 422
             assert response.json()["error"]["code"] == "validation_error"
+
+    async def test_advanced_config_is_held_to_the_providers_schema(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            created = await create_managed_agent(
+                client,
+                owner,
+                name="reviewer",
+                controller_id=None,
+                definition_body=definition(
+                    advanced_config={"effort": "high", "tools": ["Read"]}
+                ),
+            )
+            agent_id = created.json()["agent_id"]
+            refused = await client.patch(
+                f"/gateway/management/agents/{agent_id}",
+                json={"definition": definition(advanced_config={"effort": "huge"})},
+                cookies=cookies_for(owner),
+            )
+            view = await client.get(
+                f"/gateway/management/agents/{agent_id}", cookies=cookies_for(owner)
+            )
+            cleared = await client.patch(
+                f"/gateway/management/agents/{agent_id}",
+                json={"definition": definition()},
+                cookies=cookies_for(owner),
+            )
+        assert created.status_code == 201, created.text
+        assert created.json()["definition"]["advanced_config"] == {
+            "effort": "high",
+            "tools": ["Read"],
+        }
+        assert refused.status_code == 422
+        error = refused.json()["error"]
+        assert error["code"] == "validation_error"
+        assert "claude setting 'effort' must be one of" in error["message"]
+        assert view.json()["definition"]["advanced_config"] == {
+            "effort": "high",
+            "tools": ["Read"],
+        }
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["definition"]["advanced_config"] == {}
+        assert cleared.json()["revision"] == 2
+
+    async def test_the_advanced_config_schema_is_served(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            served = await client.get(
+                "/gateway/management/advanced-config", cookies=cookies_for(owner)
+            )
+            anonymous = await client.get("/gateway/management/advanced-config")
+        assert served.status_code == 200, served.text
+        providers = served.json()["providers"]
+        assert set(providers) == {
+            "claude",
+            "codex",
+            "opencode",
+            "cursor",
+            "antigravity",
+        }
+        assert providers["cursor"] == {"fields": []}
+        effort = next(
+            field for field in providers["claude"]["fields"] if field["key"] == "effort"
+        )
+        assert effort["options"][0] == {"value": "", "label": "Inherit"}
+        assert anonymous.status_code == 401
 
     async def test_adopting_an_existing_agent(self, harness: Harness) -> None:
         owner = await add_member(harness.session_factory, "ada")

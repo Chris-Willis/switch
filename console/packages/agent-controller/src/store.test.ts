@@ -31,7 +31,7 @@ const assignment = {
         icon_url: null,
         provider: 'claude',
         model: null,
-        model_options: {},
+        advanced_config: {},
         instructions: '',
         auto_approve: false,
         directory: null,
@@ -113,7 +113,7 @@ describe('ControllerStore', () => {
   it('says an assignment saved by an earlier version is unreadable, and discards it', () => {
     const store = ControllerStore.open(path);
     const [entry] = assignment.agents;
-    const { model_options: _dropped, ...earlier } = entry!.definition;
+    const { advanced_config: _dropped, ...earlier } = entry!.definition;
     store.saveAssignment(
       { revision: 5, agents: [{ ...entry!, definition: earlier }] } as unknown as Parameters<
         typeof store.saveAssignment
@@ -123,7 +123,7 @@ describe('ControllerStore', () => {
     );
     const cached = store.cachedAssignment();
     expect(cached.kind).toBe('unreadable');
-    expect(cached.kind === 'unreadable' && cached.detail).toContain('model_options');
+    expect(cached.kind === 'unreadable' && cached.detail).toContain('advanced_config');
     store.discardAssignment();
     expect(store.cachedAssignment()).toEqual({ kind: 'none' });
     store.close();

@@ -39,7 +39,7 @@ const agent = (agentId: string, controllerId: string | null, name: string): Mana
   revision: 1,
   provider: 'claude',
   model: null,
-  modelOptions: {},
+  advancedConfig: {},
   instructions: '',
   isolation: 'shared',
   directory: null,

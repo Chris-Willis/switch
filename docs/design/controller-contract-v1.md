@@ -82,7 +82,7 @@ type AgentDefinition = {
   icon_url: string | null
   provider: "claude" | "codex" | "opencode" | "cursor" | "antigravity"
   model: string | null                // null = provider default
-  model_options: Record<string, string> // the provider's options for `model` (Claude/Codex `effort`, OpenCode `variant`); ≤ 8, {} when model is null
+  advanced_config: Record<string, string | number | boolean | string[]> // the provider's "Advanced configuration", checked by the server against its schema for the provider (GET /gateway/management/advanced-config); an unset field is left out; {} for none
   instructions: string                // ≤ 32 KiB
   provider_definition: string | null  // e.g. the Claude agent definition file
   auto_approve: boolean               // CLI runs with its bypass-permissions flag

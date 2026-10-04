@@ -503,8 +503,9 @@ async function buildDefinition(agent: MigrationAgent, subagent: SubagentRef | nu
   }
   return buildManagedDefinition({
     providerId: agent.providerId,
+    name: subagent ? subagent.name : agent.name,
     specialization: launch.specialization,
-    providerDefinition: launch.definition !== undefined,
+    providerDefinition: launch.definition,
     autoApprove: row.autoApprove,
     directory: location.dir,
     stoppedByHand: (await listStoppedControllerAgentIds()).includes(agent.id),

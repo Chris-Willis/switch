@@ -117,7 +117,7 @@ const definition = {
   icon_url: null,
   provider: 'claude',
   model: null,
-  model_options: {},
+  advanced_config: {},
   instructions: '',
   auto_approve: false,
   directory: null,

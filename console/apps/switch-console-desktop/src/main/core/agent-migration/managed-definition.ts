@@ -1,3 +1,14 @@
+import { isDeepStrictEqual } from 'node:util';
+import type {
+  RepoAgentField,
+  RepoAgentLaunchDefinition,
+} from '@switch-console/core/agents/plugins';
+import {
+  type AdvancedConfig,
+  type AdvancedConfigValue,
+  advancedConfigFields,
+  sessionLaunchConfig,
+} from '@switch-console/plugins/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 
 /**
@@ -9,6 +20,8 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
 export type ManagedDefinition = {
   provider: AgentProviderId;
   model: string | null;
+  /** The provider's advanced configuration, keyed by its field keys; unset fields are absent. */
+  advanced_config: AdvancedConfig;
   instructions: string;
   auto_approve: boolean;
   directory: string | null;
@@ -17,15 +30,84 @@ export type ManagedDefinition = {
 /** The longest instructions Core takes (`MAX_INSTRUCTIONS_BYTES`). */
 export const MAX_INSTRUCTIONS_BYTES = 32 * 1024;
 
-/** The specialisation keys the definition carries, or names as lost on their own. */
-const CARRIED_KEYS = new Set(['model', 'instructions']);
+/** Refuses instructions longer than Core takes. */
+export function assertInstructionsFit(instructions: string): void {
+  if (Buffer.byteLength(instructions, 'utf8') > MAX_INSTRUCTIONS_BYTES)
+    throw new Error(
+      `The instructions are longer than the ${MAX_INSTRUCTIONS_BYTES / 1024} KiB a managed agent takes; shorten them before moving it.`
+    );
+}
+
+/** The specialisation keys the definition carries as top-level fields. */
+const TOP_LEVEL_KEYS = new Set(['model', 'instructions']);
+
+/** A specialisation value (always a string) as the value its field takes, or null when it is not one. */
+function fieldValue(field: RepoAgentField, text: string): AdvancedConfigValue | null {
+  switch (field.type) {
+    case 'list': {
+      const items = text
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+      return items.length > 0 ? items : null;
+    }
+    case 'number': {
+      const value = Number(text);
+      return text.trim() !== '' && Number.isFinite(value) ? value : null;
+    }
+    case 'boolean':
+      return text === 'true' ? true : text === 'false' ? false : null;
+    case 'select':
+      return text !== '' && (field.options ?? []).some((option) => option.value === text)
+        ? text
+        : null;
+    case 'text':
+    case 'textarea':
+      return text;
+  }
+}
+
+/**
+ * The advanced configuration an agent's launch specialisation amounts to, for
+ * the provider's fields, and what of it has no managed equivalent, said for a
+ * person.
+ */
+export function advancedConfigFromSpecialization(
+  providerId: AgentProviderId,
+  specialization: Record<string, string | undefined>
+): { advancedConfig: AdvancedConfig; notCarried: string[] } {
+  const fields = new Map(advancedConfigFields(providerId).map((field) => [field.key, field]));
+  const advancedConfig: AdvancedConfig = {};
+  const unknown: string[] = [];
+  const notCarried: string[] = [];
+  for (const key of Object.keys(specialization).sort()) {
+    const text = specialization[key];
+    if (!text || TOP_LEVEL_KEYS.has(key)) continue;
+    const field = fields.get(key);
+    if (!field) {
+      unknown.push(key);
+      continue;
+    }
+    const value = fieldValue(field, text);
+    if (value === null)
+      notCarried.push(`The setting ${field.label} (“${text}”): it is not a value the field takes.`);
+    else advancedConfig[key] = value;
+  }
+  if (unknown.length)
+    notCarried.unshift(
+      `Launch settings with no managed equivalent: ${unknown.join(', ')}${providerId === 'codex' ? ' (Codex launch profile)' : ''}.`
+    );
+  return { advancedConfig, notCarried };
+}
 
 export type DefinitionSource = {
   providerId: AgentProviderId;
+  /** The name the managed agent runs under: the agent's, or the subagent's. */
+  name: string;
   /** The agent's launch specialisation (`agentLaunchConfig`), or undefined when it sets none. */
   specialization: Record<string, string | undefined> | undefined;
-  /** Whether the agent launches as a provider agent definition (Claude Code's `--agent`). */
-  providerDefinition: boolean;
+  /** The provider agent definition the agent launches as (Claude Code's `--agent`), if any. */
+  providerDefinition: RepoAgentLaunchDefinition | undefined;
   autoApprove: boolean;
   /** The agent's working directory, as an absolute path on its machine; null for a workspace the machine chooses. */
   directory: string | null;
@@ -59,31 +141,24 @@ export function definitionBody(text: string): string {
  * The managed definition an agent's Console configuration amounts to, and
  * what it leaves behind. Pure.
  *
+ * The advanced configuration is the agent's own settings, which its machine's
+ * controller applies as Console does. A subagent watched under its parent
+ * runs from its own definition file in Console, taking only the model and its
+ * option from the parent, so that is all of the parent's settings it carries.
+ *
  * A managed agent always starts a session when addressed. One whose watcher
  * was stopped by hand moves as the desired state `stopped`.
  */
 export function buildManagedDefinition(source: DefinitionSource): BuiltDefinition {
   const specialization = source.specialization ?? {};
-  const notCarried: string[] = [];
   const optionKey = source.providerId === 'opencode' ? 'variant' : 'effort';
-  const option = specialization[optionKey];
-  if (option)
-    notCarried.push(
-      optionKey === 'variant'
-        ? `The model variant “${option}”: the managed agent runs the model's default variant.`
-        : `The reasoning effort “${option}”: the managed agent runs at the provider's default effort.`
-    );
-  const unused = Object.keys(specialization)
-    .filter((key) => key !== optionKey && !CARRIED_KEYS.has(key) && specialization[key])
-    .sort();
-  if (unused.length)
-    notCarried.push(
-      `Launch settings with no managed equivalent: ${unused.join(', ')}${source.providerId === 'codex' ? ' (Codex launch profile)' : ''}.`
-    );
-  if (source.providerDefinition && !source.subagentDefinition)
-    notCarried.push(
-      'The provider agent definition this agent launches as (its tools and permission settings): the managed agent gets its instructions as system context instead.'
-    );
+  const settings = source.subagentDefinition
+    ? { [optionKey]: specialization[optionKey] }
+    : specialization;
+  const { advancedConfig, notCarried } = advancedConfigFromSpecialization(
+    source.providerId,
+    settings
+  );
   if (source.shellSetup)
     notCarried.push('The location’s shell setup: managed sessions start without running it first.');
   if (source.chosenBinary)
@@ -98,14 +173,33 @@ export function buildManagedDefinition(source: DefinitionSource): BuiltDefinitio
     );
   }
   const instructions = parts.filter(Boolean).join('\n\n');
-  if (Buffer.byteLength(instructions, 'utf8') > MAX_INSTRUCTIONS_BYTES)
-    throw new Error(
-      `The instructions are longer than the ${MAX_INSTRUCTIONS_BYTES / 1024} KiB a managed agent takes; shorten them before moving it.`
-    );
+  assertInstructionsFit(instructions);
+  const model = specialization.model || null;
+  if (source.providerDefinition && !source.subagentDefinition) {
+    const managed = sessionLaunchConfig({
+      provider: source.providerId,
+      slug: source.name,
+      description: '',
+      cwd: source.directory ?? '',
+      model,
+      advancedConfig,
+      instructions,
+    }).agent?.definition;
+    const differing = [
+      ...new Set([...Object.keys(source.providerDefinition), ...Object.keys(managed ?? {})]),
+    ]
+      .filter((key) => !isDeepStrictEqual(source.providerDefinition?.[key], managed?.[key]))
+      .sort();
+    if (differing.length)
+      notCarried.push(
+        `Part of the provider agent definition this agent launches as (${differing.join(', ')}): the managed agent's definition is built from its name, model, advanced configuration and instructions alone.`
+      );
+  }
   return {
     definition: {
       provider: source.providerId,
-      model: specialization.model || null,
+      model,
+      advanced_config: advancedConfig,
       instructions,
       auto_approve: source.autoApprove,
       directory: source.directory,

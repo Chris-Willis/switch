@@ -47,7 +47,7 @@ class NewManagedAgent:
     machine: str
     provider: str
     model: str | None
-    model_options: dict[str, str]
+    advanced_config: dict[str, Any]
     instructions: str
     directory: str | None
     auto_approve: bool
@@ -59,11 +59,12 @@ class ManagedAgentChanges:
     """What an agent asks to change in a managed agent's definition and
     placement. None leaves a field as it is; for `model` and `directory` an
     empty string clears it (provider default, fresh workspace). `machine` is
-    resolved as for `NewManagedAgent`."""
+    resolved as for `NewManagedAgent`. `advanced_config` replaces the stored
+    one whole; {} clears it."""
 
     provider: str | None
     model: str | None
-    model_options: dict[str, str] | None
+    advanced_config: dict[str, Any] | None
     instructions: str | None
     auto_approve: bool | None
     directory: str | None
@@ -76,7 +77,7 @@ class ManagedAgentChanges:
         given: dict[str, Any] = {
             "provider": self.provider,
             "model": self.model,
-            "model_options": self.model_options,
+            "advanced_config": self.advanced_config,
             "instructions": self.instructions,
             "auto_approve": self.auto_approve,
             "directory": self.directory,
@@ -101,6 +102,11 @@ class AgentManagementPort(Protocol):
         self, tenant_id: str, owner_id: str
     ) -> list[dict[str, Any]]:
         """The owner's machines that are not revoked."""
+        ...
+
+    def advanced_config_fields(self, provider: str) -> list[dict[str, Any]]:
+        """The provider's advanced-configuration fields, as the gateway serves
+        them. Refused for a provider Switch does not run."""
         ...
 
     async def create_agent(

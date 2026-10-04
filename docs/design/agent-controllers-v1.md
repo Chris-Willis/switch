@@ -147,6 +147,9 @@ Controller access token (`{id}` must match the token's `cid`, otherwise `403 for
 - `DELETE /gateway/management/agents/{agent_id}`
   - Stops managing the agent: removes the definition, and the controller stops it. It does not delete the agent.
 - `POST   /gateway/management/operations` and `GET /gateway/management/operations?controller_id=`.
+- `GET    /gateway/management/advanced-config` returns each provider's advanced-configuration
+  schema, `{"providers": {"claude": {"fields": [...]}, "codex": ..., "opencode": ...,
+  "cursor": {"fields": []}, "antigravity": {"fields": []}}}` (see Advanced configuration below).
 
 **Placement checks** run on create, adopt and move, and on a change to `running`. Each failure returns `409` with a reason:
 - `controller_revoked`
@@ -161,9 +164,35 @@ Any change that affects a controller bumps its `assignment_revision` and nudges 
 ### Definition (v1)
 ```json
 {"provider": "claude|codex|opencode|antigravity|cursor",
- "model": null, "instructions": "", "auto_approve": false,
- "directory": null}
+ "model": null, "advanced_config": {}, "instructions": "", "auto_approve": false,
+ "directory": null, "isolation": "shared"}
 ```
+
+### Advanced configuration
+`advanced_config` carries the provider's "Advanced configuration", the per-provider settings
+Switch Console offers for its own agents. The server owns one fixed schema per provider
+(`management/advanced_config.py`), checks every create and update against it whatever
+machine runs the agent, and serves it at `GET /gateway/management/advanced-config` and
+through the `get_advanced_config(provider)` agent operation. Controllers report nothing
+about settings; they apply what they are given.
+
+- Each served field is `{key, label, type, help, placeholder, options, catalogue}`. `type`
+  is `text` or `textarea` (a string), `number` (finite), `boolean`, `list` (strings) or
+  `select` (a string among `options`). `options` is `[{value, label}]` for a select, null
+  otherwise; its first entry is `{"value": "", "label": <unset label>}` ("Default",
+  "Inherit", ...), which a form shows for "unset" and which is not an accepted value.
+  `catalogue` is null, `{kind: "model"}`, or `{kind: "model-variant", model_field}`.
+- Claude: `tools`, `disallowedTools` (lists), `permissionMode`, `color`, `maxTurns`,
+  `background`, `isolation` (Claude's git worktree, unrelated to the definition's own
+  `isolation`), `effort`, `memory`. Codex: `effort`, `verbosity`, `reasoningSummary`,
+  `webSearch` (`"true"`/`"false"`). OpenCode: `variant`, `temperature`, `topP`,
+  `maxSteps`, `webSearch`, `smallModel`. Cursor and Antigravity: none. `model` and the
+  instructions stay top-level definition fields.
+- An unset field is left out, never null, `""` or `[]`. At most 32 keys, strings at most
+  4096 characters, lists at most 64 items of 1 to 256 characters. An unknown key, a wrong
+  type or a value outside a select's options is refused as `422 validation_error`, the
+  message naming the provider and the field. A definition is replaced whole, so changing
+  `provider` needs an `advanced_config` the new provider takes.
 
 The assignment entry adds the agent's `name`, `display_name` and `icon_url`, read from the agents row.
 
@@ -178,7 +207,7 @@ These are the codes from the contract, plus `forbidden`, `invalid_credential`, `
 
 ### Agents managing agents
 
-An agent may act on its owner's agent management through three agent operations. They
+An agent may act on its owner's agent management through four agent operations. They
 exist only while management runs: they are declared in their own operation group
 (`registry.gated_operation`), and `Management.install` enables it by handing Core
 management's implementation of `AgentManagementPort`
@@ -193,8 +222,11 @@ registers every declared operation and filters by the registry per request).
   list still shows an agent placed on one, with the machine's `state: "revoked"`.
   `agents_running` counts the agents the last status reports as `running`, null before any
   status.
-- `create_agent(name, description, machine, provider, model=None, instructions="",
-  directory=None, auto_approve=False, display_name=None, start=True)`: builds the same
+- `get_advanced_config(provider)`: the provider's advanced-configuration fields, as the
+  gateway serves them.
+- `create_agent(name, description, machine, provider, model=None, advanced_config=None,
+  instructions="", directory=None, auto_approve=False, display_name=None, icon_url=None,
+  start=True)`: builds the same
   `CreateManagedAgentRequest` the gateway route takes and calls
   `ManagementService.create_managed_agent`, so validation, placement checks, owner-only
   addressing and registration are the gateway's. `machine` is an id among the owner's
@@ -203,11 +235,12 @@ registers every declared operation and filters by the registry per request).
   The agent is owned by the calling agent's owner, with `auto_session` true and the
   capability off. Returns `{agent_id, name, machine: {id, name}, desired_state, hint}`.
 - `list_managed_agents()`: the owner's managed agents, each `{agent_id, name, display_name,
-  description, provider, model, machine: {id, name, state} | null, desired_state, actual:
+  description, provider, model, advanced_config, machine: {id, name, state} | null,
+  desired_state, actual:
   {process, reason, detail, applied_revision, since} | null, revision}`, `actual` being the
   agent's entry in its controller's last status.
 
-**The capability.** `agents.can_manage_agents` (boolean, default false) gates all three,
+**The capability.** `agents.can_manage_agents` (boolean, default false) gates all four,
 listing included since it discloses the owner's machines. It is the agent's, read from its
 row on every call, so it holds however the call authenticated: the agent's own key or a
 controller acting as the agent. An agent with no owner is refused. Only the agent's owner

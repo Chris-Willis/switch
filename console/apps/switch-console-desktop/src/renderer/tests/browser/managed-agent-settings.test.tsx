@@ -45,7 +45,7 @@ const AGENT: ManagedAgentView = {
   definition: {
     provider: 'claude',
     model: 'opus',
-    modelOptions: {},
+    advancedConfig: {},
     instructions: 'Be brief.',
     autoApprove: false,
     directory: '/work/pm',

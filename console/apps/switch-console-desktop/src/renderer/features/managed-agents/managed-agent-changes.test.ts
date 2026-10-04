@@ -16,7 +16,7 @@ const AGENT: ManagedAgentView = {
   definition: {
     provider: 'claude',
     model: 'opus',
-    modelOptions: { effort: 'high' },
+    advancedConfig: { effort: 'high' },
     instructions: 'Be brief.',
     autoApprove: false,
     directory: '/work/pm',
@@ -38,13 +38,13 @@ describe('changesOf', () => {
     const before = draftOf(AGENT);
     expect(
       changesOf(AGENT, before, { ...before, option: 'max', machineId: 'controller-2' })
-    ).toEqual({ definition: { modelOptions: { effort: 'max' } }, machineId: 'controller-2' });
+    ).toEqual({ definition: { advancedConfig: { effort: 'max' } }, machineId: 'controller-2' });
   });
 
-  it('drops the model options with the model they applied to', () => {
+  it('keeps the advanced configuration when the model goes back to the default', () => {
     const before = draftOf(AGENT);
     expect(changesOf(AGENT, before, { ...before, model: '' })).toEqual({
-      definition: { model: null, modelOptions: {} },
+      definition: { model: null },
     });
   });
 
@@ -52,7 +52,7 @@ describe('changesOf', () => {
     const before = draftOf(AGENT);
     expect(
       changesOf(AGENT, before, { ...before, provider: 'opencode', option: '', model: 'gpt' })
-    ).toEqual({ definition: { provider: 'opencode', model: 'gpt', modelOptions: {} } });
+    ).toEqual({ definition: { provider: 'opencode', model: 'gpt', advancedConfig: {} } });
   });
 
   it('clears the directory to let the machine choose', () => {

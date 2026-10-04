@@ -547,6 +547,7 @@ export const NewAgentForm = observer(function NewAgentForm({
           machineId: serverMachine.id,
           dir: trimmedRemoteDir || null,
           model: managedModel.trim() || null,
+          advancedConfig: {},
         });
         if (created.kind !== 'created') {
           reportProvisionError(created);

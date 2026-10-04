@@ -82,6 +82,7 @@ const pmAgent: ManagedAgent = {
     auto_approve: false,
     directory: null,
     isolation: "shared",
+    advanced_config: {},
   },
   status: laptop.status!.agents[0],
   created_at: "2026-10-01T00:00:00Z",

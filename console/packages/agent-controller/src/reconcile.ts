@@ -11,7 +11,7 @@ import {
 } from './schemas';
 import { isCredentialFailure, LAUNCH_GRACE_MS } from './status';
 import type { AgentRow, ControllerStore } from './store';
-import { buildWatcherTemplate } from './template';
+import { advancedConfigDefinitionProblem, buildWatcherTemplate } from './template';
 
 export type StartAction = {
   kind: 'start';
@@ -39,6 +39,11 @@ export function definitionProblem(entry: AgentAssignment): string | null {
     return `The agent id '${entry.agent_id}' cannot be used as a directory name.`;
   if (!isProvider(entry.definition.provider))
     return `This controller does not run the provider '${entry.definition.provider}'.`;
+  const advancedProblem = advancedConfigDefinitionProblem(
+    entry.definition.provider,
+    entry.definition
+  );
+  if (advancedProblem) return advancedProblem;
   if (entry.definition.isolation === 'unknown')
     return 'This controller does not know the isolation this agent asks for.';
   if (entry.definition.directory === null && !isSafeSegment(entry.definition.name))

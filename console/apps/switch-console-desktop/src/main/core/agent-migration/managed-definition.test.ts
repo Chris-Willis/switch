@@ -8,8 +8,9 @@ import {
 
 const SOURCE: DefinitionSource = {
   providerId: 'claude',
+  name: 'builder',
   specialization: undefined,
-  providerDefinition: false,
+  providerDefinition: undefined,
   autoApprove: true,
   directory: '/work/builder',
   stoppedByHand: false,
@@ -28,6 +29,7 @@ describe('the managed definition of a Console agent', () => {
       definition: {
         provider: 'claude',
         model: 'sonnet',
+        advanced_config: {},
         instructions: 'Review pull requests.',
         auto_approve: true,
         directory: '/work/builder',
@@ -42,45 +44,103 @@ describe('the managed definition of a Console agent', () => {
     expect(built.desiredState).toBe('stopped');
   });
 
-  it('names the effort, and OpenCode’s variant, which it cannot carry', () => {
-    expect(
-      buildManagedDefinition({ ...SOURCE, specialization: { model: 'o3', effort: 'high' } })
-        .notCarried
-    ).toEqual([expect.stringContaining('reasoning effort “high”')]);
+  it('carries the advanced configuration, each value as its field takes it', () => {
+    const built = buildManagedDefinition({
+      ...SOURCE,
+      specialization: {
+        model: 'opus',
+        effort: 'high',
+        tools: 'Read, Grep',
+        maxTurns: '8',
+        background: 'true',
+        permissionMode: 'plan',
+      },
+    });
+    expect(built.definition.advanced_config).toEqual({
+      effort: 'high',
+      tools: ['Read', 'Grep'],
+      maxTurns: 8,
+      background: true,
+      permissionMode: 'plan',
+    });
+    expect(built.notCarried).toEqual([]);
     expect(
       buildManagedDefinition({
         ...SOURCE,
         providerId: 'opencode',
-        specialization: { model: 'anthropic/claude', variant: 'max' },
-      }).notCarried
-    ).toEqual([expect.stringContaining('model variant “max”')]);
+        specialization: { model: 'anthropic/claude', variant: 'max', temperature: '0.2' },
+      }).definition.advanced_config
+    ).toEqual({ variant: 'max', temperature: 0.2 });
   });
 
-  it('lists the other launch settings, the provider definition, shell setup and a chosen CLI', () => {
+  it('names a setting whose value its field does not take', () => {
+    const built = buildManagedDefinition({
+      ...SOURCE,
+      providerId: 'codex',
+      specialization: { effort: 'extreme', verbosity: 'low' },
+    });
+    expect(built.definition.advanced_config).toEqual({ verbosity: 'low' });
+    expect(built.notCarried).toEqual([expect.stringContaining('Reasoning effort (“extreme”)')]);
+  });
+
+  it('lists the other launch settings, shell setup and a chosen CLI', () => {
     const built = buildManagedDefinition({
       ...SOURCE,
       providerId: 'codex',
       specialization: { sandbox: 'workspace-write', approval: 'never', empty: '' },
-      providerDefinition: true,
       shellSetup: true,
       chosenBinary: '/opt/codex/bin/codex',
     });
     expect(built.notCarried).toEqual([
       'Launch settings with no managed equivalent: approval, sandbox (Codex launch profile).',
-      expect.stringContaining('provider agent definition'),
       expect.stringContaining('shell setup'),
       expect.stringContaining('/opt/codex/bin/codex'),
     ]);
   });
 
-  it('gives a subagent its definition’s prompt after its parent’s instructions', () => {
+  it('says nothing of a provider definition the managed agent runs as it is', () => {
     const built = buildManagedDefinition({
       ...SOURCE,
-      specialization: { instructions: 'Parent instructions.' },
-      providerDefinition: true,
+      specialization: { model: 'opus', tools: 'Read', instructions: 'Build.' },
+      providerDefinition: {
+        description: 'builder',
+        prompt: 'Build.',
+        model: 'opus',
+        tools: ['Read', 'mcp__switch'],
+      },
+    });
+    expect(built.notCarried).toEqual([]);
+  });
+
+  it('names what of the provider definition the managed agent’s differs in', () => {
+    const built = buildManagedDefinition({
+      ...SOURCE,
+      specialization: { instructions: 'Build.' },
+      providerDefinition: { description: 'Builds the app', prompt: 'Build.' },
+    });
+    expect(built.notCarried).toEqual([
+      expect.stringContaining('provider agent definition this agent launches as (description)'),
+    ]);
+  });
+
+  it('gives a subagent its definition’s prompt after its parent’s instructions, and only the parent’s model', () => {
+    const built = buildManagedDefinition({
+      ...SOURCE,
+      name: 'reviewer',
+      specialization: {
+        model: 'opus',
+        effort: 'low',
+        tools: 'Bash',
+        instructions: 'Parent instructions.',
+      },
+      providerDefinition: { description: 'builder', prompt: 'Parent instructions.' },
       subagentDefinition: { name: 'reviewer', body: 'You review code.' },
     });
-    expect(built.definition.instructions).toBe('Parent instructions.\n\nYou review code.');
+    expect(built.definition).toMatchObject({
+      model: 'opus',
+      advanced_config: { effort: 'low' },
+      instructions: 'Parent instructions.\n\nYou review code.',
+    });
     expect(built.notCarried).toEqual([expect.stringContaining('reviewer’s definition file')]);
   });
 

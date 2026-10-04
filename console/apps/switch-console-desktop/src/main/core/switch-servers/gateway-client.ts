@@ -1,3 +1,5 @@
+import type { RepoAgentField } from '@switch-console/core/agents/plugins';
+import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
 import { z } from 'zod';
 import type { KnownAgentType } from '@main/core/agents/known-agent-type';
 import {
@@ -2635,7 +2637,8 @@ export type ManagedAgent = {
   revision: number;
   provider: string;
   model: string | null;
-  modelOptions: Record<string, string>;
+  /** The provider's advanced configuration, keyed by its field keys; unset fields are absent. */
+  advancedConfig: Record<string, AdvancedConfigValue>;
   instructions: string;
   isolation: 'shared' | 'isolated';
   /** The working directory on its machine; null for a workspace the machine chooses. */
@@ -2672,7 +2675,7 @@ type ManagedAgentJson = {
   definition: {
     provider?: unknown;
     model?: unknown;
-    model_options?: unknown;
+    advanced_config?: unknown;
     instructions?: unknown;
     directory?: unknown;
     auto_approve?: unknown;
@@ -2759,10 +2762,24 @@ function providerReports(status: unknown): ControllerProviderReport[] {
   });
 }
 
-function stringRecord(value: unknown): Record<string, string> {
-  if (!value || typeof value !== 'object') return {};
-  return Object.fromEntries(
-    Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+export type { AdvancedConfigValue };
+
+const advancedConfigSchema = z.record(
+  z.string(),
+  z.union([z.string(), z.number(), z.boolean(), z.array(z.string())])
+);
+
+/**
+ * A definition's advanced configuration as the server holds it. Absent reads
+ * as none set; a value of a shape no field takes is refused rather than
+ * dropped, since saving the definition back would lose it.
+ */
+function advancedConfigOf(agentId: string, value: unknown): Record<string, AdvancedConfigValue> {
+  if (value === undefined || value === null) return {};
+  const parsed = advancedConfigSchema.safeParse(value);
+  if (parsed.success) return parsed.data;
+  throw new Error(
+    `The server sent an advanced configuration for managed agent ${agentId} that Console cannot read: ${parsed.error.message}`
   );
 }
 
@@ -2778,7 +2795,7 @@ function toManagedAgent(json: ManagedAgentJson): ManagedAgent {
     revision: json.revision ?? 0,
     provider: typeof json.definition?.provider === 'string' ? json.definition.provider : 'unknown',
     model: typeof json.definition?.model === 'string' ? json.definition.model : null,
-    modelOptions: stringRecord(json.definition?.model_options),
+    advancedConfig: advancedConfigOf(json.agent_id, json.definition?.advanced_config),
     instructions:
       typeof json.definition?.instructions === 'string' ? json.definition.instructions : '',
     isolation: json.definition?.isolation === 'isolated' ? 'isolated' : 'shared',
@@ -2846,10 +2863,73 @@ export async function updateManagedAgent(
   await managementFetch(server, path, { authenticated: true, method: 'PATCH', body });
 }
 
+/**
+ * One field of a provider's advanced configuration, as the server's schema
+ * serves it: the shape of Console's own field descriptors, so the same form
+ * renders either.
+ */
+export type AdvancedConfigField = Pick<
+  RepoAgentField,
+  'key' | 'label' | 'type' | 'help' | 'placeholder' | 'options' | 'catalogue'
+>;
+
+const advancedConfigFieldSchema = z.object({
+  key: z.string().min(1),
+  label: z.string(),
+  type: z.enum(['text', 'textarea', 'select', 'list', 'number', 'boolean']),
+  help: z.string().nullable(),
+  placeholder: z.string().nullable(),
+  options: z.array(z.object({ value: z.string(), label: z.string() })).nullable(),
+  catalogue: z
+    .discriminatedUnion('kind', [
+      z.object({ kind: z.literal('model') }),
+      z.object({ kind: z.literal('model-variant'), model_field: z.string().min(1) }),
+    ])
+    .nullable(),
+});
+
+const advancedConfigSchemaResponse = z.object({
+  providers: z.record(z.string(), z.object({ fields: z.array(advancedConfigFieldSchema) })),
+});
+
+/**
+ * Each provider's advanced configuration fields, keyed by provider
+ * (`GET /gateway/management/advanced-config`): what a managed agent's
+ * `advanced_config` is checked against.
+ */
+export async function fetchAdvancedConfigSchema(
+  server: SwitchServer
+): Promise<Record<string, AdvancedConfigField[]>> {
+  const res = await managementFetch(server, '/advanced-config', { authenticated: true });
+  const { providers } = advancedConfigSchemaResponse.parse(await res.json());
+  return Object.fromEntries(
+    Object.entries(providers).map(([provider, { fields }]) => [
+      provider,
+      fields.map(
+        (field): AdvancedConfigField => ({
+          key: field.key,
+          label: field.label,
+          type: field.type,
+          ...(field.help !== null ? { help: field.help } : {}),
+          ...(field.placeholder !== null ? { placeholder: field.placeholder } : {}),
+          ...(field.options !== null ? { options: field.options } : {}),
+          ...(field.catalogue === null
+            ? {}
+            : field.catalogue.kind === 'model'
+              ? { catalogue: { kind: 'model' } }
+              : { catalogue: { kind: 'model-variant', modelField: field.catalogue.model_field } }),
+        })
+      ),
+    ])
+  );
+}
+
 /** The v1 managed agent definition, as `PUT`/`PATCH …/management/agents/{id}` take it. */
 export type ManagedAgentDefinitionBody = {
   provider: string;
   model: string | null;
+  /** Keyed by the provider's advanced configuration fields; unset fields are absent. */
+  advanced_config: Record<string, AdvancedConfigValue>;
   instructions: string;
   auto_approve: boolean;
   directory: string | null;

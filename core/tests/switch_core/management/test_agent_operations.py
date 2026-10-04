@@ -1,6 +1,7 @@
 """Agents acting on their owner's agent management: machines and managed agents.
 
-`list_machines`, `create_agent` and `list_managed_agents` exist only once
+`list_machines`, `get_advanced_config`, `create_agent` and
+`list_managed_agents` exist only once
 management is installed, are refused to an agent whose owner has not turned on
 its "can manage agents" capability (however the call authenticated), and act
 for the agent's owner on that owner's machines alone. Through the real bearer
@@ -46,7 +47,12 @@ from tests.switch_core.management.harness import (
     report_status,
 )
 
-MANAGEMENT_OPERATIONS = {"list_machines", "create_agent", "list_managed_agents"}
+MANAGEMENT_OPERATIONS = {
+    "list_machines",
+    "get_advanced_config",
+    "create_agent",
+    "list_managed_agents",
+}
 
 
 @pytest.fixture
@@ -208,6 +214,7 @@ class TestTheCapability:
         ("operation", "body"),
         [
             ("list_machines", {}),
+            ("get_advanced_config", {"provider": "claude"}),
             ("list_managed_agents", {}),
             ("create_agent", _create_body("laptop")),
         ],
@@ -370,7 +377,7 @@ class TestCreateAgent:
                 instructions="Build it.",
                 directory="/work/builder",
                 model="sonnet",
-                model_options={"effort": "high"},
+                advanced_config={"effort": "high", "tools": ["Read", "Grep"]},
                 display_name="Builder",
             ),
         )
@@ -401,7 +408,10 @@ class TestCreateAgent:
         assert row.desired_state == "running"
         assert row.definition["provider"] == "claude"
         assert row.definition["model"] == "sonnet"
-        assert row.definition["model_options"] == {"effort": "high"}
+        assert row.definition["advanced_config"] == {
+            "effort": "high",
+            "tools": ["Read", "Grep"],
+        }
         assert row.definition["instructions"] == "Build it."
         assert row.definition["directory"] == "/work/builder"
         assert row.definition["auto_approve"] is False
@@ -649,7 +659,7 @@ class TestListManagedAgents:
             "description": "Builds things",
             "provider": "claude",
             "model": None,
-            "model_options": {},
+            "advanced_config": {},
             "machine": {
                 "id": controller.controller_id,
                 "name": "laptop",
@@ -747,7 +757,7 @@ class TestUpdateAgentDetail:
                 "agent_id": new_id,
                 "description": "Builds better things",
                 "model": "opus",
-                "model_options": {"effort": "high"},
+                "advanced_config": {"effort": "high"},
                 "instructions": "Build carefully.",
                 "auto_approve": True,
                 "directory": "/work/next",
@@ -760,14 +770,14 @@ class TestUpdateAgentDetail:
         assert result["description"] == "Builds better things"
         managed = result["managed"]
         assert managed["model"] == "opus"
-        assert managed["model_options"] == {"effort": "high"}
+        assert managed["advanced_config"] == {"effort": "high"}
         assert managed["desired_state"] == "stopped"
         assert managed["revision"] > before["revision"]
         after = (await _assigned(client, controller))[new_id]
         assert after["revision"] == managed["revision"]
         assert after["desired_state"] == "stopped"
         assert after["definition"]["model"] == "opus"
-        assert after["definition"]["model_options"] == {"effort": "high"}
+        assert after["definition"]["advanced_config"] == {"effort": "high"}
         assert after["definition"]["instructions"] == "Build carefully."
         assert after["definition"]["auto_approve"] is True
         assert after["definition"]["directory"] == "/work/next"
@@ -912,45 +922,102 @@ class TestUpdateAgentDetail:
 
         assert response.status_code == 403, response.text
 
-    async def test_model_options_need_a_model(
+    async def test_advanced_config_is_checked_against_the_provider(
         self, harness: Harness, client: httpx.AsyncClient
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
         controller = await enroll_console(harness, client, owner, name="laptop")
-        await _online(client, controller)
+        await _online(
+            client, controller, providers=[provider("claude"), provider("codex")]
+        )
         helper_id, key = await _agent_with_key(
             harness, owner, "helper", can_manage_agents=True
         )
         new_id = await _created(client, helper_id, key, "laptop")
 
-        no_model = await _call(
-            client,
-            helper_id,
-            "update_agent_detail",
-            bearer(key),
-            {"agent_id": new_id, "model_options": {"effort": "high"}},
-        )
-        bad_key = await _call(
-            client,
-            helper_id,
-            "update_agent_detail",
-            bearer(key),
-            {"agent_id": new_id, "model": "opus", "model_options": {"Effort": "x"}},
-        )
+        async def update(changes: dict[str, Any]) -> httpx.Response:
+            return await _call(
+                client,
+                helper_id,
+                "update_agent_detail",
+                bearer(key),
+                {"agent_id": new_id, **changes},
+            )
+
+        unknown = await update({"advanced_config": {"verbosity": "low"}})
+        wrong_type = await update({"advanced_config": {"maxTurns": "ten"}})
+        not_an_option = await update({"advanced_config": {"effort": "huge"}})
         on_create = await _call(
             client,
             helper_id,
             "create_agent",
             bearer(key),
-            _create_body("laptop", name="other", model_options={"effort": "high"}),
+            _create_body("laptop", name="other", advanced_config={"color": "teal"}),
+        )
+        set_for_claude = await update(
+            {"advanced_config": {"effort": "high", "permissionMode": "plan"}}
+        )
+        leftover = await update({"provider": "codex"})
+
+        assert unknown.status_code == 400, unknown.text
+        assert "claude has no setting 'verbosity'" in unknown.json()["detail"]
+        assert wrong_type.status_code == 400, wrong_type.text
+        assert (
+            "claude setting 'maxTurns' must be a number"
+            in (wrong_type.json()["detail"])
+        )
+        assert not_an_option.status_code == 400, not_an_option.text
+        assert (
+            "claude setting 'effort' must be one of" in (not_an_option.json()["detail"])
+        )
+        assert on_create.status_code == 400, on_create.text
+        assert on_create.json()["detail"].startswith("Nothing was created: ")
+        assert "claude setting 'color'" in on_create.json()["detail"]
+        assert await _agent_row(harness, "other") is None
+        assert set_for_claude.status_code == 200, set_for_claude.text
+        assert leftover.status_code == 400, leftover.text
+        assert "codex has no setting 'permissionMode'" in leftover.json()["detail"]
+        definition = (await _assigned(client, controller))[new_id]["definition"]
+        assert definition["provider"] == "claude"
+        assert definition["advanced_config"] == {
+            "effort": "high",
+            "permissionMode": "plan",
+        }
+
+
+class TestGetAdvancedConfig:
+    async def test_lists_the_providers_fields(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        agent_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
         )
 
-        assert no_model.status_code == 400, no_model.text
-        assert "model_options apply to a model" in no_model.json()["detail"]
-        assert bad_key.status_code == 400, bad_key.text
-        assert "'Effort'" in bad_key.json()["detail"]
-        assert on_create.status_code == 400, on_create.text
-        assert "model_options apply to a model" in on_create.json()["detail"]
-        assert (await _assigned(client, controller))[new_id]["definition"][
-            "model_options"
-        ] == {}
+        codex = await _call(
+            client, agent_id, "get_advanced_config", bearer(key), {"provider": "codex"}
+        )
+        cursor = await _call(
+            client, agent_id, "get_advanced_config", bearer(key), {"provider": "cursor"}
+        )
+        unknown = await _call(
+            client, agent_id, "get_advanced_config", bearer(key), {"provider": "vim"}
+        )
+
+        assert codex.status_code == 200, codex.text
+        fields = codex.json()["result"]
+        assert [field["key"] for field in fields] == [
+            "effort",
+            "verbosity",
+            "reasoningSummary",
+            "webSearch",
+        ]
+        assert fields[3]["options"] == [
+            {"value": "", "label": "Default"},
+            {"value": "true", "label": "On"},
+            {"value": "false", "label": "Off"},
+        ]
+        assert cursor.status_code == 200, cursor.text
+        assert cursor.json()["result"] == []
+        assert unknown.status_code == 400, unknown.text
+        assert "unknown provider 'vim'" in unknown.json()["detail"]

@@ -37,6 +37,8 @@ interface Form {
   directory: string;
   autoApprove: boolean;
   isolation: Isolation;
+  /** Not edited here; kept as it is so saving does not clear it. */
+  advancedConfig: Definition["advanced_config"];
   running: boolean;
 }
 
@@ -52,6 +54,7 @@ function initialForm(agent: ManagedAgent | null, controllers: Controller[]): For
       directory: agent.definition.directory ?? "",
       autoApprove: agent.definition.auto_approve,
       isolation: agent.definition.isolation,
+      advancedConfig: agent.definition.advanced_config,
       running: agent.desired_state === "running",
     };
   const online = controllers.find((c) => c.state === "online");
@@ -65,6 +68,7 @@ function initialForm(agent: ManagedAgent | null, controllers: Controller[]): For
     directory: "",
     autoApprove: false,
     isolation: "shared",
+    advancedConfig: {},
     running: true,
   };
 }
@@ -77,6 +81,7 @@ function definitionFrom(form: Form): Definition {
     auto_approve: form.autoApprove,
     directory: form.directory.trim() || null,
     isolation: form.isolation,
+    advanced_config: form.advancedConfig,
   };
 }
 

@@ -16,7 +16,7 @@ const AGENT: ManagedAgentView = {
   definition: {
     provider: 'claude',
     model: null,
-    modelOptions: {},
+    advancedConfig: {},
     instructions: '',
     autoApprove: false,
     directory: null,

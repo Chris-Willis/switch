@@ -102,7 +102,13 @@ function template(cwd = '/work/scout', provider: 'claude' | 'codex' = 'claude') 
   return buildWatcherTemplate({
     agentId: 'agent-1',
     provider,
-    definition: { model: null, model_options: {}, instructions: '', auto_approve: false },
+    definition: {
+      name: 'scout',
+      model: null,
+      advanced_config: {},
+      instructions: '',
+      auto_approve: false,
+    },
     cwd,
     credentialsPath: runtime.credentialsPath('agent-1'),
     binaryPath: null,

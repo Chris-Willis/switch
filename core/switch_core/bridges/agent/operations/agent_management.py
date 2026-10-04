@@ -136,13 +136,40 @@ async def list_machines() -> list[dict[str, Any]]:
 
 
 @gated_operation(AGENT_MANAGEMENT_OPERATIONS)
+async def get_advanced_config(provider: str) -> list[dict[str, Any]]:
+    """List the advanced settings a managed agent of this provider can carry.
+
+    Requires the "can manage agents" capability. These are the keys
+    `create_agent` and `update_agent_detail` accept in `advanced_config` for
+    the provider, the same "Advanced configuration" Switch Console offers.
+
+    Args:
+        provider: "claude", "codex", "opencode", "antigravity" or "cursor".
+
+    Returns:
+        A list of fields, each {key, label, type, help, placeholder, options,
+        catalogue}. `type` is "text" or "textarea" (a string), "number",
+        "boolean", "list" (a list of strings) or "select" (one of `options`).
+        `options` is a select's choices, each {value, label}, the first being
+        {"value": "", ...}: that one means unset, so leave the key out rather
+        than sending "". `catalogue` is null, or {kind: "model"} for a model
+        name, or {kind: "model-variant", model_field} for a variant of the
+        model named by that field. An empty list means the provider has no
+        advanced settings. Leave a setting out of `advanced_config` to leave it
+        unset; never send null, "" or [].
+    """
+    await permitted_to_manage()
+    return _management().advanced_config_fields(provider)
+
+
+@gated_operation(AGENT_MANAGEMENT_OPERATIONS)
 async def create_agent(
     name: str,
     description: str,
     machine: str,
     provider: str,
     model: str | None = None,
-    model_options: dict[str, str] | None = None,
+    advanced_config: dict[str, Any] | None = None,
     instructions: str = "",
     directory: str | None = None,
     auto_approve: bool = False,
@@ -174,9 +201,10 @@ async def create_agent(
         provider: The agent CLI to run: "claude" (Claude Code), "codex",
             "opencode", "antigravity" or "cursor".
         model: The model to run, or null for the provider's default.
-        model_options: The provider's options for `model`, such as
-            {"effort": "high"} for Claude Code or Codex, or {"variant": ...}
-            for OpenCode; at most 8. Needs `model`. Null for none.
+        advanced_config: The provider's advanced settings, such as
+            {"effort": "high"} for Claude Code or Codex, keyed by the fields
+            `get_advanced_config(provider)` lists; a field left out is left
+            unset. Each value is checked against that field. Null for none.
         instructions: Standing instructions for the agent (at most 32 KiB).
         directory: The working directory on the machine, or null for a fresh
             workspace the machine chooses.
@@ -205,7 +233,7 @@ async def create_agent(
             machine=machine,
             provider=provider,
             model=model,
-            model_options={} if model_options is None else model_options,
+            advanced_config={} if advanced_config is None else advanced_config,
             instructions=instructions,
             directory=directory,
             auto_approve=auto_approve,
@@ -224,7 +252,7 @@ async def list_managed_agents() -> list[dict[str, Any]]:
 
     Returns:
         A list of managed agents, each {agent_id, name, display_name,
-        description, provider, model, model_options, machine, desired_state,
+        description, provider, model, advanced_config, machine, desired_state,
         actual, revision}.
         `machine` is {id, name, state} (null when the agent is not placed on
         a machine), `state` being "online", "unknown" or "revoked".

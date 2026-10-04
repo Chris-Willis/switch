@@ -119,8 +119,16 @@ export const agentDefinitionSchema = z.object({
   /** Kept as a string so one agent with a provider this build does not know fails alone. */
   provider: z.string().min(1),
   model: z.string().nullable(),
-  /** The provider's options for the model (Claude/Codex `effort`, OpenCode `variant`); empty for none. */
-  model_options: z.record(z.string().min(1), z.string().min(1)),
+  /**
+   * The provider's advanced configuration, keyed by its field keys as Console
+   * names them; unset fields are absent. Kept open here, so a field this build
+   * does not know fails its own agent (`definitionProblem`) rather than the
+   * whole assignment.
+   */
+  advanced_config: z.record(
+    z.string().min(1),
+    z.union([z.string(), z.number(), z.boolean(), z.array(z.string())])
+  ),
   instructions: z.string(),
   auto_approve: z.boolean(),
   directory: z.string().nullable(),
