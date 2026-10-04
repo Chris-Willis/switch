@@ -145,10 +145,13 @@ describe('toggle', () => {
 describe('a removed computer with agents still moved onto it', () => {
   it('says nothing runs them, and how to bring them back', () => {
     expect(
-      machineStatus({
-        ...overview({ kind: 'removed', at: 'x' }, null, false),
-        movedAgents: ['builder'],
-      }).detail
+      machineStatus(
+        {
+          ...overview({ kind: 'removed', at: 'x' }, null, false),
+          movedAgents: ['builder'],
+        },
+        LATER
+      ).detail
     ).toMatch(
       /Nothing runs builder, moved here from this Console, now: bring them back with Stop managing\.$/
     );
