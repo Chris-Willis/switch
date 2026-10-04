@@ -1690,7 +1690,7 @@ export async function runAgentHost(
     }, OWNERSHIP_RETRY_MS);
     retry.unref();
     /**
-     * Brings the live sessions of this agent in step with its definition, as
+     * Brings this watcher's live sessions in step with its agent's definition, as
      * whoever runs the watcher last wrote it to `config.json` (the agents
      * controller on a new revision, Console when the agent's settings are
      * saved). Each session saved under an earlier definition is restarted on
@@ -1705,8 +1705,11 @@ export async function runAgentHost(
     const applyDefinition = async () => {
       const current = await currentTemplate();
       redefinitionDue.clear();
+      const ours = new Set(
+        assignments.sessions().map((config) => sharedSessionRoot(config.session.sessionId))
+      );
       for (const sessionRoot of links.live()) {
-        if (!links.ready(sessionRoot)) continue;
+        if (!ours.has(sessionRoot) || !links.ready(sessionRoot)) continue;
         const saved = await sessionConfigAt(sessionRoot);
         if (
           !saved ||
