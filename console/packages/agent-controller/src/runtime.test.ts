@@ -156,7 +156,14 @@ describe('InProcessRuntime', () => {
       takenOver: null,
     });
     expect(observation.health).toMatchObject({ pid: process.pid, current: true });
-    expect((await observeOnDisk(dataLayout(join(dir, 'data')), 'agent-1')).alive).toBe(true);
+    await waitFor(
+      () => existsSync(join(dir, 'data', 'watchers', 'agent-1', 'health.json')),
+      'the health file'
+    );
+    expect(await observeOnDisk(dataLayout(join(dir, 'data')), 'agent-1')).toMatchObject({
+      alive: true,
+      health: { pid: process.pid, current: true },
+    });
 
     await runtime.stop('agent-1', { wait: true });
     expect(await runtime.observe('agent-1')).toMatchObject({

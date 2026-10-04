@@ -278,7 +278,7 @@ It holds:
 | `controller.db` | SQLite: identity, cached assignment, per-agent applied revision and local failures, restart times, each agent's stream cursor, the relay's port, status seq. Everything except the identity can be rebuilt from the server. |
 | `secrets/controller-credential` | The controller credential (see below). Absent when the credential is handed over with `--credential-stdin`. |
 | `agents/<id>/credentials.json` | Each agent's relay endpoint and relay token, in the layout the shared host reads. No Switch credential. |
-| `watchers/<id>/` | Each agent's watcher state root: `watch.json`, `config.json`, its journal, and `supervisor/failure.json` once it has failed for good. |
+| `watchers/<id>/` | Each agent's watcher state root: `watch.json`, `config.json`, `health.json` (what `status` reads), its journal, and `supervisor/failure.json` once it has failed for good. |
 | `workspaces/<name>/` | The working directory of an agent whose definition sets none. |
 
 Sessions a watcher starts keep their state where the shared host puts it

@@ -153,9 +153,7 @@ async function runCommand(args: string[]): Promise<number> {
       : new MemorySecretStore({ [CONTROLLER_CREDENTIAL]: credential }, 'handed over on stdin');
   const stop = new AbortController();
   const onSignal = (signal: NodeJS.Signals) => {
-    log.info(
-      `Received ${signal}; stopping. The agents keep running until a controller says otherwise.`
-    );
+    log.info(`Received ${signal}; stopping this controller's agents and exiting.`);
     stop.abort();
   };
   for (const signal of SIGNALS) process.once(signal, onSignal);

@@ -14,6 +14,7 @@ import {
   providerReadinessSchema,
   readTakenOver,
   readWatchFlags,
+  recordWatcherHealth,
   runAgentHost,
   SessionLinks,
   sharedConfigSchema,
@@ -21,9 +22,11 @@ import {
   type Supervision,
   type TakenOver,
   WATCH_FLAGS_FILE,
+  WATCHER_HEALTH_FILE,
   type WatchFlags,
   WatcherControl,
   type WatcherHealthFile,
+  watcherHealthFileSchema,
   watchFlagsSchema,
 } from '@switch-console/agent-providers';
 import { ConfigurationError, ReasonedError } from './errors';
@@ -179,7 +182,13 @@ export async function observeOnDisk(
 ): Promise<AgentObservation> {
   const root = layout.watcherRoot(agentId);
   const pid = await recordedPid(join(root, 'shared-owner.lock'));
-  return { ...(await readRoot(root)), alive: pid !== null && alive(pid) };
+  const running = pid !== null && alive(pid);
+  const healthText = await readOptional(join(root, WATCHER_HEALTH_FILE));
+  const health =
+    healthText === null
+      ? null
+      : { ...watcherHealthFileSchema.parse(JSON.parse(healthText)), current: running };
+  return { ...(await readRoot(root)), alive: running, health };
 }
 
 /** Everything about a watcher root but whether it runs. */
@@ -395,6 +404,8 @@ export class InProcessRuntime implements AgentRuntime {
     const signal = AbortSignal.any([stop.signal, this.lifetime.signal]);
     const control = new WatcherControl();
     const sessions = inProcessSupervision(this.deps.bundlePath, this.links);
+    // For `status`, which runs in another process and reads only disk.
+    const stopRecording = recordWatcherHealth(root, control);
     const done = (async () => {
       try {
         await runAgentHost(
@@ -407,6 +418,7 @@ export class InProcessRuntime implements AgentRuntime {
           this.deps.openStream(agentId)
         );
       } finally {
+        stopRecording();
         await sessions.close();
       }
     })()
