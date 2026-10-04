@@ -119,6 +119,8 @@ export const agentDefinitionSchema = z.object({
   /** Kept as a string so one agent with a provider this build does not know fails alone. */
   provider: z.string().min(1),
   model: z.string().nullable(),
+  /** The provider's options for the model (Claude/Codex `effort`, OpenCode `variant`); empty for none. */
+  model_options: z.record(z.string().min(1), z.string().min(1)),
   instructions: z.string(),
   auto_approve: z.boolean(),
   directory: z.string().nullable(),

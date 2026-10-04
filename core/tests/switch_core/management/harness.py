@@ -52,6 +52,7 @@ from switch_core.db.models import (
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
@@ -131,6 +132,8 @@ def protocol_service(
     svc.approval_outcomes = None  # type: ignore[assignment]
     svc.room_store = RoomStore()
     svc.agent_session_store = AgentSessionStore()
+    svc.user_store = UserStore()
+    svc.room_role_store = RoomRoleStore()
     return svc
 
 

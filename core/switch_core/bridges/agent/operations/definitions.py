@@ -20,6 +20,11 @@ from switch_core.agent_refusals import AgentRefused, record_refusal
 from switch_core.agent_template_ops import ActingFor, AgentTemplates
 from switch_core.agent_templates import room_document
 from switch_core.bridges.agent.api.handlers import parse_timestamp_ms
+from switch_core.bridges.agent.operations.agent_management import (
+    management_permission,
+    management_port,
+    permitted_to_manage,
+)
 from switch_core.bridges.agent.operations.context import (
     bound_rooms,
     caller_session,
@@ -37,6 +42,8 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     evicted_session_warning,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.protocol.agent_detail import AgentProfileUpdate
+from switch_core.bridges.agent.protocol.agent_management import ManagedAgentChanges
 from switch_core.bridges.agent.protocol.hosted_workers import (
     HOSTED_WORKER_ONLY_MESSAGE,
     CodedPermissionError,
@@ -2142,38 +2149,98 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
 @operation
 async def update_agent_detail(
     agent_id: str,
-    options: dict[str, Any] | None = None,
-    parent_agent_id: str | None = None,
-    clear_parent: bool = False,
+    description: str | None = None,
+    display_name: str | None = None,
+    icon_url: str | None = None,
+    addressing: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    model_options: dict[str, str] | None = None,
+    instructions: str | None = None,
+    auto_approve: bool | None = None,
+    directory: str | None = None,
+    isolation: str | None = None,
+    machine: str | None = None,
+    desired_state: str | None = None,
 ) -> dict[str, Any]:
-    """Update an agent's editable settings and return its fresh detail.
+    """Change an agent your owner owns, and return its fresh detail.
 
-    Owner-only: you may only update an agent whose owner is the same as your
-    own owner (the call fails with a permission error otherwise). Only agents
-    registered with a known-agent type (e.g. "claude-code") have editable
-    options.
+    Owner-only: the agent's owner must be your own owner (a permission error
+    otherwise). Omit a field to leave it unchanged. An agent cannot be renamed.
 
-    Editable fields:
-        - `options`: a PARTIAL map of the agent's known-agent options to
-          change — only the keys you pass are updated; the rest are left as-is.
-          For a claude-code agent the options are `repo_dir` (the working
-          directory), `channels_enabled`, and `subagent_name`.
-          The merged options are validated against the agent type's schema and
-          its integration profile is rebuilt to match.
-        - `parent_agent_id`: set the agent's parent (e.g. to make it a subagent
-          of another agent). Validated against self-parenting and cycles.
-        - `clear_parent`: pass True to detach the agent from its parent (make it
-          top-level). Mutually exclusive with `parent_agent_id`.
+    Any agent:
+        description: What the agent is for.
+        display_name: Human label shown next to its name; "" clears it.
+        icon_url: An https link to its icon; "" clears it.
+        addressing: Who can address it: "owner_only" (your owner alone, not
+            even their other agents, you included), "owner_and_owner_agents"
+            (your owner and any agent they own) or "anyone".
 
-    Omit a field to leave it unchanged. Returns the same shape as
-    `get_agent_detail`.
+    A managed agent (one `list_managed_agents` shows) only, and only with the
+    "can manage agents" capability:
+        provider: "claude", "codex", "opencode", "antigravity" or "cursor".
+        model: The model to run; "" for the provider's default.
+        model_options: The provider's options for the model, replacing the
+            current ones, e.g. {"effort": "high"} (Claude Code, Codex) or
+            {"variant": ...} (OpenCode); {} clears them. Needs a model.
+        instructions: Its system prompt (at most 32 KiB).
+        auto_approve: Bypass mode: run tools without asking for approval.
+        directory: Working directory on its machine; "" for a fresh workspace.
+        isolation: "shared" (inside the machine's controller) or "isolated"
+            (a process of its own).
+        machine: Move it to this machine (`id` or exact `name` from
+            `list_machines`).
+        desired_state: "running" or "stopped".
+    The machine must be online with the provider installed and logged in;
+    otherwise nothing is changed and the error gives a reason code to relay.
+
+    Returns:
+        The `get_agent_detail` shape plus `managed`: for a managed agent, the
+        entry `list_managed_agents` shows for it (provider, model,
+        model_options, machine, desired_state, actual, revision); null when
+        the agent is not managed or you cannot manage agents.
     """
     caller_id = get_agent_id()
     protocol = get_protocol()
-    detail = await protocol.update_agent_detail(
-        caller_id, agent_id, options, parent_agent_id, clear_parent
+    await protocol.require_same_owner(caller_id, agent_id)
+    profile = AgentProfileUpdate.parse(
+        description=description,
+        display_name=display_name,
+        icon_url=icon_url,
+        addressing=addressing,
     )
-    return detail.model_dump()
+    changes = ManagedAgentChanges(
+        provider=provider,
+        model=model,
+        model_options=model_options,
+        instructions=instructions,
+        auto_approve=auto_approve,
+        directory=directory,
+        isolation=isolation,
+        machine=machine,
+        desired_state=desired_state,
+    )
+    port = management_port()
+    managed: dict[str, Any] | None = None
+    if not changes.is_empty():
+        if port is None:
+            raise ValueError(
+                "Nothing was changed: agent management is not enabled on this "
+                "Switch server, so no agent has a provider, model, machine or "
+                "run state Switch can set."
+            )
+        permitted = await permitted_to_manage()
+        managed = await port.update_managed_agent(
+            permitted.tenant_id, permitted.owner.id, agent_id, changes, protocol
+        )
+    elif port is not None:
+        permission = await management_permission()
+        if not isinstance(permission, str):
+            managed = await port.managed_agent(
+                permission.tenant_id, permission.owner.id, agent_id
+            )
+    detail = await protocol.update_agent_detail(caller_id, agent_id, profile)
+    return {**detail.model_dump(), "managed": managed}
 
 
 @operation

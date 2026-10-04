@@ -14,6 +14,7 @@ same files.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -37,6 +38,9 @@ PROVIDER_KNOWN_AGENT_TYPES: dict[str, str] = {
 }
 
 MAX_INSTRUCTIONS_BYTES = 32 * 1024
+MAX_MODEL_OPTIONS = 8
+MAX_MODEL_OPTION_VALUE_CHARS = 64
+MODEL_OPTION_KEY = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 MAX_CONTROLLER_NAME_CHARS = 200
 MAX_CONTROLLER_DESCRIPTION_CHARS = 500
 MAX_STATUS_BYTES = 64 * 1024
@@ -85,6 +89,9 @@ class DefinitionV1(_GatewayBody):
 
     provider: Provider
     model: str | None = None
+    # The provider's options for the model, applied with it: Claude Code's and
+    # Codex's `effort`, OpenCode's `variant`.
+    model_options: dict[str, str] = Field(default_factory=dict)
     instructions: str = ""
     auto_approve: bool = False
     directory: str | None = None
@@ -101,6 +108,32 @@ class DefinitionV1(_GatewayBody):
                 f"instructions must be at most {MAX_INSTRUCTIONS_BYTES} bytes"
             )
         return value
+
+    @field_validator("model_options")
+    @classmethod
+    def _model_options_fit(cls, value: dict[str, str]) -> dict[str, str]:
+        if len(value) > MAX_MODEL_OPTIONS:
+            raise ValueError(f"model_options takes at most {MAX_MODEL_OPTIONS} entries")
+        for key, option in value.items():
+            if not MODEL_OPTION_KEY.match(key):
+                raise ValueError(
+                    f"model option {key!r} must be lowercase letters, digits and "
+                    "underscores, start with a letter, and be at most 32 characters"
+                )
+            if not 1 <= len(option) <= MAX_MODEL_OPTION_VALUE_CHARS:
+                raise ValueError(
+                    f"model option {key!r} must have a value of 1 to "
+                    f"{MAX_MODEL_OPTION_VALUE_CHARS} characters"
+                )
+        return value
+
+    @model_validator(mode="after")
+    def _model_options_need_a_model(self) -> DefinitionV1:
+        if self.model_options and self.model is None:
+            raise ValueError(
+                "model_options apply to a model: name the model they are for"
+            )
+        return self
 
 
 # ── Controller-facing requests ────────────────────────────────────────────────
@@ -423,6 +456,7 @@ def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
             "icon_url": agent.icon_url,
             "provider": definition["provider"],
             "model": definition.get("model"),
+            "model_options": definition.get("model_options", {}),
             "instructions": definition.get("instructions", ""),
             "auto_approve": definition.get("auto_approve", False),
             "directory": definition.get("directory"),

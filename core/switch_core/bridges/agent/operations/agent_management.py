@@ -52,6 +52,11 @@ def disable_agent_management() -> None:
     _port = None
 
 
+def management_port() -> AgentManagementPort | None:
+    """Management's implementation, or None when agent management is off."""
+    return _port
+
+
 def _management() -> AgentManagementPort:
     if _port is None:
         raise RuntimeError(
@@ -62,14 +67,14 @@ def _management() -> AgentManagementPort:
 
 
 @dataclass(frozen=True)
-class _Permitted:
+class Permitted:
     tenant_id: str
     owner: User
 
 
-async def _permitted() -> _Permitted:
+async def management_permission() -> Permitted | str:
     """The calling agent's owner, once the agent is allowed to act on the
-    owner's agent management; a clear refusal otherwise."""
+    owner's agent management; otherwise the sentence saying why not."""
     agent_id = get_agent_id()
     protocol = get_protocol()
     async with protocol.session_factory() as session:
@@ -77,23 +82,32 @@ async def _permitted() -> _Permitted:
         if agent is None:
             raise ValueError(f"Unknown agent: {agent_id}")
         if agent.owner_id is None:
-            raise PermissionError(
+            return (
                 f"Agent {agent.name} has no owner, and only an agent acting for "
                 "its owner can manage agents."
             )
         if not agent.can_manage_agents:
-            raise PermissionError(
+            return (
                 f"Agent {agent.name} is not allowed to manage agents. Ask your "
                 f"owner to enable '{CAPABILITY_LABEL}' for {agent.name} on its "
                 "agent page in the Switch gateway."
             )
         owner = await session.get(User, agent.owner_id)
         if owner is None:
-            raise PermissionError(
+            return (
                 f"Agent {agent.name}'s owner no longer exists, so it cannot "
                 "manage agents."
             )
-    return _Permitted(tenant_id=require_tenant_id(), owner=owner)
+    return Permitted(tenant_id=require_tenant_id(), owner=owner)
+
+
+async def permitted_to_manage() -> Permitted:
+    """The calling agent's owner, once the agent is allowed to act on the
+    owner's agent management; a clear refusal otherwise."""
+    permission = await management_permission()
+    if isinstance(permission, str):
+        raise PermissionError(permission)
+    return permission
 
 
 @gated_operation(AGENT_MANAGEMENT_OPERATIONS)
@@ -117,7 +131,7 @@ async def list_machines() -> list[dict[str, Any]]:
         whose process the machine last reported as running, null before it
         has reported. Pass a machine's `id` or exact `name` to `create_agent`.
     """
-    permitted = await _permitted()
+    permitted = await permitted_to_manage()
     return await _management().list_machines(permitted.tenant_id, permitted.owner.id)
 
 
@@ -128,6 +142,7 @@ async def create_agent(
     machine: str,
     provider: str,
     model: str | None = None,
+    model_options: dict[str, str] | None = None,
     instructions: str = "",
     directory: str | None = None,
     auto_approve: bool = False,
@@ -159,6 +174,9 @@ async def create_agent(
         provider: The agent CLI to run: "claude" (Claude Code), "codex",
             "opencode", "antigravity" or "cursor".
         model: The model to run, or null for the provider's default.
+        model_options: The provider's options for `model`, such as
+            {"effort": "high"} for Claude Code or Codex, or {"variant": ...}
+            for OpenCode; at most 8. Needs `model`. Null for none.
         instructions: Standing instructions for the agent (at most 32 KiB).
         directory: The working directory on the machine, or null for a fresh
             workspace the machine chooses.
@@ -175,7 +193,7 @@ async def create_agent(
         null, "pending" or "starting", check again every 2 seconds, for at
         most a minute.
     """
-    permitted = await _permitted()
+    permitted = await permitted_to_manage()
     return await _management().create_agent(
         permitted.tenant_id,
         permitted.owner.id,
@@ -187,6 +205,7 @@ async def create_agent(
             machine=machine,
             provider=provider,
             model=model,
+            model_options={} if model_options is None else model_options,
             instructions=instructions,
             directory=directory,
             auto_approve=auto_approve,
@@ -205,8 +224,8 @@ async def list_managed_agents() -> list[dict[str, Any]]:
 
     Returns:
         A list of managed agents, each {agent_id, name, display_name,
-        description, provider, model, machine, desired_state, actual,
-        revision}.
+        description, provider, model, model_options, machine, desired_state,
+        actual, revision}.
         `machine` is {id, name, state} (null when the agent is not placed on
         a machine), `state` being "online", "unknown" or "revoked".
         `desired_state` is what your owner wants: "running" or "stopped".
@@ -218,7 +237,7 @@ async def list_managed_agents() -> list[dict[str, Any]]:
         definition's revision: the agent runs the current definition once
         `actual.applied_revision` equals it.
     """
-    permitted = await _permitted()
+    permitted = await permitted_to_manage()
     return await _management().list_managed_agents(
         permitted.tenant_id, permitted.owner.id
     )

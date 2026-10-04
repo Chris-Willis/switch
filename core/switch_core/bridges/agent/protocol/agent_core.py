@@ -30,12 +30,12 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.agent_detail import (
-    apply_agent_options,
+    AgentProfileUpdate,
     assemble_agent_detail,
     list_agent_summaries,
-    reparent_agent,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.bridges.agent.protocol.presence import rooms_occupied
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
@@ -92,6 +92,7 @@ from switch_core.db.stores.agent_runtime_state_store import (
     AgentRuntimeStateStore,
 )
 from switch_core.db.stores.budget_store import BudgetStore
+from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
@@ -3608,26 +3609,11 @@ class AgentCore:
                 connections=self.connections,
             )
 
-    async def update_agent_detail(
-        self,
-        agent_id: str,
-        target_agent_id: str,
-        options: dict[str, Any] | None,
-        parent_agent_id: str | None,
-        clear_parent: bool,
-    ) -> AgentDetail:
-        """Update a known-agent's editable fields and return its fresh detail.
+    async def require_same_owner(self, agent_id: str, target_agent_id: str) -> None:
+        """Refuse unless the calling agent's owner owns `target_agent_id`.
 
-        Mirrors the gateway PATCH /agents/{id}/options, with two differences:
-        `options` is a PARTIAL payload merged over the agent's current options
-        (only the keys provided are changed), and the agent's parent can be
-        changed (`parent_agent_id`) or cleared (`clear_parent`).
-
-        Authorization is owner-only: the calling agent's owner must match the
-        target agent's owner. Raises ValueError if either agent is missing or
-        for an invalid reparent; PermissionError if not the owner;
-        AgentOptionsNotEditable if the agent has no known-agent type; and
-        pydantic ValidationError if the merged options fail schema validation.
+        Raises ValueError if either agent is missing, PermissionError if the
+        owners differ.
         """
         async with self.session_factory() as session:
             requester = await self.agent_store.get(session, agent_id)
@@ -3636,22 +3622,37 @@ class AgentCore:
             target = await self.agent_store.get(session, target_agent_id)
             if target is None:
                 raise ValueError(f"Agent not found: {target_agent_id}")
-
             require_manage(Principal(requester.owner_id, False), target.owner_id)
 
-            if options is not None:
-                await apply_agent_options(
-                    session, self.agent_store, target, options, merge=True
-                )
-            if clear_parent:
-                await reparent_agent(session, self.agent_store, target, None)
-            elif parent_agent_id is not None:
-                await reparent_agent(session, self.agent_store, target, parent_agent_id)
+    async def update_agent_detail(
+        self, agent_id: str, target_agent_id: str, update: AgentProfileUpdate
+    ) -> AgentDetail:
+        """Write a validated profile update to an agent and return its fresh
+        detail.
 
-            await session.commit()
+        Owner-only, as `require_same_owner`. A cloud agent's launch spec, which
+        registers it again, is kept on the same values, as the gateway routes
+        for each field do.
+        """
+        await self.require_same_owner(agent_id, target_agent_id)
+        async with self.session_factory() as session:
+            target = await self.agent_store.get(session, target_agent_id)
+            if target is None:
+                raise ValueError(f"Agent not found: {target_agent_id}")
+            if update.columns:
+                await self.agent_store.update(
+                    session, target_agent_id, **update.columns
+                )
+                launch_id = hosted_launch_of(target.metadata_)
+                if launch_id is not None:
+                    await HostedLaunchStore().merge_spec(
+                        session, launch_id, update.columns
+                    )
+                await session.commit()
 
             refreshed = await self.agent_store.get(session, target_agent_id)
             assert refreshed is not None
+            await session.refresh(refreshed)
             return await assemble_agent_detail(
                 session,
                 agent=refreshed,

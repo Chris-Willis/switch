@@ -47,13 +47,13 @@ export function watcherSessionId(agentId: string): string {
  *
  * Differences from Console, all because v1's definition does not carry them:
  * no provider agent definition file, no per-location environment or shell
- * setup, and no Codex launch profile (Console builds one only from
- * specialisation values the v1 definition has no field for).
+ * setup, and no Codex launch profile. The model's options (`effort`,
+ * `variant`) travel with the model.
  */
 export function buildWatcherTemplate(input: {
   agentId: string;
   provider: Provider;
-  definition: Pick<AgentDefinition, 'model' | 'instructions' | 'auto_approve'>;
+  definition: Pick<AgentDefinition, 'model' | 'model_options' | 'instructions' | 'auto_approve'>;
   cwd: string;
   credentialsPath: string;
   binaryPath: string | null;
@@ -90,7 +90,16 @@ export function buildWatcherTemplate(input: {
         runtimeMode: input.definition.auto_approve ? 'full-access' : 'approval-required',
         env: {},
         mcpServers: {},
-        ...(input.definition.model ? { model: { id: input.definition.model } } : {}),
+        ...(input.definition.model
+          ? {
+              model: {
+                id: input.definition.model,
+                ...(Object.keys(input.definition.model_options).length
+                  ? { options: { ...input.definition.model_options } }
+                  : {}),
+              },
+            }
+          : {}),
       },
     },
     roomConnection: { connectionId: controllerConnectionId(input.agentId) },

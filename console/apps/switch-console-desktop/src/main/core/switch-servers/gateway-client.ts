@@ -1091,6 +1091,20 @@ export async function updateAgentIcon(
   return toRemoteAgentSummary((await res.json()) as AgentSummaryJson);
 }
 
+/** Change an agent's description (`PUT /gateway/agents/{id}/description`). Returns the agent as the server now holds it. */
+export async function updateAgentDescription(
+  server: SwitchServer,
+  agentId: string,
+  description: string
+): Promise<RemoteAgentSummary> {
+  const res = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}/description`, {
+    authenticated: true,
+    method: 'PUT',
+    body: { description },
+  });
+  return toRemoteAgentSummary((await res.json()) as AgentSummaryJson);
+}
+
 /**
  * Set (or clear, with `displayName = null`) an agent's display name
  * (`PUT /agents/{id}/display-name`). Only the agent's owner (or an admin) may

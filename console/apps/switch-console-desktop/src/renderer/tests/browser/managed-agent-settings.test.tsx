@@ -38,7 +38,7 @@ const AGENT: ManagedAgentView = {
   name: 'pm-agent',
   displayName: null,
   iconUrl: null,
-  description: '',
+  description: 'Writes PRDs',
   machine: { id: 'controller-1', name: 'laptop', kind: 'console', state: 'online' },
   desiredState: 'running',
   revision: 1,

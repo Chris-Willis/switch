@@ -119,8 +119,7 @@ export function ManagedModelField({
         </datalist>
       )}
       <FieldDescription>
-        Managed agents don’t carry the reasoning effort or other provider settings yet: they run
-        with the provider’s defaults.
+        Set its reasoning effort and other provider settings on the agent’s page once it is created.
       </FieldDescription>
     </Field>
   );

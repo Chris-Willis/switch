@@ -137,7 +137,7 @@ describe('where a new agent runs', () => {
 });
 
 describe('the managed model field', () => {
-  it('suggests the machine’s models and says what a managed agent does not carry', async () => {
+  it('suggests the machine’s models and says where its effort is set', async () => {
     const onChange = vi.fn();
     const el = await render(
       <ManagedModelField
@@ -155,7 +155,7 @@ describe('the managed model field', () => {
       sshHost: null,
       dir: '/work/pm',
     });
-    expect(el.textContent).toMatch(/don’t carry the reasoning effort/);
+    expect(el.textContent).toMatch(/reasoning effort and other provider settings on the agent’s page/);
   });
 });
 

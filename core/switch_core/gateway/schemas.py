@@ -358,6 +358,13 @@ class UpdateAgentIconRequest(BaseModel):
     icon_url: str | None
 
 
+class UpdateAgentDescriptionRequest(BaseModel):
+    """Change what an agent is for. A description is required, so a blank one
+    is refused rather than stored."""
+
+    description: str
+
+
 class UpdateAgentDisplayNameRequest(BaseModel):
     """Set (or clear) an agent's human display name.
 

@@ -53,6 +53,7 @@ from switch_core.gateway.schemas import (
     RegisterOtherAgentRequest,
     UpdateAddressingPolicyRequest,
     UpdateAgentCanManageAgentsRequest,
+    UpdateAgentDescriptionRequest,
     UpdateAgentDisplayNameRequest,
     UpdateAgentIconRequest,
     UpdateAgentOptionsRequest,
@@ -375,7 +376,7 @@ async def update_agent_options(
         )
 
     try:
-        await apply_agent_options(session, agent_store, agent, req.options, merge=False)
+        await apply_agent_options(session, agent_store, agent, req.options)
     except AgentOptionsNotEditable as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValidationError as exc:
@@ -502,6 +503,44 @@ async def update_agent_display_name(
         agent.name,
         user.name,
     )
+
+    owner_name = user.name if agent.owner_id == user.id else None
+    return await build_agent_summary(session, agent_store, agent, owner_name)
+
+
+@router.put("/{agent_id}/description")
+async def update_agent_description(
+    agent_id: str,
+    req: UpdateAgentDescriptionRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> AgentSummary:
+    """Change an agent's description. Only its owner (or an admin) may; a
+    blank description is refused with 400."""
+    agent = await agent_store.get(session, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+
+    try:
+        require_manage(Principal(user.id, is_admin), agent.owner_id)
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the agent's owner or an admin can change its description.",
+        )
+
+    description = req.description.strip()
+    if not description:
+        raise HTTPException(status_code=400, detail="description must not be blank")
+
+    await agent_store.update(session, agent_id, description=description)
+    await _sync_hosted_spec(session, agent, {"description": description})
+    await session.commit()
+    await session.refresh(agent)
+
+    logger.info("Set agent %s description by user %s", agent.name, user.name)
 
     owner_name = user.name if agent.owner_id == user.id else None
     return await build_agent_summary(session, agent_store, agent, owner_name)

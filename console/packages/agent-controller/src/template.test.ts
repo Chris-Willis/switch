@@ -4,7 +4,12 @@ import { describe, expect, it } from 'vitest';
 import { PROVIDERS } from './schemas';
 import { buildWatcherTemplate, watcherSessionId } from './template';
 
-const definition = { model: null, instructions: 'Review pull requests.', auto_approve: false };
+const definition = {
+  model: null,
+  model_options: {},
+  instructions: 'Review pull requests.',
+  auto_approve: false,
+};
 
 describe('buildWatcherTemplate', () => {
   it.each(PROVIDERS)('builds a configuration the shared host accepts for %s', (provider) => {
@@ -54,7 +59,7 @@ describe('buildWatcherTemplate', () => {
     const template = buildWatcherTemplate({
       agentId: 'agent-1',
       provider: 'claude',
-      definition: { model: 'opus', instructions: '', auto_approve: true },
+      definition: { model: 'opus', model_options: {}, instructions: '', auto_approve: true },
       cwd: '/work/scout',
       credentialsPath: '/data/c.json',
       binaryPath: null,
@@ -63,6 +68,23 @@ describe('buildWatcherTemplate', () => {
     expect(template.start.input.model).toEqual({ id: 'opus' });
     expect(template.execution).not.toHaveProperty('binaryPath');
     expect(template.execution!.context).toBe(SWITCH_SKILL_CONTEXT);
+  });
+
+  it('runs the model with the options its definition gives it', () => {
+    const template = buildWatcherTemplate({
+      agentId: 'agent-1',
+      provider: 'codex',
+      definition: {
+        model: 'gpt-5.5',
+        model_options: { effort: 'high' },
+        instructions: '',
+        auto_approve: false,
+      },
+      cwd: '/work/scout',
+      credentialsPath: '/data/c.json',
+      binaryPath: null,
+    });
+    expect(template.start.input.model).toEqual({ id: 'gpt-5.5', options: { effort: 'high' } });
   });
 
   it('advertises the adapter’s own approval and question capabilities', () => {

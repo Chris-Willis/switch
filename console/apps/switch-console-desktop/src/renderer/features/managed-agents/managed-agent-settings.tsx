@@ -66,6 +66,12 @@ export function ManagedAgentSettings({ agent }: { agent: ManagedAgentView }) {
           agentId: agent.agentId,
           displayName,
         });
+      if (draft.description.trim() !== base.description.trim())
+        await rpc.workspaces.updateAgentDescription({
+          workspaceId: agent.workspaceId,
+          agentId: agent.agentId,
+          description: draft.description.trim(),
+        });
       if (draft.iconUrl !== base.iconUrl)
         await rpc.workspaces.updateAgentIcon({
           workspaceId: agent.workspaceId,
@@ -101,6 +107,11 @@ export function ManagedAgentSettings({ agent }: { agent: ManagedAgentView }) {
           />
         </Field>
       </div>
+
+      <Field>
+        <FieldLabel>Description</FieldLabel>
+        <Input value={draft.description} onChange={(e) => set('description', e.target.value)} />
+      </Field>
 
       <Field>
         <FieldLabel>Machine</FieldLabel>
@@ -232,7 +243,11 @@ export function ManagedAgentSettings({ agent }: { agent: ManagedAgentView }) {
         </p>
       )}
       <div className="flex gap-2">
-        <Button size="sm" disabled={!dirty || saving} onClick={() => void save()}>
+        <Button
+          size="sm"
+          disabled={!dirty || saving || !draft.description.trim()}
+          onClick={() => void save()}
+        >
           {saving ? 'Saving…' : 'Save'}
         </Button>
         <Button

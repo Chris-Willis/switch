@@ -20,9 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.agent_management import (
     AgentManagementRefused,
+    ManagedAgentChanges,
     NewManagedAgent,
 )
-from switch_core.db.models import AgentController
+from switch_core.db.models import Agent, AgentController
+from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.db.session_scope import tenant_session
 from switch_core.management import reason_codes
 from switch_core.management.errors import ManagementError
@@ -30,10 +32,14 @@ from switch_core.management.placement import provider_auth
 from switch_core.management.schemas import (
     CreateManagedAgentRequest,
     DefinitionV1,
+    PatchManagedAgentRequest,
     agent_status_from,
     wire_time_or_none,
 )
 from switch_core.management.service import ManagementService
+
+NOTHING_CREATED = "Nothing was created"
+NOTHING_CHANGED = "Nothing was changed"
 
 CREATED_HINT = (
     "The agent is created and its machine has been told. Check it with "
@@ -149,10 +155,16 @@ class ManagementAgentOperations:
         return machines
 
     async def _resolve_machine(
-        self, session: AsyncSession, tenant_id: str, owner_id: str, machine: str
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        owner_id: str,
+        machine: str,
+        nothing_done: str,
     ) -> AgentController:
         """The owner's machine with this id, or else the one not revoked with
-        this exact name."""
+        this exact name. `nothing_done` opens a refusal ("Nothing was
+        created")."""
         controllers = await self._service.controllers.list_for_owner(
             session, tenant_id, owner_id
         )
@@ -169,7 +181,7 @@ class ManagementAgentOperations:
         if not named:
             raise AgentManagementRefused(
                 reason_codes.NOT_FOUND,
-                f"Nothing was created: your owner has no machine with the id or "
+                f"{nothing_done}: your owner has no machine with the id or "
                 f"name '{machine}'. list_machines shows the machines you can use.",
             )
         candidates = "; ".join(
@@ -177,7 +189,7 @@ class ManagementAgentOperations:
         )
         raise AgentManagementRefused(
             reason_codes.VALIDATION_ERROR,
-            f"Nothing was created: your owner has {len(named)} machines named "
+            f"{nothing_done}: your owner has {len(named)} machines named "
             f"'{machine}': {candidates}. Pass the id of the one you mean as "
             "`machine`.",
         )
@@ -191,7 +203,7 @@ class ManagementAgentOperations:
     ) -> dict[str, Any]:
         async with tenant_session(self._session_factory, tenant_id) as session:
             controller = await self._resolve_machine(
-                session, tenant_id, owner_id, spec.machine
+                session, tenant_id, owner_id, spec.machine, NOTHING_CREATED
             )
             try:
                 request = CreateManagedAgentRequest(
@@ -204,6 +216,7 @@ class ManagementAgentOperations:
                     definition=DefinitionV1(
                         provider=spec.provider,  # type: ignore[arg-type]
                         model=spec.model,
+                        model_options=spec.model_options,
                         instructions=spec.instructions,
                         auto_approve=spec.auto_approve,
                         directory=spec.directory,
@@ -212,7 +225,7 @@ class ManagementAgentOperations:
             except ValidationError as exc:
                 raise AgentManagementRefused(
                     reason_codes.VALIDATION_ERROR,
-                    f"Nothing was created: {_validation_message(exc)}.",
+                    f"{NOTHING_CREATED}: {_validation_message(exc)}.",
                 ) from exc
             try:
                 view = await self._service.create_managed_agent(
@@ -222,7 +235,7 @@ class ManagementAgentOperations:
                 sentence = _placement_sentence(exc.code, controller.name, spec.provider)
                 raise AgentManagementRefused(
                     exc.code,
-                    f"Nothing was created: {sentence or exc.message} ({exc.code}).",
+                    f"{NOTHING_CREATED}: {sentence or exc.message} ({exc.code}).",
                 ) from exc
         return {
             "agent_id": view["agent_id"],
@@ -230,6 +243,41 @@ class ManagementAgentOperations:
             "machine": {"id": controller.id, "name": controller.name},
             "desired_state": view["desired_state"],
             "hint": CREATED_HINT,
+        }
+
+    def _managed_entry(
+        self,
+        row: AgentDefinitionRow,
+        agent: Agent,
+        controller: AgentController | None,
+    ) -> dict[str, Any]:
+        status = agent_status_from(controller, agent.id)
+        return {
+            "agent_id": agent.id,
+            "name": agent.name,
+            "display_name": agent.display_name,
+            "description": agent.description,
+            "provider": row.definition.get("provider"),
+            "model": row.definition.get("model"),
+            "model_options": row.definition.get("model_options", {}),
+            "machine": None
+            if controller is None
+            else {
+                "id": controller.id,
+                "name": controller.name,
+                "state": self._service.state_of(controller),
+            },
+            "desired_state": row.desired_state,
+            "actual": None
+            if status is None
+            else {
+                "process": status.get("process"),
+                "reason": status.get("reason"),
+                "detail": status.get("detail"),
+                "applied_revision": status.get("applied_revision"),
+                "since": status.get("since"),
+            },
+            "revision": row.revision,
         }
 
     async def list_managed_agents(
@@ -245,38 +293,111 @@ class ManagementAgentOperations:
             rows = await self._service.definitions.list_for_owner(
                 session, tenant_id, owner_id
             )
-        managed = []
-        for row, agent in rows:
-            controller = (
-                controllers.get(row.controller_id) if row.controller_id else None
+        return [
+            self._managed_entry(
+                row,
+                agent,
+                controllers.get(row.controller_id) if row.controller_id else None,
             )
-            status = agent_status_from(controller, agent.id)
-            managed.append(
-                {
-                    "agent_id": agent.id,
-                    "name": agent.name,
-                    "display_name": agent.display_name,
-                    "description": agent.description,
-                    "provider": row.definition.get("provider"),
-                    "model": row.definition.get("model"),
-                    "machine": None
-                    if controller is None
-                    else {
-                        "id": controller.id,
-                        "name": controller.name,
-                        "state": self._service.state_of(controller),
-                    },
-                    "desired_state": row.desired_state,
-                    "actual": None
-                    if status is None
-                    else {
-                        "process": status.get("process"),
-                        "reason": status.get("reason"),
-                        "detail": status.get("detail"),
-                        "applied_revision": status.get("applied_revision"),
-                        "since": status.get("since"),
-                    },
-                    "revision": row.revision,
-                }
+            for row, agent in rows
+        ]
+
+    async def managed_agent(
+        self, tenant_id: str, owner_id: str, agent_id: str
+    ) -> dict[str, Any] | None:
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            return await self._owned_entry(session, tenant_id, owner_id, agent_id)
+
+    async def _owned_entry(
+        self, session: AsyncSession, tenant_id: str, owner_id: str, agent_id: str
+    ) -> dict[str, Any] | None:
+        agent = await self._service.agents.get(session, agent_id)
+        if agent is None or agent.owner_id != owner_id:
+            return None
+        row = await self._service.definitions.get_for_agent(
+            session, tenant_id, agent_id
+        )
+        if row is None:
+            return None
+        controller = (
+            await self._service.controllers.get(session, tenant_id, row.controller_id)
+            if row.controller_id is not None
+            else None
+        )
+        return self._managed_entry(row, agent, controller)
+
+    async def update_managed_agent(
+        self,
+        tenant_id: str,
+        owner_id: str,
+        agent_id: str,
+        changes: ManagedAgentChanges,
+        protocol: AgentCore,
+    ) -> dict[str, Any]:
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            agent = await self._service.agents.get(session, agent_id)
+            row = await self._service.definitions.get_for_agent(
+                session, tenant_id, agent_id
             )
-        return managed
+            if agent is None or agent.owner_id != owner_id or row is None:
+                raise AgentManagementRefused(
+                    reason_codes.NOT_FOUND,
+                    f"{NOTHING_CHANGED}: agent {agent_id} is not one of your "
+                    "owner's managed agents, so it has no provider, model, "
+                    "machine or run state Switch can set. Only its name-level "
+                    "settings (description, display name, icon, addressing) "
+                    "can be changed here.",
+                )
+            controller: AgentController | None = None
+            if changes.machine is not None:
+                controller = await self._resolve_machine(
+                    session, tenant_id, owner_id, changes.machine, NOTHING_CHANGED
+                )
+            elif row.controller_id is not None:
+                controller = await self._service.controllers.get(
+                    session, tenant_id, row.controller_id
+                )
+            definition_changes = changes.definition_changes()
+            body: dict[str, Any] = {}
+            if definition_changes:
+                body["definition"] = {**row.definition, **definition_changes}
+            if changes.desired_state is not None:
+                body["desired_state"] = changes.desired_state
+            if changes.machine is not None:
+                assert controller is not None
+                body["controller_id"] = controller.id
+            try:
+                request = PatchManagedAgentRequest.model_validate(body)
+            except ValidationError as exc:
+                raise AgentManagementRefused(
+                    reason_codes.VALIDATION_ERROR,
+                    f"{NOTHING_CHANGED}: {_validation_message(exc)}.",
+                ) from exc
+            provider = (
+                request.definition.provider
+                if request.definition is not None
+                else str(row.definition.get("provider"))
+            )
+            try:
+                await self._service.patch_managed_agent(
+                    session,
+                    tenant_id,
+                    owner_id,
+                    agent_id,
+                    definition=request.definition,
+                    desired_state=request.desired_state,
+                    controller_id=request.controller_id,
+                    controller_id_given="controller_id" in request.model_fields_set,
+                    protocol=protocol,
+                )
+            except ManagementError as exc:
+                machine = controller.name if controller is not None else "(none)"
+                sentence = _placement_sentence(exc.code, machine, provider)
+                raise AgentManagementRefused(
+                    exc.code,
+                    f"{NOTHING_CHANGED}: {sentence or exc.message} ({exc.code}).",
+                ) from exc
+            entry = await self._owned_entry(session, tenant_id, owner_id, agent_id)
+        if entry is None:
+            raise RuntimeError(f"managed agent {agent_id} vanished while updating it")
+        return entry

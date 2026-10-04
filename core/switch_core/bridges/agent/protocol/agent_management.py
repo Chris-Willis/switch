@@ -47,10 +47,53 @@ class NewManagedAgent:
     machine: str
     provider: str
     model: str | None
+    model_options: dict[str, str]
     instructions: str
     directory: str | None
     auto_approve: bool
     start: bool
+
+
+@dataclass(frozen=True)
+class ManagedAgentChanges:
+    """What an agent asks to change in a managed agent's definition and
+    placement. None leaves a field as it is; for `model` and `directory` an
+    empty string clears it (provider default, fresh workspace). `machine` is
+    resolved as for `NewManagedAgent`."""
+
+    provider: str | None
+    model: str | None
+    model_options: dict[str, str] | None
+    instructions: str | None
+    auto_approve: bool | None
+    directory: str | None
+    isolation: str | None
+    machine: str | None
+    desired_state: str | None
+
+    def definition_changes(self) -> dict[str, Any]:
+        """The definition fields given, with their stored values."""
+        given: dict[str, Any] = {
+            "provider": self.provider,
+            "model": self.model,
+            "model_options": self.model_options,
+            "instructions": self.instructions,
+            "auto_approve": self.auto_approve,
+            "directory": self.directory,
+            "isolation": self.isolation,
+        }
+        changes = {key: value for key, value in given.items() if value is not None}
+        for clearable in ("model", "directory"):
+            if changes.get(clearable) == "":
+                changes[clearable] = None
+        return changes
+
+    def is_empty(self) -> bool:
+        return (
+            not self.definition_changes()
+            and self.machine is None
+            and self.desired_state is None
+        )
 
 
 class AgentManagementPort(Protocol):
@@ -74,4 +117,23 @@ class AgentManagementPort(Protocol):
         self, tenant_id: str, owner_id: str
     ) -> list[dict[str, Any]]:
         """The owner's managed agents, with where each runs and how it is doing."""
+        ...
+
+    async def managed_agent(
+        self, tenant_id: str, owner_id: str, agent_id: str
+    ) -> dict[str, Any] | None:
+        """One of the owner's managed agents as `list_managed_agents` shows it,
+        or None when the agent is not managed."""
+        ...
+
+    async def update_managed_agent(
+        self,
+        tenant_id: str,
+        owner_id: str,
+        agent_id: str,
+        changes: ManagedAgentChanges,
+        protocol: AgentCore,
+    ) -> dict[str, Any]:
+        """Change a managed agent's definition, machine or desired state, as
+        the owner's gateway PATCH would; returns it as `managed_agent` does."""
         ...

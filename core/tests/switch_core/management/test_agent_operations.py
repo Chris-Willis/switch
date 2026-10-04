@@ -370,6 +370,7 @@ class TestCreateAgent:
                 instructions="Build it.",
                 directory="/work/builder",
                 model="sonnet",
+                model_options={"effort": "high"},
                 display_name="Builder",
             ),
         )
@@ -400,6 +401,7 @@ class TestCreateAgent:
         assert row.desired_state == "running"
         assert row.definition["provider"] == "claude"
         assert row.definition["model"] == "sonnet"
+        assert row.definition["model_options"] == {"effort": "high"}
         assert row.definition["instructions"] == "Build it."
         assert row.definition["directory"] == "/work/builder"
         assert row.definition["auto_approve"] is False
@@ -647,6 +649,7 @@ class TestListManagedAgents:
             "description": "Builds things",
             "provider": "claude",
             "model": None,
+            "model_options": {},
             "machine": {
                 "id": controller.controller_id,
                 "name": "laptop",
@@ -664,3 +667,290 @@ class TestListManagedAgents:
             "applied_revision": 1,
             "since": "2026-01-01T00:00:00Z",
         }
+
+
+async def _assigned(
+    client: httpx.AsyncClient, controller: EnrolledController
+) -> dict[str, dict[str, Any]]:
+    response = await client.get(
+        f"/v1/management/controllers/{controller.controller_id}/assignment",
+        headers=controller.headers,
+    )
+    assert response.status_code == 200, response.text
+    return {entry["agent_id"]: entry for entry in response.json()["agents"]}
+
+
+async def _created(
+    client: httpx.AsyncClient, helper_id: str, key: str, machine: str
+) -> str:
+    response = await _call(
+        client, helper_id, "create_agent", bearer(key), _create_body(machine)
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["result"]["agent_id"]
+
+
+class TestUpdateAgentDetail:
+    async def test_profile_fields_change_on_any_agent_without_the_capability(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=False
+        )
+        target_id, _ = await _agent_with_key(
+            harness, owner, "plain", can_manage_agents=False
+        )
+
+        response = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {
+                "agent_id": target_id,
+                "description": "Plain agent",
+                "display_name": "Plain",
+                "icon_url": "https://example.com/plain.png",
+                "addressing": "anyone",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        result = response.json()["result"]
+        assert result["description"] == "Plain agent"
+        assert result["display_name"] == "Plain"
+        assert result["icon_url"] == "https://example.com/plain.png"
+        assert result["managed"] is None
+        row = await _agent_row(harness, "plain")
+        assert row is not None
+        assert row.addressing_policy is None
+
+    async def test_a_definition_edit_bumps_the_revision_and_reaches_the_machine(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        new_id = await _created(client, helper_id, key, "laptop")
+        before = (await _assigned(client, controller))[new_id]
+
+        response = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {
+                "agent_id": new_id,
+                "description": "Builds better things",
+                "model": "opus",
+                "model_options": {"effort": "high"},
+                "instructions": "Build carefully.",
+                "auto_approve": True,
+                "directory": "/work/next",
+                "desired_state": "stopped",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        result = response.json()["result"]
+        assert result["description"] == "Builds better things"
+        managed = result["managed"]
+        assert managed["model"] == "opus"
+        assert managed["model_options"] == {"effort": "high"}
+        assert managed["desired_state"] == "stopped"
+        assert managed["revision"] > before["revision"]
+        after = (await _assigned(client, controller))[new_id]
+        assert after["revision"] == managed["revision"]
+        assert after["desired_state"] == "stopped"
+        assert after["definition"]["model"] == "opus"
+        assert after["definition"]["model_options"] == {"effort": "high"}
+        assert after["definition"]["instructions"] == "Build carefully."
+        assert after["definition"]["auto_approve"] is True
+        assert after["definition"]["directory"] == "/work/next"
+        assert after["definition"]["provider"] == "claude"
+
+    async def test_moves_the_agent_to_another_machine(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        laptop = await enroll_console(harness, client, owner, name="laptop")
+        desktop = await enroll_console(harness, client, owner, name="desktop")
+        await _online(client, laptop)
+        await _online(client, desktop)
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        new_id = await _created(client, helper_id, key, "laptop")
+
+        response = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "machine": "desktop"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["result"]["managed"]["machine"] == {
+            "id": desktop.controller_id,
+            "name": "desktop",
+            "state": "online",
+        }
+        assert new_id not in await _assigned(client, laptop)
+        assert new_id in await _assigned(client, desktop)
+        binding = harness.protocol.connections.controllers.binding(new_id)
+        assert binding is not None
+        assert binding.controller_id == desktop.controller_id
+
+    async def test_a_placement_refusal_changes_nothing(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        laptop = await enroll_console(harness, client, owner, name="laptop")
+        await enroll_console(harness, client, owner, name="desktop")
+        await _online(client, laptop)
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        new_id = await _created(client, helper_id, key, "laptop")
+
+        response = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "machine": "desktop", "description": "moved"},
+        )
+
+        assert response.status_code == 400, response.text
+        detail = response.json()["detail"]
+        assert detail.startswith("Nothing was changed: ")
+        assert "(controller_offline)" in detail
+        assert new_id in await _assigned(client, laptop)
+        row = await _agent_row(harness, "builder")
+        assert row is not None
+        assert row.description == "Builds things"
+
+    async def test_definition_fields_need_the_capability(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        creator_id, creator_key = await _agent_with_key(
+            harness, owner, "creator", can_manage_agents=True
+        )
+        new_id = await _created(client, creator_id, creator_key, "laptop")
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=False
+        )
+
+        response = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "model": "opus", "description": "changed"},
+        )
+
+        assert response.status_code == 403, response.text
+        assert (
+            "Ask your owner to enable 'can manage agents' for helper"
+            in response.json()["detail"]
+        )
+        row = await _agent_row(harness, "builder")
+        assert row is not None
+        assert row.description == "Builds things"
+
+    async def test_definition_fields_are_refused_for_an_unmanaged_agent(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        target_id, _ = await _agent_with_key(
+            harness, owner, "plain", can_manage_agents=False
+        )
+
+        response = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": target_id, "instructions": "Do things."},
+        )
+
+        assert response.status_code == 400, response.text
+        assert (
+            "is not one of your owner's managed agents" in (response.json()["detail"])
+        )
+
+    async def test_another_owners_agent_is_refused(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        stranger = await add_member(harness.session_factory, "grace")
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        target_id, _ = await _agent_with_key(
+            harness, stranger, "theirs", can_manage_agents=False
+        )
+
+        response = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": target_id, "description": "mine"},
+        )
+
+        assert response.status_code == 403, response.text
+
+    async def test_model_options_need_a_model(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        new_id = await _created(client, helper_id, key, "laptop")
+
+        no_model = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "model_options": {"effort": "high"}},
+        )
+        bad_key = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "model": "opus", "model_options": {"Effort": "x"}},
+        )
+        on_create = await _call(
+            client,
+            helper_id,
+            "create_agent",
+            bearer(key),
+            _create_body("laptop", name="other", model_options={"effort": "high"}),
+        )
+
+        assert no_model.status_code == 400, no_model.text
+        assert "model_options apply to a model" in no_model.json()["detail"]
+        assert bad_key.status_code == 400, bad_key.text
+        assert "'Effort'" in bad_key.json()["detail"]
+        assert on_create.status_code == 400, on_create.text
+        assert "model_options apply to a model" in on_create.json()["detail"]
+        assert (await _assigned(client, controller))[new_id]["definition"][
+            "model_options"
+        ] == {}

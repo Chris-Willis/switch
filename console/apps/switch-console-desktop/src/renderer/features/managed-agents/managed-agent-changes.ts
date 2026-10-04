@@ -23,6 +23,7 @@ export const MODEL_OPTION: Record<
 
 export type Draft = {
   displayName: string;
+  description: string;
   iconUrl: string | null;
   machineId: string | null;
   provider: string;
@@ -38,6 +39,7 @@ export function draftOf(agent: ManagedAgentView): Draft {
   const option = MODEL_OPTION[agent.definition.provider];
   return {
     displayName: agent.displayName ?? '',
+    description: agent.description,
     iconUrl: agent.iconUrl,
     machineId: agent.machine?.id ?? null,
     provider: agent.definition.provider,

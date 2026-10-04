@@ -10,7 +10,10 @@
         "display_name": "Reviewer",
         "icon_url": "https://example.com/icons/reviewer.png",
         "provider": "claude",
-        "model": null,
+        "model": "opus",
+        "model_options": {
+          "effort": "high"
+        },
         "instructions": "Review pull requests in this repository.",
         "auto_approve": false,
         "directory": "/home/example/src/project",

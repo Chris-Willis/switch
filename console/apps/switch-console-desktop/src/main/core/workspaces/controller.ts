@@ -42,6 +42,7 @@ import {
   type TemplateVisibility,
   updateAddressingPolicy,
   updateCanManageAgents,
+  updateAgentDescription,
   updateAgentDisplayName,
   updateAgentIcon,
   updateRoom,
@@ -685,6 +686,16 @@ export const workspacesController = createRPCController({
   }): Promise<RemoteAgentSummary> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       updateAgentIcon(server, params.agentId, params.iconUrl)
+    ),
+
+  /** Change an agent's description. Returns the agent as the server now holds it. */
+  updateAgentDescription: (params: {
+    workspaceId: string;
+    agentId: string;
+    description: string;
+  }): Promise<RemoteAgentSummary> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      updateAgentDescription(server, params.agentId, params.description)
     ),
 
   /** Set or clear an agent's display name. Returns the agent as the server now holds it. */

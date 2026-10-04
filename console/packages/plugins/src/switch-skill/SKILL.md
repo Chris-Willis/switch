@@ -386,16 +386,20 @@ none of it is needed to take part in a conversation.
 - **`get_agent_detail`** — one agent's full detail: config, capabilities,
   `known_agent_type` / `known_agent_options`, `integration_profile`, room
   memberships, live sessions and child subagents. Readable by any agent.
-- **`update_agent_detail`** — change an agent's editable settings.
-  **Owner-only**: the agent's owner must match your own. `options` is a
-  PARTIAL map of known-agent options merged over the current ones, and the
-  keys differ per type — for `opencode` and `codex`: `repo_dir` (working
-  directory), `auto_session`; for `claude-code`: those plus
-  `channels_enabled` and `subagent_name`. Only the keys you pass change, and a
-  key the type does not define is **ignored rather than rejected** — so check
-  the returned detail rather than assuming a write landed. `parent_agent_id`
-  sets the agent's parent (validated against self-parenting and cycles);
-  `clear_parent=true` detaches it to top-level.
+- **`update_agent_detail`** — change an agent your owner owns; anyone
+  else's is refused. Pass only the fields to change; the name cannot change.
+  On any agent: `description`, `display_name` and `icon_url` (`""` clears
+  either), and `addressing` — `"owner_only"`, `"owner_and_owner_agents"` or
+  `"anyone"`. On a managed agent (one `list_managed_agents` shows), and only
+  with "can manage agents": `provider`, `model` (`""` for the provider's
+  default), `model_options` (replaces them, e.g. `{"effort": "high"}`; needs a
+  model), `instructions` (its system prompt), `auto_approve` (bypass mode),
+  `directory` (`""` for a fresh workspace), `isolation` (`"shared"` or
+  `"isolated"`), `machine` (move it; id or name from `list_machines`) and
+  `desired_state`. The machine must be online with the provider installed and
+  logged in, or nothing changes and the error gives a reason code to relay.
+  Returns the agent's detail plus `managed`, its `list_managed_agents` entry
+  (null when it is not managed).
 
 **Address by `name`, not `display_name`.** `list_agents` and
 `get_agent_detail` return both. `name` is the machine identifier and the only
