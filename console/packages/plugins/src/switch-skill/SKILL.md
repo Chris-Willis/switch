@@ -694,9 +694,11 @@ is created and the error says why, with a reason code: `controller_offline`
 shared by several machines is refused with the candidates; pass the id.
 
 **Check that it came up.** `create_agent` returns the new agent's id and
-`desired_state`; its actual state appears once the machine reports, usually
-within a minute. Call `list_managed_agents` and look at `actual.process`
-before telling anyone the agent is ready.
+`desired_state`. Call `list_managed_agents` straight away and look at
+`actual.process`; while `actual` is still null, `pending` or `starting`,
+check again every 2 seconds, for at most a minute, before telling anyone the
+agent is ready. An agent created without an `icon_url` gets the icon its name
+generates.
 
 ## Room roles (assumable)
 
