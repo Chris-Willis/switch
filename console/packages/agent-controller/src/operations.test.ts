@@ -18,6 +18,7 @@ function entry(desired: 'running' | 'stopped' = 'running'): AgentAssignment {
       instructions: '',
       auto_approve: false,
       directory: null,
+      isolation: 'shared',
     },
   };
 }

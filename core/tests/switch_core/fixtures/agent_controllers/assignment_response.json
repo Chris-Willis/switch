@@ -13,7 +13,8 @@
         "model": null,
         "instructions": "Review pull requests in this repository.",
         "auto_approve": false,
-        "directory": "/home/example/src/project"
+        "directory": "/home/example/src/project",
+        "isolation": "shared"
       }
     }
   ]

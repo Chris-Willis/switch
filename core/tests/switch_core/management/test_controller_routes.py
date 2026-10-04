@@ -246,6 +246,42 @@ class TestCredentialRotation:
 
 
 class TestAssignment:
+    async def test_carries_each_agents_isolation(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            for name, body in (
+                ("shared-one", definition()),
+                ("isolated-one", definition(isolation="isolated")),
+            ):
+                created = await create_managed_agent(
+                    client,
+                    owner,
+                    name=name,
+                    controller_id=controller.controller_id,
+                    definition_body=body,
+                )
+                assert created.status_code == 201, created.text
+            refused = await create_managed_agent(
+                client,
+                owner,
+                name="sandboxed",
+                controller_id=controller.controller_id,
+                definition_body=definition(isolation="sandboxed"),
+            )
+            assignment = await client.get(
+                f"/v1/management/controllers/{controller.controller_id}/assignment",
+                headers=controller.headers,
+            )
+
+        isolation = {
+            entry["definition"]["name"]: entry["definition"]["isolation"]
+            for entry in assignment.json()["agents"]
+        }
+        assert isolation == {"shared-one": "shared", "isolated-one": "isolated"}
+        assert refused.status_code == 422
+
     async def test_etag_and_not_modified(self, harness: Harness) -> None:
         owner = await add_member(harness.session_factory, "ada")
         async with harness.client() as client:
@@ -733,4 +769,5 @@ def test_definition_helper_is_the_v1_shape() -> None:
         "instructions",
         "auto_approve",
         "directory",
+        "isolation",
     }

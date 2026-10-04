@@ -120,6 +120,7 @@ const definition = {
   instructions: '',
   auto_approve: false,
   directory: null,
+  isolation: 'shared',
 };
 
 describe('received messages', () => {

@@ -27,6 +27,7 @@ function agent(overrides: Partial<AgentAssignment> = {}, definition = {}): Agent
       instructions: '',
       auto_approve: false,
       directory: null,
+      isolation: 'shared',
       ...definition,
     },
   };
@@ -86,6 +87,7 @@ describe('reconcile', () => {
     expect(runtime.credentials.get('agent-1')).toEqual({ endpoint: RELAY, token: 'swlr_1' });
     const [launch] = runtime.launches();
     expect(launch!.options).toEqual({
+      isolation: 'shared',
       restart: false,
       replaceIdentity: false,
       clearTakenOver: true,

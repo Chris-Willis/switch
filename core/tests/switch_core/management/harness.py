@@ -353,6 +353,7 @@ def definition(provider_name: str = "claude", **overrides: Any) -> dict[str, Any
         "instructions": "",
         "auto_approve": False,
         "directory": None,
+        "isolation": "shared",
         **overrides,
     }
 

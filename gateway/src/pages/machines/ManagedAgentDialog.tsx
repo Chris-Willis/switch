@@ -17,6 +17,7 @@ import {
   type Controller,
   createManagedAgent,
   type Definition,
+  type Isolation,
   type DesiredState,
   type ManagedAgent,
   PROVIDERS,
@@ -35,6 +36,7 @@ interface Form {
   instructions: string;
   directory: string;
   autoApprove: boolean;
+  isolation: Isolation;
   running: boolean;
 }
 
@@ -49,6 +51,7 @@ function initialForm(agent: ManagedAgent | null, controllers: Controller[]): For
       instructions: agent.definition.instructions,
       directory: agent.definition.directory ?? "",
       autoApprove: agent.definition.auto_approve,
+      isolation: agent.definition.isolation,
       running: agent.desired_state === "running",
     };
   const online = controllers.find((c) => c.state === "online");
@@ -61,6 +64,7 @@ function initialForm(agent: ManagedAgent | null, controllers: Controller[]): For
     instructions: "",
     directory: "",
     autoApprove: false,
+    isolation: "shared",
     running: true,
   };
 }
@@ -72,6 +76,7 @@ function definitionFrom(form: Form): Definition {
     instructions: form.instructions,
     auto_approve: form.autoApprove,
     directory: form.directory.trim() || null,
+    isolation: form.isolation,
   };
 }
 
@@ -222,6 +227,16 @@ export default function ManagedAgentDialog({
             onChange={(e) => set("directory", e.target.value)}
             helperText="An absolute path that exists on the machine. Empty uses a workspace the controller creates."
           />
+          <TextField
+            select
+            label="Isolation"
+            value={form.isolation}
+            onChange={(e) => set("isolation", e.target.value as Isolation)}
+            helperText="Cloud machines run every agent isolated."
+          >
+            <MenuItem value="shared">Shared: runs inside the machine's controller</MenuItem>
+            <MenuItem value="isolated">Isolated: runs as a process of its own</MenuItem>
+          </TextField>
           <FormControlLabel
             control={
               <Switch

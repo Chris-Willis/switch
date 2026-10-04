@@ -66,6 +66,7 @@ const assignment: Assignment = {
         instructions: '',
         auto_approve: false,
         directory: null,
+        isolation: 'shared',
       },
     },
   ],

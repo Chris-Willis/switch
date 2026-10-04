@@ -33,6 +33,7 @@ function entry(overrides: Partial<AgentAssignment> = {}): AgentAssignment {
       instructions: '',
       auto_approve: false,
       directory: null,
+      isolation: 'shared',
     },
     ...overrides,
   };

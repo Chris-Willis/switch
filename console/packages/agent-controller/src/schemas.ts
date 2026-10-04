@@ -120,7 +120,10 @@ export const agentDefinitionSchema = z.object({
   instructions: z.string(),
   auto_approve: z.boolean(),
   directory: z.string().nullable(),
+  /** `shared`: the agent host runs in this controller's process; `isolated`: in a process of its own. */
+  isolation: receivedEnum(['shared', 'isolated']),
 });
+export type Isolation = 'shared' | 'isolated';
 export type AgentDefinition = z.infer<typeof agentDefinitionSchema>;
 
 export const agentAssignmentSchema = z.object({

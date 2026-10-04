@@ -13,8 +13,15 @@ processes, started from the shared-host bundle
 (`@switch-console/agent-providers/shared-host-daemon`). The controller decides what
 runs, and the agent hosts do the running.
 
+An agent whose definition asks for `isolation: "isolated"` runs instead as an agent
+host in a process of its own (the shared-host bundle with `--ensure-watch`, as Console
+runs an agent on an SSH host). It hears its events through the relay, which serves it
+the per-agent agent protocol (its own event stream, heartbeat and placements), and it
+is not stopped when the controller exits: it reconnects when the controller is back.
+Changing an agent's isolation restarts it the other way.
+
 The controller holds **one** event stream to Switch for all of its agents and hands
-each agent's events to its agent host directly. Each agent host makes its calls to Switch
+each shared agent's events to its agent host directly. Each agent host makes its calls to Switch
 through a **local relay** on a loopback port, which adds the controller's
 credentials. No agent holds a Switch credential: each is given a token that only the
 relay accepts.

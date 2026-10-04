@@ -34,6 +34,7 @@ const assignment = {
         instructions: '',
         auto_approve: false,
         directory: null,
+        isolation: 'shared' as const,
       },
     },
   ],

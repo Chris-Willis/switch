@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util';
 import packageJson from '../package.json' with { type: 'json' };
 import { ControllerApiError, enroll, normalizeServerUrl } from './api';
 import { DEFAULT_TIMING, runController } from './controller';
+import { DetachedRuntime } from './detached-runtime';
 import { ConfigurationError, UsageError } from './errors';
 import {
   EXIT_CONFIGURATION,
@@ -28,6 +29,7 @@ import {
   InProcessRuntime,
   observeOnDisk,
 } from './runtime';
+import { AgentRuntimes } from './runtimes';
 import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore } from './secrets';
 import { contractPlatform, mapAgentProcess, PathProviderLocator } from './status';
 import { ControllerStore } from './store';
@@ -184,13 +186,16 @@ async function runCommand(args: string[]): Promise<number> {
         store,
         secrets,
         runtime: (openStream) =>
-          new InProcessRuntime({
-            layout,
-            bundlePath: sharedHostBundle,
-            openStream,
-            log,
-            crashBackoffMs: 2_000,
-          }),
+          new AgentRuntimes(
+            new InProcessRuntime({
+              layout,
+              bundlePath: sharedHostBundle,
+              openStream,
+              log,
+              crashBackoffMs: 2_000,
+            }),
+            new DetachedRuntime({ layout, bundlePath: sharedHostBundle })
+          ),
         locator: new PathProviderLocator(process.env.PATH),
         fetch,
         log,

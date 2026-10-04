@@ -85,6 +85,7 @@ type AgentDefinition = {
   instructions: string                // ≤ 32 KiB
   provider_definition: string | null  // e.g. the Claude agent definition file
   auto_approve: boolean               // CLI runs with its bypass-permissions flag
+  isolation: "shared" | "isolated"    // agent host in the controller, or a process of its own
   session_limit: number
   repo: { kind: "github"; installation_id: number; repository_id: number } | null
   skills: Skill[]

@@ -32,7 +32,7 @@ import {
 import { ConfigurationError, ReasonedError } from './errors';
 import { errorMessage, type Logger } from './log';
 import type { DataLayout } from './paths';
-import type { Provider } from './schemas';
+import type { Isolation, Provider } from './schemas';
 
 const execute = promisify(execFile);
 
@@ -63,6 +63,8 @@ export function emptyObservation(): AgentObservation {
 }
 
 export type LaunchOptions = {
+  /** Where the agent host runs: in this controller's process, or in one of its own. */
+  isolation: Isolation;
   /** Stop a running agent host first, so the new configuration takes effect. */
   restart: boolean;
   /** Restart into a different provider or working directory: the saved configuration goes. */
@@ -71,15 +73,25 @@ export type LaunchOptions = {
   clearTakenOver: boolean;
 };
 
-/**
- * How the controller runs agents. `InProcessRuntime` is the real one; tests
- * substitute a fake.
- */
-/** What an agent's agent host reads to reach Switch: the controller's relay, and a token for it. */
+/** What an agent host reads to reach Switch: the controller's relay, and a token for it. */
 export type RelayCredentials = { endpoint: string; token: string };
 
-export interface AgentRuntime {
+/** Runs agent hosts one way: in this controller's process, or each in a process of its own. */
+export interface AgentRunner {
   observe(agentId: string): Promise<AgentObservation>;
+  launch(agentId: string, template: SharedHostConfig, options: LaunchOptions): Promise<void>;
+  /** Turns the agent host off; with `wait`, returns once it and its sessions are gone. */
+  stop(agentId: string, options: { wait: boolean }): Promise<void>;
+  /** The controller is exiting. */
+  close(): Promise<void>;
+}
+
+/**
+ * How the controller runs agents on this machine (`AgentRuntimes`, over an
+ * `InProcessRuntime` and a runner for isolated agents); tests substitute a
+ * fake.
+ */
+export interface AgentRuntime extends AgentRunner {
   credentialsPath(agentId: string): string;
   /** The credentials file as written, or null when there is none or it cannot be read. */
   readCredentials(agentId: string): Promise<RelayCredentials | null>;
@@ -87,16 +99,11 @@ export interface AgentRuntime {
   deleteCredentials(agentId: string): Promise<void>;
   /** `directory` from the definition, or a workspace under the data directory. */
   workingDirectory(name: string, directory: string | null): Promise<string>;
-  launch(agentId: string, template: SharedHostConfig, options: LaunchOptions): Promise<void>;
-  /** Turns the agent host off; with `wait`, returns once it and its sessions are gone. */
-  stop(agentId: string, options: { wait: boolean }): Promise<void>;
   probe(provider: Provider, binaryPath: string, cwd: string): Promise<ProviderReadiness>;
-  /** Stops every agent and its sessions: the controller is exiting. */
-  close(): Promise<void>;
 }
 
 /** How long an agent host asked to stop is given; each session host is allowed 20 s of it. */
-const STOP_TIMEOUT_MS = 30_000;
+export const STOP_TIMEOUT_MS = 30_000;
 const PROBE_TIMEOUT_MS = 90_000;
 /** Failures an agent host is started again after, within `CRASH_WINDOW_MS`. */
 const MAX_CRASHES = 3;
@@ -108,7 +115,7 @@ const CRASH_WINDOW_MS = 10 * 60 * 1000;
  */
 const IN_PROCESS_BUILD = 'switch-agent-controller:in-process';
 
-async function writeAtomic(path: string, body: string): Promise<void> {
+export async function writeAtomic(path: string, body: string): Promise<void> {
   const temporary = `${path}.${randomUUID()}`;
   const file = await open(temporary, 'wx', 0o600);
   try {
@@ -120,7 +127,7 @@ async function writeAtomic(path: string, body: string): Promise<void> {
   await rename(temporary, path);
 }
 
-async function readOptional(path: string): Promise<string | null> {
+export async function readOptional(path: string): Promise<string | null> {
   try {
     return await readFile(path, 'utf8');
   } catch (error) {
@@ -129,13 +136,13 @@ async function readOptional(path: string): Promise<string | null> {
   }
 }
 
-async function removeOptional(path: string): Promise<void> {
+export async function removeOptional(path: string): Promise<void> {
   await unlink(path).catch((error: NodeJS.ErrnoException) => {
     if (error.code !== 'ENOENT') throw error;
   });
 }
 
-function alive(pid: number): boolean {
+export function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -146,7 +153,7 @@ function alive(pid: number): boolean {
 }
 
 /** A saved PID counts only while it still names a process started for this root. */
-async function ownsRoot(pid: number, root: string): Promise<boolean> {
+export async function ownsRoot(pid: number, root: string): Promise<boolean> {
   if (!alive(pid)) return false;
   try {
     const { stdout } = await execute('ps', ['-p', String(pid), '-o', 'command=']);
@@ -157,7 +164,7 @@ async function ownsRoot(pid: number, root: string): Promise<boolean> {
   }
 }
 
-async function recordedPid(path: string): Promise<number | null> {
+export async function recordedPid(path: string): Promise<number | null> {
   const text = await readOptional(path);
   if (text === null) return null;
   const pid = (JSON.parse(text) as { pid?: unknown }).pid;
@@ -165,7 +172,7 @@ async function recordedPid(path: string): Promise<number | null> {
 }
 
 /** The owner records an agent host writes under its root: the worker's, then a detached one's supervisor's. */
-const OWNER_RECORDS = ['shared-owner.lock', join('supervisor', 'owner.json')];
+export const OWNER_RECORDS = ['shared-owner.lock', join('supervisor', 'owner.json')];
 
 /** The shared host needs POSIX process control: macOS or Linux. */
 export function assertSupportedPlatform(platform: NodeJS.Platform): void {
@@ -192,7 +199,7 @@ export async function observeOnDisk(
 }
 
 /** Everything about an agent host root but whether it runs. */
-async function readRoot(root: string): Promise<Omit<AgentObservation, 'alive'>> {
+export async function readRoot(root: string): Promise<Omit<AgentObservation, 'alive'>> {
   const config = await readOptional(join(root, 'config.json'));
   let configured: AgentObservation['configured'] = null;
   if (config !== null) {

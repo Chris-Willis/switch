@@ -6,7 +6,7 @@ import { errorMessage, type Logger } from './log';
 import { processPendingOperations } from './operations';
 import { isSafeSegment } from './paths';
 import { definitionProblem, reconcile, type ReconcileDeps, startAgent } from './reconcile';
-import { LocalRelay, RELAY_TOKEN_PREFIX } from './relay';
+import { DEFAULT_RELAY_TIMING, LocalRelay, RELAY_TOKEN_PREFIX, type RelayTiming } from './relay';
 import { UpstreamForwarder } from './relay-forward';
 import type { AgentRuntime } from './runtime';
 import {
@@ -41,6 +41,7 @@ export type ControllerTiming = {
    * every agent on the controller is offline while the stream is down.
    */
   streamMaxBackoffMs: number;
+  relay: RelayTiming;
   /** The most events held per agent while its agent host is not taking them. */
   eventBufferLimit: number;
 };
@@ -54,6 +55,7 @@ export const DEFAULT_TIMING: ControllerTiming = {
   streamIdleMs: 45_000,
   streamInitialBackoffMs: 1_000,
   streamMaxBackoffMs: 8_000,
+  relay: DEFAULT_RELAY_TIMING,
   eventBufferLimit: 5_000,
 };
 
@@ -204,11 +206,17 @@ export async function runController(
       store.saveCursor(agentId, cursor, new Date(deps.now()).toISOString()),
     onChange: () => reporter?.request(),
   });
-  for (const [agentId, cursor] of store.cursors()) hub.setCursor(agentId, cursor);
   const runtime = deps.runtime((agentId) => (streamDeps) => hub.open(agentId, streamDeps));
   const relay = new LocalRelay({
     log,
-    roomFor: (agentId, sessionId) => hub.roomFor(agentId, sessionId),
+    version: deps.version,
+    now: deps.now,
+    timing: timing.relay,
+    bufferLimit: timing.eventBufferLimit,
+    onCursor: (agentId, cursor) =>
+      store.saveCursor(agentId, cursor, new Date(deps.now()).toISOString()),
+    onChange: () => reporter?.request(),
+    sharedRoomFor: (agentId, sessionId) => hub.roomFor(agentId, sessionId),
     forwarder: new UpstreamForwarder({
       server: identity.server,
       auth: {
@@ -219,6 +227,34 @@ export async function runController(
       log,
     }),
   });
+  /**
+   * The agents whose host runs in a process of its own: their events go
+   * through the relay, as their own stream. Every other agent's go to its host
+   * in this process, through the hub.
+   */
+  const isolated = new Set<string>();
+  const placed = new Set<string>();
+  const delivery = (agentId: string) => (isolated.has(agentId) ? relay : hub);
+  /** Sends each agent's events the way its definition asks, moving its cursor when that changes. */
+  const placeAgents = (held: Assignment) => {
+    const cursors = store.cursors();
+    for (const entry of held.agents) {
+      const agentId = entry.agent_id;
+      const wanted = entry.definition.isolation === 'isolated';
+      if (placed.has(agentId) && wanted === isolated.has(agentId)) continue;
+      placed.add(agentId);
+      if (wanted) {
+        isolated.add(agentId);
+        hub.forget(agentId);
+      } else {
+        isolated.delete(agentId);
+        relay.forgetStreams(agentId);
+      }
+      const cursor = cursors.get(agentId);
+      if (cursor !== undefined) delivery(agentId).setCursor(agentId, cursor);
+    }
+  };
+  if (assignment) placeAgents(assignment);
   const port = await relay.start(store.relayPort());
   store.saveRelayPort(port);
   log.info('Relay listening for this machine’s agents', { endpoint: relay.endpoint });
@@ -275,7 +311,7 @@ export async function runController(
     store,
     runtime,
     providers,
-    attached: (agentId) => hub.attached(agentId),
+    attached: (agentId) => delivery(agentId).attached(agentId),
     dataDir: deps.dataDir,
     version: deps.version,
     now: deps.now,
@@ -307,6 +343,7 @@ export async function runController(
           etag = pulled.etag;
           store.saveAssignment(assignment, etag, new Date(deps.now()).toISOString());
           log.info('Pulled assignment', { revision: assignment.revision, why });
+          placeAgents(assignment);
         }
         if (assignment) await reconcile(assignment, reconcileDeps);
         reporter?.request();
@@ -402,29 +439,33 @@ export async function runController(
       case 'evicted':
         return;
       case 'agent.event':
-        hub.ingest(frame.data);
+        delivery(frame.data.agent_id).ingest(frame.data);
         return;
       case 'agent.gap':
         log.warn('Switch reports events an agent missed', {
           agentId: frame.data.agent_id,
           reason: frame.data.reason,
         });
-        hub.gap(frame.data);
+        delivery(frame.data.agent_id).gap(frame.data);
         return;
       case 'agent.session_command':
-        hub.sessionCommand(frame.data);
+        delivery(frame.data.agent_id).sessionCommand(frame.data);
         return;
       case 'agent.approval_outcome':
-        hub.approvalOutcome(frame.data);
+        delivery(frame.data.agent_id).approvalOutcome(frame.data);
         return;
       case 'agent.attached':
-        hub.attach(frame.data.agent_id, frame.data.from_seq, frame.data.rooms);
+        delivery(frame.data.agent_id).attach(
+          frame.data.agent_id,
+          frame.data.from_seq,
+          frame.data.rooms
+        );
         return;
       case 'agent.detached':
-        hub.detach(frame.data.agent_id, frame.data.reason);
+        delivery(frame.data.agent_id).detach(frame.data.agent_id, frame.data.reason);
         return;
       case 'agent.rooms':
-        hub.setRooms(frame.data.agent_id, frame.data.rooms);
+        delivery(frame.data.agent_id).setRooms(frame.data.agent_id, frame.data.rooms);
         return;
       case 'assignment.changed':
         void sync(`assignment.changed to revision ${frame.data.revision}`);
@@ -465,10 +506,10 @@ export async function runController(
       cursors: () => {
         const cursors: Record<string, AgentCursor> = {};
         for (const entry of assignment?.agents ?? []) cursors[entry.agent_id] = 'head';
-        return { ...cursors, ...hub.cursors() };
+        return { ...cursors, ...hub.cursors(), ...relay.cursors() };
       },
-      confirmed: () => hub.cursors(),
-      placements: () => hub.sessionRooms(),
+      confirmed: () => ({ ...hub.cursors(), ...relay.cursors() }),
+      placements: () => ({ ...hub.sessionRooms(), ...relay.sessionRooms() }),
       onOpened: (connection) =>
         log.info('Switch has these agents bound to this controller', {
           agents: connection.agents,
@@ -476,10 +517,14 @@ export async function runController(
       onConnected: () => {
         log.info('Connected to Switch');
         hub.streamAttached();
+        relay.streamAttached();
         void sync('connected');
         void runOperations();
       },
-      onDisconnected: () => hub.setUpstream(false),
+      onDisconnected: () => {
+        hub.setUpstream(false);
+        relay.setUpstream(false);
+      },
       onFrame,
       signal: stop.signal,
       log,

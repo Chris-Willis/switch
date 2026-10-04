@@ -271,6 +271,11 @@ stream. The flag and everything else above stay as they are.
   changing mid-stream attach or detach agents live.
 
 ### Agent hosts in the controller's process, and the local relay
+- Each agent's definition says where its agent host runs: `isolation: "shared"` (the default)
+  in the controller's process, as below; `isolated` in a process of its own, served the
+  per-agent agent protocol by the relay (its own event stream, heartbeat, placements and room
+  claims), as before agent hosts moved in-process. Cloud machines run every agent isolated, as
+  a systemd unit. Changing an agent's isolation restarts it the other way.
 - One upstream stream. Each agent's agent host runs inside the controller's process and is handed
   its events from that stream directly (`AgentHub`): in order, filtered to what addresses the
   agent, with gaps, resets, room controls and approval outcomes. Events that arrive while its

@@ -29,7 +29,12 @@ if (args[0] === '--probe') {
 `;
 
 const RELAY = { endpoint: 'http://127.0.0.1:43210', token: 'swlr_relay-token-placeholder' };
-const LAUNCH = { restart: false, replaceIdentity: false, clearTakenOver: false };
+const LAUNCH = {
+  isolation: 'shared' as const,
+  restart: false,
+  replaceIdentity: false,
+  clearTakenOver: false,
+};
 
 let dir: string;
 let bundle: string;
@@ -179,6 +184,7 @@ describe('InProcessRuntime', () => {
     await runtime.launch('agent-1', template(), LAUNCH);
     await waitFor(() => opened.length === 1, 'the first watcher');
     await runtime.launch('agent-1', template('/work/elsewhere', 'codex'), {
+      isolation: 'shared',
       restart: true,
       replaceIdentity: true,
       clearTakenOver: true,

@@ -15,6 +15,7 @@ export const PROVIDERS: { value: Provider; label: string }[] = [
 ];
 
 export type DesiredState = "running" | "stopped";
+export type Isolation = "shared" | "isolated";
 export type ControllerState = "online" | "unknown" | "revoked";
 
 export interface Platform {
@@ -84,6 +85,7 @@ export interface Definition {
   instructions: string;
   auto_approve: boolean;
   directory: string | null;
+  isolation: Isolation;
 }
 
 export interface ManagedAgent {

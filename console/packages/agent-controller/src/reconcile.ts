@@ -39,6 +39,8 @@ export function definitionProblem(entry: AgentAssignment): string | null {
     return `The agent id '${entry.agent_id}' cannot be used as a directory name.`;
   if (!isProvider(entry.definition.provider))
     return `This controller does not run the provider '${entry.definition.provider}'.`;
+  if (entry.definition.isolation === 'unknown')
+    return 'This controller does not know the isolation this agent asks for.';
   if (entry.definition.directory === null && !isSafeSegment(entry.definition.name))
     return `The agent name '${entry.definition.name}' cannot be used as a workspace directory name; set a directory.`;
   return null;
@@ -243,6 +245,7 @@ export async function startAgent(
       (observation.configured !== null &&
         (observation.configured.provider !== provider || observation.configured.cwd !== cwd));
     await deps.runtime.launch(agentId, template, {
+      isolation: definition.isolation === 'isolated' ? 'isolated' : 'shared',
       restart: action.restart || replaceIdentity,
       replaceIdentity,
       clearTakenOver: action.clearTakenOver,

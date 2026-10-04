@@ -25,6 +25,7 @@ from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 Provider = Literal["claude", "codex", "opencode", "antigravity", "cursor"]
 ControllerKind = Literal["console", "daemon", "ec2"]
 DesiredState = Literal["running", "stopped"]
+Isolation = Literal["shared", "isolated"]
 
 # The known-agent spec each provider registers through.
 PROVIDER_KNOWN_AGENT_TYPES: dict[str, str] = {
@@ -85,6 +86,10 @@ class DefinitionV1(_GatewayBody):
     instructions: str = ""
     auto_approve: bool = False
     directory: str | None = None
+    # `shared`: the agent host runs inside its machine's controller.
+    # `isolated`: it runs as a process of its own (a systemd unit on a cloud
+    # machine, which runs every agent isolated).
+    isolation: Isolation = "shared"
 
     @field_validator("instructions")
     @classmethod
@@ -327,6 +332,7 @@ def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
             "instructions": definition.get("instructions", ""),
             "auto_approve": definition.get("auto_approve", False),
             "directory": definition.get("directory"),
+            "isolation": definition.get("isolation", "shared"),
         },
     }
 
