@@ -95,7 +95,6 @@ function harness(): Harness {
         h.created = { body };
         return config.createOutcome;
       },
-      setIcon: async (_w, _id, iconUrl) => step(`icon ${iconUrl}`),
       setDesiredState: async (_w, _id, state) => step(`desired ${state}`),
       release: async () => step('release'),
       deleteAgent: async () => {
@@ -103,7 +102,6 @@ function harness(): Harness {
         if (config.deleteFails) throw new Error('delete refused');
       },
     },
-    defaultIcon: (name) => `https://avatars.example.test/${name}.png`,
     writeConfig: async () => step('config'),
     store: {
       set: async (record) => {
@@ -151,19 +149,12 @@ describe('NewManagedAgentService.add', () => {
     const result = await new NewManagedAgentService(h.deps).add(PARAMS);
 
     expect(result.kind).toBe('created');
-    expect(h.calls).toEqual([
-      'create',
-      'icon https://avatars.example.test/pm-agent.png',
-      'config',
-      'record',
-      'row',
-      'desired running',
-      'announce',
-    ]);
+    expect(h.calls).toEqual(['create', 'config', 'record', 'row', 'desired running', 'announce']);
     expect(h.created?.body).toEqual({
       name: 'pm-agent',
       description: 'Writes PRDs',
       display_name: 'PM',
+      icon_url: null,
       controller_id: 'controller-1',
       desired_state: 'stopped',
       definition: {

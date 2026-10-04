@@ -188,6 +188,7 @@ function EditCloudAgentForm({
         <FieldGroup>
           <div className="flex justify-center">
             <AgentIconPicker
+              serverId={serverId}
               name={launch.name}
               iconUrl={iconUrl}
               onChange={setIconUrl}

@@ -79,6 +79,7 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
       <span className="flex size-[88px] shrink-0 items-center justify-center">
         {editableIcon ? (
           <AgentIconPicker
+            serverId={agent?.serverId ?? null}
             name={title}
             iconUrl={remote?.iconUrl ?? null}
             onChange={changeIcon}

@@ -1053,6 +1053,23 @@ export async function updateCanManageAgents(
 }
 
 /**
+ * One page of the icons the server generates for an agent called `name`
+ * (`GET /agents/icon-choices`): page 0 leads with the one an agent of that
+ * name gets when nobody picks an icon.
+ */
+export async function fetchAgentIconChoices(
+  server: SwitchServer,
+  name: string,
+  page: number
+): Promise<string[]> {
+  const query = new URLSearchParams({ name, page: String(page) });
+  const res = await gatewayFetch(server, `/agents/icon-choices?${query.toString()}`, {
+    authenticated: true,
+  });
+  return ((await res.json()) as { choices: string[] }).choices;
+}
+
+/**
  * Set (or clear, with `iconUrl = null`) an agent's icon (`PUT /agents/{id}/icon`).
  * Only the agent's owner (or an admin) may change it; a non-owner request
  * surfaces as a `GatewayError`, as does a URL the gateway rejects — it accepts
@@ -2752,6 +2769,8 @@ export async function createManagedAgent(
     name: string;
     description: string;
     display_name: string | null;
+    /** Null for the icon the server generates from the name. */
+    icon_url: string | null;
     controller_id: string;
     desired_state: 'running' | 'stopped';
     definition: ManagedAgentDefinitionBody;

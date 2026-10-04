@@ -647,7 +647,7 @@ export const NewAgentForm = observer(function NewAgentForm({
             tabIndex={-1}
             className="max-h-[calc(100dvh-2rem-var(--modal-chrome,8.5rem))] gap-4"
           >
-            <AgentIdentityFields form={form} />
+            <AgentIdentityFields form={form} serverId={pickState.serverId} />
 
             <Field>
               <FieldLabel>Run location</FieldLabel>

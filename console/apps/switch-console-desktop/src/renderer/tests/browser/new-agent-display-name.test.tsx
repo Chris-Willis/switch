@@ -136,14 +136,21 @@ afterEach(async () => {
 
 function Fields() {
   domForm = useConfigureAgentForm();
-  return <AgentIdentityFields form={domForm} />;
+  return <AgentIdentityFields form={domForm} serverId={null} />;
 }
 
 async function renderFields(): Promise<HTMLDivElement> {
   domContainer = document.createElement('div');
   document.body.appendChild(domContainer);
   domRoot = createRoot(domContainer);
-  await act(async () => domRoot!.render(<Fields />));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  await act(async () =>
+    domRoot!.render(
+      <QueryClientProvider client={client}>
+        <Fields />
+      </QueryClientProvider>
+    )
+  );
   return domContainer;
 }
 

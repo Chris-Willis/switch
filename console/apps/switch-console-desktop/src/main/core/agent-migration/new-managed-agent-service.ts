@@ -21,7 +21,7 @@ export type AddManagedAgentParams = {
   serverId: string;
   description: string;
   displayName: string | null;
-  /** Null means the form offered no choice: the agent gets the avatar its name generates. */
+  /** Null means the form offered no choice: the server gives it the icon its name generates. */
   iconUrl: string | null;
   autoApprove: boolean;
   instructions: string;
@@ -53,12 +53,12 @@ export type NewManagedAgentDeps = {
         name: string;
         description: string;
         display_name: string | null;
+        icon_url: string | null;
         controller_id: string;
         desired_state: 'running' | 'stopped';
         definition: ManagedDefinition;
       }
     ): Promise<ManagedCreateOutcome>;
-    setIcon(workspaceId: string, switchAgentId: string, iconUrl: string): Promise<void>;
     setDesiredState(
       workspaceId: string,
       switchAgentId: string,
@@ -68,8 +68,6 @@ export type NewManagedAgentDeps = {
     /** Deletes the agent itself on Switch, so its name is free again. */
     deleteAgent(workspaceId: string, switchAgentId: string): Promise<void>;
   };
-  /** The avatar an agent with no chosen icon is registered with. */
-  defaultIcon(name: string): string;
   /** Writes the agent's config file into its working directory, as a Console-run agent has. */
   writeConfig(params: AddAgentParams): Promise<void>;
   store: {
@@ -127,7 +125,7 @@ function asAddAgentParams(params: AddManagedAgentParams): AddAgentParams {
  *    created if either refuses.
  * 2. Switch registers and places it, stopped. Switch checks the placement
  *    first, so a refusal leaves nothing behind.
- * 3. Its icon, its config file, the managed record (so Console never starts a
+ * 3. Its config file, the managed record (so Console never starts a
  *    watcher of its own for it), then its row; then it is set running. A
  *    failure here undoes everything, the agent on Switch included.
  */
@@ -190,6 +188,7 @@ export class NewManagedAgentService {
       name: input.name,
       description: input.description,
       display_name: input.displayName,
+      icon_url: input.iconUrl,
       controller_id: target.controllerId,
       desired_state: 'stopped',
       definition,
@@ -201,11 +200,6 @@ export class NewManagedAgentService {
     const id = this.deps.newId();
     let row: Agent | null = null;
     try {
-      await this.deps.management.setIcon(
-        workspace.id,
-        switchAgentId,
-        input.iconUrl ?? this.deps.defaultIcon(input.name)
-      );
       await this.deps.writeConfig(params);
       await this.deps.store.set({
         agentId: id,

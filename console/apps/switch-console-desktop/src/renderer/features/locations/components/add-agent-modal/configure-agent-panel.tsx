@@ -208,7 +208,14 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
  * agents — so the two halves can sit in different places in the dialog without
  * the identity fields waiting on four queries they do not use.
  */
-export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState }) {
+export function AgentIdentityFields({
+  form,
+  serverId,
+}: {
+  form: ConfigureAgentFormState;
+  /** The Switch server whose generated icons are offered. */
+  serverId: string | null;
+}) {
   const nameId = useId();
   const displayNameId = useId();
   const descriptionId = useId();
@@ -221,6 +228,7 @@ export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState })
           recognised by. */}
       <div className="flex flex-col items-center gap-1.5 pb-1">
         <AgentIconPicker
+          serverId={serverId}
           name={form.agentName}
           iconUrl={form.iconUrl}
           onChange={form.setIconUrl}

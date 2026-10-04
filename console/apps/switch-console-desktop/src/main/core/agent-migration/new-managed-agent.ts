@@ -15,13 +15,11 @@ import {
   GatewayError,
   managementErrorMessage,
   setManagedAgentDesiredState,
-  updateAgentIcon,
 } from '@main/core/switch-servers/gateway-client';
 import { withReachableWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { db } from '@main/db/client';
 import { agents as agentsTable } from '@main/db/schema';
 import { log } from '@main/lib/logger';
-import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { resolveMachine } from './agent-migration';
 import { deleteManagedAgentRecord, setManagedAgentRecord } from './managed-agents-store';
@@ -53,10 +51,6 @@ export const newManagedAgentService = new NewManagedAgentService({
           throw error;
         }
       }),
-    setIcon: (workspaceId, switchAgentId, iconUrl) =>
-      withReachableWorkspaceSession(workspaceId, async (server) => {
-        await updateAgentIcon(server, switchAgentId, iconUrl);
-      }),
     setDesiredState: (workspaceId, switchAgentId, desiredState) =>
       withReachableWorkspaceSession(workspaceId, (server) =>
         setManagedAgentDesiredState(server, switchAgentId, desiredState)
@@ -68,7 +62,6 @@ export const newManagedAgentService = new NewManagedAgentService({
     deleteAgent: (workspaceId, switchAgentId) =>
       withReachableWorkspaceSession(workspaceId, (server) => deleteAgent(server, switchAgentId)),
   },
-  defaultIcon: agentAvatarUrlForName,
   writeConfig: async (params) => {
     const workdir = await resolveWorkdirFsFor(params.sshHost, params.dir);
     try {

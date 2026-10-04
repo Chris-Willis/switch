@@ -50,6 +50,7 @@ import {
   getConnectionCatalog,
   getGitHubConnection,
   createCloudLaunch,
+  fetchAgentIconChoices,
   cloudLifecycle,
   getCloudLaunchConfiguration,
   updateCloudLaunchConfiguration,
@@ -241,6 +242,11 @@ export const switchServersController = createRPCController({
   disconnectCloudProvider: (serverId: string, provider: Exclude<AgentProviderId, 'claude'>) =>
     withReachableServerWorkspaceSession(serverId, (server) =>
       disconnectCloudProvider(server, provider)
+    ),
+  /** The icons the server generates for an agent called `name`, one page at a time. */
+  agentIconChoices: (params: { serverId: string; name: string; page: number }) =>
+    withReachableServerWorkspaceSession(params.serverId, (server) =>
+      fetchAgentIconChoices(server, params.name, params.page)
     ),
   createCloudLaunch: (serverId: string, input: CloudLaunchInput) =>
     withReachableServerWorkspaceSession(serverId, (server) =>
