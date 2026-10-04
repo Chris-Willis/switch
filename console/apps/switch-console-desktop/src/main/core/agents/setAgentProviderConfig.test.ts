@@ -16,6 +16,7 @@ const getAgentLocation = vi.fn(async (_agent: unknown) => ({
 }));
 const getRemoteAgentLocation = vi.fn();
 const ensureRemoteWatcher = vi.fn(async (_id: string) => {});
+const refreshLocalWatcher = vi.fn(async (_id: string) => {});
 const removeAgentLaunchProfile = vi.fn(
   async (_agent: unknown, _location: unknown, _slug: string) => {}
 );
@@ -35,6 +36,7 @@ vi.mock('./agent-location', () => ({
 }));
 vi.mock('./remote-watcher', () => ({
   ensureRemoteWatcher: (id: string) => ensureRemoteWatcher(id),
+  refreshLocalWatcher: (id: string) => refreshLocalWatcher(id),
 }));
 vi.mock('./remove-launch-profile', () => ({
   removeAgentLaunchProfile: (agent: unknown, location: unknown, slug: string) =>
@@ -68,11 +70,12 @@ describe('setAgentProviderConfig', () => {
     expect(updateAgent).toHaveBeenCalledWith({ agentId: 'agent-1', providerConfig: CONFIG });
   });
 
-  it('leaves a local agent alone otherwise — the profile is rewritten at the next spawn', async () => {
+  it('hands a local agent’s running watcher the new config, leaving its launch profile', async () => {
     getRemoteAgentLocation.mockResolvedValue(null);
 
     await setAgentProviderConfig({ agentId: 'agent-1', config: CONFIG });
 
+    expect(refreshLocalWatcher).toHaveBeenCalledWith('agent-1');
     expect(ensureRemoteWatcher).not.toHaveBeenCalled();
     expect(removeAgentLaunchProfile).not.toHaveBeenCalled();
   });

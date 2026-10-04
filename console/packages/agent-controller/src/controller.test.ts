@@ -317,8 +317,11 @@ describe('runController', () => {
     core.setAssignment({ revision: 2, agents: [agent(2)] });
     core.assignment.agents[0]!.definition.model = 'opus';
     core.push('assignment.changed', { revision: 2 });
-    await waitFor(() => runtime.launches('agent-1').length === 2, 'a restart on the new revision');
-    expect(runtime.launches('agent-1')[1]!.options.restart).toBe(true);
+    await waitFor(
+      () => runtime.launches('agent-1').length === 2,
+      'the new revision handed to the agent host'
+    );
+    expect(runtime.launches('agent-1')[1]!.options.restart).toBe(false);
     expect(runtime.launches('agent-1')[1]!.template.start.input.model).toEqual({ id: 'opus' });
     stop.abort();
     expect(await running).toBe('stopped');

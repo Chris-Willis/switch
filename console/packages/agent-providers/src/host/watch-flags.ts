@@ -1,5 +1,5 @@
 import { watch, type FSWatcher } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 
@@ -99,4 +99,68 @@ export function awaitWatchChange(
     signal.addEventListener('abort', onAbort, { once: true });
     check();
   });
+}
+
+/** The agent host's configuration, which its definition is read from. */
+const CONFIG_FILE = 'config.json';
+
+/**
+ * Calls `listener` each time the agent host's `config.json` under `root` is
+ * replaced, until `signal` fires or the returned function is called. It is
+ * how whoever runs the agent host (the agents controller, Console) hands it a
+ * new definition: they rewrite the file, and the running host hears it.
+ *
+ * Writers replace the file by rename, so the directory is watched. Where the
+ * platform cannot watch, the file's modification time is read on a timer
+ * instead, and that is reported.
+ */
+export function onConfigReplaced(
+  root: string,
+  signal: AbortSignal,
+  listener: () => void
+): () => void {
+  let watcher: FSWatcher | null = null;
+  let polling: ReturnType<typeof setInterval> | null = null;
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    watcher?.close();
+    if (polling) clearInterval(polling);
+    signal.removeEventListener('abort', close);
+  };
+  const readOnATimer = (reason: string) => {
+    if (closed || polling) return;
+    console.warn(
+      `Cannot watch ${CONFIG_FILE} for changes; reading it every ${POLL_INTERVAL_MS}ms instead: ${reason}`
+    );
+    let seen: number | null = null;
+    polling = setInterval(() => {
+      void stat(join(root, CONFIG_FILE)).then(
+        (stats) => {
+          if (seen !== null && stats.mtimeMs !== seen) listener();
+          seen = stats.mtimeMs;
+        },
+        (error: NodeJS.ErrnoException) => {
+          if (error.code !== 'ENOENT') console.warn(`Cannot read ${CONFIG_FILE}: ${error.message}`);
+        }
+      );
+    }, POLL_INTERVAL_MS);
+    polling.unref();
+  };
+  if (signal.aborted) return close;
+  try {
+    watcher = watch(root, (_event, filename) => {
+      if (filename === null || filename === CONFIG_FILE) listener();
+    });
+  } catch (error) {
+    readOnATimer(String(error));
+  }
+  watcher?.on('error', (error: Error) => {
+    watcher?.close();
+    watcher = null;
+    readOnATimer(error.message);
+  });
+  signal.addEventListener('abort', close, { once: true });
+  return close;
 }

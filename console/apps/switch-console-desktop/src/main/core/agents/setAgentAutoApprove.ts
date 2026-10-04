@@ -2,7 +2,7 @@ import { keepAutoApproveChoice, recordAutoApproveOnHost } from '@main/core/sdk-h
 import { listStoppedControllerAgentIds } from '@main/core/switch-rooms/auto-session-store';
 import { getRemoteAgentLocation } from './agent-location';
 import { getAgentById } from './getAgentById';
-import { pushRemoteAutoApprove } from './remote-watcher';
+import { pushRemoteAutoApprove, refreshLocalWatcher } from './remote-watcher';
 import { updateAgent } from './updateAgent';
 
 export type AgentAutoApproveParams = { agentId: string; enabled: boolean };
@@ -25,6 +25,7 @@ export async function setAgentAutoApprove(params: AgentAutoApproveParams): Promi
   };
   if (!agent.switchAgentId || (await getRemoteAgentLocation(agent)) === null) {
     await setRow(params.enabled);
+    if (agent.switchAgentId) await refreshLocalWatcher(agent.id);
     return;
   }
   if ((await listStoppedControllerAgentIds()).includes(agent.id)) {

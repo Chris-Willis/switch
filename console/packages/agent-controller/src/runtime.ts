@@ -65,7 +65,10 @@ export function emptyObservation(): AgentObservation {
 export type LaunchOptions = {
   /** Where the agent host runs: in this controller's process, or in one of its own. */
   isolation: Isolation;
-  /** Stop a running agent host first, so the new configuration takes effect. */
+  /**
+   * Stop a running agent host first. Without it, a running agent host is
+   * handed the new configuration and brings its sessions in step itself.
+   */
   restart: boolean;
   /** Restart into a different provider or working directory: the saved configuration goes. */
   replaceIdentity: boolean;

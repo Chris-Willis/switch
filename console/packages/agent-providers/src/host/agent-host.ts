@@ -47,7 +47,7 @@ import { readHostSessions } from './session-list';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
 import { hostParked } from './shared-state';
 import { readTakenOver, recordTakenOver } from './taken-over';
-import { awaitWatchChange, readWatchFlags } from './watch-flags';
+import { awaitWatchChange, onConfigReplaced, readWatchFlags } from './watch-flags';
 import {
   announceSessionStart,
   announceStartFailure,
@@ -381,6 +381,18 @@ export function definitionChanged(config: SharedHostConfig, template: SharedHost
   return !isDeepStrictEqual(withDefinitionOf(config, template), config);
 }
 
+/** The config saved at a session root; null when the session has not written one. */
+async function sessionConfigAt(sessionRoot: string): Promise<SharedHostConfig | null> {
+  try {
+    return sharedConfigSchema.parse(
+      JSON.parse(await readFile(join(sessionRoot, 'config.json'), 'utf8'))
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
 /**
  * The live sessions among `sessionIds` saved under an earlier definition of
  * their agent than `template`'s. A running host keeps the model and
@@ -394,15 +406,8 @@ export async function redefinedSessions(
   const found: { root: string; config: SharedHostConfig }[] = [];
   for (const sessionId of new Set(sessionIds)) {
     const root = sharedSessionRoot(sessionId);
-    let config: SharedHostConfig;
-    try {
-      config = sharedConfigSchema.parse(
-        JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))
-      );
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
-      throw error;
-    }
+    const config = await sessionConfigAt(root);
+    if (!config) continue;
     if (config.session.agentId !== template.session.agentId) continue;
     if (!definitionChanged(config, template)) continue;
     if (!(await liveSupervisor(root))) continue;
@@ -1684,6 +1689,74 @@ export async function runAgentHost(
       void pending.catch((error: Error) => fail(error));
     }, OWNERSHIP_RETRY_MS);
     retry.unref();
+    /**
+     * Brings the live sessions of this agent in step with its definition, as
+     * whoever runs the watcher last wrote it to `config.json` (the agents
+     * controller on a new revision, Console when the agent's settings are
+     * saved). Each session saved under an earlier definition is restarted on
+     * its own conversation under the current one (`withDefinitionOf`) once it
+     * is idle, so no turn is cut short: one in the middle of a turn waits in
+     * `redefinitionDue` until its host says it is done. One saved under another
+     * provider or directory belongs to an earlier identity of the agent and is
+     * left alone.
+     */
+    const redefinitionDue = new Set<string>();
+    let redefining = false;
+    const applyDefinition = async () => {
+      const current = await currentTemplate();
+      redefinitionDue.clear();
+      for (const sessionRoot of links.live()) {
+        if (!links.ready(sessionRoot)) continue;
+        const saved = await sessionConfigAt(sessionRoot);
+        if (
+          !saved ||
+          saved.session.agentId !== agentId ||
+          saved.start.provider !== current.start.provider ||
+          saved.start.input.cwd !== current.start.input.cwd ||
+          !definitionChanged(saved, current)
+        )
+          continue;
+        if (links.busy(sessionRoot)?.busy !== false) {
+          redefinitionDue.add(sessionRoot);
+          continue;
+        }
+        console.warn(
+          `Session ${saved.session.sessionId} runs under an earlier definition of its agent (model, instructions or approval mode); restarting it on the same conversation under the current one.`
+        );
+        try {
+          await ensureSharedProcess({
+            root: sessionRoot,
+            config: reachableBy(withDefinitionOf(saved, current), connectionId),
+            resuming: true,
+            watcher: false,
+            restart: true,
+            supervision,
+            startSource: null,
+          });
+        } catch (error) {
+          console.warn(
+            `Could not restart session ${saved.session.sessionId} under its agent's current definition: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+    };
+    const redefine = () => {
+      if (redefining) return;
+      redefining = true;
+      pending = pending.then(applyDefinition).finally(() => {
+        redefining = false;
+      });
+      void pending.catch((error: Error) => fail(error));
+    };
+    unbind.push(
+      onConfigReplaced(root, stop.signal, redefine),
+      links.onBusy((busyRoot) => {
+        if (redefinitionDue.has(busyRoot) && links.busy(busyRoot)?.busy === false) redefine();
+      }),
+      links.onExit((exitedRoot) => {
+        redefinitionDue.delete(exitedRoot);
+      })
+    );
     while (!stop.signal.aborted) {
       const changed = await awaitWatchChange(root, flags, stop.signal);
       if (!changed) break;

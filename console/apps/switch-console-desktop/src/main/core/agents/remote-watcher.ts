@@ -43,6 +43,24 @@ export async function pushRemoteAutoApprove(agentId: string): Promise<void> {
   await applyControllerState(agentId, 'restore', 'this-console');
   remoteSessionReconciler.start(agentId);
 }
+/**
+ * Hands the running watcher of an agent on this computer the configuration its
+ * settings now describe; it brings its live sessions in step as each finishes
+ * its turn. A save that cannot reach it says so, with the setting kept.
+ */
+export async function refreshLocalWatcher(agentId: string): Promise<void> {
+  if (!(await getAgentById(agentId))?.switchAgentId) return;
+  try {
+    await applyControllerState(agentId, 'restore', 'host');
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `The setting is saved, but the agent's running watcher could not be updated yet (${reason}). ` +
+        'Its sessions take the new setting once it is.',
+      { cause: error }
+    );
+  }
+}
 export async function stopRemoteWatcher(agentId: string): Promise<void> {
   await configureAgentHost(agentId, { connected: false, spawning: false }, 'restore');
 }

@@ -177,6 +177,13 @@ function sessionHosts() {
     },
     /** The host at `root` exits. */
     exit: (root: string) => children.get(root)?.emit('exit', 0, null),
+    /** The host at `root` says whether it is in the middle of a turn. */
+    busy: (root: string, busy: boolean) =>
+      children.get(root)?.emit('message', {
+        kind: 'busy',
+        busy,
+        reasons: busy ? [{ kind: 'turn_running', count: 1 }] : [],
+      }),
     /** What the host at `root` was asked, in order. */
     to: (root: string) => requests.filter((entry) => entry.root === root).map((e) => e.request),
   };
@@ -1527,6 +1534,76 @@ it('restarts a room’s session under its agent’s edited definition, resuming 
   expect(hosts.to(stale.sessionRoot)).toMatchObject([
     { type: 'room', handoff: { messageId: 'message-3' } },
   ]);
+});
+
+it('brings live sessions in step with a rewritten definition, each once its turn has ended', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-live-redefined-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const working = await existing(root, config);
+  const idle = await existing(root, config);
+  await assignTo(root, config, 1, 'room', working.sessionId);
+  await assignTo(root, config, 2, 'elsewhere', idle.sessionId);
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const hosts = sessionHosts();
+  await hosts.start(working.sessionRoot);
+  await hosts.start(idle.sessionRoot);
+  hosts.busy(working.sessionRoot, true);
+  hosts.busy(idle.sessionRoot, false);
+  const restarted: { root: string; model: unknown; context: unknown; resuming: boolean }[] = [];
+  vi.mocked(ensureSharedProcess).mockImplementation(
+    async ({ root: sessionRoot, config: started, resuming }) => {
+      restarted.push({
+        root: sessionRoot,
+        model: started.start.input.model,
+        context: started.execution?.context,
+        resuming,
+      });
+      await writeFile(join(sessionRoot, 'config.json'), JSON.stringify(started));
+      return { created: false };
+    }
+  );
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    const edited = structuredClone(config);
+    edited.start.input.model = { id: 'claude-sonnet-4-6' };
+    edited.execution!.context = 'New instructions.';
+    await writeFile(join(root, 'config.json.next'), JSON.stringify(edited));
+    await rename(join(root, 'config.json.next'), join(root, 'config.json'));
+    await eventually(() => restarted.length === 1);
+    // The session in the middle of a turn is left to finish it.
+    expect(restarted).toEqual([
+      {
+        root: idle.sessionRoot,
+        model: { id: 'claude-sonnet-4-6' },
+        context: 'New instructions.',
+        resuming: true,
+      },
+    ]);
+    hosts.busy(working.sessionRoot, false);
+    await eventually(() => restarted.length === 2);
+    expect(restarted[1]).toMatchObject({
+      root: working.sessionRoot,
+      model: { id: 'claude-sonnet-4-6' },
+      resuming: true,
+    });
+  } finally {
+    abort.abort();
+    await run;
+  }
+  expect(restarted).toHaveLength(2);
 });
 
 it('gives a room a new session once the one serving it has been stopped', async () => {

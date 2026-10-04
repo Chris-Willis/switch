@@ -50,8 +50,11 @@ export function definitionProblem(entry: AgentAssignment): string | null {
  * Decides what to do for each agent, from the assignment, what was applied,
  * and what is running. Pure: it reads nothing and changes nothing.
  *
- * Running agents are started when never applied or when their revision moved
- * (a restart, so the new definition takes effect), and started again when
+ * Running agents are started when never applied. When their revision moved,
+ * the new definition is written to the running agent host, which brings its
+ * live sessions in step as each finishes its turn; the agent host is
+ * restarted only when the provider or working directory changed, since those
+ * cannot carry over to its sessions. They are started again when
  * their agent host is gone without a recorded failure (a reboot, say) once the
  * launch grace has passed, so an agent host still coming up is not launched
  * twice. A running agent host whose relay credentials were just rewritten (the
@@ -131,7 +134,7 @@ export function planReconcile(input: {
         observation.configured.provider !== entry.definition.provider;
       actions.push({
         ...base,
-        restart: observation.configured !== null,
+        restart: replaceIdentity || (observation.alive && observation.flags?.enabled === false),
         replaceIdentity,
         clearTakenOver: true,
         why: applied === null ? 'not applied yet' : `revision ${applied} → ${entry.revision}`,
@@ -244,14 +247,16 @@ export async function startAgent(
       action.replaceIdentity ||
       (observation.configured !== null &&
         (observation.configured.provider !== provider || observation.configured.cwd !== cwd));
+    const restart = action.restart || replaceIdentity;
     await deps.runtime.launch(agentId, template, {
       isolation: definition.isolation === 'isolated' ? 'isolated' : 'shared',
-      restart: action.restart || replaceIdentity,
+      restart,
       replaceIdentity,
       clearTakenOver: action.clearTakenOver,
     });
     deps.store.recordApplied(agentId, entry.revision, now);
-    if (action.relaunch) deps.store.recordRestart(agentId, nowMs);
+    if (action.relaunch && (restart || !observation.alive))
+      deps.store.recordRestart(agentId, nowMs);
     deps.log.info('Started agent', { agentId, revision: entry.revision, why: action.why });
     return null;
   } catch (error) {

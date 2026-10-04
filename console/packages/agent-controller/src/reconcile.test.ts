@@ -110,19 +110,19 @@ describe('reconcile', () => {
     expect(runtime.calls).toEqual([]);
   });
 
-  it('restarts on a revision bump, keeping the relay token it already has', async () => {
+  it('hands a revision bump to the running agent host without restarting it, keeping its relay token', async () => {
     await reconcile(assignment(agent()), deps());
     await reconcile(assignment(agent({ revision: 2 }, { model: 'opus' })), deps());
     const launches = runtime.launches();
     expect(launches).toHaveLength(2);
     expect(launches[1]!.options).toMatchObject({
-      restart: true,
+      restart: false,
       replaceIdentity: false,
     });
     expect(launches[1]!.template.start.input.model).toEqual({ id: 'opus' });
     expect(minted).toEqual(['agent-1']);
     expect(store.agent('agent-1')?.appliedRevision).toBe(2);
-    expect(store.restartsSince('agent-1', 0)).toBe(1);
+    expect(store.restartsSince('agent-1', 0)).toBe(0);
   });
 
   it('replaces the saved identity when the provider or directory changes', async () => {

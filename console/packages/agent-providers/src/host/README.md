@@ -114,7 +114,11 @@ model, approval mode, instructions and skill from the watcher's current
 template (`withDefinitionOf`). A watcher that starts with a template differing
 from a running session's saved definition stops that session, as it does one
 left on a superseded build, so the edit applies when the session is next
-needed. The native conversation is resumed under the new model and
+needed. A running watcher hears its `config.json` replaced — the agents
+controller writes it on a new revision, Console when the agent's settings are
+saved — and restarts each live session saved under an earlier definition on
+its own conversation, once that session is idle, so no turn is cut short. The
+native conversation is resumed under the new model and
 instructions; every provider takes both on resume (Cursor and Antigravity send
 the instructions with the first message after the restart).
 
