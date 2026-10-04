@@ -665,8 +665,10 @@ does not manage agents, so say so rather than looking for another way.
 - **`create_agent`** — create a new agent for your owner on one of those
   machines: `name`, `description`, `machine` (its id, or its exact name),
   `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`), and
-  optionally `model`, `instructions`, `directory`, `auto_approve`,
-  `display_name`, and `start=false` to create it stopped.
+  optionally `model`, `model_options` (e.g. `{"effort": "high"}`; needs a
+  model), `instructions`, `directory`, `auto_approve`, `display_name`,
+  `icon_url`, and `start=false` to create it stopped. Change it later with
+  `update_agent_detail`.
 - **`list_managed_agents`** — your owner's managed agents, with the machine
   each runs on, what your owner wants (`desired_state`) and what the machine
   last reported (`actual.process`, and `actual.reason` when it crashed or
