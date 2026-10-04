@@ -5,6 +5,7 @@ import type {
 } from '@shared/core/agent-migration/agent-migration';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { agentMigrationService } from './agent-migration';
+import { managedAgentAdoption } from './managed-agents-sync';
 import { newManagedAgentService } from './new-managed-agent';
 import type { AddManagedAgentParams, AddManagedAgentResult } from './new-managed-agent-service';
 
@@ -38,6 +39,9 @@ export const agentMigrationController = createRPCController({
     workspaceId: string;
     sshHost: string | null;
   }): Promise<NewAgentMachine> => newManagedAgentService.machineFor(params),
+
+  /** Shows now the managed agents created elsewhere that run on this Console's machines. */
+  syncManagedAgents: (): Promise<number> => managedAgentAdoption.sync(),
 
   /** Creates a new agent as a managed agent on this computer or an SSH host. */
   addManagedAgent: (params: AddManagedAgentParams): Promise<AddManagedAgentResult> =>

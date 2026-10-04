@@ -34,6 +34,8 @@ const agent = (agentId: string, controllerId: string | null, name: string) => ({
   controllerId,
   desiredState: 'running' as const,
   provider: 'claude',
+  directory: null,
+  autoApprove: false,
   status: null,
 });
 

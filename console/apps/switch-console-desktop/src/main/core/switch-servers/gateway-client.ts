@@ -2607,6 +2607,9 @@ export type ManagedAgent = {
   controllerId: string | null;
   desiredState: 'running' | 'stopped';
   provider: string;
+  /** The working directory on its machine; null for a workspace the machine chooses. */
+  directory: string | null;
+  autoApprove: boolean;
   status: {
     process: string;
     attached: boolean;
@@ -2631,7 +2634,7 @@ type ManagedAgentJson = {
   display_name: string | null;
   controller_id: string | null;
   desired_state: 'running' | 'stopped';
-  definition: { provider?: unknown } | null;
+  definition: { provider?: unknown; directory?: unknown; auto_approve?: unknown } | null;
   status: {
     process: string;
     attached: boolean;
@@ -2695,6 +2698,8 @@ function toManagedAgent(json: ManagedAgentJson): ManagedAgent {
     controllerId: json.controller_id,
     desiredState: json.desired_state,
     provider: typeof json.definition?.provider === 'string' ? json.definition.provider : 'unknown',
+    directory: typeof json.definition?.directory === 'string' ? json.definition.directory : null,
+    autoApprove: json.definition?.auto_approve === true,
     status: json.status
       ? {
           process: json.status.process,

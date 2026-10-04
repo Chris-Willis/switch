@@ -141,6 +141,11 @@ export class HostControllerService {
 
   constructor(private readonly deps: HostControllerDeps) {}
 
+  /** Every SSH host enrolled as a machine, for any server. */
+  enrolled(): Promise<HostControllerRecord[]> {
+    return this.deps.records.all();
+  }
+
   async overview(
     sshHost: string,
     serverId: string,
