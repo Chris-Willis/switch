@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, CirclePause, Loader2 } from 'lucide-react';
 import { useEffect } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { events, rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
@@ -58,9 +59,7 @@ export function AgentConnectionIndicator({
   const attention = connectionNeedsAttention(state);
   const label = connectionLabels[state];
   const detail = query.isError
-    ? query.error instanceof Error
-      ? query.error.message
-      : String(query.error)
+    ? failureText(query.error, 'The connection could not be checked.')
     : (health?.detail ?? null);
   const Icon = state === 'connecting' ? Loader2 : state === 'stopped' ? CirclePause : AlertTriangle;
   return (
