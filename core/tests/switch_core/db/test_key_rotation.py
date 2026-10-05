@@ -21,6 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.db import encrypted_json
 from switch_core.db.key_rotation import reencrypt_stored_secrets
 from switch_core.db.models import (
+    CONTROLLER_ENROLLMENT_KEY_TYPE,
+    CONTROLLER_KEY_TYPE,
     ApiKey,
     Client,
     CollaborationBridge,
@@ -161,3 +163,29 @@ async def test_a_value_no_key_opens_stops_the_boot(
     monkeypatch.setattr(encrypted_json, "_keyring", too_early)
     with pytest.raises(UndecryptableError):
         await reencrypt_stored_secrets(rls_harness.restricted, too_early, [tenant_id])
+
+
+@pytest.mark.parametrize(
+    "key_type", [CONTROLLER_KEY_TYPE, CONTROLLER_ENROLLMENT_KEY_TYPE]
+)
+async def test_a_hash_only_key_is_left_empty(
+    rls_harness: RLSHarness, monkeypatch: pytest.MonkeyPatch, key_type: str
+) -> None:
+    """A controller credential or enrollment code stores only its hash; its
+    empty `encrypted_key` has nothing to re-encrypt and must not stop the boot."""
+    monkeypatch.setattr(encrypted_json, "_keyring", _NEW)
+    tenant_id, user_id = await _tenant_with_user(rls_harness.owner)
+    async with tenant_session(rls_harness.restricted, tenant_id) as session:
+        key = ApiKey(
+            user_id=user_id,
+            key_hash=uuid.uuid4().hex,
+            encrypted_key="",
+            label="controller",
+            type=key_type,
+        )
+        session.add(key)
+        await session.commit()
+
+    await reencrypt_stored_secrets(rls_harness.restricted, _NEW, [tenant_id])
+
+    assert await _raw(rls_harness.owner, "api_keys", "encrypted_key", key.id) == ""
