@@ -22,6 +22,9 @@ from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostConnectionConfig,
 )
 
+# Past this the server hangs up, so a regressed client fails instead of hanging.
+_HANG_UP_AFTER_SECONDS = 5.0
+
 
 @pytest.fixture
 def silent_server() -> Iterator[int]:
@@ -31,23 +34,25 @@ def silent_server() -> Iterator[int]:
     server.listen()
     held: list[socket.socket] = []
     stop = threading.Event()
+    deadline = time.monotonic() + _HANG_UP_AFTER_SECONDS
 
     def accept() -> None:
         server.settimeout(0.1)
-        while not stop.is_set():
+        while not stop.is_set() and time.monotonic() < deadline:
             try:
                 conn, _ = server.accept()
             except TimeoutError:
                 continue
             held.append(conn)
+        for conn in held:
+            conn.close()
+        server.close()
 
     thread = threading.Thread(target=accept, daemon=True)
     thread.start()
     yield server.getsockname()[1]
     stop.set()
     thread.join()
-    for conn in held:
-        conn.close()
     server.close()
 
 
@@ -74,7 +79,7 @@ async def test_a_request_mattermost_never_answers_gives_up(
     with pytest.raises(Exception):  # noqa: B017, the driver's own timeout error
         await adapter._mm_api("get", "/config")
 
-    assert time.monotonic() - started < 5
+    assert time.monotonic() - started < _HANG_UP_AFTER_SECONDS
 
 
 async def test_the_event_loop_keeps_running_while_mattermost_is_silent(
