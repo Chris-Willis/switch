@@ -55,6 +55,14 @@ ingress:
   agentApiPaths:
     - /agents
     - /hosted
+    # Session hosts report session starts, turn activity and approval requests
+    # here, and poll for approval answers.
+    - /agent-sessions
+    - /version
+    - /deeplink
+    # Agents controllers: enrollment, tokens, assignment, status and their
+    # event stream (/v1/management/..., /v1/controllers/...).
+    - /v1
     - /mcp
     - /oauth
     - /.well-known
