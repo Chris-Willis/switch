@@ -46,6 +46,7 @@ _ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (ProviderVerification, "encrypted_credential"),
     (ProviderVerification, "encrypted_token"),
     (HostedMachine, "machine_capability_encrypted"),
+    (HostedMachine, "controller_credential_encrypted"),
     (HostedLaunch, "worker_capability_encrypted"),
     (GitHubIssuedToken, "encrypted_token"),
 )

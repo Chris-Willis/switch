@@ -181,6 +181,11 @@ class SwitchConfig(BaseSettings):
     hosted_github_config_path: str | None = None
     hosted_provider_verification_enabled: bool = False
     hosted_claude_verifier_path: str | None = None
+    # The KMS key provider logins are sealed under for cloud machines that run
+    # the agent controller, and its region. Required as soon as any machine
+    # runs runtime=controller: sealing refuses to run without them.
+    hosted_login_kms_key_arn: str | None = None
+    hosted_login_kms_region: str | None = None
     # Sets the Secure flag on the gateway's cookies (the switch_auth session
     # and the OIDC sign-in cookie), so they are never sent over plain HTTP.
     # Only a local stack served over http:// should turn it off.
