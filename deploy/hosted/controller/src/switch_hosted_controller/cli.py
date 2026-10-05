@@ -194,7 +194,11 @@ def _reconcile_command(config: ControllerConfig, command: str, gateway_path: Pat
                     try:
                         verification.reconcile()
                     except Exception as error:
-                        logging.exception("Provider verification reconciliation failed: %s", error)
+                        logging.error(
+                            "Provider verification reconciliation failed: %s (status %s)",
+                            type(error).__name__,
+                            getattr(error, "status", "n/a"),
+                        )
                 listed = None
                 if gateway:
                     try:
