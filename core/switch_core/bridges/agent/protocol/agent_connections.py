@@ -462,8 +462,9 @@ class AgentConnection:
 
 
 def connection_transport(conn: AgentConnection) -> str:
-    """`websocket` while a stream is attached, which is only ever the socket."""
-    return "websocket" if conn.stream_attached else "poll"
+    """`websocket` while the socket is attached; `detached` while the socket has
+    dropped and the connection waits out its heartbeat window for a reconnect."""
+    return "websocket" if conn.stream_attached else "detached"
 
 
 class AgentConnectionRegistry:
