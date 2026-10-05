@@ -782,7 +782,7 @@
         "show_legend": false,
         "requests": [
           {
-            "q": "sum:switch.db.server.transactions{$env,$service}.as_rate()",
+            "q": "avg:switch.db.server.transactions{$env,$service}.as_rate()",
             "display_type": "line"
           }
         ]

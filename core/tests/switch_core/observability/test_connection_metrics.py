@@ -155,8 +155,10 @@ def test_the_gauge_carries_transport_and_client_but_never_the_version() -> None:
 
     readings = _connected_readings(_probes(connections.live_agents_by_transport))
 
+    # The zero baseline is always there; no series carries a version.
     assert readings == {
         (("client", "agent-runtime"), ("transport", "websocket")): 2.0,
+        (("client", "unknown"), ("transport", "websocket")): 0.0,
     }
 
 
