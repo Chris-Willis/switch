@@ -147,6 +147,12 @@ async def _build_room_detail(
         if group:
             group_name = group.name
 
+    owner_name: str | None = None
+    if room.owner_id:
+        owner = await session.get(User, room.owner_id)
+        if owner:
+            owner_name = owner.name
+
     roles = await _list_room_role_details(session, room.id, protocol)
     join_event_listeners = await room_store.get_join_event_listeners(session, room.id)
 
@@ -165,6 +171,8 @@ async def _build_room_detail(
         external_channel_url=await _external_channel_url(room),
         group_id=room.group_id,
         group_name=group_name,
+        owner_id=room.owner_id,
+        owner_name=owner_name,
         read_visibility=room.read_visibility,
         write_visibility=room.write_visibility,
         created_at=str(room.created_at),
