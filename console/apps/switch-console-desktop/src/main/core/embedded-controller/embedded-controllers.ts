@@ -1,4 +1,4 @@
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { hostname, release } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -48,10 +48,32 @@ async function controllerVersion(bundle: string): Promise<string> {
 
 const controllerLog = log.child({ component: 'embedded-agent-controller' });
 
+/**
+ * The name people know this computer by: on a Mac the computer name from its
+ * Sharing settings, which the host name often is not; elsewhere the host name.
+ */
+function computerName(): string {
+  if (process.platform !== 'darwin') return hostname();
+  try {
+    const name = execFileSync('scutil', ['--get', 'ComputerName'], {
+      encoding: 'utf8',
+      timeout: 2000,
+    }).trim();
+    if (name) return name;
+    controllerLog.warn('This Mac has no computer name; using its host name');
+  } catch (error) {
+    controllerLog.warn('Could not read this Mac’s computer name; using its host name', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return hostname();
+}
+
 export const embeddedControllerService = new EmbeddedControllerService({
   platform: process.platform,
   machine: () => ({
-    name: hostname(),
+    name: computerName(),
+    hostname: hostname(),
     platform: {
       os:
         process.platform === 'darwin'

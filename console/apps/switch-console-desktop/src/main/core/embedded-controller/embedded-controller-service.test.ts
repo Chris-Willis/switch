@@ -53,6 +53,7 @@ function service(overrides: Partial<EmbeddedControllerDeps> = {}): EmbeddedContr
     platform: 'linux',
     machine: () => ({
       name: 'build-box',
+      hostname: 'build-box',
       platform: { os: 'linux', arch: 'x64', os_version: '6.1.0' },
     }),
     records: new EnrollmentFile(() => join(base, 'state.json')),
@@ -129,8 +130,10 @@ function leaveControllerState(): void {
   mkdirSync(join(dataDir(), 'workspaces', 'scout'), { recursive: true });
 }
 
-async function enabled(): Promise<EmbeddedControllerService> {
-  const created = service();
+async function enabled(
+  overrides: Partial<EmbeddedControllerDeps> = {}
+): Promise<EmbeddedControllerService> {
+  const created = service(overrides);
   await created.enable(SERVER, WORKSPACE);
   await waitFor(() => calls.length === 1, 'the controller started');
   return created;
@@ -314,6 +317,31 @@ describe('EmbeddedControllerService', () => {
     expect(secrets.get(credentialSecretKey(SERVER))).toBe(CREDENTIAL);
     expect(lastPhase()).toEqual({ kind: 'running', since: '2026-01-01T00:00:00.000Z' });
     expect((await running.overview(SERVER, null)).enrollment?.controllerId).toBe('controller-1');
+  });
+
+  it('renames a machine still called by its raw host name to the computer name, once', async () => {
+    const machine = () => ({
+      name: 'Build Box',
+      hostname: 'BX0042',
+      platform: { os: 'macos', arch: 'arm64', os_version: '24.0.0' },
+    });
+    const remote = (name: string) => ({
+      kind: 'ok' as const,
+      controller: { name, description: null, state: 'online' as const, lastSeenAt: null },
+      agents: [],
+    });
+    const running = await enabled({ machine });
+    management.read.mockResolvedValue(remote('BX0042'));
+    const renamed = await running.overview(SERVER, null);
+    expect(management.update).toHaveBeenCalledWith(WORKSPACE, 'controller-1', {
+      name: 'Build Box',
+    });
+    expect(renamed.remote).toMatchObject({ controller: { name: 'Build Box' } });
+
+    management.update.mockClear();
+    management.read.mockResolvedValue(remote('my laptop'));
+    await running.overview(SERVER, null);
+    expect(management.update).not.toHaveBeenCalled();
   });
 
   it('says which agents moved from this Console run on it', async () => {

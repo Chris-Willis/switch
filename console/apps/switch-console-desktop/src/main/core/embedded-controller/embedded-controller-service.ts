@@ -57,8 +57,11 @@ export type ServiceLog = {
 
 export type EmbeddedControllerDeps = {
   platform: NodeJS.Platform;
-  /** This machine as it enrolls: its host name and platform. */
-  machine: () => { name: string; platform: ControllerPlatform };
+  /**
+   * This machine as it enrolls: the name people know it by (on a Mac, the
+   * computer name in its Sharing settings), its raw host name, and platform.
+   */
+  machine: () => { name: string; hostname: string; platform: ControllerPlatform };
   records: EnrollmentRecords;
   /** The server's API URL as Console has it now, or null for a server Console no longer knows. */
   serverApiUrl: (serverId: string) => Promise<string | null>;
@@ -146,9 +149,40 @@ export class EmbeddedControllerService {
       unsupportedReason: this.unsupportedReason,
       enrollment,
       phase: this.phaseOf(serverId, record),
-      remote,
+      remote: enrollment && remote ? await this.withFriendlyName(enrollment, remote) : remote,
       movedAgents,
     };
+  }
+
+  /**
+   * Earlier builds enrolled this computer under its raw host name, which on a
+   * Mac is often a serial-like string nobody recognises. A machine still
+   * called that on the server is renamed once to the computer's own name; one
+   * its owner renamed is left as they named it.
+   */
+  private async withFriendlyName(
+    enrollment: { workspaceId: string; controllerId: string },
+    remote: EmbeddedControllerRemote
+  ): Promise<EmbeddedControllerRemote> {
+    const machine = this.deps.machine();
+    if (remote.kind !== 'ok' || !remote.controller) return remote;
+    if (remote.controller.name !== machine.hostname || machine.name === machine.hostname)
+      return remote;
+    try {
+      await this.deps.management.update(enrollment.workspaceId, enrollment.controllerId, {
+        name: machine.name,
+      });
+    } catch (error) {
+      this.deps.log.warn('Could not rename this computer from its host name on the server', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return remote;
+    }
+    this.deps.log.info('Renamed this computer on the server from its host name', {
+      from: machine.hostname,
+      to: machine.name,
+    });
+    return { ...remote, controller: { ...remote.controller, name: machine.name } };
   }
 
   /** The controller this computer is enrolled as for a server, or null when it is not one. */
