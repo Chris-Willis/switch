@@ -253,7 +253,8 @@ DELIVERY_CACHE_READS = _spec(
     "A transport asking the room cache for the rows after its cursor. "
     "`outcome` is hit (served from memory), filled (served after waiting for "
     "the room's one read), or why it fell back to its own database read: "
-    "behind (cursor below what is held), evicted (dropped while it waited), "
+    "behind (cursor below what is held), evicted (dropped while it waited, "
+    "and the read it waited for could not answer it), "
     "unwatched, or gave_up.",
     "outcome",
 )

@@ -221,10 +221,15 @@ class CachedPage:
 
 
 class _Fill:
-    __slots__ = ("started", "task")
+    __slots__ = ("after", "rows", "started", "task")
 
-    def __init__(self, started: int) -> None:
+    def __init__(self, started: int, after: int) -> None:
         self.started = started
+        # It reads the rows after this, so what it holds is (after, last].
+        self.after = after
+        # What it read, once checked; kept so its waiters can still use it if
+        # the entry is dropped before it lands.
+        self.rows: tuple[CachedRow, ...] | None = None
         self.task: asyncio.Task[None] | None = None
 
 
@@ -234,6 +239,7 @@ class _Entry:
         "bytes",
         "ceiling",
         "complete_as_of",
+        "dropped",
         "filling",
         "floor",
         "rows",
@@ -249,6 +255,8 @@ class _Entry:
         # No fill has reached the end yet, so no wake is covered.
         self.complete_as_of = -1
         self.filling: _Fill | None = None
+        # Why it was dropped, once it has been.
+        self.dropped: str | None = None
 
 
 class RoomDeliveryCache:
@@ -323,7 +331,8 @@ class RoomDeliveryCache:
         The hook for anything that changes a row after it was written (an
         edit, a redaction) or removes the room. Nothing does the former today;
         see the module docstring. A fill in flight for the room is discarded
-        when it lands, and its waiters read the database.
+        when it lands, and its waiters read the database: it may have read
+        rows from before the change.
         """
         self._drop((tenant_id, room_id), "invalidated")
 
@@ -381,10 +390,53 @@ class RoomDeliveryCache:
             assert fill.task is not None
             await asyncio.shield(fill.task)
             if self._entries.get(key) is not entry:
-                self._count("evicted")
-                return None
+                return self._from_dropped(
+                    key,
+                    entry,
+                    fill,
+                    after_seq=after_seq,
+                    woken_at=woken_at,
+                    limit=limit,
+                )
         self._count("gave_up")
         return None
+
+    def _from_dropped(
+        self,
+        key: CacheKey,
+        entry: _Entry,
+        fill: _Fill,
+        *,
+        after_seq: int,
+        woken_at: int,
+        limit: int,
+    ) -> CachedPage | None:
+        """Serve a waiter from a fill whose entry was dropped while it read.
+
+        Evicted for room or bytes, the rows are as good as ever; they are just
+        not kept. Sending every waiter to the database instead would put a
+        read per member on top of the one already made, which under churn is
+        the load this cache exists to remove. Invalidated means a row may have
+        changed under the read, so its waiters still read the database.
+        """
+        if key not in self._watchers:
+            self._count("unwatched")
+            return None
+        if (
+            entry.dropped == "invalidated"
+            or fill.rows is None
+            or after_seq < fill.after
+        ):
+            self._count("evicted")
+            return None
+        rows = tuple(row for row in fill.rows if row.seq > after_seq)
+        reached_end = len(fill.rows) < self._page and fill.started > woken_at
+        if not rows and not reached_end:
+            self._count("evicted")
+            return None
+        served = rows[:limit]
+        self._count("filled")
+        return CachedPage(rows=served, done=reached_end and len(served) == len(rows))
 
     def stats(self) -> RoomCacheStats:
         return RoomCacheStats(
@@ -406,7 +458,7 @@ class RoomDeliveryCache:
     def _start_fill(self, key: CacheKey, entry: _Entry) -> _Fill:
         # Ticked here, before the task can query, so a reader woken after
         # this moment never mistakes this fill for one that saw its row.
-        fill = _Fill(started=self.tick())
+        fill = _Fill(started=self.tick(), after=entry.ceiling)
         task = asyncio.create_task(
             self._fill(key, entry, fill), name="room-delivery-cache-fill"
         )
@@ -419,7 +471,7 @@ class RoomDeliveryCache:
 
     async def _fill(self, key: CacheKey, entry: _Entry, fill: _Fill) -> None:
         tenant_id, room_id = key
-        after = entry.ceiling
+        after = fill.after
         try:
             # The task inherits its creator's context; the session below binds
             # the tenant explicitly, and nothing else here should inherit one.
@@ -442,11 +494,6 @@ class RoomDeliveryCache:
         if entry.filling is fill:
             entry.filling = None
         metrics().increment(DELIVERY_CACHE_ROWS_READ, {}, float(len(snapshots)))
-        if self._entries.get(key) is not entry or entry.ceiling != after:
-            # Evicted, unwatched or invalidated while reading. Publishing into
-            # a dropped entry would resurrect it outside the limits.
-            metrics().increment(DELIVERY_CACHE_FILLS, {"outcome": "discarded"})
-            return
         if snapshots and snapshots[0].seq <= after:
             # `list_for_room` reads `seq > after` in order, so this cannot
             # happen; if it ever does, holding these rows would break the
@@ -457,6 +504,13 @@ class RoomDeliveryCache:
                 snapshots[0].seq,
                 after,
             )
+            metrics().increment(DELIVERY_CACHE_FILLS, {"outcome": "discarded"})
+            return
+        fill.rows = snapshots
+        if self._entries.get(key) is not entry or entry.ceiling != after:
+            # Evicted, unwatched or invalidated while reading. Publishing into
+            # a dropped entry would resurrect it outside the limits; its
+            # waiters may still take the rows (`_from_dropped`).
             metrics().increment(DELIVERY_CACHE_FILLS, {"outcome": "discarded"})
             return
         self._publish(key, entry, fill, snapshots)
@@ -514,6 +568,7 @@ class RoomDeliveryCache:
         entry = self._entries.pop(key, None)
         if entry is None:
             return
+        entry.dropped = reason
         self._bytes -= entry.bytes
         metrics().increment(DELIVERY_CACHE_EVICTIONS, {"reason": reason})
 
