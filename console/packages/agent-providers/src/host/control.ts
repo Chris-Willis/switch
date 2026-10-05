@@ -379,7 +379,14 @@ export class ControlClient {
     stream.on('error', (error: Error) => fail(error));
     stream.on('close', () => fail(new SidecarConnectionClosedError()));
     lines(stream, (line) => {
-      const message = serverMessageSchema.safeParse(JSON.parse(line));
+      let json: unknown;
+      try {
+        json = JSON.parse(line);
+      } catch {
+        stream.destroy(new Error('The control port sent a line that is not JSON.'));
+        return;
+      }
+      const message = serverMessageSchema.safeParse(json);
       if (!message.success) return;
       const data = message.data;
       if ('authenticated' in data) authenticate();
@@ -415,6 +422,11 @@ export class ControlClient {
       this.pending.set(id, { resolve, reject });
       this.stream.write(`${JSON.stringify({ id, ...message })}\n`);
     });
+  }
+
+  /** Any control message, for a caller that forwards them; live views go through `subscribe` and `onHealth`. */
+  send(message: ControlMessage): Promise<unknown> {
+    return this.call(message);
   }
 
   request(sessionId: string, request: SessionRequest): Promise<unknown> {
