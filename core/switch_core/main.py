@@ -817,7 +817,7 @@ async def run(config: SwitchConfig) -> None:
         consumers_running=client_lifecycle.running_count,
         connectors_running=connector_lifecycle.running_count,
         connectors_configured=connector_lifecycle.expected_count,
-        agents_connected=lambda: len(connections.live_agent_ids()),
+        agents_connected=connections.live_agents_by_transport,
         pool_stats=lambda: pool_stats(engine, pool_watermark),
     )
 
@@ -841,6 +841,7 @@ async def run(config: SwitchConfig) -> None:
                 version=switch_core_version(),
                 session_factory=session_factory,
                 probes=probes,
+                db_server_engine=lambda: create_unpooled_engine(config),
             )
             asyncio.create_task(connector_lifecycle.start_all())
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))

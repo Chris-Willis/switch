@@ -31,7 +31,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from switch_core.artifacts import contract_range
+from switch_core.artifacts import ARTIFACT_VERSIONS, contract_range
 from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.bridges.agent.protocol.hosted_workers import (
     IDLE_FRESH_FOR_SECONDS,
@@ -359,6 +359,20 @@ class ClientDeclaration:
         }
 
 
+def client_label(declaration: ClientDeclaration) -> str:
+    """The declared artifact as a metric value: a registered name, or a bucket.
+
+    The client says what it is, so only names in the artifact registry pass
+    through. The declared version is never a label: it is the client's own
+    string and unbounded, and stays in the `[CONN] opened` log line instead.
+    """
+    if not declaration.artifact:
+        return "unknown"
+    if declaration.artifact in ARTIFACT_VERSIONS:
+        return declaration.artifact
+    return "other"
+
+
 class ProtocolVersionError(ConnectionError_):
     """A client's declared agent-protocol range cannot meet this server's.
 
@@ -445,6 +459,11 @@ class AgentConnection:
 
     def is_alive(self, now: float) -> bool:
         return self.closure is None and (now - self.last_beat) < HEARTBEAT_TTL_SECONDS
+
+
+def connection_transport(conn: AgentConnection) -> str:
+    """`websocket` while a stream is attached, which is only ever the socket."""
+    return "websocket" if conn.stream_attached else "poll"
 
 
 class AgentConnectionRegistry:
@@ -1375,6 +1394,21 @@ class AgentConnectionRegistry:
         return {
             conn.agent_id for conn in self._by_id.values() if conn.is_alive(now)
         } | self.controllers.live_agent_ids()
+
+    def live_agents_by_transport(self) -> dict[tuple[str, str], int]:
+        """Agents with a live connection, per `(transport, client)` label.
+
+        Counted like `live_agent_ids`: an agent is one, however many
+        connections it holds, but an agent connected two different ways counts
+        once under each, so the labels can sum to more than the agent count.
+        """
+        now = time.monotonic()
+        agents: dict[tuple[str, str], set[str]] = {}
+        for conn in self._by_id.values():
+            if conn.is_alive(now):
+                key = (connection_transport(conn), client_label(conn.declaration))
+                agents.setdefault(key, set()).add(conn.agent_id)
+        return {key: len(ids) for key, ids in agents.items()}
 
     def live_connection_ids(self) -> set[str]:
         """Every connection currently alive, by id.
