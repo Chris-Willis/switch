@@ -131,3 +131,25 @@ async def test_an_unreachable_database_reports_nothing_and_keeps_trying(
         assert not sampler.disabled
     finally:
         await sampler.aclose()
+
+
+async def test_a_sampler_that_switches_itself_off_stops_reporting(
+    postgres_url: str, registry: MetricsRegistry
+) -> None:
+    """The last good reading must not stay on the dashboard after it stops."""
+    from sqlalchemy.exc import ProgrammingError
+
+    sampler = DbServerSampler(lambda: _unpooled(postgres_url))
+    try:
+        assert await sampler.sample_once() is not None
+        assert list(sampler.readings())
+
+        async def unreadable() -> None:
+            raise ProgrammingError("SELECT ...", {}, Exception("permission denied"))
+
+        sampler._read = unreadable  # type: ignore[method-assign]
+        assert await sampler.sample_once() is None
+        assert sampler.disabled
+        assert list(sampler.readings()) == []
+    finally:
+        await sampler.aclose()

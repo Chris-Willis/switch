@@ -122,19 +122,18 @@ class Observability:
 
 
 def _state_readings(probes: RuntimeProbes) -> Callable[[], Iterator[GaugeReading]]:
+    # Every (transport, client) pair reported so far: one that empties out is
+    # reported as 0, or the dashboard would keep showing its last count.
+    seen: set[tuple[str, str]] = {("websocket", "unknown")}
+
     def readings() -> Iterator[GaugeReading]:
         connected = probes.agents_connected()
-        for (transport, client), agents in connected.items():
+        seen.update(connected)
+        for transport, client in sorted(seen):
             yield GaugeReading(
                 AGENTS_CONNECTED,
-                float(agents),
+                float(connected.get((transport, client), 0)),
                 {"transport": transport, "client": client},
-            )
-        if not connected:
-            # A zero rather than nothing, so the panel reads none connected
-            # instead of no data.
-            yield GaugeReading(
-                AGENTS_CONNECTED, 0.0, {"transport": "websocket", "client": "unknown"}
             )
         yield GaugeReading(CONSUMERS_RUNNING, float(probes.consumers_running()), {})
         for platform, running in probes.bridges_running_by_platform().items():
