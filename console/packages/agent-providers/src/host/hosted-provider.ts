@@ -7,7 +7,8 @@ import { refreshCodexAuthentication } from '../codex/home';
 import { importOpenCodeConsole } from './opencode-console';
 import { readSharedCredentials, type SharedHostConfig } from './shared-config';
 
-const credentialSchema = z.discriminatedUnion('status', [
+/** What `/hosted/provider-credential` answers, and what an agents controller hands a unit. */
+export const hostedCredentialSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('revoked') }),
   z.object({
     status: z.literal('connected'),
@@ -17,7 +18,7 @@ const credentialSchema = z.discriminatedUnion('status', [
     credential: z.string().min(1).max(16384),
   }),
 ]);
-export type HostedCredential = z.infer<typeof credentialSchema>;
+export type HostedCredential = z.infer<typeof hostedCredentialSchema>;
 
 async function hostedOrigin(config: SharedHostConfig): Promise<{ origin: string; token: string }> {
   const credentials = await readSharedCredentials(config);
@@ -69,7 +70,7 @@ export async function fetchHostedProvider(config: SharedHostConfig): Promise<Hos
     await response.body?.cancel();
     throw new Error(`Cloud provider access check failed (HTTP ${response.status}).`);
   }
-  const result = credentialSchema.parse(await response.json());
+  const result = hostedCredentialSchema.parse(await response.json());
   if (result.status === 'connected' && result.provider !== config.start.provider)
     throw new Error('Cloud provider credentials do not match this session.');
   return result;
