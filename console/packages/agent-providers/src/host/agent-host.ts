@@ -1722,6 +1722,7 @@ export async function runAgentHost(
       const ours = new Set(
         assignments.sessions().map((config) => sharedSessionRoot(config.session.sessionId))
       );
+      const idle: { root: string; saved: SharedHostConfig }[] = [];
       for (const sessionRoot of links.live()) {
         if (!ours.has(sessionRoot) || !links.ready(sessionRoot)) continue;
         const saved = await sessionConfigAt(sessionRoot);
@@ -1733,10 +1734,14 @@ export async function runAgentHost(
           !definitionChanged(saved, current)
         )
           continue;
-        if (links.busy(sessionRoot)?.busy !== false) {
-          redefinitionDue.add(sessionRoot);
-          continue;
-        }
+        if (links.busy(sessionRoot)?.busy !== false) redefinitionDue.add(sessionRoot);
+        else idle.push({ root: sessionRoot, saved });
+      }
+      if (idle.length === 0 && redefinitionDue.size === 0) return;
+      console.warn(
+        `Agent ${agentId}'s definition changed: restarting ${idle.length} idle session(s) under it now; ${redefinitionDue.size} more once their turn ends.`
+      );
+      for (const { root: sessionRoot, saved } of idle) {
         console.warn(
           `Session ${saved.session.sessionId} runs under an earlier definition of its agent (model, instructions, advanced configuration or approval mode); restarting it on the same conversation under the current one.`
         );

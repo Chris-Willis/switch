@@ -122,6 +122,32 @@ export function onConfigReplaced(
   let watcher: FSWatcher | null = null;
   let polling: ReturnType<typeof setInterval> | null = null;
   let closed = false;
+  // What the file was when last looked at. Any change in the directory is a
+  // reason to look again: platforms differ in which name a rename reports
+  // (the temporary file's, the target's, or none), so the event's name is
+  // not trusted to say whether this file was the one replaced.
+  let seen: string | null = null;
+  let checking: Promise<void> = Promise.resolve();
+  const identity = async (): Promise<string | null> => {
+    try {
+      const stats = await stat(join(root, CONFIG_FILE));
+      return `${stats.ino}:${stats.mtimeMs}:${stats.size}`;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+  };
+  const check = () => {
+    checking = checking
+      .then(async () => {
+        if (closed) return;
+        const now = await identity();
+        if (now === seen) return;
+        seen = now;
+        if (now !== null) listener();
+      })
+      .catch((error: Error) => console.warn(`Cannot read ${CONFIG_FILE}: ${error.message}`));
+  };
   const close = () => {
     if (closed) return;
     closed = true;
@@ -134,25 +160,18 @@ export function onConfigReplaced(
     console.warn(
       `Cannot watch ${CONFIG_FILE} for changes; reading it every ${POLL_INTERVAL_MS}ms instead: ${reason}`
     );
-    let seen: number | null = null;
-    polling = setInterval(() => {
-      void stat(join(root, CONFIG_FILE)).then(
-        (stats) => {
-          if (seen !== null && stats.mtimeMs !== seen) listener();
-          seen = stats.mtimeMs;
-        },
-        (error: NodeJS.ErrnoException) => {
-          if (error.code !== 'ENOENT') console.warn(`Cannot read ${CONFIG_FILE}: ${error.message}`);
-        }
-      );
-    }, POLL_INTERVAL_MS);
+    polling = setInterval(check, POLL_INTERVAL_MS);
     polling.unref();
   };
   if (signal.aborted) return close;
+  checking = identity().then(
+    (now) => {
+      seen = now;
+    },
+    (error: Error) => console.warn(`Cannot read ${CONFIG_FILE}: ${error.message}`)
+  );
   try {
-    watcher = watch(root, (_event, filename) => {
-      if (filename === null || filename === CONFIG_FILE) listener();
-    });
+    watcher = watch(root, check);
   } catch (error) {
     readOnATimer(String(error));
   }
