@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from switch_core.db.models import Agent, AgentController, AgentControllerOperation
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
+from switch_core.management import reason_codes
 from switch_core.management.advanced_config import validate_advanced_config
 
 Provider = Literal["claude", "codex", "opencode", "antigravity", "cursor"]
@@ -512,13 +513,25 @@ def agent_status_from(
 ) -> dict[str, Any] | None:
     """The agent's entry in its controller's last status report, if there is
     one. `directory` is always present: null when the controller has not
-    resolved one or predates the field."""
+    resolved one or predates the field.
+
+    A revoked controller runs nothing, whatever it last reported, so its
+    agents read as stopped for that reason."""
     if controller is None or controller.status is None:
         return None
     agents = controller.status.get("agents")
     for entry in agents if isinstance(agents, list) else []:
         if isinstance(entry, dict) and entry.get("agent_id") == agent_id:
-            return {**entry, "directory": entry.get("directory")}
+            status = {**entry, "directory": entry.get("directory")}
+            if controller.revoked_at is not None or controller.api_key_id is None:
+                status.update(
+                    process="stopped",
+                    attached=False,
+                    sessions={"active": 0, "ids": []},
+                    reason=reason_codes.CONTROLLER_REVOKED,
+                    detail="Its machine was revoked, so nothing runs this agent.",
+                )
+            return status
     return None
 
 

@@ -681,6 +681,45 @@ class TestListManagedAgents:
             "directory": None,
         }
 
+    async def test_an_agent_on_a_revoked_machine_reads_as_stopped(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        agent_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        created = await _call(
+            client, agent_id, "create_agent", bearer(key), _create_body("laptop")
+        )
+        new_id = created.json()["result"]["agent_id"]
+        await _online(
+            client, controller, seq=2, agents=[_agent_status(new_id, "running")]
+        )
+        revoked = await client.delete(
+            f"/gateway/management/controllers/{controller.controller_id}",
+            cookies=cookies_for(owner),
+        )
+        assert revoked.status_code == 200, revoked.text
+
+        listed = await _call(client, agent_id, "list_managed_agents", bearer(key))
+        managed = await client.get(
+            "/gateway/management/agents", cookies=cookies_for(owner)
+        )
+
+        assert listed.status_code == 200, listed.text
+        [entry] = listed.json()["result"]
+        assert entry["machine"]["state"] == "revoked"
+        assert entry["actual"]["process"] == "stopped"
+        assert entry["actual"]["reason"] == "controller_revoked"
+        assert managed.status_code == 200, managed.text
+        [view] = managed.json()
+        assert view["status"]["process"] == "stopped"
+        assert view["status"]["attached"] is False
+        assert view["status"]["sessions"] == {"active": 0, "ids": []}
+        assert view["status"]["reason"] == "controller_revoked"
+
 
 async def _assigned(
     client: httpx.AsyncClient, controller: EnrolledController
