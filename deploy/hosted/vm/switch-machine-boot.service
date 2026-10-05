@@ -1,0 +1,35 @@
+[Unit]
+Description=Switch hosted machine boot (data volume, controller configuration, IMDS rules)
+Wants=network-online.target
+After=network-online.target cloud-final.service nftables.service
+Before=switch-controller.service
+Conflicts=switch-hosted-worker.service
+ConditionPathExists=/etc/switch-hosted/assignment.json
+ConditionPathExists=/etc/switch-hosted/runtime.json
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/local/libexec/switch-machine-boot --config /etc/switch-hosted/assignment.json --runtime-config /etc/switch-hosted/runtime.json
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=15min
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

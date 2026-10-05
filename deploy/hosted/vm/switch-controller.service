@@ -1,0 +1,43 @@
+[Unit]
+Description=Switch agent controller
+Requires=switch-machine-boot.service
+Wants=network-online.target
+After=switch-machine-boot.service network-online.target
+ConditionPathExists=/etc/switch-hosted/assignment.json
+AssertPathIsMountPoint=/data
+
+[Service]
+Type=simple
+User=switch-controller
+Group=switch-controller
+SupplementaryGroups=switch-agent
+LoadCredential=controller:/run/switch-machine/controller-credential
+ExecStart=/opt/switch/node/bin/node /opt/switch/controller/switch-agent-controller.mjs run --ec2 --config /run/switch-machine/controller.json --credential-file ${CREDENTIALS_DIRECTORY}/controller --data-dir /data/.switch-controller
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+RuntimeDirectory=switch-controller
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+Restart=always
+RestartSec=2
+UMask=0027
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/data/.switch-controller /data/agents /data/worktrees
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target
