@@ -23,13 +23,14 @@ from switch_core.db.stores.provider_connection_store import (
     ProviderConnectionStore,
 )
 from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.cloud_controllers import cloud_controllers
 from switch_core.gateway.dependencies import get_config, get_protocol, get_session
 from switch_core.providers.claude_verifier import (
     ClaudeVerificationError,
     ClaudeVerifier,
 )
 from switch_core.providers.credentials import validate_provider_credential
-from switch_core.providers.sealing import revoke_logins, seal_login
+from switch_core.providers.sealing import SealedChange, revoke_logins, seal_login
 from switch_core.providers.verification import ACTIVE, latest, queue, summary
 
 OtherProvider = Literal["codex", "cursor", "opencode", "antigravity"]
@@ -128,7 +129,7 @@ async def connect_claude(
     await bump_machine_agents(session, user.id)
     await session.commit()
     await ring_credential_change(
-        session, protocol.connections, user.id, "claude", str(now)
+        session, protocol.connections, user.id, "claude", str(now), sealed
     )
     return {"status": "connected", "kind": kind, "verified_at": str(now)}
 
@@ -139,14 +140,20 @@ async def ring_credential_change(
     user_id: str,
     provider: str,
     revision: str | None,
+    sealed: list[SealedChange],
 ) -> None:
-    """Tell the owner's attached workers on this provider to fetch a new credential.
+    """Tell the owner's attached workers on this provider to fetch a new
+    credential, and each controller in `sealed` to fetch its envelope again.
 
     A doorbell only: the frame carries the revision, never the secret. A lost
     one is caught up by the next idle-report response. A disconnect rings with
     no revision; the worker's fetch then reads `revoked`, and it stops every
     host but stays attached.
     """
+    for change in sealed:
+        cloud_controllers().provider_credential_changed(
+            change.controller_id, change.provider, change.revision
+        )
     agent_ids = await session.scalars(
         select(HostedLaunch.agent_id).where(
             HostedLaunch.tenant_id == require_tenant_id(),
@@ -184,10 +191,12 @@ async def disconnect_claude(
     except ProviderConnectionBusy as error:
         raise HTTPException(409, str(error)) from None
     await store.delete(session, user.id)
-    await revoke_logins(session, user.id, "claude", datetime.now(UTC))
+    revoked = await revoke_logins(session, user.id, "claude", datetime.now(UTC))
     await bump_machine_agents(session, user.id)
     await session.commit()
-    await ring_credential_change(session, protocol.connections, user.id, "claude", None)
+    await ring_credential_change(
+        session, protocol.connections, user.id, "claude", None, revoked
+    )
     return Response(status_code=204)
 
 
@@ -299,7 +308,7 @@ async def connect_other_provider(
     await bump_machine_agents(session, user.id)
     await session.commit()
     await ring_credential_change(
-        session, protocol.connections, user.id, provider, str(now)
+        session, protocol.connections, user.id, provider, str(now), sealed
     )
     return {"status": "configured", "kind": payload["kind"], "verified_at": str(now)}
 
@@ -342,8 +351,10 @@ async def disconnect_other_provider(
             ),
         )
     )
-    await revoke_logins(session, user.id, provider, datetime.now(UTC))
+    revoked = await revoke_logins(session, user.id, provider, datetime.now(UTC))
     await bump_machine_agents(session, user.id)
     await session.commit()
-    await ring_credential_change(session, protocol.connections, user.id, provider, None)
+    await ring_credential_change(
+        session, protocol.connections, user.id, provider, None, revoked
+    )
     return Response(status_code=204)

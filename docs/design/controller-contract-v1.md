@@ -249,8 +249,13 @@ type StreamEvent =
   | { type: "agent.detached";     agent_id: string; reason: "unassigned" | "superseded" | "deleted" }
   | { type: "assignment.changed"; revision: number }
   | { type: "operation.pending";  operation_id: string; kind: OperationKind; agent_id: string | null }
+  | { type: "provider.credential_changed"; provider: string; revision: number }
+                                  // Switch EC2 only: the owner's login for `provider` was sealed again
+                                  // or revoked for this controller. Fetch the envelope again (§5)
   | { type: "credential.revoked" }
 ```
+
+`provider.credential_changed` carries no secret. Like the other nudges it coalesces, to the latest revision per provider, and a lost one costs a delay: the controller reads the envelope again whenever it next needs the login.
 
 Cursors are **per agent**, because each agent keeps its own sequence in Core's buffer. That's why resume uses the `cursors` map and not `Last-Event-ID`.
 
@@ -330,6 +335,7 @@ The personal agent relays that reason to the user as is.
 | `out_of_memory` | status | Killed by the memory limit |
 | `disk_full` / `capacity_exceeded` | status, placement | No disk / no session slots |
 | `controller_offline` | placement | Target is `unknown` |
+| `relay_resolved` | control relay | The relayed request was already answered or has expired |
 | `internal` | any | Server or controller bug, with `retryable` set honestly |
 
 ---

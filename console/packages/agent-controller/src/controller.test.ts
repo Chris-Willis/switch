@@ -55,6 +55,7 @@ let stop: AbortController;
 let running: Promise<ControllerExit> | null;
 let watchers: AbortController[];
 let blockers: Server[];
+let changedLogins: string[];
 
 function deps(server = core.url): ControllerDeps {
   store.saveIdentity({
@@ -67,6 +68,7 @@ function deps(server = core.url): ControllerDeps {
     store,
     secrets,
     runtime: runtime.build,
+    sealedLoginChanged: async (provider) => void changedLogins.push(provider),
     locator: new FakeLocator(),
     fetch,
     log: silentLogger,
@@ -177,6 +179,7 @@ beforeEach(async () => {
   running = null;
   watchers = [];
   blockers = [];
+  changedLogins = [];
   core.rooms.set('agent-1', ['room-a']);
 });
 
@@ -430,6 +433,18 @@ describe('runController', () => {
       clearTakenOver: true,
     });
     expect(runtime.probes).toBeGreaterThan(probesBefore);
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
+  it('fetches a sealed login again when Switch says it changed', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(deps(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the first start');
+    core.push('provider.credential_changed', { provider: 'not-a-provider', revision: 1 });
+    core.push('provider.credential_changed', { provider: 'codex', revision: 4 });
+    await waitFor(() => changedLogins.length === 1, 'the changed login fetched');
+    expect(changedLogins).toEqual(['codex']);
     stop.abort();
     expect(await running).toBe('stopped');
   });

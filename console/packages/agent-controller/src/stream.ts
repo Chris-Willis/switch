@@ -31,6 +31,8 @@ import {
   evictedSchema,
   type OperationPending,
   operationPendingSchema,
+  type ProviderCredentialChanged,
+  providerCredentialChangedSchema,
 } from './schemas';
 
 export type SseItem =
@@ -102,6 +104,7 @@ export const STREAM_FRAME_SCHEMAS = {
   'assignment.changed': assignmentChangedSchema,
   'operation.pending': operationPendingSchema,
   'credential.revoked': credentialRevokedSchema,
+  'provider.credential_changed': providerCredentialChangedSchema,
 } as const satisfies Record<string, z.ZodType>;
 
 export type ControllerFrame =
@@ -118,7 +121,8 @@ export type ControllerFrame =
   | { type: 'agent.control_cancel'; data: AgentControlCancelFrame }
   | { type: 'assignment.changed'; data: { revision: number } }
   | { type: 'operation.pending'; data: OperationPending }
-  | { type: 'credential.revoked'; data: Record<string, never> };
+  | { type: 'credential.revoked'; data: Record<string, never> }
+  | { type: 'provider.credential_changed'; data: ProviderCredentialChanged };
 
 /** Why the stream stopped for good. */
 export type StreamEnding = 'stopped' | 'revoked' | 'taken_over';

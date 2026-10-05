@@ -35,8 +35,8 @@ from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.gateway.cloud_controllers import set_cloud_controllers
 from switch_core.gateway.controller_relay import controller_relay_router
-from switch_core.gateway.hosted_controller import set_cloud_controllers
 from switch_core.management.agent_operations import ManagementAgentOperations
 from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.bindings import load_bindings

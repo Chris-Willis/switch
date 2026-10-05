@@ -3,9 +3,7 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import packageJson from '../package.json' with { type: 'json' };
 import {
-  AccessTokens,
   ControllerApiError,
-  ControllerClient,
   enroll,
   type Fetch,
   normalizeServerUrl,
@@ -173,6 +171,7 @@ type RunSetup = {
   secrets: SecretStore;
   identity: { controllerId: string; server: string; name: string } | null;
   runtime: ControllerDeps['runtime'];
+  sealedLoginChanged: ControllerDeps['sealedLoginChanged'];
   locator: ProviderLocator;
   fetch: Fetch;
   workspacesFor: (server: string) => string;
@@ -223,6 +222,7 @@ async function localRun(
       ),
     locator: new PathProviderLocator(process.env.PATH),
     fetch,
+    sealedLoginChanged: null,
     workspacesFor: serverWorkspacesDir,
     close: async () => {},
   };
@@ -255,43 +255,9 @@ async function ec2Run(
     instanceId: config.instanceId,
     bootId: config.bootId,
   });
-  const tokens = new AccessTokens({
-    fetch: hostFetch,
-    server: config.server,
-    controllerId: config.controllerId,
-    credential: async () => credential,
-    now: Date.now,
-    log,
-  });
-  const client = new ControllerClient({
-    fetch: hostFetch,
-    server: config.server,
-    controllerId: config.controllerId,
-    version: VERSION,
-    tokens,
-  });
   const layout = ec2Layout({ dataRoot: EC2_DATA_ROOT, runRoot: EC2_RUN_ROOT });
-  const logins = new SealedLogins({
-    fetchEnvelope: (provider) => client.providerCredential(provider),
-    decrypt: kmsDecrypter({ region: config.kms.region, endpoint: config.kms.endpoint }),
-    kms: {
-      keyArn: config.kms.keyArn,
-      grantTokens: config.kms.grantTokens,
-      context: config.kms.context,
-    },
-    layout,
-    log,
-  });
-  const systemd = new SystemdRuntime({
-    layout,
-    systemctl,
-    logins,
-    agentGroupId,
-    log,
-    now: Date.now,
-    idleCheckMs: 60_000,
-    forceRestartAfterMs: 30 * 60_000,
-  });
+  let logins: SealedLogins | undefined;
+  let systemd: SystemdRuntime | undefined;
   return {
     dataDir,
     store,
@@ -302,11 +268,40 @@ async function ec2Run(
         : 'the machine credential file'
     ),
     identity: { controllerId: config.controllerId, server: config.server, name: hostname() },
-    runtime: () => new AgentRuntimes(systemd, systemd),
+    runtime: (_openStream, _workspaces, _control, client) => {
+      logins = new SealedLogins({
+        fetchEnvelope: (provider) => client.providerCredential(provider),
+        decrypt: kmsDecrypter({ region: config.kms.region, endpoint: config.kms.endpoint }),
+        kms: {
+          keyArn: config.kms.keyArn,
+          grantTokens: config.kms.grantTokens,
+          context: config.kms.context,
+        },
+        layout,
+        log,
+      });
+      systemd = new SystemdRuntime({
+        layout,
+        systemctl,
+        logins,
+        agentGroupId,
+        log,
+        now: Date.now,
+        idleCheckMs: 60_000,
+        forceRestartAfterMs: 30 * 60_000,
+      });
+      return new AgentRuntimes(systemd, systemd);
+    },
+    sealedLoginChanged: async (provider) => {
+      if (!logins) throw new Error('A sealed login changed before the agents runtime was built.');
+      await logins.current(provider);
+    },
     locator: new FixedProviderLocator(config.providers),
     fetch: hostFetch,
     workspacesFor: () => layout.worktreesRoot,
-    close: () => systemd.close(),
+    close: async () => {
+      await systemd?.close();
+    },
   };
 }
 
@@ -374,6 +369,7 @@ async function runCommand(args: string[]): Promise<number> {
         store,
         secrets: setup.secrets,
         runtime: setup.runtime,
+        sealedLoginChanged: setup.sealedLoginChanged,
         locator: setup.locator,
         fetch: setup.fetch,
         log,

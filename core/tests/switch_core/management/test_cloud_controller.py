@@ -495,6 +495,31 @@ class TestSealedLogins:
         assert (revoked["status"], revoked["revision"]) == ("revoked", 3)
         assert revoked["ciphertext"] is None and revoked["encrypted_key"] is None
 
+    async def test_each_seal_and_revoke_tells_the_controller_to_fetch_again(
+        self, cloud: Cloud
+    ) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        controller = await cloud.cloud_controller(owner)
+        stream = cloud.harness.management.service.notifier.subscribe(
+            controller.controller_id
+        )
+        try:
+            await _connect(cloud, owner, "cursor", "api-key", "PLACEHOLDER-1")
+            sealed = stream.drain()
+            await cloud.client.delete(
+                "/gateway/provider-connections/cursor", cookies=cookies_for(owner)
+            )
+            revoked = stream.drain()
+        finally:
+            stream.close()
+
+        assert sealed == [
+            ("provider.credential_changed", {"provider": "cursor", "revision": 1})
+        ]
+        assert revoked == [
+            ("provider.credential_changed", {"provider": "cursor", "revision": 2})
+        ]
+
     async def test_an_owner_on_the_worker_keeps_a_keyring_copy(
         self, cloud: Cloud
     ) -> None:

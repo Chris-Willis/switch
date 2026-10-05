@@ -2,7 +2,7 @@ import logging
 import secrets
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.config import SwitchConfig
 from switch_core.db.models import (
-    AgentController,
     HostedLaunch,
     HostedMachine,
     HostedOperation,
@@ -28,6 +27,7 @@ from switch_core.db.stores.hosted_machine_store import (
     lock_launch,
     retention_expired,
 )
+from switch_core.gateway.cloud_controllers import CloudControllers, cloud_controllers
 from switch_core.gateway.dependencies import (
     get_config,
     get_protocol,
@@ -50,43 +50,6 @@ router = APIRouter(prefix="/hosted-controller")
 QUEUED_TIMEOUT = timedelta(minutes=10)
 DELETING_RESUME_AFTER = timedelta(minutes=5)
 AGENT_STOP_TIMEOUT = timedelta(minutes=10)
-
-
-class CloudControllers(Protocol):
-    """What preparing a machine on the controller runtime needs from agent
-    management, which owns controllers and their credentials. Management
-    installs it (`set_cloud_controllers`); Core never imports management."""
-
-    async def cloud_controller(
-        self, session: AsyncSession, machine: HostedMachine
-    ) -> tuple[AgentController, bool]: ...
-
-    async def cloud_credential(
-        self,
-        session: AsyncSession,
-        machine: HostedMachine,
-        controller: AgentController,
-        stored: str | None,
-    ) -> tuple[str, bool]: ...
-
-    def credential_replaced(self, controller_id: str) -> None: ...
-
-
-_cloud_controllers: CloudControllers | None = None
-
-
-def set_cloud_controllers(provider: CloudControllers | None) -> None:
-    global _cloud_controllers
-    _cloud_controllers = provider
-
-
-def cloud_controllers() -> CloudControllers:
-    if _cloud_controllers is None:
-        raise RuntimeError(
-            "A cloud machine runs the agent controller, and agent management "
-            "is not enabled to provide it (AGENT_MANAGEMENT_ENABLED)."
-        )
-    return _cloud_controllers
 
 
 async def controller_session(

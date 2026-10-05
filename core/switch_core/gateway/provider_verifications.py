@@ -34,7 +34,7 @@ from switch_core.gateway.provider_connections import (
 )
 from switch_core.providers.credentials import validate_provider_credential
 from switch_core.providers.hosted import HostedControllerSettings
-from switch_core.providers.sealing import seal_login
+from switch_core.providers.sealing import SealedChange, seal_login
 from switch_core.providers.verification import ACTIVE, latest
 from switch_core.tenant_context import tenant_scope
 
@@ -219,6 +219,7 @@ async def result(
     if not current or current.id != job.id or not member:
         raise HTTPException(409, "Connection check is no longer current.")
     verified_at = datetime.now(UTC)
+    sealed: list[SealedChange] = []
     if job.result is True:
         if job.encrypted_credential is None:
             raise HTTPException(409, "Connection check has no credential to save.")
@@ -258,6 +259,11 @@ async def result(
     await session.commit()
     if job.result is True:
         await ring_credential_change(
-            session, protocol.connections, job.user_id, job.provider, str(verified_at)
+            session,
+            protocol.connections,
+            job.user_id,
+            job.provider,
+            str(verified_at),
+            sealed,
         )
     return {"received": True}

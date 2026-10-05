@@ -468,6 +468,11 @@ class ManagementService:
     def credential_replaced(self, controller_id: str) -> None:
         self.presence.credential_replaced(controller_id)
 
+    def provider_credential_changed(
+        self, controller_id: str, provider: str, revision: int
+    ) -> None:
+        self.notifier.provider_credential_changed(controller_id, provider, revision)
+
     async def cloud_credential(
         self,
         session: AsyncSession,

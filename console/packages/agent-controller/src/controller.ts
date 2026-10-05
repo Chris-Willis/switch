@@ -18,6 +18,8 @@ import type { AgentRuntime } from './runtime';
 import {
   type AgentCursor,
   type Assignment,
+  PROVIDERS,
+  type Provider,
   type StatusReport,
   statusReportSchema,
 } from './schemas';
@@ -73,14 +75,20 @@ export type ControllerDeps = {
   /**
    * Builds how agents run here, given the stream each agent's agent host hears
    * its events on, the folder agents with no directory of their own work in,
-   * and where an agent host running in this process registers to answer
-   * relayed control messages.
+   * where an agent host running in this process registers to answer
+   * relayed control messages, and the client the controller calls Switch with.
    */
   runtime: (
     openStream: (agentId: string) => OpenAgentStream,
     workspaces: string,
-    control: ControlRegistry
+    control: ControlRegistry,
+    client: ControllerClient
   ) => AgentRuntime;
+  /**
+   * Fetches a provider login Switch seals for this machine again, on
+   * `provider.credential_changed`; null where logins are not sealed by Switch.
+   */
+  sealedLoginChanged: ((provider: Provider) => Promise<void>) | null;
   locator: ProviderLocator;
   fetch: Fetch;
   log: Logger;
@@ -246,7 +254,8 @@ export async function runController(
   const runtime = deps.runtime(
     (agentId) => (streamDeps) => hub.open(agentId, streamDeps),
     workspaces,
-    hub
+    hub,
+    client
   );
   const relay = new LocalRelay({
     log,
@@ -550,7 +559,30 @@ export async function runController(
       case 'credential.revoked':
         await revoke();
         return;
+      case 'provider.credential_changed':
+        loginChanged(frame.data.provider, frame.data.revision);
+        return;
     }
+  };
+
+  const loginChanged = (provider: string, revision: number): void => {
+    if (!deps.sealedLoginChanged) {
+      log.warn(
+        'Switch says a sealed provider login changed, but this controller is not given sealed logins',
+        { provider, revision }
+      );
+      return;
+    }
+    if (!(PROVIDERS as readonly string[]).includes(provider)) {
+      log.warn('Switch says a login changed for a provider this controller does not know', {
+        provider,
+        revision,
+      });
+      return;
+    }
+    void deps
+      .sealedLoginChanged(provider as Provider)
+      .catch((error) => failed(`Fetching the changed ${provider} login`, error));
   };
 
   /** Switch's verdict on the credential, asked before any cached agent starts. */

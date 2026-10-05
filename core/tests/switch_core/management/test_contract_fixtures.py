@@ -427,6 +427,11 @@ class TestStreamFrames:
             )
             provoked += await take(stream, 1)
 
+            harness.management.service.notifier.provider_credential_changed(
+                controller.controller_id, "claude", 2
+            )
+            provoked += await take(stream, 1)
+
             moved = await client.patch(
                 f"/gateway/management/agents/{agent_id}",
                 json={"controller_id": second.controller_id},

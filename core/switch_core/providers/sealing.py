@@ -61,6 +61,15 @@ CONTEXT_CONTROLLER = "switch:controller_id"
 CONTEXT_PROVIDER = "switch:provider"
 
 
+@dataclass(frozen=True)
+class SealedChange:
+    """A controller's envelope of one login, sealed again or revoked, at `revision`."""
+
+    controller_id: str
+    provider: str
+    revision: int
+
+
 class SealingNotConfigured(RuntimeError):
     """A login has to be sealed, and the KMS key to seal it with is not configured."""
 
@@ -271,7 +280,7 @@ async def _store(
     status: Literal["connected", "revoked"],
     envelope_for: Any,
     now: datetime,
-) -> None:
+) -> SealedChange:
     row = await _locked_row(session, controller.id, provider)
     revision = 1 if row is None else row.revision + 1
     envelope = await envelope_for(revision)
@@ -293,6 +302,7 @@ async def _store(
         row.envelope = envelope
         row.updated_at = now
     await session.flush()
+    return SealedChange(controller.id, provider, revision)
 
 
 async def seal_for_controller(
@@ -304,7 +314,7 @@ async def seal_for_controller(
     kind: str,
     credential: str,
     now: datetime,
-) -> None:
+) -> SealedChange:
     context = login_context(
         require_tenant_id(), controller.owner_id, controller.id, provider
     )
@@ -318,7 +328,7 @@ async def seal_for_controller(
             plaintext=login_plaintext(provider, kind, credential, revision),
         )
 
-    await _store(session, controller, provider, "connected", envelope_for, now)
+    return await _store(session, controller, provider, "connected", envelope_for, now)
 
 
 async def seal_login(
@@ -330,9 +340,9 @@ async def seal_login(
     kind: str,
     credential: str,
     now: datetime,
-) -> bool:
+) -> list[SealedChange]:
     """Seal a login for each ec2 controller the owner's cloud machine runs
-    as. Returns whether it did.
+    as. Returns the envelopes it sealed, none when it did not seal.
 
     Not sealed means the caller keeps the keyring copy, as for every owner on
     the worker runtime. So does an owner whose machine is on the controller
@@ -341,9 +351,9 @@ async def seal_login(
     """
     controllers = await sealing_controllers(session, owner_id)
     if not controllers:
-        return False
+        return []
     settings = kms_settings(config)
-    for controller in controllers:
+    return [
         await seal_for_controller(
             session,
             settings,
@@ -353,13 +363,15 @@ async def seal_login(
             credential=credential,
             now=now,
         )
-    return True
+        for controller in controllers
+    ]
 
 
 async def revoke_logins(
     session: AsyncSession, owner_id: str, provider: str, now: datetime
-) -> None:
-    """Mark every envelope of the owner's login for `provider` revoked."""
+) -> list[SealedChange]:
+    """Mark every envelope of the owner's login for `provider` revoked, and
+    return them."""
     rows = await session.scalars(
         select(SealedProviderCredential.controller_id).where(
             SealedProviderCredential.tenant_id == require_tenant_id(),
@@ -367,6 +379,7 @@ async def revoke_logins(
             SealedProviderCredential.provider == provider,
         )
     )
+    changes: list[SealedChange] = []
     for controller_id in list(rows):
         controller = await session.get(AgentController, controller_id)
         if controller is None:
@@ -382,7 +395,10 @@ async def revoke_logins(
         ) -> dict[str, Any]:
             return revoked_envelope(provider, revision, context)
 
-        await _store(session, controller, provider, "revoked", envelope_for, now)
+        changes.append(
+            await _store(session, controller, provider, "revoked", envelope_for, now)
+        )
+    return changes
 
 
 async def seal_stored_logins(

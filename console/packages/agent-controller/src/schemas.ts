@@ -392,6 +392,13 @@ export type OperationPending = z.infer<typeof operationPendingSchema>;
 
 export const credentialRevokedSchema = z.object({});
 
+/** A login Switch seals for this controller was sealed again or revoked: fetch it again. */
+export const providerCredentialChangedSchema = z.object({
+  provider: z.string().min(1),
+  revision: z.number().int().nonnegative(),
+});
+export type ProviderCredentialChanged = z.infer<typeof providerCredentialChangedSchema>;
+
 // Console control relayed through Switch: one request answered by an agent's
 // host, and the live views it pushes.
 

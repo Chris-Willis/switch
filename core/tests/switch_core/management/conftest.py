@@ -7,7 +7,7 @@ import pytest
 from switch_core.bridges.agent.operations.agent_management import (
     disable_agent_management,
 )
-from switch_core.gateway.hosted_controller import set_cloud_controllers
+from switch_core.gateway.cloud_controllers import set_cloud_controllers
 
 
 @pytest.fixture(autouse=True)
