@@ -136,6 +136,8 @@ _PLUMBING = (
     f"{_PACKAGE_MARKER}db{os.sep}session_scope.py",
     f"{_PACKAGE_MARKER}db{os.sep}tenant_session.py",
 )
+# A test tree mirrors the package path, so its frames would otherwise pass as ours.
+_TESTS_MARKER = f"{os.sep}tests{os.sep}"
 _HOLD_KEY = "_switch_hold"
 UNKNOWN_CALLER = "unknown"
 
@@ -172,7 +174,11 @@ def _frames_of_borrower() -> list[FrameType]:
 
 def _ours(frame: FrameType) -> bool:
     filename = frame.f_code.co_filename
-    return _PACKAGE_MARKER in filename and not any(p in filename for p in _PLUMBING)
+    return (
+        _PACKAGE_MARKER in filename
+        and _TESTS_MARKER not in filename
+        and not any(p in filename for p in _PLUMBING)
+    )
 
 
 def _module(frame: FrameType) -> str:
