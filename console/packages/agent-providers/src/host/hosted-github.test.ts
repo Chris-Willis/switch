@@ -78,6 +78,42 @@ it('renews only the assigned repository credential and hides failed response bod
   );
 });
 
+it("renews over plain HTTP only through an agents controller's relay on this machine", async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hosted-github-relay-'));
+  roots.push(root);
+  const credentials = join(root, 'agent');
+  const request = vi.fn(
+    async () =>
+      new Response(
+        JSON.stringify({
+          token,
+          repository: 'example/project',
+          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        })
+      )
+  );
+  vi.stubGlobal('fetch', request);
+  const endpoint = async (value: string) =>
+    writeFile(
+      credentials,
+      JSON.stringify({
+        env: { SWITCH_API_ENDPOINT: value, SWITCH_API_TOKEN: 'synthetic-relay-credential' },
+      })
+    );
+  await endpoint('http://127.0.0.1:47100');
+  expect(await renewGitHubCredential(credentials, 'example/project')).toBe(token);
+  expect((request.mock.calls as unknown[][])[0]?.[0]).toBe(
+    'http://127.0.0.1:47100/hosted/github-credential'
+  );
+  for (const remote of ['http://switch.example.com', 'http://127.0.0.1.example.com:47100']) {
+    await endpoint(remote);
+    await expect(renewGitHubCredential(credentials, 'example/project')).rejects.toThrow(
+      'Could not renew'
+    );
+  }
+  expect(request).toHaveBeenCalledOnce();
+});
+
 it('keeps raw and common transport encodings out of redacted output', () => {
   const secrets = githubRedactions(token);
   for (const value of secrets) expect(redactHostedText(value, secrets)).toBe('[REDACTED]');

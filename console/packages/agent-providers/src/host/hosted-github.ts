@@ -139,8 +139,10 @@ export async function renewGitHubCredential(
   try {
     const { env } = JSON.parse(await readFile(credentialsPath, 'utf8'));
     const endpoint = new URL(env.SWITCH_API_ENDPOINT);
+    // Plain HTTP only to an agents controller's relay on this machine.
+    const loopback = ['127.0.0.1', '[::1]', 'localhost'].includes(endpoint.hostname);
     if (
-      endpoint.protocol !== 'https:' ||
+      (endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && loopback)) ||
       endpoint.username ||
       endpoint.password ||
       endpoint.search ||

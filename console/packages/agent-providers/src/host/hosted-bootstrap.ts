@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import {
   access,
+  copyFile,
+  lstat,
   link,
   mkdir,
   open,
@@ -17,7 +19,9 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { buildSharedHostConfig } from './build-shared-config';
+import { unconfirmedCutoverManifest } from './cutover-manifest';
 import { WorkerObsoleteError } from './exit-codes';
+import { sharedGroupEnabled } from './host-permissions';
 import {
   ensureHostedRepository,
   githubLaunchEnvironment,
@@ -29,13 +33,20 @@ import {
 } from './hosted-github';
 import { redactHostedText } from './hosted-log';
 import { runHostedPreflight } from './hosted-preflight';
-import { fetchHostedProvider, hostedRequest, materializeHostedProvider } from './hosted-provider';
+import {
+  fetchHostedProvider,
+  hostedCredentialSchema,
+  type HostedCredential,
+  hostedRequest,
+  materializeHostedProvider,
+} from './hosted-provider';
 import {
   hostedSkillsDirectory,
   hostedSkillsSchema,
   installHostedSkills,
   supportsHostedSkills,
 } from './hosted-skills';
+import { PLACEMENTS_FILE } from './placements';
 import { checkProviderReadiness } from './provider-readiness';
 import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
 import type { superviseSharedHost } from './supervisor';
@@ -47,6 +58,9 @@ const absolutePath = z
   .min(1)
   .refine((value) => isAbsolute(value), 'must be an absolute path');
 const identifier = z.string().min(1).max(200);
+const repositoryName = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}$/);
 
 export const hostedDeploymentSpecSchema = z
   .strictObject({
@@ -79,10 +93,7 @@ export const hostedDeploymentSpecSchema = z
     github: z
       .strictObject({
         credentialPath: absolutePath,
-        repository: z
-          .string()
-          .regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}$/)
-          .optional(),
+        repository: repositoryName.optional(),
         refresh: z.literal(true).optional(),
         /** The bare mirror the workspace is a worktree of, shared by every agent on the repository. */
         mirrorPath: absolutePath,
@@ -292,7 +303,7 @@ function sameValue(left: unknown, right: unknown): boolean {
  * `materializeHostedProvider` writes it, so the sessions read the login the
  * worker fetched.
  */
-function controlledEnvironment(
+export function controlledEnvironment(
   root: string,
   provider: HostedDeploymentSpec['provider']['kind']
 ): Record<string, string> {
@@ -409,8 +420,18 @@ export async function prepareHostedDeployment(
   try {
     const existing = await stat(stateDirectory);
     if (!existing.isDirectory()) throw new Error('not-directory');
-    if (process.getuid && existing.uid !== process.getuid()) throw new Error('wrong-owner');
-    if ((existing.mode & 0o077) !== 0) throw new Error('not-private');
+    if (sharedGroupEnabled()) {
+      if (
+        process.getuid &&
+        existing.uid !== process.getuid() &&
+        (existing.gid !== process.getgid?.() || (existing.mode & 0o070) !== 0o070)
+      )
+        throw new Error('wrong-owner');
+      if ((existing.mode & 0o007) !== 0) throw new Error('not-private');
+    } else {
+      if (process.getuid && existing.uid !== process.getuid()) throw new Error('wrong-owner');
+      if ((existing.mode & 0o077) !== 0) throw new Error('not-private');
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
       throw new Error('Hosted SDK state directory must be a private directory owned by this user.');
@@ -682,5 +703,186 @@ export async function runHostedBootstrap(
     if (error instanceof WorkerObsoleteError) throw error;
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(redactHostedText(message, prepared.logRedactions));
+  }
+}
+
+/**
+ * What an agents controller writes into an agent's root for its unit: the
+ * repository the workspace is a worktree of, if any, and what the provider is
+ * given to read.
+ */
+export const hostedWorkspaceSchema = z
+  .strictObject({
+    repository: repositoryName.nullable(),
+    /** The bare mirror the workspace is a worktree of, shared by every agent on the repository. */
+    mirrorPath: absolutePath.nullable(),
+    workspacePath: absolutePath,
+    skills: z.union([z.tuple([]), hostedSkillsSchema]),
+    instructions: z.string(),
+  })
+  .refine((workspace) => (workspace.repository === null) === (workspace.mirrorPath === null), {
+    message: 'A repository and its mirror are given together.',
+  });
+export type HostedWorkspace = z.infer<typeof hostedWorkspaceSchema>;
+
+/** Beside the agent root's `watcher/` state; read by `prepareHostedAgent`. */
+export const HOSTED_WORKSPACE_FILE = 'workspace.json';
+/** The systemd credential names an agent unit loads: Switch credentials, and its provider sign-in. */
+export const UNIT_AGENT_CREDENTIAL = 'agent';
+export const UNIT_PROVIDER_CREDENTIAL = 'provider';
+const MAX_UNIT_FILE_BYTES = 64 * 1024;
+/** Watcher state a worker volume kept in the agent root, which the unit's watcher keeps in `watcher/`. */
+const LEGACY_WATCHER_STATE = ['assignments.jsonl', PLACEMENTS_FILE];
+
+async function readUnitFile(path: string, failure: string): Promise<unknown> {
+  try {
+    if ((await stat(path)).size > MAX_UNIT_FILE_BYTES) throw new Error();
+    return JSON.parse(await readFile(path, 'utf8'));
+  } catch {
+    throw new Error(failure);
+  }
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+/**
+ * A worker volume's agent root, brought to the unit's layout: the preflight
+ * finishes a session-table layout, and the watcher state the worker kept in
+ * the agent root seeds `watcher/` once, so rooms stay with their sessions.
+ */
+async function migrateWorkerRoot(root: string, config: SharedHostConfig): Promise<void> {
+  const planPath = join(root, PLAN_FILE);
+  if (!(await exists(planPath))) return;
+  const agentId = config.session.agentId;
+  const saved = z
+    .object({ spec: z.object({ session: z.object({ agentId: z.string() }) }) })
+    .safeParse(await readJson(planPath, `${planPath} is not JSON.`));
+  if (!saved.success || saved.data.spec.session.agentId !== agentId)
+    throw new Error(`${planPath} does not belong to agent ${agentId}.`);
+  await runHostedPreflight(root, {
+    version: 1,
+    spec: { session: { sessionId: config.session.sessionId, agentId } },
+    config,
+  });
+  const manifest = await unconfirmedCutoverManifest(root);
+  if (manifest && manifest.items.length > 0)
+    console.warn(
+      `${manifest.items.length} item(s) this volume held before the watcher cutover were never handed to Switch, and an agent unit does not upload them; see ${join(root, 'cutover', 'manifest.json')}.`
+    );
+  const watcherRoot = join(root, 'watcher');
+  for (const name of LEGACY_WATCHER_STATE) if (await exists(join(watcherRoot, name))) return;
+  for (const name of LEGACY_WATCHER_STATE)
+    try {
+      await copyFile(join(root, name), join(watcherRoot, name), constants.COPYFILE_EXCL);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+}
+
+export interface HostedAgentPreparation {
+  ensureRepository: typeof ensureHostedRepository;
+}
+
+/**
+ * Prepares an agent's root before its unit's watcher starts, as the agent's
+ * user (`shared-host-daemon --prepare <agentRoot>`): migrates a worker
+ * volume's layout, writes the provider sign-in the controller handed over
+ * into the provider's home, makes the workspace a worktree of the selected
+ * repository, and installs the granted skills.
+ *
+ * Reads `watcher/config.json` and `workspace.json` from the agent root, and
+ * the credentials `agent` and `provider` from `credentialsDirectory`.
+ */
+export async function prepareHostedAgent(
+  input: { agentRoot: string; credentialsDirectory: string },
+  dependencies: HostedAgentPreparation
+): Promise<void> {
+  if (!isAbsolute(input.agentRoot)) throw new Error('The agent root must be an absolute path.');
+  if (!isAbsolute(input.credentialsDirectory))
+    throw new Error('The credentials directory must be an absolute path.');
+  const root = await realpath(input.agentRoot);
+  const configPath = join(root, 'watcher', CONFIG_FILE);
+  const parsedConfig = sharedConfigSchema.safeParse(
+    await readUnitFile(configPath, `${configPath} is missing or is not JSON.`)
+  );
+  if (!parsedConfig.success) throw new Error(`${configPath} is not a valid launch configuration.`);
+  const config = parsedConfig.data;
+  const agentId = config.session.agentId;
+  const provider = config.start.provider;
+  const credentialsPath = join(input.credentialsDirectory, UNIT_AGENT_CREDENTIAL);
+  if (config.execution?.credentialsPath !== credentialsPath)
+    throw new Error(
+      `${configPath} reads its Switch credentials from somewhere other than this unit's ${credentialsPath}.`
+    );
+  if (!config.execution.binaryPath) throw new Error(`${configPath} names no provider executable.`);
+  await validateSwitchCredentials(credentialsPath, agentId);
+
+  await migrateWorkerRoot(root, config);
+
+  const providerPath = join(input.credentialsDirectory, UNIT_PROVIDER_CREDENTIAL);
+  const parsedCredential = hostedCredentialSchema.safeParse(
+    await readUnitFile(
+      providerPath,
+      'The provider sign-in handed to this agent is missing or invalid.'
+    )
+  );
+  if (!parsedCredential.success)
+    throw new Error('The provider sign-in handed to this agent is missing or invalid.');
+  const credential: HostedCredential = parsedCredential.data;
+  if (credential.status === 'revoked')
+    throw new Error('The provider was disconnected. Reconnect it in Switch to start this agent.');
+  if (credential.provider !== provider)
+    throw new Error(
+      `The provider sign-in handed to this agent is for ${credential.provider}, not ${provider}.`
+    );
+  const environment = controlledEnvironment(root, provider);
+  await createControlledDirectories(environment);
+  await materializeHostedProvider(root, environment, credential, config.execution.binaryPath);
+
+  const workspacePath = join(root, HOSTED_WORKSPACE_FILE);
+  const parsedWorkspace = hostedWorkspaceSchema.safeParse(
+    await readUnitFile(workspacePath, `${workspacePath} is missing or is not JSON.`)
+  );
+  if (!parsedWorkspace.success)
+    throw new Error(
+      `${workspacePath} is invalid: ${parsedWorkspace.error.issues[0]?.message ?? 'invalid value'}.`
+    );
+  const workspace = parsedWorkspace.data;
+  if (workspace.repository !== null && workspace.mirrorPath !== null) {
+    const inherited = Object.fromEntries(
+      INHERITED_ENV.flatMap((key) => {
+        const value = process.env[key];
+        return value === undefined ? [] : [[key, value]];
+      })
+    );
+    await dependencies.ensureRepository({
+      workspace: workspace.workspacePath,
+      mirror: workspace.mirrorPath,
+      repository: workspace.repository,
+      agentId,
+      env: {
+        ...inherited,
+        ...environment,
+        ...githubLaunchEnvironment(),
+        SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: credentialsPath,
+        SWITCH_HOSTED_GITHUB_REPOSITORY: workspace.repository,
+      },
+    });
+    await prepareGitHubCli(root);
+  } else {
+    await mkdir(workspace.workspacePath, { recursive: true, mode: 0o700 });
+  }
+  if (workspace.skills.length > 0) {
+    if (!supportsHostedSkills(provider))
+      throw new Error('This provider has no skills directory to install connection skills into.');
+    await installHostedSkills(hostedSkillsDirectory(provider, environment), workspace.skills);
   }
 }

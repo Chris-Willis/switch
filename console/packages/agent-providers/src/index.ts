@@ -79,6 +79,22 @@ export {
   watchFlagsSchema,
 } from './host/watch-flags';
 export { superviseSharedHost } from './host/supervisor';
+export {
+  controlledEnvironment,
+  HOSTED_WORKSPACE_FILE,
+  type HostedWorkspace,
+  hostedWorkspaceSchema,
+  UNIT_AGENT_CREDENTIAL,
+  UNIT_PROVIDER_CREDENTIAL,
+} from './host/hosted-bootstrap';
+export { githubLaunchEnvironment } from './host/hosted-github';
+export {
+  applyHostedProvider,
+  type HostedCredential,
+  hostedCredentialSchema,
+} from './host/hosted-provider';
+export { dirMode, fileMode, SHARED_GROUP_ENV, sharedGroupEnabled } from './host/host-permissions';
+export { OBSOLETE_BUNDLE_EXIT_CODE } from './host/exit-codes';
 export { controllerConnectionId } from './host/connection-id';
 export { EXECUTION_INHERIT_ENV } from './host/agent-env';
 export {

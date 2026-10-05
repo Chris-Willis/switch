@@ -3,6 +3,7 @@ import { link, mkdir, open, readFile, readdir, rename, unlink } from 'node:fs/pr
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
+import { dirMode, fileMode } from './host-permissions';
 
 const ticketSchema = z.strictObject({
   choosing: z.boolean(),
@@ -15,14 +16,16 @@ function alive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'EPERM') return true;
+    if (code === 'ESRCH') return false;
     throw error;
   }
 }
 
 async function save(path: string, value: unknown, replace: boolean): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
-  const file = await open(temporary, 'wx', 0o600);
+  const file = await open(temporary, 'wx', fileMode());
   try {
     await file.writeFile(JSON.stringify(value));
     await file.sync();
@@ -42,7 +45,7 @@ async function save(path: string, value: unknown, replace: boolean): Promise<voi
 /** Bakery election: each contender writes only its own ticket, so reclamation needs no lock. */
 export async function withOwnershipLock<T>(root: string, action: () => Promise<T>): Promise<T> {
   const directory = join(root, 'ownership');
-  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await mkdir(directory, { recursive: true, mode: dirMode() });
   const id = `${process.pid}-${randomUUID()}.json`;
   const path = join(directory, id);
   const entries = async (): Promise<Array<{ id: string; value: Ticket }>> => {

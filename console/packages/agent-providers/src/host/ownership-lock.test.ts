@@ -45,9 +45,13 @@ async function child(root: string, stage: string): Promise<number | null> {
       }
     });
   `;
-  const processHandle = spawn(process.execPath, ['--input-type=module', '-e', script], {
-    stdio: 'ignore',
-  });
+  const processHandle = spawn(
+    process.execPath,
+    ['--import', 'tsx', '--input-type=module', '-e', script],
+    {
+      stdio: 'ignore',
+    }
+  );
   const [code] = await once(processHandle, 'exit');
   return code;
 }

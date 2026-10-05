@@ -10,6 +10,7 @@ import {
   attachmentChunkSchema,
   ControlError,
 } from './attachment-transfers';
+import { fileMode } from './host-permissions';
 import { readJournalSnapshot } from './journal-snapshot';
 import { ensureSharedProcess, liveSupervisor, sharedSessionRoot, type Supervision } from './launch';
 import {
@@ -295,7 +296,7 @@ export async function serveControl(
   if (!address || typeof address === 'string') throw new Error('The control server has no port.');
   const path = join(root, CONTROL_FILE);
   const temporary = `${path}.${token.slice(0, 8)}.tmp`;
-  await writeFile(temporary, JSON.stringify({ port: address.port, token }), { mode: 0o600 });
+  await writeFile(temporary, JSON.stringify({ port: address.port, token }), { mode: fileMode() });
   await rename(temporary, path);
   try {
     await new Promise<void>((resolve) => {
