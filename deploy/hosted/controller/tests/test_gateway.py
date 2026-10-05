@@ -68,6 +68,8 @@ def make_gateway(cfg, store, secrets=None, instance_type="m6i.large") -> Gateway
         cfg,
         store,
         secrets if secrets is not None else Mock(),
+        Mock(),
+        None,
     )
 
 

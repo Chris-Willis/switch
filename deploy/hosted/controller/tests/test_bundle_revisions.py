@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from uuid import NAMESPACE_URL, uuid5
 
 import pytest
@@ -157,7 +157,7 @@ class FakeCloud:
     def get_instance(self, machine):
         return self.instance
 
-    def validate_image(self, machine):
+    def validate_image(self, image_id, require):
         pass
 
     def validate_capacity(self):
@@ -212,6 +212,8 @@ def harness(tmp_path):
         cfg,
         store,
         secrets,
+        Mock(),
+        None,
     )
     gateway.request = core.request
     return store, secrets, core, gateway

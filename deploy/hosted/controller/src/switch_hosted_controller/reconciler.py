@@ -7,7 +7,7 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
-from .cloud import CloudResourceError, Ec2Cloud, rejected
+from .cloud import CloudResourceError, Ec2Cloud, rejected, required_capabilities
 from .model import DesiredState, Machine, ObservedState
 from .store import MachineStore, require_recovery_allowed
 
@@ -74,6 +74,8 @@ class Reconciler:
             )
         if volume is None:
             return self._attention(claim, "recorded data volume cannot be found")
+        if machine.target_runtime is not machine.runtime:
+            return self._change_runtime(claim, volume)
 
         instance = self._cloud.get_instance(machine)
         if machine.instance_id is None:
@@ -90,7 +92,7 @@ class Reconciler:
             if not machine.instance_launch_issued:
                 if not self._unchanged(claim, DesiredState.RUNNING):
                     return self._store.cancel_queued_instance_launch(claim)
-                self._cloud.validate_image(machine)
+                self._cloud.validate_image(machine.image_id, required_capabilities(machine.runtime))
                 self._cloud.validate_capacity()
                 if not self._unchanged(claim, DesiredState.RUNNING):
                     return self._store.cancel_queued_instance_launch(claim)
@@ -158,6 +160,24 @@ class Reconciler:
                 self._cloud.enforce_data_retention(machine)
             return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
         return self._store.set_observed(claim, ObservedState.RUNNING, None)
+
+    def _change_runtime(self, claim: Machine, volume: dict[str, Any]) -> Machine:
+        """Replace the instance with one of the requested runtime on the same data volume."""
+        pending = self._terminate_instance(
+            claim, DesiredState.RUNNING, ObservedState.PROVISIONING, "runtime change"
+        )
+        if pending is not None:
+            return pending
+        machine = self._store.get(claim.machine_id)
+        if machine.instance_id is not None and (
+            volume.get("State") != "available" or volume.get("Attachments")
+        ):
+            return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
+        if not self._unchanged(claim, DesiredState.RUNNING):
+            return machine
+        if machine.instance_id is None and machine.instance_launch_issued:
+            return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
+        return self._store.switch_runtime(machine)
 
     def _stopped(self, claim: Machine) -> Machine:
         machine = claim

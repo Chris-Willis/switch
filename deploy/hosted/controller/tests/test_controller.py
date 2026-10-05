@@ -415,7 +415,11 @@ def test_stop_and_start_use_only_recorded_instance(tmp_path: Path):
 def test_config_rejects_duplicate_assignment_credentials(tmp_path: Path):
     cfg = config(tmp_path, max_machines=2)
     raw = {
-        **cfg.__dict__,
+        **{
+            key: value
+            for key, value in cfg.__dict__.items()
+            if key not in {"controller_image_id", "login_kms_key_arn"}
+        },
         "security_group_ids": list(cfg.security_group_ids),
         "allowed_instance_types": list(cfg.allowed_instance_types),
         "state_db_path": str(cfg.state_db_path),
