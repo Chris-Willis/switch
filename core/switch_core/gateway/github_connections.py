@@ -12,7 +12,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, select, text, update
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
@@ -350,25 +349,21 @@ async def confirm(
     await queue_revocation(session, (GitHubIssuedToken.owner_id == user.id,))
     encrypted = config.keyring.encrypt(json.dumps(flow.credentials))
     now = datetime.now(UTC)
-    await session.execute(
-        insert(ProviderConnection)
-        .values(
-            tenant_id=require_tenant_id(),
-            user_id=user.id,
-            provider="github",
-            kind="oauth",
-            encrypted_credential=encrypted,
-            verified_at=now,
+    if previous is None:
+        session.add(
+            ProviderConnection(
+                tenant_id=require_tenant_id(),
+                user_id=user.id,
+                provider="github",
+                kind="oauth",
+                encrypted_credential=encrypted,
+                verified_at=now,
+            )
         )
-        .on_conflict_do_update(
-            index_elements=["tenant_id", "user_id", "provider"],
-            set_={
-                "kind": "oauth",
-                "encrypted_credential": encrypted,
-                "verified_at": now,
-            },
-        )
-    )
+    else:
+        previous.kind = "oauth"
+        previous.encrypted_credential = encrypted
+        previous.verified_at = now
     await session.commit()
     github.flows.pop(flow_id, None)
     logger.info(
