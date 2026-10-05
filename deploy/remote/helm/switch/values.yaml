@@ -54,6 +54,11 @@ ingress:
   # gateway: the Bearer-auth agent bridge + MCP, and public OAuth/MCP discovery.
   agentApiPaths:
     - /agents
+    # Session hosts report session starts, turn activity and approval requests
+    # here, and poll for approval answers.
+    - /agent-sessions
+    - /version
+    - /deeplink
     - /mcp
     - /oauth
     - /.well-known
