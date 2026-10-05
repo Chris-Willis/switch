@@ -27,6 +27,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import httpx
+import jwt
 from fastapi import FastAPI
 from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -58,7 +59,7 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
 from switch_core.keys import Keyring
-from switch_core.management import controller_routes
+from switch_core.management import controller_routes, tokens
 from switch_core.management.wiring import Management, build_management
 
 KEYRING = Keyring.parse(
@@ -311,6 +312,15 @@ class EnrolledController:
     @property
     def headers(self) -> dict[str, str]:
         return bearer(self.access_token)
+
+    @property
+    def credential_id(self) -> str:
+        """The `kid` claim: the api key the access token was exchanged for."""
+        claims = jwt.decode(
+            self.access_token.removeprefix(tokens.ACCESS_TOKEN_PREFIX),
+            options={"verify_signature": False},
+        )
+        return str(claims["kid"])
 
 
 async def enroll_console(

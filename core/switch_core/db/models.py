@@ -301,7 +301,9 @@ class ProviderConnection(TenantScoped, Base):
     )
     provider: Mapped[str] = mapped_column(Text, nullable=False)
     kind: Mapped[str] = mapped_column(Text, nullable=False)
-    encrypted_credential: Mapped[str] = mapped_column(Text, nullable=False)
+    #: Null when the login is held only sealed for the owner's ec2 controllers
+    #: (`SealedProviderCredential`), which Core cannot decrypt.
+    encrypted_credential: Mapped[str | None] = mapped_column(Text)
     verification_status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="verified"
     )
@@ -382,6 +384,14 @@ class HostedMachine(TenantScoped, Base):
             "generation",
             unique=True,
         ),
+        CheckConstraint(
+            "runtime IN ('worker', 'controller')", name="ck_hosted_machine_runtime"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "controller_id"],
+            ["agent_controllers.tenant_id", "agent_controllers.id"],
+            name="fk_hosted_machines_controller",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, nullable=False)
@@ -401,6 +411,14 @@ class HostedMachine(TenantScoped, Base):
     machine_capability_hash: Mapped[str | None] = mapped_column(Text)
     machine_capability_encrypted: Mapped[str | None] = mapped_column(Text)
     machine_capability_revision: Mapped[int | None] = mapped_column(Integer)
+    #: `worker` runs the hosted worker; `controller` runs the shared agent
+    #: controller as the ec2 controller `controller_id`.
+    runtime: Mapped[str] = mapped_column(Text, nullable=False, server_default="worker")
+    controller_id: Mapped[str | None] = mapped_column(Text)
+    #: The ec2 controller's `swcc_` credential for `controller_credential_revision`,
+    #: keyring-encrypted so a retried prepare at one revision returns the same one.
+    controller_credential_encrypted: Mapped[str | None] = mapped_column(Text)
+    controller_credential_revision: Mapped[int | None] = mapped_column(Integer)
     agents_version: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="1"
     )
@@ -3125,6 +3143,56 @@ class AgentController(TenantScoped, Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+class SealedProviderCredential(TenantScoped, Base):
+    """A provider login sealed with KMS for one ec2 controller.
+
+    `envelope` is what the controller fetches: the data key encrypted by KMS
+    under the encryption context it names, and the login encrypted with that
+    key. Core keeps no way to open it. `revision` bumps on every change, a
+    disconnect included, which leaves the row `revoked` with no ciphertext.
+    """
+
+    __tablename__ = "sealed_provider_credentials"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "controller_id", "provider"),
+        ForeignKeyConstraint(
+            ["tenant_id", "controller_id"],
+            ["agent_controllers.tenant_id", "agent_controllers.id"],
+            name="fk_sealed_provider_credentials_controller",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "provider IN ('claude', 'codex', 'opencode', 'cursor', 'antigravity')",
+            name="ck_sealed_provider_credentials_provider",
+        ),
+        CheckConstraint(
+            "status IN ('connected', 'revoked')",
+            name="ck_sealed_provider_credentials_status",
+        ),
+        CheckConstraint(
+            "revision >= 1", name="ck_sealed_provider_credentials_revision"
+        ),
+        Index(
+            "ix_sealed_provider_credentials_owner",
+            "tenant_id",
+            "owner_id",
+            "provider",
+        ),
+    )
+
+    owner_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    controller_id: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    envelope: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 

@@ -169,13 +169,19 @@ class TestRefusals:
                 "invalid_credential",
             ),
             ({"cid": "no-such-controller"}, "invalid_credential"),
+            ({"kid": "a-replaced-credential"}, "token_expired"),
+            ({"kid": 7}, "invalid_credential"),
         ],
     )
     async def test_a_bad_token_is_refused_in_the_envelope(
         self, harness: Harness, claims: dict[str, Any], code: str
     ) -> None:
         controller = await _enrolled(harness)
-        base = {"cid": controller.controller_id, "oid": controller.owner.id}
+        base = {
+            "cid": controller.controller_id,
+            "oid": controller.owner.id,
+            "kid": controller.credential_id,
+        }
         mw, captured = _middleware(
             harness, controller_auth=harness.management.authenticator
         )
@@ -194,6 +200,7 @@ class TestRefusals:
             controller_id=controller.controller_id,
             tenant_id=TENANT_ZERO_ID,
             owner_id=controller.owner.id,
+            credential_id=controller.credential_id,
             now=datetime.now(UTC) - timedelta(hours=2),
         )
         mw, _ = _middleware(harness, controller_auth=harness.management.authenticator)

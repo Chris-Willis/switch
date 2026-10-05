@@ -73,6 +73,10 @@ _AGENT_SESSIONS_PREFIX = "/agent-sessions/"
 # First segments under `/agents/` that name no agent. On these the agent comes
 # from `X-Switch-Agent-Id` alone.
 _NOT_AN_AGENT_SEGMENT = frozenset({"rooms", "feature-flags"})
+# Routes outside `/agents/` a controller may also act as an agent on, naming
+# it with `X-Switch-Agent-Id`: a Switch cloud controller fetches each of its
+# agents' repository tokens here.
+_ACT_AS_PATHS = frozenset({"/hosted/github-credential"})
 # Registration: a controller registers nothing, so its token is refused here.
 _REGISTRATION_SEGMENTS = frozenset({"register-known", "register-known-bulk"})
 # The connection surface a controller serves its agents itself, from its own
@@ -539,7 +543,7 @@ def _controller_refusal(code: str, message: str, status_code: int) -> Response:
 
 
 def _is_agent_route(path: str) -> bool:
-    if path.startswith(_AGENT_SESSIONS_PREFIX):
+    if path.startswith(_AGENT_SESSIONS_PREFIX) or path in _ACT_AS_PATHS:
         return True
     match = _AGENT_PATH.fullmatch(path)
     return match is not None and match["segment"] not in _REGISTRATION_SEGMENTS

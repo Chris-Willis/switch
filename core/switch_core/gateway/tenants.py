@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import re
 import secrets
@@ -85,6 +84,7 @@ from switch_core.gateway.dependencies import (
     get_user_store,
 )
 from switch_core.gateway.email_domains import email_domain, join_domain_refusal
+from switch_core.gateway.github_connections import github_identity
 from switch_core.gateway.github_connections import lock as github_lock
 from switch_core.gateway.invite_mail import (
     InviteEmail,
@@ -1448,11 +1448,7 @@ async def remove_member(
         )
     )
     github_token = (
-        json.loads(config.keyring.decrypt(github_row.encrypted_credential))[
-            "access_token"
-        ]
-        if github_row
-        else None
+        github_identity(github_row, config)["access_token"] if github_row else None
     )
     await queue_revocation(session, (GitHubIssuedToken.owner_id == user_id,))
     await session.execute(
