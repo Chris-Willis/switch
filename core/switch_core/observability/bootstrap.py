@@ -26,6 +26,8 @@ from switch_core.observability.catalogue import (
     DB_POOL_IN_USE,
     DB_POOL_OVERFLOW,
     DB_POOL_SIZE,
+    DELIVERY_CACHE_BYTES,
+    DELIVERY_CACHE_ROOMS,
 )
 from switch_core.observability.db_server import DbServerSampler
 from switch_core.observability.exporter import MetricsExporter
@@ -56,6 +58,7 @@ from switch_core.observability.runtime import (
     RuntimeMetrics,
     log_unreadable_sources,
 )
+from switch_core.transport.room_cache import RoomCacheStats
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +93,9 @@ class RuntimeProbes:
     # None when the engine's pool does not keep these — see
     # :mod:`switch_core.observability.pool`.
     pool_stats: Callable[[], PoolStats | None]
+    # None when the room delivery cache is off, which reports nothing rather
+    # than a zero that reads as an empty cache.
+    room_cache_stats: Callable[[], RoomCacheStats | None] = lambda: None
 
 
 @dataclass
@@ -149,6 +155,11 @@ def _state_readings(probes: RuntimeProbes) -> Callable[[], Iterator[GaugeReading
             yield GaugeReading(DB_POOL_IN_USE, float(stats.in_use), {})
             yield GaugeReading(DB_POOL_SIZE, float(stats.size), {})
             yield GaugeReading(DB_POOL_OVERFLOW, float(stats.overflow), {})
+
+        cache = probes.room_cache_stats()
+        if cache is not None:
+            yield GaugeReading(DELIVERY_CACHE_BYTES, float(cache.bytes), {})
+            yield GaugeReading(DELIVERY_CACHE_ROOMS, float(cache.rooms), {})
 
     return readings
 

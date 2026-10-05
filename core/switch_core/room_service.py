@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from switch_core.bridges.collaboration.lifecycle_service import (
         CollaborationBridgeLifecycleService,
     )
+    from switch_core.transport.room_cache import RoomDeliveryCache
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +169,7 @@ class RoomService:
         resource_service: ResourceService,
         session_factory: async_sessionmaker[AsyncSession],
         telemetry: TelemetryService | None = None,
+        room_cache: RoomDeliveryCache | None = None,
     ) -> None:
         self._provisioning = provisioning
         self._room_store = room_store
@@ -180,6 +182,8 @@ class RoomService:
         # Optional because several tests and tooling build a RoomService
         # without one; `emit_safely` treats None as "report nothing".
         self._telemetry = telemetry
+        # The shared delivery read, when enabled; told when a room goes.
+        self._room_cache = room_cache
 
     async def _resolve_agent_ids(self, config: RoomCreateConfig) -> list[str]:
         if config.agent_ids is not None:
@@ -805,6 +809,11 @@ class RoomService:
             async with self._session_factory() as session:
                 await self._room_store.delete(session, room_id)
                 await session.commit()
+
+        if self._room_cache is not None:
+            # Kicking the members above already emptied it if they were all
+            # running here; this covers any that were not.
+            self._room_cache.invalidate(room.tenant_id, room_id)
 
         if bridge_id:
             collaboration_core = self._collab_lifecycle.get(bridge_id)
