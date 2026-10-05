@@ -141,6 +141,30 @@ DB_QUERY_DURATION = _spec(
     bounds=SUB_MILLISECOND_BOUNDS_MS,
 )
 
+# What the database itself reports, sampled by this server on a connection of
+# its own rather than one from the pool above: the case worth seeing is the pool
+# exhausted, when a pooled connection is the one thing a sampler cannot get.
+# Only the server role's own sessions in its own database are counted, which is
+# also all `pg_stat_activity` shows a role that is not a superuser.
+DB_SERVER_CONNECTIONS = _spec(
+    "switch.db.server.connections",
+    "gauge",
+    "{connection}",
+    "Sessions the database holds for this server's role, by state, as of the "
+    "last sample. `idle_in_transaction` is a connection checked out and held "
+    "across work that is not a query, the usual way a pool runs dry. Counts "
+    "every replica's sessions, not only this one's.",
+    "state",
+)
+DB_SERVER_TRANSACTIONS = _spec(
+    "switch.db.server.transactions",
+    "sum",
+    "{transaction}",
+    "Transactions committed or rolled back in this server's database, from the "
+    "database's own counters. Counts every client of the database, every "
+    "replica included.",
+)
+
 # ── Message transport ────────────────────────────────────────────────────────
 MESSAGES_SENT = _spec(
     "switch.messages.sent",
@@ -264,6 +288,18 @@ AGENT_EVENTS_DROPPED = _spec(
     "(retention).",
     "reason",
 )
+# `reason` is from a fixed set the refusal sites choose: `transport_removed` is
+# a client still asking for the retired event stream, the one way to see old
+# clients that never manage to connect at all.
+AGENT_CONNECTIONS_REFUSED = _spec(
+    "switch.agent.connections_refused",
+    "sum",
+    "{connection}",
+    "Agent connections refused on opening, by reason: transport_removed (an "
+    "old client asking for the event stream), protocol (no agent-protocol "
+    "revision in common), unauthorized (no valid credential), other.",
+    "reason",
+)
 AGENT_CONNECTIONS_EXPIRED = _spec(
     "switch.agent.connections_expired",
     "sum",
@@ -273,11 +309,17 @@ AGENT_CONNECTIONS_EXPIRED = _spec(
 )
 
 # ── Agents and clients ───────────────────────────────────────────────────────
+# `client` is the declared artifact when the registry knows the name, else
+# `other` or `unknown`. Never the declared version: the client chooses it.
 AGENTS_CONNECTED = _spec(
     "switch.agents.connected",
     "gauge",
     "{agent}",
-    "Agents holding a live protocol connection.",
+    "Agents holding a live protocol connection, by transport and client. An "
+    "agent connected more than one way counts once under each, so summing "
+    "across the attributes can exceed the number of agents.",
+    "transport",
+    "client",
 )
 CONSUMERS_RUNNING = _spec(
     "switch.consumers.running",
@@ -354,6 +396,8 @@ CATALOGUE: dict[str, MetricSpec] = {
         DB_POOL_OVERFLOW,
         DB_POOL_TIMEOUTS,
         DB_QUERY_DURATION,
+        DB_SERVER_CONNECTIONS,
+        DB_SERVER_TRANSACTIONS,
         MESSAGES_SENT,
         MESSAGES_DELIVERED,
         SEND_FAILURES,
@@ -365,6 +409,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         BRIDGES_RUNNING,
         BRIDGE_CALL_DURATION,
         AGENT_EVENTS_DROPPED,
+        AGENT_CONNECTIONS_REFUSED,
         AGENT_CONNECTIONS_EXPIRED,
         AGENTS_CONNECTED,
         CONSUMERS_RUNNING,

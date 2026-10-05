@@ -133,6 +133,8 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.feature_flag_store import FeatureFlagStore
 from switch_core.feature_flags import is_known_flag
 from switch_core.gateway.known_agents import KNOWN_AGENTS
+from switch_core.observability.catalogue import AGENT_CONNECTIONS_REFUSED
+from switch_core.observability.metrics import metrics
 from switch_core.version import switch_core_version
 
 logger = logging.getLogger(__name__)
@@ -1236,6 +1238,10 @@ async def connection_socket(
             worker_state_version=worker_state_version,
         )
     except HTTPException as exc:
+        reason = (
+            "protocol" if isinstance(exc.__cause__, ProtocolVersionError) else "other"
+        )
+        metrics().increment(AGENT_CONNECTIONS_REFUSED, {"reason": reason})
         await websocket.send_json(
             {
                 "event": "refused",

@@ -7,6 +7,8 @@ import json
 from contextlib import asynccontextmanager
 
 import pytest
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 
 from switch_core.config import SwitchConfig
 from switch_core.observability.bootstrap import RuntimeProbes, start_observability
@@ -74,7 +76,10 @@ def _probes(**overrides) -> RuntimeProbes:
         consumers_running=lambda: 5,
         connectors_running=lambda: 2,
         connectors_configured=lambda: 2,
-        agents_connected=lambda: 3,
+        agents_connected=lambda: {
+            ("websocket", "agent-runtime"): 2,
+            ("websocket", "unknown"): 1,
+        },
         pool_stats=lambda: PoolStats(in_use=4, size=30, overflow=0),
     )
     return RuntimeProbes(**{**defaults, **overrides})
@@ -163,7 +168,14 @@ async def test_an_endpoint_installs_the_registry_and_reports_state(monkeypatch):
             for name, payload in payloads.items()
             if payload.numbers and not payload.numbers[0].attributes
         }
-        assert values["switch.agents.connected"] == 3.0
+        connected = {
+            (point.attributes["transport"], point.attributes["client"]): point.value
+            for point in payloads["switch.agents.connected"].numbers
+        }
+        assert connected == {
+            ("websocket", "agent-runtime"): 2.0,
+            ("websocket", "unknown"): 1.0,
+        }
         assert values["switch.consumers.running"] == 5.0
         assert values["switch.connectors.running"] == 2.0
         assert values["switch.db.pool.in_use"] == 4.0
@@ -262,3 +274,34 @@ async def test_closing_stops_the_loops_and_uninstalls(monkeypatch):
 
     assert metrics().enabled is False
     assert all(task.done() for task in observability._tasks)
+
+
+@pytest.mark.asyncio
+async def test_the_database_sampler_starts_with_the_metrics_exporter(monkeypatch):
+    built: list[object] = []
+
+    def engine():
+        built.append(object())
+        return create_async_engine(
+            "postgresql+asyncpg://u:p@127.0.0.1:1/x", poolclass=NullPool
+        )
+
+    observability = start_observability(
+        config=_config(
+            monkeypatch,
+            OTLP_ENDPOINT="https://collector.example",
+            DEPLOYMENT_ID=DEPLOYMENT_ID,
+            OTLP_EXPORT_INTERVAL_SECONDS="3600",
+        ),
+        version="1.0.0",
+        session_factory=_session_factory(),
+        probes=_probes(),
+        db_server_engine=engine,
+    )
+    try:
+        await asyncio.sleep(0.05)
+        names = {task.get_name() for task in observability._tasks}
+        assert "db-server-sampler" in names
+        assert built, "the sampler never built its engine"
+    finally:
+        await observability.aclose()
