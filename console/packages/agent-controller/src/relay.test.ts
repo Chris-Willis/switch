@@ -122,7 +122,7 @@ beforeEach(async () => {
     timing: { heartbeatTtlMs: 6_000, heartbeatIntervalS: 2, sweepMs: 50, keepaliveMs: 15_000 },
     bufferLimit: 100,
   });
-  await relay.start(null);
+  await relay.start(null, false);
   token = relay.mint(AGENT);
   relay.streamAttached();
   relay.attach(AGENT, 0, ['room-a', 'room-b']);
@@ -341,7 +341,7 @@ describe('the relay as the agent protocol, read by the real SwitchEventStream', 
       timing: { heartbeatTtlMs: 300, heartbeatIntervalS: 2, sweepMs: 20, keepaliveMs: 15_000 },
       bufferLimit: 100,
     });
-    await relay.start(null);
+    await relay.start(null, false);
     token = relay.mint(AGENT);
     relay.setReady();
     const response = await fetch(
@@ -552,7 +552,7 @@ describe('what the relay refuses', () => {
       timing: { heartbeatTtlMs: 6_000, heartbeatIntervalS: 2, sweepMs: 50, keepaliveMs: 15_000 },
       bufferLimit: 100,
     });
-    await starting.start(null);
+    await starting.start(null, false);
     try {
       const early = await fetch(`${starting.endpoint}/agents/${AGENT}/ops`, {
         headers: { Authorization: 'Bearer swlr_unknown' },

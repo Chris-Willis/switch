@@ -69,6 +69,7 @@ function deps(server = core.url): ControllerDeps {
     secrets,
     runtime: runtime.build,
     sealedLoginChanged: async (provider) => void changedLogins.push(provider),
+    pinnedRelayPort: null,
     locator: new FakeLocator(),
     fetch,
     log: silentLogger,
@@ -367,6 +368,17 @@ describe('runController', () => {
     expect(store.relayPort()).not.toBe(port);
     stop.abort();
     expect(await running).toBe('stopped');
+  });
+
+  it('refuses to start when the relay port its agents are configured with is taken', async () => {
+    const port = await freePort();
+    const blocker = createServer();
+    blockers.push(blocker);
+    await new Promise<void>((resolve) => blocker.listen(port, '127.0.0.1', resolve));
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    await expect(runController({ ...deps(), pinnedRelayPort: port }, stop.signal)).rejects.toThrow(
+      `The relay port ${port} this machine's agents are configured with is taken`
+    );
   });
 
   it('exits as taken over when another instance opens the controller stream', async () => {

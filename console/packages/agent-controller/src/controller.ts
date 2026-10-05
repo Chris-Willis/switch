@@ -89,6 +89,8 @@ export type ControllerDeps = {
    * `provider.credential_changed`; null where logins are not sealed by Switch.
    */
   sealedLoginChanged: ((provider: Provider) => Promise<void>) | null;
+  /** The one port the relay may listen on, where agents are configured with it; null to choose freely. */
+  pinnedRelayPort: number | null;
   locator: ProviderLocator;
   fetch: Fetch;
   log: Logger;
@@ -326,7 +328,9 @@ export async function runController(
     }
   };
   if (assignment) placeAgents(assignment);
-  const port = await relay.start(store.relayPort());
+  const port = await (deps.pinnedRelayPort === null
+    ? relay.start(store.relayPort(), false)
+    : relay.start(deps.pinnedRelayPort, true));
   store.saveRelayPort(port);
   log.info('Relay listening for this machine’s agents', { endpoint: relay.endpoint });
 

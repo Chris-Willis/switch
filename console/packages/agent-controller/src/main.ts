@@ -172,6 +172,7 @@ type RunSetup = {
   identity: { controllerId: string; server: string; name: string } | null;
   runtime: ControllerDeps['runtime'];
   sealedLoginChanged: ControllerDeps['sealedLoginChanged'];
+  pinnedRelayPort: ControllerDeps['pinnedRelayPort'];
   locator: ProviderLocator;
   fetch: Fetch;
   workspacesFor: (server: string) => string;
@@ -223,6 +224,7 @@ async function localRun(
     locator: new PathProviderLocator(process.env.PATH),
     fetch,
     sealedLoginChanged: null,
+    pinnedRelayPort: null,
     workspacesFor: serverWorkspacesDir,
     close: async () => {},
   };
@@ -250,7 +252,6 @@ async function ec2Run(
   const { dataDir, store } = await openState(
     values['data-dir'] ?? join(EC2_DATA_ROOT, '.switch-controller')
   );
-  store.saveRelayPort(config.relayPort);
   const hostFetch = withHostIdentity(fetch, {
     instanceId: config.instanceId,
     bootId: config.bootId,
@@ -296,6 +297,7 @@ async function ec2Run(
       if (!logins) throw new Error('A sealed login changed before the agents runtime was built.');
       await logins.current(provider);
     },
+    pinnedRelayPort: config.relayPort,
     locator: new FixedProviderLocator(config.providers),
     fetch: hostFetch,
     workspacesFor: () => layout.worktreesRoot,
@@ -370,6 +372,7 @@ async function runCommand(args: string[]): Promise<number> {
         secrets: setup.secrets,
         runtime: setup.runtime,
         sealedLoginChanged: setup.sealedLoginChanged,
+        pinnedRelayPort: setup.pinnedRelayPort,
         locator: setup.locator,
         fetch: setup.fetch,
         log,

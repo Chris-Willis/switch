@@ -214,8 +214,12 @@ export class LocalRelay {
 
   constructor(private readonly deps: RelayDeps) {}
 
-  /** Listens on 127.0.0.1: on `preferredPort` when it is free, so running watchers find it again. */
-  async start(preferredPort: number | null): Promise<number> {
+  /**
+   * Listens on 127.0.0.1: on `preferredPort` when it is free, so running
+   * watchers find it again. A `pinned` port is the only one the agents can
+   * reach, so its being taken is an error rather than a reason to move.
+   */
+  async start(preferredPort: number | null, pinned: boolean): Promise<number> {
     const server = createServer((req, res) => {
       void this.handle(req, res).catch((error: unknown) => {
         this.deps.log.error('The relay failed a request', {
@@ -243,6 +247,11 @@ export class LocalRelay {
     } catch (error) {
       if (preferredPort === null || (error as NodeJS.ErrnoException).code !== 'EADDRINUSE')
         throw error;
+      if (pinned)
+        throw new Error(
+          `The relay port ${preferredPort} this machine's agents are configured with is taken by another process.`,
+          { cause: error }
+        );
       this.deps.log.warn(
         'The relay port the agents were given is taken; using a new one. Running agents are restarted to pick it up.',
         { port: preferredPort }
