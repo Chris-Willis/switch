@@ -71,7 +71,7 @@
         "title": "Agents connected",
         "requests": [
           {
-            "q": "avg:switch.agents.connected{$env,$service}",
+            "q": "sum:switch.agents.connected{$env,$service}",
             "aggregator": "last"
           }
         ],
@@ -712,6 +712,85 @@
         "x": 0,
         "y": 63,
         "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agents connected, by transport and client",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.agents.connected{$env,$service} by {transport,client}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 67,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agent connections refused per second, by reason",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.agent.connections_refused{$env,$service} by {reason}.as_rate()",
+            "display_type": "bars",
+            "style": {
+              "palette": "warm"
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 67,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Database sessions for this server's role, by state (the database's view)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.db.server.connections{$env,$service} by {state}",
+            "display_type": "area"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 71,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Database transactions per second (the database's view)",
+        "show_legend": false,
+        "requests": [
+          {
+            "q": "sum:switch.db.server.transactions{$env,$service}.as_rate()",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 71,
+        "width": 6,
         "height": 4
       }
     }

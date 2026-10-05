@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 
 import jwt
 from fastapi import HTTPException
@@ -25,6 +26,8 @@ from switch_core.db.tenant_lookup import (
     tenant_of_api_key,
 )
 from switch_core.logging_context import log_context
+from switch_core.observability.catalogue import AGENT_CONNECTIONS_REFUSED
+from switch_core.observability.metrics import metrics
 from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
@@ -47,6 +50,11 @@ PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     # origin from the platform's signature before it does anything else.
     MESSAGING_INSTALL_PREFIX,
 )
+
+
+# The agent connection's socket, whose refusals are counted as connections
+# refused. Any other path's 401 is an ordinary failed request.
+_AGENT_CONNECTION_PATH = re.compile(r"^/agents/[^/]+/connection/ws$")
 
 
 class OIDCTokenValidator:
@@ -283,6 +291,8 @@ async def _unauthorized(
     connection uses for every refusal.
     """
     if scope["type"] == "websocket":
+        if _AGENT_CONNECTION_PATH.match(scope.get("path", "")):
+            metrics().increment(AGENT_CONNECTIONS_REFUSED, {"reason": "unauthorized"})
         await receive()  # the client's websocket.connect
         await send({"type": "websocket.accept"})
         await send({"type": "websocket.close", "code": 4401, "reason": reason})

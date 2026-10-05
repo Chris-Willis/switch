@@ -117,6 +117,8 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.feature_flag_store import FeatureFlagStore
 from switch_core.feature_flags import is_known_flag
 from switch_core.gateway.known_agents import KNOWN_AGENTS
+from switch_core.observability.catalogue import AGENT_CONNECTIONS_REFUSED
+from switch_core.observability.metrics import metrics
 from switch_core.version import switch_core_version
 
 logger = logging.getLogger(__name__)
@@ -733,6 +735,7 @@ async def poll_events(
         # The agent connection moved to one WebSocket, which carries both the
         # events and the heartbeat. A client still asking for the stream is
         # an old runtime, and is told what to do rather than left retrying.
+        metrics().increment(AGENT_CONNECTIONS_REFUSED, {"reason": "transport_removed"})
         raise HTTPException(
             status_code=410,
             detail={
@@ -978,6 +981,10 @@ async def connection_socket(
             expected_generation=expected_generation,
         )
     except HTTPException as exc:
+        reason = (
+            "protocol" if isinstance(exc.__cause__, ProtocolVersionError) else "other"
+        )
+        metrics().increment(AGENT_CONNECTIONS_REFUSED, {"reason": reason})
         await websocket.send_json(
             {
                 "event": "refused",

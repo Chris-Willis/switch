@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 
 import httpx
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from switch_core.config import SwitchConfig
 from switch_core.logging_context import LogContextFilter
@@ -27,6 +27,7 @@ from switch_core.observability.catalogue import (
     DB_POOL_OVERFLOW,
     DB_POOL_SIZE,
 )
+from switch_core.observability.db_server import DbServerSampler
 from switch_core.observability.exporter import MetricsExporter
 from switch_core.observability.health import (
     HealthMonitor,
@@ -83,7 +84,9 @@ class RuntimeProbes:
     consumers_running: Callable[[], int]
     connectors_running: Callable[[], int]
     connectors_configured: Callable[[], int]
-    agents_connected: Callable[[], int]
+    # Agents per (transport, client); see
+    # `AgentConnectionRegistry.live_agents_by_transport`.
+    agents_connected: Callable[[], Mapping[tuple[str, str], int]]
     # None when the engine's pool does not keep these — see
     # :mod:`switch_core.observability.pool`.
     pool_stats: Callable[[], PoolStats | None]
@@ -120,7 +123,19 @@ class Observability:
 
 def _state_readings(probes: RuntimeProbes) -> Callable[[], Iterator[GaugeReading]]:
     def readings() -> Iterator[GaugeReading]:
-        yield GaugeReading(AGENTS_CONNECTED, float(probes.agents_connected()), {})
+        connected = probes.agents_connected()
+        for (transport, client), agents in connected.items():
+            yield GaugeReading(
+                AGENTS_CONNECTED,
+                float(agents),
+                {"transport": transport, "client": client},
+            )
+        if not connected:
+            # A zero rather than nothing, so the panel reads none connected
+            # instead of no data.
+            yield GaugeReading(
+                AGENTS_CONNECTED, 0.0, {"transport": "websocket", "client": "unknown"}
+            )
         yield GaugeReading(CONSUMERS_RUNNING, float(probes.consumers_running()), {})
         for platform, running in probes.bridges_running_by_platform().items():
             yield GaugeReading(
@@ -144,10 +159,13 @@ def start_observability(
     version: str | None,
     session_factory: async_sessionmaker,
     probes: RuntimeProbes,
+    db_server_engine: Callable[[], AsyncEngine] | None = None,
 ) -> Observability:
     """Install the registry, start the loops, and hand back the handle.
 
-    Called once, from the server's lifespan.
+    Called once, from the server's lifespan. `db_server_engine` builds the
+    engine the database sampler takes its one connection from; it must not be
+    the application's pooled engine.
     """
     monitor = HealthMonitor(
         checks=[
@@ -209,6 +227,12 @@ def start_observability(
         tasks.append(
             asyncio.create_task(exporter.run_forever(), name="metrics-exporter")
         )
+        if db_server_engine is not None:
+            sampler = DbServerSampler(db_server_engine)
+            registry.register_observer(sampler.readings)
+            tasks.append(
+                asyncio.create_task(sampler.run_forever(), name="db-server-sampler")
+            )
         logger.info(
             "Reporting metrics to %s every %.0fs as service %r.",
             client.url_for("metrics"),
