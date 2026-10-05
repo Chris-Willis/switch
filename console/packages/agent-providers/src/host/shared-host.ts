@@ -13,6 +13,7 @@ import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import {
   planAttachments,
   roomCommand,
+  roomFreshStartCommandId,
   roomMessageSchema,
   type RoomAttachmentSource,
 } from './room-prompt';
@@ -57,11 +58,11 @@ export type SharedHostOptions = {
 };
 
 /** How long a session sits idle before its host parks, unless the environment says otherwise. */
-const PARK_AFTER_MS = 30 * 60 * 1000;
+const PARK_AFTER_MS = 24 * 60 * 60 * 1000;
 
 /**
  * The park timeout for this process: `SWITCH_SESSION_PARK_AFTER_MS` in
- * milliseconds, `off` to never park, or 30 minutes when unset.
+ * milliseconds, `off` to never park, or one day when unset.
  */
 export function parkAfterMs(): number | null {
   const value = process.env.SWITCH_SESSION_PARK_AFTER_MS;
@@ -549,6 +550,40 @@ export async function runSharedHost(
       }
     };
 
+    /**
+     * A room message reached a conversation that cannot continue as it was —
+     * its provider lost it, or a reset was cut off. Nobody in the room can
+     * press "Start a fresh conversation" for it, so the session does: the
+     * message would otherwise wait unseen for someone at the Console. The
+     * transcript keeps everything said before.
+     */
+    const startFreshFor = async (event: { roomId: string; messageId: string }): Promise<void> => {
+      await host!.startingFreshForRoom();
+      const outcome = await run(
+        {
+          contractVersion: 1,
+          commandId: roomFreshStartCommandId(agentId, event.roomId, event.messageId),
+          sessionId: options.session.sessionId,
+          epoch: host!.snapshot().session.epoch,
+          origin: {
+            surface: 'switch-web',
+            actorId: agentId,
+            roomId: null,
+            threadId: null,
+            messageId: null,
+          },
+          body: { type: 'session.reset' },
+        },
+        null
+      );
+      if (typeof outcome === 'string')
+        throw new Error(`Could not start a fresh conversation for a room message: ${outcome}`);
+      if (outcome.status === 'rejected' || outcome.status === 'unknown')
+        throw new Error(
+          `Could not start a fresh conversation for a room message: ${outcome.message ?? outcome.code ?? outcome.status}`
+        );
+    };
+
     identify(host.snapshot().session);
     // A parent that started this host talks to it over IPC: commands and room
     // messages come down the pipe, and every recorded event goes up it.
@@ -579,9 +614,17 @@ export async function runSharedHost(
       host.onPublished((event) => parent.push(event));
       parent.ready();
     }
-    /** Nothing running, nothing waiting on a person, nothing handed over, for long enough. */
+    /**
+     * Nothing running, nothing waiting on a person, nothing handed over, for
+     * long enough. Subagents still at work after their turn ended count as
+     * running, and the wait starts again from when the last of them stops.
+     */
     const idleEnough = (): boolean => {
       if (!parent || options.parkAfterMs === null) return false;
+      if (host!.backgroundWorkRunning) {
+        active();
+        return false;
+      }
       if (performance.now() - lastActive < options.parkAfterMs) return false;
       const snapshot = host!.snapshot();
       return (
@@ -666,8 +709,11 @@ export async function runSharedHost(
         throw new Error(
           'HOST_FAULTED: Provider execution failed. Inspect the transcript before recovery.'
         );
-      if (host.resetDecisionPending) heldForDecision = true;
-      else if (heldForDecision) {
+      if (host.resetDecisionPending) {
+        heldForDecision = true;
+        const first = rooms?.pending()[0];
+        if (first) await startFreshFor(first);
+      } else if (heldForDecision) {
         heldForDecision = false;
         const held = rooms?.pending().length ?? 0;
         if (held) await host.roomBacklogDelivered(held);

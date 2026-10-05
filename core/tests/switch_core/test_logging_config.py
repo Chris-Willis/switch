@@ -25,7 +25,7 @@ BASE_ENV = {
     "DB_NAME": "switch",
     "MATRIX_SERVER_NAME": "switch.local",
     "AGENT_REGISTRATION_TOKEN": "token",
-    "JWT_SECRET_KEY": "jwt",
+    "SECRET_KEYS": "test:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
     "GATEWAY_ADMIN_EMAIL": "admin@example.com",
     "GATEWAY_ADMIN_PASSWORD": "pw",
 }
@@ -251,22 +251,25 @@ def test_filter_stamps_every_field(monkeypatch: pytest.MonkeyPatch) -> None:
     record = logging.LogRecord(
         "x", logging.INFO, __file__, 1, "m", args=(), exc_info=None
     )
+    fields = {name: f"{name}-value" for name in CONTEXT_FIELDS if name != "tenant_id"}
 
-    with log_context(
-        request_id="r",
-        agent_id="a",
-        user_id="u",
-        console_id="c",
-        console_name="alice@laptop",
-    ):
+    with log_context(**fields):
         LogContextFilter("acme").filter(record)
 
     assert record.tenant_id == "acme"
-    assert record.request_id == "r"
-    assert record.agent_id == "a"
-    assert record.user_id == "u"
-    assert record.console_id == "c"
-    assert record.console_name == "alice@laptop"
+    for name, value in fields.items():
+        assert getattr(record, name) == value, name
+
+
+def test_the_bridge_side_reaches_a_json_line(json_lines) -> None:
+    logger, lines = json_lines
+
+    with log_context(bridge="collaboration", platform="slack"):
+        logger.info("[BRIDGE-IN] message")
+
+    entry = _one(lines)
+    assert entry["bridge"] == "collaboration"
+    assert entry["platform"] == "slack"
 
 
 def test_the_console_rides_alongside_the_user_in_json(json_lines) -> None:

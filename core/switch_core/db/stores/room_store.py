@@ -49,10 +49,10 @@ class RoomStore:
             return None
         return row[0], row[1] is not None
 
-    async def get_by_matrix_room_id(
-        self, session: AsyncSession, matrix_room_id: str
+    async def get_by_transport_room_id(
+        self, session: AsyncSession, transport_room_id: str
     ) -> Room | None:
-        """Resolve a room by its Matrix room id within the bound tenant.
+        """Resolve a room by its transport room id (`transport_room_id`) within the bound tenant.
 
         Scoped explicitly rather than left to row-level security:
         `matrix_room_id` is unique per tenant
@@ -62,16 +62,16 @@ class RoomStore:
         every inbound-event path that resolves a room this way (provisioning,
         the Postgres transport, admin commands). Every caller that reaches
         this by now already knows its tenant — `PostgresTransport` and the
-        two `ClientBase` subclasses carry it on the row they were built from,
+        two `Actor` subclasses carry it on the row they were built from,
         and `PostgresProvisioning` is only ever called from `room_service`
         inside a `tenant_scope` bound to the room it is acting on — so there
         is no bootstrap case left that needs an unfiltered fallback, the same
-        as `ClientStore.get_by_matrix_user_id`.
+        as `ClientStore.get_by_transport_user_id`.
         """
         result = await session.execute(
             select(Room).where(
                 Room.tenant_id == require_tenant_id(),
-                Room.matrix_room_id == matrix_room_id,
+                Room.transport_room_id == transport_room_id,
             )
         )
         return result.scalar_one_or_none()
@@ -194,6 +194,29 @@ class RoomStore:
         room.channel_type = channel_type
         room.external_channel_id = external_channel_id
         await session.flush()
+
+    async def correct_channel_type(
+        self,
+        session: AsyncSession,
+        *,
+        bridge_id: str,
+        external_channel_id: str,
+        channel_type: str,
+    ) -> list[str]:
+        """Set `channel_type` on this bridge's rooms bound to the channel and
+        saved as a channel of the other privacy; returns the ids that changed."""
+        result = await session.execute(
+            update(Room)
+            .where(
+                Room.bridge_id == bridge_id,
+                Room.external_channel_id == external_channel_id,
+                Room.channel_type.in_(("channel_public", "channel_private")),
+                Room.channel_type != channel_type,
+            )
+            .values(channel_type=channel_type)
+            .returning(Room.id)
+        )
+        return list(result.scalars().all())
 
     async def clear_bridge(self, session: AsyncSession, room_id: str) -> None:
         room = await session.get(Room, room_id)
@@ -425,19 +448,22 @@ class RoomStore:
     async def get_member_agent_clients(
         self, session: AsyncSession, room_id: str
     ) -> dict[str, str]:
-        """`{client_id: matrix_user_id}` for the agents this room has as members.
+        """`{client_id: transport_user_id}` for the agents this room has as members.
 
         Resolved from the database rather than from the running client
         registry, so it answers correctly before the agent clients have
         finished booting.
         """
         result = await session.execute(
-            select(Client.id, Client.matrix_user_id)
+            select(Client.id, Client.transport_user_id)
             .join(Agent, Agent.client_id == Client.id)
             .join(room_agents, room_agents.c.agent_id == Agent.id)
             .where(room_agents.c.room_id == room_id)
         )
-        return {client_id: matrix_user_id for client_id, matrix_user_id in result.all()}
+        return {
+            client_id: transport_user_id
+            for client_id, transport_user_id in result.all()
+        }
 
     async def get_by_bridge(self, session: AsyncSession, bridge_id: str) -> list[Room]:
         result = await session.execute(select(Room).where(Room.bridge_id == bridge_id))

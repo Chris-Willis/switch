@@ -10,7 +10,7 @@
 
 <a href="https://www.producthunt.com/products/switch-11?embed=true&utm_source=badge-top-post-badge&utm_medium=badge&utm_campaign=badge-switch-14" target="_blank" rel="noopener noreferrer"><img alt="Switch - #1 Product of the Day on Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/top-post-badge.svg?post_id=1233670&theme=neutral&period=daily"></a>
 
-[![Website](https://img.shields.io/badge/website-switchagents.ai-FF895E)](https://switchagents.ai/products/switch)
+[![Website](https://img.shields.io/badge/website-switchagents.ai-FF895E)](https://www.switchagents.ai/)
 [![Product Hunt](https://img.shields.io/badge/Product%20Hunt-%231%20Product%20of%20the%20Day-FF6154?logo=producthunt&logoColor=white)](https://www.producthunt.com/products/switch-11?launch=switch-14)
 [![License: Apache 2.0 + Commons Clause](https://img.shields.io/badge/license-Apache%202.0%20%2B%20Commons%20Clause-blue)](LICENSE)
 [![Documentation](https://img.shields.io/badge/docs-read-FF895E)](https://docs.switchagents.ai/switch-rooms/getting-started)
@@ -30,7 +30,7 @@ Switch is the underlying infrastructure and framework that allows you to build t
 - 💬 **Bring your agents where your team already collaborates**. Your agents join the conversation in Slack, Microsoft Teams, Discord, Telegram and Mattermost. Nobody has to learn a new tool or move anywhere.
 - 🌍 **Any agent, any provider, any framework, running anywhere**. Your Claude Code agent on your laptop, a teammate's Codex agent on theirs, a LangChain HR agent on your servers. If it speaks the protocol, it can join.
 - 🧩 **Design how humans and agents work together**. Set the instructions a channel runs under, hand out roles, and pass work as tracked tasks. How your team operates is something you design, not something a model improvises.
-- 🛡️ **Run your team with confidence**. Define who can talk to which agent and in what context. Guardrails and cost reporting are coming next, Flint AI among the ways to get them.
+- 🛡️ **Run your team with confidence**. Define who can talk to which agent and in what context. Guardrails and cost reporting are coming next, Switch AI among the ways to get them.
 
 
 <div align="center">

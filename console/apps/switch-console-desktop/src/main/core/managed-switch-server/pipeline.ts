@@ -1,10 +1,10 @@
-import { resolveAgentServers } from '@main/core/agents/resolve-servers';
 import { passwordLogin } from '@main/core/switch-servers/auth';
 import {
   assertManagedServerUrlFree,
   ensureManagedServer,
   setActiveServerId,
 } from '@main/core/switch-servers/servers-store';
+import { reconcileServerWorkspaces } from '@main/core/workspaces/reconcile-workspaces';
 import { log } from '@main/lib/logger';
 import { COMPATIBLE_SWITCH_VERSION, RELEASE_REPO_OWNER } from '@shared/app-identity';
 import {
@@ -34,7 +34,7 @@ import type { ServerHost } from './host/types';
 import { finishUpgrade, type OwedUpgrade, prepareUpgrade } from './managed-upgrade';
 import { crossesMatrixBoundary, runBackfill } from './matrix-migration';
 import { clearPorts, readPersistedPorts, rememberPorts, resolvePorts } from './ports';
-import { type LocalServerSecrets, withRuntimePassword } from './secret-values';
+import { type LocalServerSecrets, withNewerSecrets } from './secret-values';
 import { clearSecrets, loadOrCreateSecrets, readSecrets, storeSecrets } from './secrets';
 import type { ServerLease } from './stack-lock';
 import {
@@ -302,10 +302,13 @@ async function adoptSettings(
   stack: Extract<StackOnHost, { kind: 'present' }>
 ): Promise<StackSettings> {
   // A `.env` from before the database role split has no runtime password; one
-  // is made here, and the next start gives the role it.
-  const { secrets } = withRuntimePassword({
+  // is made here, and the next start gives the role it. One from before
+  // SECRET_KEYS takes this desktop's, if it has one — a server may already
+  // have stored credentials under it — and a fresh one otherwise.
+  const { secrets } = withNewerSecrets({
     ...stack.env.secrets,
     dbRuntimePassword: stack.env.secrets.dbRuntimePassword ?? '',
+    secretKeys: stack.env.secrets.secretKeys ?? (await readSecrets(host))?.secretKeys ?? '',
   });
   await storeSecrets(host, secrets);
   await rememberPorts(host, stack.env.ports);
@@ -446,9 +449,18 @@ async function registerAndSignIn(
     log.warn('managed-switch-server: auto sign-in failed; server will show a sign-in prompt', {
       error: login.error,
     });
+  } else {
+    // The user never sees a login form for a managed stack, so this is the only
+    // sign-in it will ever have — without matching the workspaces here, its
+    // placeholder one would stay unmatched until some later launch happened to.
+    await reconcileServerWorkspaces(server.id).catch((error: unknown) => {
+      log.warn('managed-switch-server: signed in, but could not read the account’s workspaces', {
+        server: server.id,
+        error: String(error),
+      });
+    });
   }
 
-  await resolveAgentServers();
   return server.id;
 }
 

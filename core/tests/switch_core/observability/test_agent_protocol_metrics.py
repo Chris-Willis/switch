@@ -12,11 +12,11 @@ from collections.abc import Iterator
 
 import pytest
 
-from switch_core.bridges.agent.protocol import connections as conn_module
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol import agent_connections as conn_module
+from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
@@ -88,7 +88,7 @@ def test_nothing_is_counted_when_nothing_is_dropped(registry):
 
 def test_expired_connections_are_counted(registry, monkeypatch):
     """A flat connection count hides agents reconnecting as fast as they lapse."""
-    connections = ConnectionRegistry()
+    connections = AgentConnectionRegistry()
     connections.open(
         agent_id="agent-1",
         connection_id="c1",
@@ -113,7 +113,7 @@ def test_expired_connections_are_counted(registry, monkeypatch):
 
 
 def test_a_quiet_sweep_counts_nothing(registry):
-    connections = ConnectionRegistry()
+    connections = AgentConnectionRegistry()
     connections.open(
         agent_id="agent-1",
         connection_id="c1",

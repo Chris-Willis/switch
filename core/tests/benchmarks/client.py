@@ -20,7 +20,9 @@ from typing import Any
 
 import httpx
 
-from switch_core.bridges.agent.protocol.connections import HEARTBEAT_INTERVAL_SECONDS
+from switch_core.bridges.agent.protocol.agent_connections import (
+    HEARTBEAT_INTERVAL_SECONDS,
+)
 
 
 @dataclass(frozen=True, slots=True)

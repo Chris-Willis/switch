@@ -19,10 +19,10 @@ from fastapi import HTTPException
 
 from switch_core.bridges.agent.api.handlers import connection_beat
 from switch_core.bridges.agent.api.schemas import ConnectionBeatRequest
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 
@@ -33,7 +33,7 @@ CONN_ID = "conn-1"
 class _Protocol:
     def __init__(self) -> None:
         self.event_buffer = EventBuffer()
-        self.connections = ConnectionRegistry()
+        self.connections = AgentConnectionRegistry()
 
 
 def _open(protocol: _Protocol, *, speaks: int | None = PROTOCOL_VERSION) -> Any:

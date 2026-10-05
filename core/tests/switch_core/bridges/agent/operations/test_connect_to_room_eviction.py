@@ -26,10 +26,10 @@ from switch_core.bridges.agent.operations.callctx import (
     set_call_context,
 )
 from switch_core.bridges.agent.operations.context import init_operations_protocol
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 
@@ -63,7 +63,7 @@ class _RecordingSessionStore:
         self.bindings.append((agent_id, room_id, transport_session_id))
 
 
-def _protocol(registry: ConnectionRegistry, store: _RecordingSessionStore) -> Any:
+def _protocol(registry: AgentConnectionRegistry, store: _RecordingSessionStore) -> Any:
     room = SimpleNamespace(id=ROOM, name="Room One", description="A room")
     agent = SimpleNamespace(id=AGENT, name="agent-one", integration_profile=_PROFILE)
     room_model = SimpleNamespace(id=ROOM, name="Room One", bridge_id=None)
@@ -117,7 +117,7 @@ def _returning(value: Any):
     return _get
 
 
-def _open(registry: ConnectionRegistry, connection_id: str):
+def _open(registry: AgentConnectionRegistry, connection_id: str):
     return registry.open(
         agent_id=AGENT,
         connection_id=connection_id,
@@ -132,7 +132,7 @@ def _open(registry: ConnectionRegistry, connection_id: str):
 
 @pytest.fixture
 def harness(monkeypatch: pytest.MonkeyPatch):
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     store = _RecordingSessionStore()
     protocol = _protocol(registry, store)
     init_operations_protocol(protocol)

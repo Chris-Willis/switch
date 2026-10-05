@@ -148,6 +148,12 @@ export interface ProviderAdapter {
   stopSession(sessionId: string): Promise<void>;
   stopAll(): Promise<void>;
   hasSession(sessionId: string): boolean;
+  /**
+   * Whether the session is still at work outside any turn — subagents started
+   * in the background that outlive the turn that started them. A session with
+   * background work is not idle. Absent means the provider has none to report.
+   */
+  hasBackgroundWork?(sessionId: string): boolean;
 
   /** Events for every session this adapter drives. Returns the unsubscribe. */
   subscribe(listener: (event: ProviderRuntimeEvent) => void): () => void;

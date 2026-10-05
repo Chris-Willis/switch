@@ -10,15 +10,16 @@ const mocks = vi.hoisted(() => ({
   teardown: vi.fn(async () => ({ success: true })),
 }));
 vi.mock('./getAgentById', () => ({
-  getAgentById: async () => ({ id: 'local', serverId: 'server', switchAgentId: 'agent' }),
+  getAgentById: async () => ({ id: 'local', workspaceId: 'workspace', switchAgentId: 'agent' }),
 }));
-vi.mock('@main/core/switch-servers/servers-store', () => ({
-  getServer: async () => ({ id: 'server' }),
+vi.mock('@main/core/workspaces/workspace-session', () => ({
+  withWorkspaceSession: (_workspaceId: string, fn: (server: { id: string }) => Promise<unknown>) =>
+    fn({ id: 'server' }),
 }));
 vi.mock('@main/core/sdk-host/host-sessions', () => ({ listHostSessions: mocks.list }));
 vi.mock('@main/core/sdk-host/shared-agent-runtime', () => ({ stopSharedSession: mocks.stop }));
-vi.mock('@main/core/sdk-host/shared-watcher', () => ({
-  configureSharedWatcher: mocks.disable,
+vi.mock('@main/core/sdk-host/agent-host', () => ({
+  configureAgentHost: mocks.disable,
   applyControllerState: mocks.restart,
 }));
 // Sidecar management is deliberately left real: it owns the Start transition,

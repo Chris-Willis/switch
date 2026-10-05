@@ -19,7 +19,7 @@ vi.mock('node:os', async (importOriginal) => ({
 }));
 vi.mock('@switch-console/agent-providers', () => ({
   ensureSharedProcess: mocks.ensure,
-  runSharedWatcher: mocks.runWatcher,
+  runAgentHost: mocks.runWatcher,
   superviseSharedHost: mocks.supervise,
   clearTakenOver: mocks.clearTakenOver,
   WATCH_FLAGS_FILE: 'watch.json',

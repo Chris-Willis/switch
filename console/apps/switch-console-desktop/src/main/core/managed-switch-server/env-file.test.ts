@@ -10,6 +10,7 @@ const secrets: LocalServerSecrets = {
   dbRuntimePassword: 'db-runtime-pw',
   agentRegistrationToken: 'agent-token',
   jwtSecretKey: 'jwt-key',
+  secretKeys: 'console:secret-keys-value',
   gatewayAdminPassword: 'gw-admin',
   mattermostAdminPassword: 'mm-admin',
   mattermostUserPassword: 'mm-user',
@@ -55,6 +56,7 @@ describe('buildEnvFile', () => {
 
   it('binds the managed stack to loopback and seeds the admin account', () => {
     expect(vars.SWITCH_BIND_ADDR).toBe('127.0.0.1');
+    expect(vars.GATEWAY_COOKIE_SECURE).toBe('false');
     expect(vars.GATEWAY_ADMIN_EMAIL).toBe('admin@switch.local');
   });
 
@@ -63,6 +65,7 @@ describe('buildEnvFile', () => {
     expect(vars.DB_OWNER_PASSWORD).toBe('db-pw');
     expect(vars.AGENT_REGISTRATION_TOKEN).toBe('agent-token');
     expect(vars.JWT_SECRET_KEY).toBe('jwt-key');
+    expect(vars.SECRET_KEYS).toBe('console:secret-keys-value');
     expect(vars.GATEWAY_ADMIN_PASSWORD).toBe('gw-admin');
     expect(vars.MATTERMOST_ADMIN_PASSWORD).toBe('mm-admin');
     expect(vars.MATTERMOST_USER_PASSWORD).toBe('mm-user');
@@ -94,20 +97,33 @@ describe('buildEnvFile', () => {
     // An entry here must say why the stack is correct without it — leaving a
     // var unset is a decision, not a default.
     const intentionallyUnset = new Set<string>([
-      // The four below configure switch-core as a distributed messaging app —
-      // one app we own, installed by a customer into their own workspace, with
-      // the platform posting events to URLs declared once in the app manifest.
-      // A managed stack cannot be one of those and is not meant to be: it binds
-      // to loopback, so no platform can reach its callback or event URLs, and
-      // the credentials are the app owner's rather than anything this machine
-      // could hold. switch-core registers no installer without them and the
-      // operator UI says so rather than offering a button that would fail at
-      // Slack. Connecting a workspace from here is the other path — an operator
-      // registering a bridge with their own app's token.
+      // The vars below configure switch-core as a distributed messaging app —
+      // one app we own, installed by a customer into their own workspace. A
+      // managed stack cannot be one of those and is not meant to be: it binds
+      // to loopback, so no platform can reach the OAuth redirect the install
+      // needs (and switch-core makes MESSAGING_PUBLIC_URL a startup requirement
+      // the moment a distributed app is configured, so setting the credentials
+      // without it would fail boot), and the credentials are the app owner's
+      // rather than anything this machine could hold. switch-core registers no
+      // installer without them and the operator UI says so rather than offering
+      // a button that would fail at the platform. Connecting a workspace from
+      // here is the other path — an operator registering a bridge with their
+      // own app's token.
       'MESSAGING_PUBLIC_URL',
       'SLACK_APP_CLIENT_ID',
       'SLACK_APP_CLIENT_SECRET',
       'SLACK_APP_SIGNING_SECRET',
+      // Discord grants no per-install token, so its four are deployment config
+      // rather than per-workspace secrets. None can be held by a loopback stack
+      // (see above), so all are unset here.
+      'DISCORD_APP_CLIENT_ID',
+      'DISCORD_APP_CLIENT_SECRET',
+      'DISCORD_APP_BOT_TOKEN',
+      'DISCORD_APP_APPLICATION_ID',
+      // Private hosts Switch may reach at a tenant- or agent-supplied URL. The
+      // compose file always allows the bundled Mattermost; a managed stack
+      // allows nothing more until its operator says so.
+      'OUTBOUND_ALLOWED_PRIVATE_HOSTS',
     ]);
 
     const missing = [...interpolated]
@@ -187,6 +203,15 @@ describe('readStackEnv', () => {
         secrets: { ...secrets, dbRuntimePassword: null },
         version: '1.2.3',
       },
+    });
+  });
+
+  it('reads a file written before SECRET_KEYS, leaving the key ring to be filled in', () => {
+    const legacy = written.replace(/^SECRET_KEYS=.*$/m, '');
+
+    expect(readStackEnv(legacy)).toEqual({
+      kind: 'complete',
+      env: { ports, secrets: { ...secrets, secretKeys: null }, version: '1.2.3' },
     });
   });
 
@@ -294,6 +319,12 @@ describe('keysDisagreeing', () => {
     expect(keysDisagreeing(partial, { ports, secrets: { ...secrets, jwtSecretKey: 'x' } })).toEqual(
       []
     );
+  });
+
+  it('names a key ring the copy disagrees with', () => {
+    expect(
+      keysDisagreeing(written, { ports, secrets: { ...secrets, secretKeys: 'console:other' } })
+    ).toEqual(['SECRET_KEYS']);
   });
 
   it('reads DB_PASSWORD as the owner’s in a file written before the role split', () => {

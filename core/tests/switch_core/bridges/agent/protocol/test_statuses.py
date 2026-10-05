@@ -7,10 +7,10 @@ from typing import Any
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import AgentStatus
@@ -50,9 +50,9 @@ def _registry(
     scope: str = "single",
     room: str | None = None,
     spawn_capable: bool = False,
-) -> ConnectionRegistry:
+) -> AgentConnectionRegistry:
     """A registry holding at most one live connection."""
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     if agent_id is not None:
         conn = registry.open(
             agent_id=agent_id,

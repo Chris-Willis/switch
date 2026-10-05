@@ -15,6 +15,7 @@ import uvicorn
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -24,12 +25,12 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.agent.app import create_agent_bridge_app
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_TTL_SECONDS,
-    ConnectionRegistry,
+    AgentConnectionRegistry,
 )
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_KEY_LABEL,
     BOOTSTRAP_KEY_TYPE,
@@ -46,10 +47,14 @@ from switch_core.bridges.agent.server_connectors.opencode.connector import (
     OpenCodeConnectionConfig,
     OpenCodeConnector,
 )
+from switch_core.bridges.collaboration.adapter import SupportsSharedConnection
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
+from switch_core.bridges.collaboration.discord.connection import DiscordConnection
+from switch_core.bridges.collaboration.discord.gateway import DiscordGatewayClient
+from switch_core.bridges.collaboration.discord.install import DiscordAppInstaller
 from switch_core.bridges.collaboration.install import MessagingInstallerRegistry
 from switch_core.bridges.collaboration.install_routes import (
     create_messaging_install_router,
@@ -76,35 +81,43 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramConnectionConfig,
 )
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.clients.admin_client import AdminClient
-from switch_core.clients.agent_client import AgentClient
-from switch_core.clients.client_base import ClientBase
+from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
+from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
-from switch_core.config import SwitchConfig
-from switch_core.crypto import encrypt_token
+from switch_core.clients.command_consumer import CommandConsumer
+from switch_core.config import SwitchConfig, deprecated_env_names
+from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
 from switch_core.db.engine import (
     create_engine_from_config,
     create_session_factory,
     create_unpooled_engine,
 )
-from switch_core.db.models import TENANT_ZERO_ID, ApiKey, User
+from switch_core.db.key_rotation import reencrypt_stored_secrets
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    ApiKey,
+    User,
+)
 from switch_core.db.runtime_role import (
     RuntimeRoleError,
     grant_runtime_role,
     verify_restricted_role,
 )
+from switch_core.db.schema_version import require_schema_at_head
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
+from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.invitation_store import InvitationStore
+from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
@@ -120,10 +133,12 @@ from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.tenant_store import TenantStore
+from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
+from switch_core.gateway.invite_mail import SmtpInviteMailer
 from switch_core.logging_config import configure_logging
 from switch_core.messages.notify import MessageListener
 from switch_core.observability.bootstrap import (
@@ -137,12 +152,12 @@ from switch_core.observability.runtime import EventLoopLag
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
-from switch_core.session_activity.listener import SessionActivityListener
+from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
     maintenance_loop as session_activity_maintenance_loop,
 )
 from switch_core.session_activity.outcomes import ApprovalOutcomes
-from switch_core.session_activity.service import SessionActivityService
+from switch_core.session_activity.service import AgentSessionActivityService
 from switch_core.telemetry.reporter import SnapshotReporter
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.setup import build_telemetry
@@ -169,7 +184,7 @@ _CONNECTION_SWEEP_INTERVAL = 2.0
 _FORCED_EXIT_GRACE_SECONDS = 3.0
 
 
-async def _runtime_state_sweep_loop(protocol: ProtocolService) -> None:
+async def _runtime_state_sweep_loop(protocol: AgentCore) -> None:
     # `no_tenant` for the reason every other long-lived task does it: a task
     # keeps the context of whoever created it, and nothing in here may depend
     # on that. Boot binds nothing today, so this changes no behaviour — it
@@ -183,7 +198,7 @@ async def _runtime_state_sweep_loop(protocol: ProtocolService) -> None:
                 logger.exception("Runtime-state sweep failed")
 
 
-async def _connection_sweep_loop(protocol: ProtocolService, lag: EventLoopLag) -> None:
+async def _connection_sweep_loop(protocol: AgentCore, lag: EventLoopLag) -> None:
     """Expire connections whose client has stopped beating.
 
     Skips a round after the event loop has been blocked. A stall stops us
@@ -204,7 +219,7 @@ async def _connection_sweep_loop(protocol: ProtocolService, lag: EventLoopLag) -
         lag.record(overslept)
         if overslept > HEARTBEAT_TTL_SECONDS / 2:
             logger.warning(
-                "Connection sweep skipped: the event loop was blocked for %.1fs, "
+                "AgentConnection sweep skipped: the event loop was blocked for %.1fs, "
                 "so heartbeats could not be processed and every connection would "
                 "look lapsed. Something is blocking the loop — that is the bug, "
                 "not the connections.",
@@ -214,14 +229,14 @@ async def _connection_sweep_loop(protocol: ProtocolService, lag: EventLoopLag) -
         try:
             for conn in protocol.connections.sweep():
                 logger.info(
-                    "Connection %s for agent %s expired (heartbeat lapsed, "
+                    "AgentConnection %s for agent %s expired (heartbeat lapsed, "
                     "%d beats received)",
                     conn.id,
                     conn.agent_id,
                     conn.beats,
                 )
         except Exception:
-            logger.exception("Connection sweep failed")
+            logger.exception("AgentConnection sweep failed")
 
 
 # The innermost of three nested budgets: under
@@ -306,25 +321,58 @@ async def _prepare_database(config: SwitchConfig) -> None:
     )
 
 
-async def _check_tenant_isolation(config: SwitchConfig, engine: AsyncEngine) -> None:
+_INSUFFICIENT_PRIVILEGE = "42501"
+
+
+async def _check_tenant_isolation(config: SwitchConfig, engine: AsyncEngine) -> bool:
     """Refuse to serve on a connection the policies do not apply to.
 
     Before anything else touches the database, because the first thing that
     does is the admin seeding, and a deployment that is not isolating tenants
     should not get as far as writing a row.
+
+    Returns whether isolation is in force. False only with
+    DB_REQUIRE_RESTRICTED_ROLE off, and then the server keeps to the one
+    workspace it has: no further tenant may be created while it runs.
     """
     try:
         await verify_restricted_role(engine)
     except RuntimeRoleError as exc:
         if config.db_require_restricted_role:
             raise
+        try:
+            tenant_count = len(await all_tenant_ids(create_session_factory(engine)))
+        except DBAPIError as count_error:
+            if getattr(count_error.orig, "sqlstate", None) != _INSUFFICIENT_PRIVILEGE:
+                raise
+            # The role cannot run the lookups because boot had no owner
+            # connection to grant them with. Nothing can resolve a tenant on
+            # such a connection, let alone serve a second one, so the count is
+            # not needed to keep tenants apart; the role check's own error
+            # already names what is missing.
+            logger.error(
+                "Tenant isolation is NOT in force on this deployment, and the "
+                "number of workspaces could not be checked: %s Continuing only "
+                "because DB_REQUIRE_RESTRICTED_ROLE is false.",
+                exc,
+            )
+            return False
+        if tenant_count > 1:
+            raise RuntimeRoleError(
+                f"{exc} DB_REQUIRE_RESTRICTED_ROLE=false is only allowed on a "
+                f"single-tenant deployment, and this one has {tenant_count} "
+                "workspaces."
+            ) from exc
         logger.error(
             "Tenant isolation is NOT in force on this deployment: %s "
             "Continuing only because DB_REQUIRE_RESTRICTED_ROLE is false. "
             "Every row-level-security policy in this schema is inert, and any "
-            "second tenant onboarded here can read the first's data.",
+            "second tenant onboarded here can read the first's data, so none "
+            "can be created while it runs.",
             exc,
         )
+        return False
+    return True
 
 
 async def run(config: SwitchConfig) -> None:
@@ -334,8 +382,9 @@ async def run(config: SwitchConfig) -> None:
     # — see `main._migrate_and_grant`, which `main()` awaits first. Both use
     # the schema owner's connection where one is configured, and neither
     # belongs on the pooled application engine built below.
+    encrypted_json.configure(config.keyring)
     engine = create_engine_from_config(config)
-    await _check_tenant_isolation(config, engine)
+    tenants_isolated = await _check_tenant_isolation(config, engine)
     session_factory = create_session_factory(engine)
     # Wired here rather than inside the engine factory, so the database layer
     # keeps knowing nothing about observability. Unconditional: the listeners
@@ -359,7 +408,7 @@ async def run(config: SwitchConfig) -> None:
     message_listener = MessageListener(lambda: create_unpooled_engine(config))
     # The same arrangement for session activity and approval requests: their
     # tables announce each change with the row attached, and this pushes it on.
-    session_activity_listener = SessionActivityListener(
+    session_activity_listener = AgentSessionActivityListener(
         lambda: create_unpooled_engine(config)
     )
 
@@ -380,6 +429,7 @@ async def run(config: SwitchConfig) -> None:
     user_store = UserStore()
     api_key_store = ApiKeyStore()
     invitation_store = InvitationStore()
+    join_domain_store = JoinDomainStore()
     tenant_store = TenantStore()
     reference_store = ReferenceStore()
     reference_type_store = ReferenceTypeStore()
@@ -389,6 +439,8 @@ async def run(config: SwitchConfig) -> None:
     room_group_store = RoomGroupStore()
     room_role_store = RoomRoleStore()
     message_store = MessageStore()
+    usage_store = UsageStore()
+    budget_store = BudgetStore()
     media_store = MediaStore()
     template_store = TemplateStore()
 
@@ -447,9 +499,10 @@ async def run(config: SwitchConfig) -> None:
     for tenant_id in tenant_ids:
         async with tenant_session(session_factory, tenant_id) as session:
             await resource_service.log_builtin_shadowing(session)
+    await reencrypt_stored_secrets(session_factory, config.keyring, tenant_ids)
 
     # ── Provisioning ─────────────────────────────────────────────────────────
-    matrix_admin: Provisioning = PostgresProvisioning(
+    provisioning: Provisioning = PostgresProvisioning(
         session_factory=session_factory,
         room_store=room_store,
         client_store=client_store,
@@ -461,7 +514,7 @@ async def run(config: SwitchConfig) -> None:
     # the agent bridge because the room clients are wired first and read
     # presence from it — an agent is reachable if it has a live connection OR a
     # fresh heartbeat row (CHOO-1857 stage B).
-    connections = ConnectionRegistry()
+    connections = AgentConnectionRegistry()
 
     # ── Client factory ───────────────────────────────────────────────────────
     client_factory = ClientFactory(
@@ -470,6 +523,7 @@ async def run(config: SwitchConfig) -> None:
         config=config,
         room_store=room_store,
         message_store=message_store,
+        usage_store=usage_store,
         media_store=media_store,
         listener=message_listener,
         invites=invites,
@@ -477,7 +531,8 @@ async def run(config: SwitchConfig) -> None:
     )
     client_factory.register(
         "agent",
-        AgentClient,
+        AgentActor,
+        AgentConsumer,
         event_buffer=event_buffer,
         agent_store=agent_store,
         room_store=room_store,
@@ -490,17 +545,20 @@ async def run(config: SwitchConfig) -> None:
         connections=connections,
         frontend_base_url=config.frontend_base_url,
     )
-    client_factory.register("user", ClientBase)
-    client_factory.register("bridge", ClientBase)
+    # Members that only write: a person on another platform, and a bridge's own
+    # identity (its reader, the WorkspaceConsumer, is built by the bridge).
+    client_factory.register("user", HumanActor)
+    client_factory.register("bridge", Actor)
 
     # ── Client lifecycle ─────────────────────────────────────────────────────
     client_lifecycle = ClientLifecycleService(
-        matrix_admin=matrix_admin,
+        provisioning=provisioning,
         client_store=client_store,
         tenant_store=tenant_store,
         client_factory=client_factory,
         session_factory=session_factory,
         config=config,
+        tenants_isolated=tenants_isolated,
     )
 
     # ── Collaboration bridge lifecycle ───────────────────────────────────────
@@ -513,19 +571,19 @@ async def run(config: SwitchConfig) -> None:
         client_store=client_store,
         client_lifecycle=client_lifecycle,
         room_service=None,  # type: ignore[arg-type]  # set after RoomService creation
-        matrix_admin=matrix_admin,
+        provisioning=provisioning,
         session_factory=session_factory,
         config=config,
         client_factory=client_factory,
         session_activity_listener=session_activity_listener,
-        session_activity_service=SessionActivityService(session_factory),
+        session_activity_service=AgentSessionActivityService(session_factory),
         connections=connections,
         telemetry=telemetry,
     )
 
     # ── Room service ─────────────────────────────────────────────────────────
     room_service = RoomService(
-        matrix_admin=matrix_admin,
+        provisioning=provisioning,
         room_store=room_store,
         agent_store=agent_store,
         client_lifecycle=client_lifecycle,
@@ -537,12 +595,13 @@ async def run(config: SwitchConfig) -> None:
     )
     collab_lifecycle._room_service = room_service
 
-    # Registered after RoomService is built: the admin client owns the
+    # Registered after RoomService is built: the command consumer owns the
     # `!invite-agent` command, which reuses RoomService to add agents to the
     # room (and any bridged channel).
     client_factory.register(
         "admin",
-        AdminClient,
+        SystemActor,
+        CommandConsumer,
         agent_store=agent_store,
         room_store=room_store,
         room_role_store=room_role_store,
@@ -571,7 +630,7 @@ async def run(config: SwitchConfig) -> None:
         session_factory=session_factory,
         config=config,
         approval_outcomes=ApprovalOutcomes(
-            session_activity_listener, SessionActivityService(session_factory)
+            session_activity_listener, AgentSessionActivityService(session_factory)
         ),
         connections=connections,
         telemetry=telemetry,
@@ -586,8 +645,9 @@ async def run(config: SwitchConfig) -> None:
         api_key_store=api_key_store,
         protocol=protocol,
         session_factory=session_factory,
-        encryption_secret=config.jwt_secret_key,
+        keyring=config.keyring,
         telemetry=telemetry,
+        outbound_policy=config.outbound_policy,
     )
     connector_lifecycle.register_connector_type(
         "opencode", OpenCodeConnector, OpenCodeConnectionConfig
@@ -610,6 +670,16 @@ async def run(config: SwitchConfig) -> None:
                 signing_secret=config.slack_app_signing_secret,
             )
         )
+    if config.discord_app_client_id:
+        assert config.discord_app_client_secret is not None
+        assert config.discord_app_application_id is not None
+        installers.register(
+            DiscordAppInstaller(
+                client_id=config.discord_app_client_id,
+                client_secret=config.discord_app_client_secret,
+                application_id=config.discord_app_application_id,
+            )
+        )
 
     install_service: MessagingInstallService | None = None
     if installers.platforms():
@@ -621,7 +691,7 @@ async def run(config: SwitchConfig) -> None:
             installers=installers,
             lifecycle=collab_lifecycle,
             public_origin=config.messaging_public_url,
-            secret=config.jwt_secret_key,
+            keyring=config.keyring,
         )
 
     # ── Gateway app ───────────────────────────────────────────────────────────
@@ -641,10 +711,18 @@ async def run(config: SwitchConfig) -> None:
         external_user_store=external_user_store,
         api_key_store=api_key_store,
         invitation_store=invitation_store,
+        join_domain_store=join_domain_store,
         template_store=template_store,
+        usage_store=usage_store,
+        budget_store=budget_store,
         resource_service=resource_service,
         protocol=protocol,
         install_service=install_service,
+        invite_mailer=(
+            SmtpInviteMailer.from_config(config)
+            if config.invite_email_enabled
+            else None
+        ),
         config=config,
     )
 
@@ -703,7 +781,7 @@ async def run(config: SwitchConfig) -> None:
         bridges_running=collab_lifecycle.running_count,
         bridges_running_by_platform=collab_lifecycle.running_by_platform,
         bridges_configured=collab_lifecycle.expected_count,
-        clients_running=client_lifecycle.running_count,
+        consumers_running=client_lifecycle.running_count,
         connectors_running=connector_lifecycle.running_count,
         connectors_configured=connector_lifecycle.expected_count,
         agents_connected=lambda: len(connections.live_agent_ids()),
@@ -772,7 +850,50 @@ async def run(config: SwitchConfig) -> None:
 
     # ── Start runtime ────────────────────────────────────────────────────────
     await client_lifecycle.start_all()
+    # Before the bridges start, so none on a shared app runs without the
+    # install that entitles it.
+    if install_service is not None:
+        collab_lifecycle.add_bridge_start_guard(
+            install_service.refuse_uninstalled_bridge
+        )
     await collab_lifecycle.start_all()
+
+    # The one shared Discord Gateway connection. Started after the bridges so it
+    # can attach to the inert ones the moment it connects — a shared-delivery
+    # bridge opens no socket of its own, and attaching re-runs the agent-identity
+    # provisioning that could not run at start. Supervised in the background: a
+    # configured-but-unreachable Discord app must never block or fail a boot that
+    # serves every other platform, so its initial connect retries with backoff
+    # and Discord installs stay inert until it succeeds.
+    discord_gateway: DiscordGatewayClient | None = None
+    discord_gateway_task: asyncio.Task[None] | None = None
+    if config.discord_app_bot_token:
+        # install_service is present whenever an installer is registered, and the
+        # Discord bot token being set means the Discord installer is — so this is
+        # not None here. Asserted rather than branched to say that out loud.
+        assert install_service is not None
+
+        async def _attach_shared_discord_bridges(
+            connection: DiscordConnection,
+        ) -> None:
+            # Runs once the socket is up: hand it to every already-running bridge
+            # that rides a shared connection. Platform-agnostic — narrowed by
+            # capability, not by knowing which platform that is.
+            for adapter in collab_lifecycle.iter_adapters():
+                if isinstance(adapter, SupportsSharedConnection):
+                    adapter.attach_shared_connection(connection)
+
+        discord_gateway = DiscordGatewayClient(
+            bot_token=config.discord_app_bot_token,
+            message_content=config.discord_app_message_content,
+            members=config.discord_app_members,
+            install_service=install_service,
+            on_connected=_attach_shared_discord_bridges,
+        )
+        collab_lifecycle.add_bridge_starting_listener(discord_gateway.attach_if_live)
+        discord_gateway_task = asyncio.create_task(
+            discord_gateway.start_with_retry(), name="discord-gateway-start"
+        )
 
     # Backfill room membership: system clients (e.g. the admin client) added
     # after a room was created, and any agent whose invite did not land. The
@@ -806,7 +927,9 @@ async def run(config: SwitchConfig) -> None:
                     client_lifecycle,
                     collab_lifecycle,
                     connector_lifecycle,
-                    matrix_admin,
+                    provisioning,
+                    discord_gateway,
+                    discord_gateway_task,
                 )
             ),
         )
@@ -965,9 +1088,7 @@ async def _seed_agent_registration_bootstrap_key(
         token_hash = hashlib.sha256(
             config.agent_registration_token.encode()
         ).hexdigest()
-        encrypted_key = encrypt_token(
-            config.agent_registration_token, config.jwt_secret_key
-        )
+        encrypted_key = config.keyring.encrypt(config.agent_registration_token)
 
         # Filtered on this tenant as well as on the type, for the same reason
         # every other fan-out in this change is: `get_by_type` carries no
@@ -1253,14 +1374,26 @@ async def _shutdown(
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
     connector_lifecycle: ServerSideConnectorLifecycleService,
-    matrix_admin: Provisioning,
+    provisioning: Provisioning,
+    discord_gateway: DiscordGatewayClient | None,
+    discord_gateway_task: asyncio.Task[None] | None,
 ) -> None:
     logger.info("Shutting down...")
     server.should_exit = True
     await connector_lifecycle.stop_all()
     await collab_lifecycle.stop_all()
+    # Cancel the supervised connect/retry loop before closing the socket, so a
+    # retry in flight cannot re-open what stop() just closed.
+    if discord_gateway_task is not None:
+        discord_gateway_task.cancel()
+        try:
+            await discord_gateway_task
+        except asyncio.CancelledError:
+            pass
+    if discord_gateway is not None:
+        await discord_gateway.stop()
     await client_lifecycle.stop_all()
-    await matrix_admin.close()
+    await provisioning.close()
 
     # `should_exit` starts uvicorn's shutdown, which runs the lifespan's
     # teardown; this sleep is all the time that teardown gets.
@@ -1302,8 +1435,7 @@ async def _migrate_and_grant(config: SwitchConfig) -> None:
     `asyncio.to_thread`, on a worker thread that starts with no event loop of
     its own, which is exactly what that inner `asyncio.run` needs.
     """
-    alembic_ini = Path(__file__).resolve().parent.parent / "alembic.ini"
-    alembic_cfg = AlembicConfig(str(alembic_ini))
+    alembic_cfg = _alembic_config()
     async with boot_lock(config):
         await asyncio.to_thread(alembic_command.upgrade, alembic_cfg, "head")
         await _prepare_database(config)
@@ -1311,6 +1443,27 @@ async def _migrate_and_grant(config: SwitchConfig) -> None:
         "Database migrations applied as %s",
         config.db_owner_user or config.db_user,
     )
+
+
+async def _check_schema_at_head(config: SwitchConfig) -> None:
+    """Stand in for `_migrate_and_grant` on a server that does not migrate."""
+    if config.db_owner_password is not None:
+        logger.warning(
+            "DB_OWNER_PASSWORD is set on a server with DB_MIGRATE_ON_BOOT=false, "
+            "which never uses it. Remove it from this process's environment."
+        )
+    engine = create_async_engine(
+        config.database_url, poolclass=NullPool, connect_args=config.db_connect_args
+    )
+    try:
+        await require_schema_at_head(engine, _alembic_config())
+    finally:
+        await engine.dispose()
+    logger.info("Database schema is at head; migrations were applied before boot")
+
+
+def _alembic_config() -> AlembicConfig:
+    return AlembicConfig(str(Path(__file__).resolve().parent.parent / "alembic.ini"))
 
 
 def migrate() -> None:
@@ -1346,8 +1499,13 @@ def main() -> None:
     configure_logging(config, running_version)
 
     logger.info("Starting switch-core %s", running_version or "(version unknown)")
+    for warning in deprecated_env_names():
+        logger.warning(warning)
 
-    asyncio.run(_migrate_and_grant(config))
+    if config.db_migrate_on_boot:
+        asyncio.run(_migrate_and_grant(config))
+    else:
+        asyncio.run(_check_schema_at_head(config))
 
     asyncio.run(run(config))
 

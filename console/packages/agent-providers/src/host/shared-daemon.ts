@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { runAgentHost } from './agent-host';
 import { ensureSessions, serveControl } from './control';
 import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
 import { replaceOwner } from './ownership-lock';
@@ -11,8 +12,8 @@ import { adapterFor } from './server';
 import { HOST_EXIT_GRACE_MS, SessionLinks } from './session-channel';
 import { sharedConfigSchema } from './shared-config';
 import { hostSessionProcess } from './shared-host';
-import { runSharedWatcher } from './shared-watcher';
 import { superviseSharedHost } from './supervisor';
+import { recordWatcherHealth } from './watcher-health-file';
 import { WatcherControl } from './watcher-tools';
 
 const [root, configPath, mode] = process.argv.slice(2);
@@ -120,18 +121,20 @@ async function main(): Promise<void> {
     const ensure = ensureSessions(supervision);
     // Console's "Reconnect to room" reaches the watcher through the control port.
     const control = new WatcherControl();
+    // Console reads the watcher's connection state from this file, with the
+    // rest of the host's watcher state, rather than from the control port.
+    const stopRecording = recordWatcherHealth(resolve(root), control);
     // A watcher that stops (disabled, stood down after a takeover, or
     // signalled) takes the process with it: the control port and every
     // session host go too, so the supervisor sees a clean exit and does not
     // start it again.
     try {
       await Promise.all([
-        runSharedWatcher(root, config, stop.signal, supervision, control).finally(() =>
-          stop.abort()
-        ),
+        runAgentHost(root, config, stop.signal, supervision, control).finally(() => stop.abort()),
         serveControl(resolve(root), links, ensure, control, stop.signal),
       ]);
     } finally {
+      stopRecording();
       await supervision.close();
     }
   } else if (process.platform !== 'win32' && (await ownProcessGroup()) === null) {

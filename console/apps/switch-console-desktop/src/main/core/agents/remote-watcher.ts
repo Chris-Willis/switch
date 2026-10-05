@@ -1,4 +1,4 @@
-import { applyControllerState, configureSharedWatcher } from '@main/core/sdk-host/shared-watcher';
+import { applyControllerState, configureAgentHost } from '@main/core/sdk-host/agent-host';
 import { agentEvents } from './agent-events';
 import { getAgentById } from './getAgentById';
 import { getAgents } from './getAgents';
@@ -44,5 +44,5 @@ export async function pushRemoteAutoApprove(agentId: string): Promise<void> {
   remoteSessionReconciler.start(agentId);
 }
 export async function stopRemoteWatcher(agentId: string): Promise<void> {
-  await configureSharedWatcher(agentId, { connected: false, spawning: false }, 'restore');
+  await configureAgentHost(agentId, { connected: false, spawning: false }, 'restore');
 }

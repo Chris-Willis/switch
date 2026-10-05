@@ -95,7 +95,9 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({
   setActiveServerId: vi.fn(() => Promise.resolve()),
 }));
 vi.mock('@main/core/switch-servers/auth', () => ({ passwordLogin: passwordLoginMock }));
-vi.mock('@main/core/agents/resolve-servers', () => ({ resolveAgentServers: vi.fn() }));
+vi.mock('@main/core/workspaces/reconcile-workspaces', () => ({
+  reconcileServerWorkspaces: vi.fn(async () => {}),
+}));
 vi.mock('./matrix-migration', () => ({
   crossesMatrixBoundary: () => false,
   runBackfill: vi.fn(),
@@ -109,6 +111,7 @@ const hostSecrets: LocalServerSecrets = {
   dbRuntimePassword: 'host-runtime-pw',
   agentRegistrationToken: 'host-agent-token',
   jwtSecretKey: 'host-jwt',
+  secretKeys: 'console:host-secret-keys',
   gatewayAdminPassword: 'host-admin-pw',
   mattermostAdminPassword: 'host-mm-admin',
   mattermostUserPassword: 'host-mm-user',
@@ -367,6 +370,31 @@ describe('starting a shared stack', () => {
     const [{ secrets }] = buildEnvFileMock.mock.calls[0] as [{ secrets: LocalServerSecrets }];
     expect(secrets.dbPassword).toBe('host-owner-pw');
     expect(secrets.dbRuntimePassword).toMatch(/.{16,}/);
+  });
+
+  it('keeps this desktop’s key ring for a stack whose .env predates SECRET_KEYS', async () => {
+    inspectStackMock.mockResolvedValue(
+      present({}, { secrets: { ...hostSecrets, secretKeys: null } })
+    );
+    readSecretsMock.mockResolvedValue({ ...hostSecrets, secretKeys: 'console:desktop-ring' });
+    const { host } = sharedHost();
+
+    await startStack(startOptions(host));
+
+    const [{ secrets }] = buildEnvFileMock.mock.calls[0] as [{ secrets: LocalServerSecrets }];
+    expect(secrets.secretKeys).toBe('console:desktop-ring');
+  });
+
+  it('makes a key ring for a pre-SECRET_KEYS stack this desktop has none for', async () => {
+    inspectStackMock.mockResolvedValue(
+      present({}, { secrets: { ...hostSecrets, secretKeys: null } })
+    );
+    const { host } = sharedHost();
+
+    await startStack(startOptions(host));
+
+    const [{ secrets }] = buildEnvFileMock.mock.calls[0] as [{ secrets: LocalServerSecrets }];
+    expect(secrets.secretKeys).toMatch(/^console:[0-9a-f]{64}$/);
   });
 
   it('makes new credentials only on a host with nothing of the stack', async () => {
