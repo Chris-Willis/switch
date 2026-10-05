@@ -315,6 +315,28 @@ AGENT_EVENTS_DROPPED = _spec(
     "(retention).",
     "reason",
 )
+# The buffer answers a read and an unread count by walking the agent's retained
+# events from the oldest. These say what that walk costs, so whether to index
+# the buffer is decided from data. `operation` is "read" or "unread".
+AGENT_BUFFER_SCANNED = _spec(
+    "switch.agent.buffer.scanned",
+    "histogram",
+    "{event}",
+    "Retained events walked to answer one buffer read or unread count. Bounded "
+    "by the per-agent cap, so a p95 near it means every read walks a full buffer.",
+    "operation",
+    bounds=(0.0, 10.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 1500.0, 2000.0),
+)
+AGENT_BUFFER_SCAN_DURATION = _spec(
+    "switch.agent.buffer.scan.duration",
+    "histogram",
+    "ms",
+    "Wall time of one buffer read or unread count. A read runs on every pass "
+    "of a connection's delivery loop, an unread count on every addressed event "
+    "it delivers.",
+    "operation",
+    bounds=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 100.0),
+)
 # `reason` is from a fixed set the refusal sites choose. `transport_removed` is
 # a client still asking for the retired event stream, the one way to see old
 # clients that never manage to connect at all. Nothing sends it while the event
@@ -469,6 +491,8 @@ CATALOGUE: dict[str, MetricSpec] = {
         BRIDGES_RUNNING,
         BRIDGE_CALL_DURATION,
         AGENT_EVENTS_DROPPED,
+        AGENT_BUFFER_SCANNED,
+        AGENT_BUFFER_SCAN_DURATION,
         AGENT_CONNECTIONS_REFUSED,
         AGENT_CONNECTIONS_EXPIRED,
         AGENT_CONNECTIONS_OPENED,
