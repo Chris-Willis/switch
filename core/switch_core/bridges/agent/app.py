@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+import re
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from switch_core.bridges.agent.api.activity_routes import router as activity_router
@@ -185,6 +187,9 @@ def create_agent_bridge_app(
     # is still counted and timed — an authentication failure is traffic, and a
     # spike of it is the thing you most want a dashboard to show.
     app.add_middleware(MetricsMiddleware)
+    # Outside the bearer middleware: a browser carries no bearer token, and
+    # would otherwise be answered 401 for an old link to an agent page.
+    app.add_middleware(LegacyAgentPageRedirectMiddleware)
     # Tags every log line of an agent request as the agent bridge's, as a
     # field. Only agent paths: the gateway is mounted on this same app.
     app.add_middleware(AgentBridgeLogContextMiddleware)
@@ -193,6 +198,45 @@ def create_agent_bridge_app(
     app.add_middleware(RequestContextMiddleware)
 
     return app, protocol
+
+
+class LegacyAgentPageRedirectMiddleware:
+    """Sends a browser following an old `/agents[/<id>]` page link to the
+    gateway's agent directory.
+
+    On a shared origin the ingress routes `/agents` here, to the agent API, so
+    the gateway's former agent pages are unreachable by URL. Only a page load
+    is redirected — a GET that accepts HTML and carries no Authorization
+    header — which no agent API client sends.
+    """
+
+    _PAGE = re.compile(r"/agents(?:/(?P<agent_id>[^/]+))?/?")
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        target = self._redirect_target(scope)
+        if target is None:
+            await self.app(scope, receive, send)
+            return
+        await RedirectResponse(target, status_code=302)(scope, receive, send)
+
+    def _redirect_target(self, scope: Scope) -> str | None:
+        if scope["type"] != "http" or scope["method"] not in ("GET", "HEAD"):
+            return None
+        match = self._PAGE.fullmatch(scope["path"])
+        if match is None:
+            return None
+        headers = dict(scope["headers"])
+        if b"authorization" in headers:
+            return None
+        if b"text/html" not in headers.get(b"accept", b""):
+            return None
+        agent_id = match.group("agent_id")
+        if agent_id is None:
+            return "/agent-directory"
+        return f"/agent-directory/{quote(agent_id, safe='')}"
 
 
 class AgentBridgeLogContextMiddleware:
