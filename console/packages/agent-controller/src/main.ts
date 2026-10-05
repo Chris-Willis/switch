@@ -208,7 +208,7 @@ async function localRun(
       controllerId !== undefined && values.server !== undefined
         ? { controllerId, server: values.server, name: values.name ?? hostname() }
         : null,
-    runtime: (openStream, workspaces) =>
+    runtime: (openStream, workspaces, control) =>
       new AgentRuntimes(
         new InProcessRuntime({
           layout,
@@ -217,6 +217,7 @@ async function localRun(
           openStream,
           log,
           crashBackoffMs: 2_000,
+          control,
         }),
         new DetachedRuntime({ layout, bundlePath: sharedHostBundle })
       ),

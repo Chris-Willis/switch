@@ -479,6 +479,39 @@ function isDefiniteRefusal(error: unknown): error is GatewayError {
 }
 
 /**
+ * Start or restart a session of an agent its cloud machine's controller runs,
+ * relayed to the agent's host as an `ensure` naming only the session: the
+ * host builds the session from the agent's own configuration. A refusal
+ * Switch or the controller answered sent nothing on; anything else may have
+ * acted, so its outcome is unknown and asking again is safe, since a start of
+ * a session that exists goes on with it.
+ */
+async function ensureControllerSession(
+  agentId: string,
+  sessionId: string,
+  action: 'start' | 'restart'
+): Promise<CloudOperationOutcome> {
+  try {
+    await (
+      await cloudControl(agentId)
+    ).ensure({
+      sessionId,
+      resuming: action === 'restart',
+      restart: action === 'restart',
+      startSource: action === 'start' ? 'user' : null,
+    });
+    return { state: 'applied' };
+  } catch (error) {
+    if (error instanceof CloudRelayError && error.status < 500)
+      return { state: 'failed', message: error.message, code: error.relayCode };
+    return {
+      state: 'unknown',
+      message: `The cloud machine's controller did not confirm the session ${action}: ${errorMessage(error)}`,
+    };
+  }
+}
+
+/**
  * Ask the worker to start a new session (`start`) or run an existing one
  * again (`restart`), and wait until it says it has. `operationId` is the
  * attempt's identity: after an `unknown` outcome, ask again with the same id
@@ -494,12 +527,7 @@ export async function runCloudSessionOperation(
   if (action === 'start' && operationId !== sessionId)
     throw new Error('A cloud session start is identified by its session id.');
   const target = targetOf(agentId);
-  if (target.kind === 'agent')
-    return {
-      state: 'failed',
-      message: `Switch cannot ${action} a session yet for a cloud agent its cloud machine's controller runs.`,
-      code: 'unsupported',
-    };
+  if (target.kind === 'agent') return ensureControllerSession(agentId, sessionId, action);
   const { serverId, requestId } = target;
   let operation: CloudOperation;
   try {

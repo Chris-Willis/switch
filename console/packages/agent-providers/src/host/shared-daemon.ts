@@ -4,7 +4,7 @@ import { mkdir, readFile, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { openSwitchStream, runAgentHost } from './agent-host';
 import { AttachmentTransfers } from './attachment-transfers';
-import { type ControlContext, ensureSessions, serveControl } from './control';
+import { type ControlContext, ensureSessions, ensureThroughWatcher, serveControl } from './control';
 import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
 import { dirMode } from './host-permissions';
 import { prepareHostedAgent } from './hosted-bootstrap';
@@ -34,7 +34,8 @@ if (!root || !configPath)
 /**
  * Runs the room watcher for the state root `root` in this process, with the
  * session hosts it starts as its children. `withHostedWorker` is false for an
- * agents controller's unit, which reaches Switch through the controller.
+ * agents controller's unit, which reaches Switch through the controller and
+ * builds the sessions it is asked to start from its own configuration.
  */
 async function watch(
   root: string,
@@ -48,9 +49,9 @@ async function watch(
   // IPC, and Console reaches them through its control port.
   const links = new SessionLinks();
   const supervision = inProcessSupervision(process.argv[1]!, links);
-  const ensure = ensureSessions(supervision);
   // Console's "Reconnect to room" reaches the watcher through the control port.
   const control = new WatcherControl();
+  const ensure = withHostedWorker ? ensureSessions(supervision) : ensureThroughWatcher(control);
   const transfers = new AttachmentTransfers(resolve(root));
   await transfers.clear();
   const context: ControlContext = {

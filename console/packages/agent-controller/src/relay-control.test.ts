@@ -137,6 +137,31 @@ describe('relaying to an agent whose host runs in this process', () => {
     expect(received).toEqual([]);
   });
 
+  it('passes on an ensure with nothing of the caller’s config but the session id', async () => {
+    const { hub, received } = fakeHub(() => ({ created: true }));
+    const control = relayControl({ hub });
+    const config = {
+      session: { sessionId: 's1', agentId: 'someone-else' },
+      start: { provider: 'claude', input: { cwd: '/elsewhere' } },
+      execution: { credentialsPath: '/etc/shadow' },
+    };
+    expect(
+      await relay(control, {
+        ensure: { config, resuming: true, restart: true, startSource: 'user' },
+      })
+    ).toEqual({ ok: true, result: { created: true } });
+    expect(received).toEqual([
+      {
+        ensure: {
+          config: { session: { sessionId: 's1' } },
+          resuming: true,
+          restart: true,
+          startSource: 'user',
+        },
+      },
+    ]);
+  });
+
   it('answers not_assigned and agent_not_running for an agent it cannot reach', async () => {
     const { hub, detach } = fakeHub();
     let placement: 'shared' | null = null;

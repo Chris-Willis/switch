@@ -6,7 +6,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { AttachmentTransfers } from './attachment-transfers';
-import { CONTROL_FILE, ControlClient, ensureSessions, serveControl } from './control';
+import {
+  CONTROL_FILE,
+  ControlClient,
+  ensureSessions,
+  ensureThroughWatcher,
+  serveControl,
+} from './control';
 import type { Supervision } from './launch';
 import { SessionHostFailedError, SessionLinks } from './session-channel';
 import { WatcherControl } from './watcher-tools';
@@ -200,7 +206,11 @@ it('moves a room to a session through the watcher, and says why when it cannot',
     displaced: 'other',
   }));
   const forgot = vi.fn(async () => {});
-  const unbind = watcher.bind({ place: placed, forget: forgot });
+  const unbind = watcher.bind({
+    place: placed,
+    forget: forgot,
+    ensure: async () => ({ created: false }),
+  });
   await console.forget('gone');
   expect(forgot).toHaveBeenCalledWith('gone');
   expect(await console.place('session', 'room')).toEqual({
@@ -416,4 +426,33 @@ it('starts a session whose start source is newer than this sidecar, as not known
   socket.destroy();
   stop.abort();
   await serving;
+});
+
+it('starts a session for an agents controller by its id alone, through the watcher', async () => {
+  const watcher = new WatcherControl();
+  const ensured = vi.fn(async () => ({ created: true }));
+  watcher.bind({ place: vi.fn(), forget: vi.fn(), ensure: ensured });
+  const ensure = ensureThroughWatcher(watcher);
+  expect(
+    await ensure({
+      config: { session: { sessionId: 's1' } },
+      resuming: false,
+      restart: false,
+      startSource: 'user',
+    })
+  ).toEqual({ created: true });
+  expect(ensured).toHaveBeenCalledWith({
+    sessionId: 's1',
+    resuming: false,
+    restart: false,
+    startSource: 'user',
+  });
+  await expect(
+    ensure({
+      config: { session: { sessionId: 's2' }, start: { provider: 'claude' } },
+      resuming: false,
+      restart: false,
+    })
+  ).rejects.toThrow('by its id alone');
+  expect(ensured).toHaveBeenCalledTimes(1);
 });

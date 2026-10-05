@@ -7,8 +7,10 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import {
+  AttachmentTransfers,
   clearTakenOver,
   ensureSharedProcess,
+  ensureThroughWatcher,
   inProcessSupervision,
   type OpenAgentStream,
   type ProviderReadiness,
@@ -30,6 +32,7 @@ import {
   watchFlagsSchema,
 } from '@switch-console/agent-providers';
 import { z } from 'zod';
+import type { ControlRegistry } from './agent-hub';
 import { ConfigurationError, ReasonedError } from './errors';
 import { errorMessage, type Logger } from './log';
 import { agentWorkspace, type DataLayout } from './paths';
@@ -372,6 +375,8 @@ export class InProcessRuntime implements AgentRuntime {
       log: Logger;
       /** How long a failed agent host waits before it is started again. */
       crashBackoffMs: number;
+      /** Where each agent host registers to answer relayed control messages while it runs. */
+      control: ControlRegistry;
     }
   ) {
     assertSupportedPlatform(process.platform);
@@ -522,7 +527,17 @@ export class InProcessRuntime implements AgentRuntime {
     // For `status`, which runs in another process and reads only disk.
     const stopRecording = recordWatcherHealth(root, control);
     const done = (async () => {
+      let detach = () => {};
       try {
+        const transfers = new AttachmentTransfers(root);
+        await transfers.clear();
+        detach = this.deps.control.attachControl(agentId, {
+          agentId,
+          links: this.links,
+          ensure: ensureThroughWatcher(control),
+          watcher: control,
+          transfers,
+        });
         await runAgentHost(
           root,
           config,
@@ -533,6 +548,7 @@ export class InProcessRuntime implements AgentRuntime {
           this.deps.openStream(agentId)
         );
       } finally {
+        detach();
         stopRecording();
         await sessions.close();
       }

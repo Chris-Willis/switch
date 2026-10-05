@@ -1708,6 +1708,37 @@ export async function runAgentHost(
             );
           return { sessionId, roomId, ...moved };
         },
+        ensure: ({ sessionId, resuming, restart, startSource }) =>
+          port.serial(async () => {
+            const sessionRoot = sharedSessionRoot(sessionId);
+            const saved = await sessionConfigAt(sessionRoot);
+            if (!saved) {
+              if (resuming || restart)
+                throw new Error(
+                  `Session ${sessionId} has no saved conversation here, so it cannot be reopened.`
+                );
+              return ensureSharedProcess({
+                root: sessionRoot,
+                config: reachableBy(sessionFrom(await currentTemplate(), sessionId), connectionId),
+                resuming: false,
+                watcher: false,
+                restart: false,
+                supervision,
+                startSource,
+              });
+            }
+            if (saved.session.agentId !== agentId)
+              throw new Error(`Session ${sessionId} is not one of this agent's sessions here.`);
+            return ensureSharedProcess({
+              root: sessionRoot,
+              config: reachableBy(withDefinitionOf(saved, await currentTemplate()), connectionId),
+              resuming: true,
+              watcher: false,
+              restart,
+              supervision,
+              startSource,
+            });
+          }),
       })
     );
     // Queued behind the events rather than run beside them: the decision it

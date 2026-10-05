@@ -124,10 +124,12 @@ export {
   controlMessageSchema,
   ControlPeer,
   type ControlPush,
+  controllerEnsureConfigSchema,
+  ensureThroughWatcher,
   handleControlMessage,
   serveControl,
 } from './host/control';
-export { ControlError } from './host/attachment-transfers';
+export { AttachmentTransfers, ControlError } from './host/attachment-transfers';
 export {
   CloudRelayClient,
   CloudRelayClosedError,

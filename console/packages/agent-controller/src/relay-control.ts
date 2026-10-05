@@ -323,6 +323,29 @@ function isPaged(message: ControlMessage): boolean {
   );
 }
 
+const ensuredSessionSchema = z.object({
+  session: z.object({ sessionId: z.string().min(1).max(256) }),
+});
+
+/**
+ * An `ensure` carrying nothing of the caller's config but the session id:
+ * the agent's watcher builds the session from its own configuration.
+ */
+function sessionOnly(message: ControlMessage): ControlMessage {
+  if (!('ensure' in message)) return message;
+  const config = ensuredSessionSchema.safeParse(message.ensure.config);
+  if (!config.success)
+    throw new ControlError('refused_message', 'An ensure names the session it starts.');
+  return {
+    ensure: {
+      config: { session: { sessionId: config.data.session.sessionId } },
+      resuming: message.ensure.resuming,
+      restart: message.ensure.restart,
+      startSource: message.ensure.startSource ?? null,
+    },
+  };
+}
+
 export function controlErrorCode(error: unknown): string {
   if (error instanceof ControlError) return error.code;
   if (error instanceof SessionHostFailedError) return 'session_failed';
@@ -439,11 +462,8 @@ export class RelayControl {
     const parsed = controlMessageSchema.safeParse(frame.message);
     if (!parsed.success)
       throw new ControlError('refused_message', 'The relayed message is unreadable.');
-    const message = parsed.data;
-    if (
-      'ensure' in message ||
-      ('request' in message && ['room', 'approvals'].includes(message.request.type))
-    )
+    const message = sessionOnly(parsed.data);
+    if ('request' in message && ['room', 'approvals'].includes(message.request.type))
       throw new ControlError('refused_message', 'Only the agent’s watcher sends that message.');
     if (this.deps.placement(agentId) === null)
       throw new ControlError(

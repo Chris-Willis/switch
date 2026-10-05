@@ -17,6 +17,7 @@ import {
   SessionUnavailableError,
   type SessionRequest,
 } from './session-channel';
+import type { HostStartSource } from './session-start';
 import { type PlaceOutcome, type WatcherHealth, watcherHealthSchema } from './watcher-tools';
 
 /**
@@ -120,7 +121,7 @@ const chunkAnswerSchema = z.union([
   z.object({ staged: z.object({ transferId: z.string(), ref: z.string().min(1) }) }),
 ]);
 
-const MUTATING = ['place', 'forget', 'attachment', 'attachmentCancel'];
+const MUTATING = ['place', 'forget', 'attachment', 'attachmentCancel', 'ensure'];
 
 function mutating(message: ControlMessage): boolean {
   if ('request' in message) return message.request.type === 'command';
@@ -320,6 +321,27 @@ export class CloudRelayClient {
 
   async forget(sessionId: string): Promise<void> {
     await this.call({ forget: sessionId });
+  }
+
+  /**
+   * Start the session, or run it again, on an agent its cloud machine's
+   * controller runs. Only the session id is sent: the agent's host builds
+   * the session from its own configuration.
+   */
+  async ensure(input: {
+    sessionId: string;
+    resuming: boolean;
+    restart: boolean;
+    startSource: HostStartSource | null;
+  }): Promise<unknown> {
+    return this.call({
+      ensure: {
+        config: { session: { sessionId: input.sessionId } },
+        resuming: input.resuming,
+        restart: input.restart,
+        startSource: input.startSource,
+      },
+    });
   }
 
   async health(): Promise<WatcherHealth> {

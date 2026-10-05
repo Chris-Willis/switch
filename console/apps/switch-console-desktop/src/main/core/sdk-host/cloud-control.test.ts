@@ -17,6 +17,8 @@ const server = vi.hoisted(() => ({
   controllers: [] as { id: string; kind: string }[],
   managedAgents: [] as Record<string, unknown>[],
   relayList: (async () => []) as () => Promise<unknown[]>,
+  relayEnsures: [] as unknown[],
+  relayEnsure: (async () => ({ created: true })) as () => Promise<unknown>,
 }));
 const kvRows = vi.hoisted(() => new Map<string, unknown>());
 
@@ -56,6 +58,10 @@ vi.mock('@switch-console/agent-providers', () => ({
     onClose() {}
     list() {
       return server.relayList();
+    }
+    ensure(input: unknown) {
+      server.relayEnsures.push(input);
+      return server.relayEnsure();
     }
   },
   CloudRelayError: class extends Error {
@@ -190,6 +196,8 @@ beforeEach(() => {
   server.management = true;
   server.controllers = [];
   server.managedAgents = [];
+  server.relayEnsures = [];
+  server.relayEnsure = async () => ({ created: true });
 });
 
 const machineId = '3f1c2b4a-0000-4000-8000-000000000001';
@@ -561,9 +569,15 @@ describe('an agent its cloud machine’s controller runs', () => {
     server.launches = [launch(requestId, {})];
     server.managedAgents = [managed({ controllerId: 'laptop' })];
     server.controllers = [{ id: 'laptop', kind: 'console' }];
-    expect((await listCloudAgents('server'))?.[0]).toMatchObject({ key: agent, controllerId: null });
+    expect((await listCloudAgents('server'))?.[0]).toMatchObject({
+      key: agent,
+      controllerId: null,
+    });
     server.management = false;
-    expect((await listCloudAgents('server'))?.[0]).toMatchObject({ key: agent, controllerId: null });
+    expect((await listCloudAgents('server'))?.[0]).toMatchObject({
+      key: agent,
+      controllerId: null,
+    });
   });
 
   it.each([
@@ -605,10 +619,35 @@ describe('an agent its cloud machine’s controller runs', () => {
     expect(server.machineActions).toEqual([{ action: 'start', revision: 4 }]);
   });
 
-  it('refuses a session start or restart rather than queueing one no worker would apply', async () => {
+  it('starts and restarts a session through the agent’s relay, never queueing a worker operation', async () => {
+    expect(await runCloudSessionOperation(controllerAgent, sessionId, sessionId, 'start')).toEqual({
+      state: 'applied',
+    });
     expect(
-      await runCloudSessionOperation(controllerAgent, sessionId, sessionId, 'start')
-    ).toMatchObject({ state: 'failed', code: 'unsupported' });
+      await runCloudSessionOperation(controllerAgent, sessionId, 'restart-1', 'restart')
+    ).toEqual({ state: 'applied' });
+    expect(server.relayEnsures).toEqual([
+      { sessionId, resuming: false, restart: false, startSource: 'user' },
+      { sessionId, resuming: true, restart: true, startSource: null },
+    ]);
     expect(server.operations.size).toBe(0);
+  });
+
+  it('reads a refusal as failed and a lost answer as unknown', async () => {
+    const { CloudRelayError } = await import('@switch-console/agent-providers');
+    server.relayEnsure = async () => {
+      throw new CloudRelayError('agent_not_running', 'The host is not running.', 409, false);
+    };
+    expect(await runCloudSessionOperation(controllerAgent, sessionId, sessionId, 'start')).toEqual({
+      state: 'failed',
+      message: 'The host is not running.',
+      code: 'agent_not_running',
+    });
+    server.relayEnsure = async () => {
+      throw new CloudRelayError('relay_timeout', 'No answer in time.', 504, false);
+    };
+    expect(
+      (await runCloudSessionOperation(controllerAgent, sessionId, sessionId, 'start')).state
+    ).toBe('unknown');
   });
 });

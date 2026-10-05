@@ -221,6 +221,34 @@ export function ensureSessions(supervision: Supervision): EnsureSession {
   };
 }
 
+/** All an agents controller takes from an `ensure`'s config: which session it is. */
+export const controllerEnsureConfigSchema = z.strictObject({
+  session: z.strictObject({ sessionId: z.string().min(1).max(256) }),
+});
+
+/**
+ * How a watcher an agents controller runs answers `ensure`: the session is
+ * built by the watcher from its own configuration, as a session it starts
+ * for a room is, and only the session id is read from the message. Whoever
+ * asked does not choose what the session runs.
+ */
+export function ensureThroughWatcher(watcher: WatcherControl): EnsureSession {
+  return async (input) => {
+    const parsed = controllerEnsureConfigSchema.safeParse(input.config);
+    if (!parsed.success)
+      throw new ControlError(
+        'refused_message',
+        'An agent run by its controller is asked to start a session by its id alone.'
+      );
+    return watcher.ensure({
+      sessionId: parsed.data.session.sessionId,
+      resuming: input.resuming,
+      restart: input.restart,
+      startSource: input.startSource ?? null,
+    });
+  };
+}
+
 /** How long a request waits for the session's host to be ready. */
 const REQUEST_WAIT_MS = 30000;
 

@@ -5,7 +5,7 @@ import { AccessTokens, ControllerApiError, ControllerClient, type Fetch, isRevok
 import { ConfigurationError } from './errors';
 import { errorMessage, type Logger } from './log';
 import { processPendingOperations } from './operations';
-import { dataLayout, isSafeSegment } from './paths';
+import { isSafeSegment } from './paths';
 import { definitionProblem, reconcile, type ReconcileDeps, startAgent } from './reconcile';
 import { DEFAULT_RELAY_TIMING, LocalRelay, RELAY_TOKEN_PREFIX, type RelayTiming } from './relay';
 import {
@@ -276,7 +276,6 @@ export async function runController(
   const isolated = new Set<string>();
   const placed = new Set<string>();
   const delivery = (agentId: string) => (isolated.has(agentId) ? relay : hub);
-  const layout = dataLayout(deps.dataDir);
   const controlPath = `${identity.server}/v1/management/controllers/${encodeURIComponent(identity.controllerId)}`;
   relayControl = new RelayControl({
     post: async (path, body) => {
@@ -292,7 +291,7 @@ export async function runController(
     placement: (agentId) =>
       isolated.has(agentId) ? 'isolated' : placed.has(agentId) ? 'shared' : null,
     hub,
-    controlFile: (agentId) => join(layout.watcherRoot(agentId), CONTROL_FILE),
+    controlFile: (agentId) => join(runtime.watcherRoot(agentId), CONTROL_FILE),
     log,
     now: deps.now,
     timing: timing.control,

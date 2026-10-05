@@ -89,6 +89,7 @@ async function worker(
   const placed: [string, string][] = [];
   control.bind({
     forget: async () => {},
+    ensure: async () => ({ created: false }),
     place: async (sessionId, roomId) => {
       placed.push([sessionId, roomId]);
       return { sessionId, roomId, displaced: null, previous: null };

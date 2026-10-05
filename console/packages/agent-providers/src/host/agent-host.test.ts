@@ -627,6 +627,60 @@ it('starts no saved session at startup; each waits until it is needed', async ()
   }
 });
 
+it('starts and restarts sessions asked of its control from its own configuration', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-ensure-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const { sessionId: savedId } = await existing(root, config);
+  const { supervision } = sessionHosts();
+  vi.mocked(ensureSharedProcess).mockResolvedValue({ created: true });
+  const control = new WatcherControl();
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    supervision,
+    control,
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => control.running);
+    const fresh = randomUUID();
+    await control.ensure({
+      sessionId: fresh,
+      resuming: false,
+      restart: false,
+      startSource: 'user',
+    });
+    const started = vi.mocked(ensureSharedProcess).mock.calls.at(-1)![0];
+    expect(started).toMatchObject({
+      root: join(root, fresh),
+      resuming: false,
+      restart: false,
+      startSource: 'user',
+    });
+    expect(started.config.session.sessionId).toBe(fresh);
+    expect(started.config.start.input.cwd).toBe(config.start.input.cwd);
+
+    await control.ensure({ sessionId: savedId, resuming: true, restart: true, startSource: null });
+    expect(vi.mocked(ensureSharedProcess).mock.calls.at(-1)![0]).toMatchObject({
+      root: join(root, savedId),
+      resuming: true,
+      restart: true,
+    });
+
+    await expect(
+      control.ensure({ sessionId: randomUUID(), resuming: true, restart: true, startSource: null })
+    ).rejects.toThrow('no saved conversation');
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
 it('leaves an event queued behind earlier work unstarted once spawning is turned off', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-queued-'));
   roots.push(root);

@@ -444,7 +444,10 @@ it('follows the watcher’s health and closes when its stream ends', async () =>
 });
 
 it('relays to an agent a cloud machine’s controller runs exactly as to a launch', async () => {
-  answer = (message) => ('health' in message ? ok({ state: 'connected', detail: null, since: '2026-09-25T12:00:00Z', placements: {} }) : ok(null));
+  answer = (message) =>
+    'health' in message
+      ? ok({ state: 'connected', detail: null, since: '2026-09-25T12:00:00Z', placements: {} })
+      : ok(null);
   const asked = async (basePath: string) => {
     relayed = [];
     relayedTo = [];
@@ -488,4 +491,35 @@ it('reads agent management’s error envelope as the refusal it names', async ()
     status: 409,
     wakeAvailable: false,
   });
+});
+
+it('asks a controller to start a session by its id alone, and never twice on a changed generation', async () => {
+  answer = () => ok({ created: true });
+  expect(
+    await client(AGENT_BASE).ensure({
+      sessionId: 'one',
+      resuming: false,
+      restart: false,
+      startSource: 'user',
+    })
+  ).toEqual({ created: true });
+  expect(relayed[0]!.message).toEqual({
+    ensure: {
+      config: { session: { sessionId: 'one' } },
+      resuming: false,
+      restart: false,
+      startSource: 'user',
+    },
+  });
+
+  answer = () => refused(409, 'generation_changed');
+  await expect(
+    client(AGENT_BASE).ensure({
+      sessionId: 'one',
+      resuming: true,
+      restart: true,
+      startSource: null,
+    })
+  ).rejects.toMatchObject({ relayCode: 'generation_changed' });
+  expect(relayed).toHaveLength(2);
 });
