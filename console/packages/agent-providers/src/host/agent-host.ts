@@ -292,6 +292,9 @@ function reachableBy(config: SharedHostConfig, connectionId: string): SharedHost
  * with a live supervisor counts — one that is not running was not left behind
  * by an upgrade, and starting it would reopen a session its owner had closed.
  */
+/** Session directories whose config this process has already said it cannot read. */
+const unreadableSessionRoots = new Set<string>();
+
 export async function supersededSessions(
   agentId: string,
   supervision: Supervision
@@ -320,11 +323,16 @@ export async function supersededSessions(
       // has, used to abort the whole call and take auto-sessions down for an
       // agent that had nothing to do with it. One unreadable neighbour is not a
       // reason to stop; it is a reason to say so and carry on.
-      console.warn(
-        `Skipping session state at ${root}: its config could not be read (${
-          error instanceof Error ? error.message : String(error)
-        }). It will not be restarted.`
-      );
+      // Said once per directory in a process: every agent host sweeps every
+      // session on the machine, so it would otherwise repeat for each agent.
+      if (!unreadableSessionRoots.has(root)) {
+        unreadableSessionRoots.add(root);
+        console.warn(
+          `Skipping session state at ${root}: its config could not be read (${
+            error instanceof Error ? error.message : String(error)
+          }). It will not be restarted.`
+        );
+      }
       continue;
     }
     if (config.session.agentId !== agentId) continue;
