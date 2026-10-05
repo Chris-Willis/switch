@@ -153,6 +153,20 @@ switchCore:
   hostedDiskRetentionDays: 7
   hostedIdleStopMinutes: 30
   hostedProviderVerificationEnabled: false
+  # KMS key that seals hosted provider logins for cloud machines running the
+  # agent controller. switch-core only calls GenerateDataKey on it, so its
+  # ServiceAccount (below) needs a cloud IAM binding allowing that. Empty
+  # leaves sealing unconfigured.
+  hostedLoginKmsKeyArn: ""
+  # Region of that key. Set only when switch-core should not use its default.
+  hostedLoginKmsRegion: ""
+  # The ServiceAccount switch-core runs as. Annotate it to bind a cloud IAM
+  # role (e.g. eks.amazonaws.com/role-arn for IRSA). With create: false the
+  # named account must already exist in the release namespace.
+  serviceAccount:
+    create: true
+    name: switch-core
+    annotations: {}
   image: switch-core:latest
   imagePullPolicy: Always
   logLevel: INFO

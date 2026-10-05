@@ -1,0 +1,52 @@
+[Unit]
+Description=Switch agent %i
+After=switch-machine-boot.service
+StartLimitIntervalSec=600
+StartLimitBurst=5
+AssertPathIsMountPoint=/data
+
+[Service]
+Type=simple
+User=switch-agent
+Group=switch-agent
+Slice=switch-agents.slice
+UMask=0007
+Environment=SWITCH_HOST_SHARED_GROUP=1
+Environment=HOME=/data/agents/%i/home
+Environment=TMPDIR=/data/agents/%i/tmp
+Environment=PATH=/opt/switch/node/bin:/opt/switch/claude/bin:/usr/local/bin:/usr/bin:/bin
+LoadCredential=agent:/run/switch-controller/agents/%i.credentials.json
+LoadCredential=provider:/run/switch-controller/agents/%i.provider.json
+EnvironmentFile=-/run/switch-controller/agents/%i.env
+WorkingDirectory=/data/agents/%i
+ExecStartPre=/opt/switch/node/bin/node /opt/switch/agent-providers/shared-host-daemon.mjs --prepare /data/agents/%i
+ExecStart=/opt/switch/node/bin/node /opt/switch/agent-providers/shared-host-daemon.mjs --unit /data/agents/%i/watcher
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+TemporaryFileSystem=/data/agents:ro /data/worktrees:ro
+BindPaths=/data/agents/%i /data/worktrees/%i /data/repos
+InaccessiblePaths=/data/.switch-controller /data/.switch-hosted /run/switch-controller /run/switch-machine /etc/switch-hosted
+IPAddressDeny=169.254.169.254/32 fd00:ec2::254/128
+Restart=on-failure
+RestartSec=3
+RestartPreventExitStatus=75
+MemoryMax=75%
+OOMPolicy=stop
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectProc=invisible
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
