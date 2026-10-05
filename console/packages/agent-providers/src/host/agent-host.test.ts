@@ -1487,6 +1487,27 @@ it('takes the model, approval mode, instructions and advanced configuration from
   expect(cleared.start.input).not.toHaveProperty('agentDefinition');
 });
 
+it('takes the provider CLI and inherited environment from the template, so a fixed machine recovers', () => {
+  const root = '/state';
+  const fixed = watchable(root);
+  fixed.execution!.binaryPath = '/opt/claude/bin/claude';
+  fixed.execution!.inheritEnv = ['PATH', 'HOME', 'CLAUDE_CODE_OAUTH_TOKEN'];
+  const saved = watchable(root);
+  saved.session = { ...saved.session, agentId: fixed.session.agentId, sessionId: 'room-session' };
+  saved.execution!.binaryPath = '/old/claude';
+  saved.execution!.inheritEnv = ['PATH', 'HOME'];
+
+  const refreshed = withDefinitionOf(saved, fixed);
+
+  expect(definitionChanged(saved, fixed)).toBe(true);
+  expect(refreshed.execution).toMatchObject({
+    binaryPath: '/opt/claude/bin/claude',
+    inheritEnv: ['PATH', 'HOME', 'CLAUDE_CODE_OAUTH_TOKEN'],
+  });
+  delete fixed.execution!.binaryPath;
+  expect(withDefinitionOf(saved, fixed).execution).not.toHaveProperty('binaryPath');
+});
+
 it('leaves a session that runs as a definition file on disk as the agent it runs as', () => {
   const root = '/state';
   const edited = watchable(root);
