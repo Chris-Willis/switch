@@ -157,7 +157,7 @@ export function AgentHeaderLayout({
       <span className="flex size-[88px] shrink-0 items-center justify-center">{avatar}</span>
       <div className="flex min-w-0 flex-1 flex-col gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1.5">
-          <h1 className="min-w-0 text-3xl font-semibold tracking-tight [overflow-wrap:anywhere] text-foreground">
+          <h1 className="max-w-full shrink-0 text-3xl font-semibold tracking-tight [overflow-wrap:anywhere] text-foreground">
             {title}
           </h1>
           {badges}
