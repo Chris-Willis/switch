@@ -9,17 +9,17 @@ import signal
 import sys
 import threading
 import uuid
-from dataclasses import replace
 from pathlib import Path
 from time import time
 from typing import Any
 
 import boto3
 
-from .cloud import Ec2Cloud
+from .cloud import Ec2Cloud, required_capabilities
 from .config import ConfigError, ControllerConfig, validate_slot_id
 from .gateway import Gateway, GatewayConfig
 from .health import check_health
+from .kms_grants import KmsGrants
 from .lock import ControllerAlreadyRunning, ControllerLock
 from .model import DesiredState, Machine
 from .reconciler import Reconciler
@@ -147,10 +147,11 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
                 raise StoreError(
                     "the old instance must be confirmed terminated and its retained disk detached"
                 )
-            cloud.validate_image(replace(machine, image_id=config.image_id))
+            image_id = config.image_for(machine.runtime)
+            cloud.validate_image(image_id, required_capabilities(machine.runtime))
             claim = store.mark_instance_terminal_observed(machine.machine_id, machine.instance_id)
             _print_machine(
-                store.upgrade_terminated(claim, config.image_id, args.previous_runtime_fingerprint)
+                store.upgrade_terminated(claim, image_id, args.previous_runtime_fingerprint)
             )
             return 0
         raise AssertionError(f"unhandled command {args.command}")
@@ -163,13 +164,25 @@ def _reconcile_command(config: ControllerConfig, command: str, gateway_path: Pat
         store = MachineStore(config.state_db_path, config.fingerprint())
         try:
             ec2 = boto3.client("ec2", region_name=config.region)
-            reconciler = Reconciler(store, Ec2Cloud(ec2, config))
+            cloud = Ec2Cloud(ec2, config)
+            reconciler = Reconciler(store, cloud)
+            grants = (
+                KmsGrants(
+                    boto3.client("kms", region_name=config.region),
+                    config.login_kms_key_arn,
+                    store,
+                )
+                if config.login_kms_key_arn
+                else None
+            )
             gateway = (
                 Gateway(
                     GatewayConfig.load(gateway_path),
                     config,
                     store,
                     boto3.client("secretsmanager", region_name=config.region),
+                    cloud,
+                    grants,
                 )
                 if gateway_path
                 else None
@@ -253,6 +266,8 @@ def _machine_output(machine: Machine) -> dict[str, Any]:
         "desired_state": machine.desired_state.value,
         "desired_revision": machine.desired_revision,
         "observed_state": machine.observed_state.value,
+        "runtime": machine.runtime.value,
+        "target_runtime": machine.target_runtime.value,
         "instance_id": machine.instance_id,
         "instance_seq": machine.instance_seq,
         "data_volume_id": machine.data_volume_id,

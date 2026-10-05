@@ -60,6 +60,8 @@ def test_create_status_and_delete_are_keyed_by_slot(capsys, config_path):
         "data_volume_id",
         "retain_until",
         "error",
+        "runtime",
+        "target_runtime",
     }
     assert run(capsys, config_path, "status", "slot-a")[1] == created
 

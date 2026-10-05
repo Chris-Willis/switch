@@ -15,13 +15,17 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from botocore.exceptions import ClientError
 
+from .cloud import Ec2Cloud, required_capabilities
 from .config import ConfigError, ControllerConfig, validate_slot_id
-from .model import DesiredState, Machine, ObservedState
+from .kms_grants import Grant, KmsGrants, validate_context
+from .model import DesiredState, Machine, ObservedState, Runtime
 from .store import MachineStore, SlotInUseError
 
 logger = logging.getLogger(__name__)
 
 CAPABILITY_RE = re.compile(r"^[\x21-\x7e]{16,4096}$")
+CONTROLLER_CREDENTIAL_RE = re.compile(r"^swcc_[\x21-\x7e]{16,4091}$")
+CONTROLLER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 CORE_DESIRED_STATES = {"running", "stopped", "retained", "deleted"}
 SETUP_FAILED_MESSAGE = (
     "Cloud machine setup failed. Retry; if it still fails, contact your administrator."
@@ -141,13 +145,21 @@ class Gateway:
         config: ControllerConfig,
         store: MachineStore,
         secrets_client: Any,
+        cloud: Ec2Cloud,
+        grants: KmsGrants | None,
     ):
         if settings.instance_type not in config.allowed_instance_types:
             raise ConfigError("Cloud gateway instance type is not allowed.")
+        if (grants is None) != (config.login_kms_key_arn is None) or (
+            grants is not None and grants.key_arn != config.login_kms_key_arn
+        ):
+            raise ConfigError("Login key grants must use the configured login key.")
         self.settings = settings
         self.config = config
         self.store = store
         self.secrets = secrets_client
+        self.cloud = cloud
+        self.grants = grants
         self.prepare_failures: dict[str, float] = {}
         for machine in store.list():
             if machine.observed_state is ObservedState.DELETED:
@@ -301,6 +313,9 @@ class Gateway:
                     "Cloud gateway reports a different data volume than the controller recorded."
                 )
 
+        self.retire_grants(machine.slot_id, machine.generation)
+        if core.desired_state in {"deleted", "retained"}:
+            self.retire_grants(machine.slot_id, machine.generation + 1)
         if core.desired_state == "deleted":
             if machine.desired_state is DesiredState.DELETED or _at_rest(machine):
                 self.store.set_desired(machine.machine_id, DesiredState.DELETED, core.retain_until)
@@ -360,7 +375,16 @@ class Gateway:
             return
         if prepared["bundle_revision"] != machine.core_revision:
             raise ConfigError("Cloud gateway prepared a bundle for a different revision.")
-        bundle = self.bundle(prepared, machine)
+        runtime = _runtime(prepared)
+        if runtime is Runtime.CONTROLLER:
+            image_id = self.config.image_for(runtime)
+            bundle = self.bundle_v3(prepared, machine, image_id)
+            machine = self.store.request_runtime(machine.machine_id, runtime, image_id)
+        else:
+            machine = self.store.request_runtime(
+                machine.machine_id, runtime, self.config.image_for(runtime)
+            )
+            bundle = self.bundle(prepared, machine)
         try:
             self.secrets.put_secret_value(
                 SecretId=secret_id,
@@ -393,6 +417,12 @@ class Gateway:
             SecretId=secret_id, VersionStage="AWSCURRENT", MoveToVersionId=token, **holder
         )
         return True
+
+    def retire_grants(self, slot_id: str, before_generation: int) -> None:
+        if self.grants is not None:
+            self.grants.retire_older(slot_id, before_generation)
+        elif self.store.open_grants(slot_id, before_generation):
+            raise ConfigError("Login key grants are recorded but no login key is configured.")
 
     def report_observations(self, listed: list[dict]) -> None:
         for item in listed:
@@ -460,10 +490,7 @@ class Gateway:
         capability = prepared.get("machine_capability")
         if not isinstance(capability, str) or not CAPABILITY_RE.fullmatch(capability):
             raise ConfigError("Cloud gateway returned no valid machine capability.")
-        endpoint = prepared.get("api_endpoint")
-        url = urlsplit(endpoint) if isinstance(endpoint, str) else None
-        if url is None or url.scheme != "https" or not url.hostname:
-            raise ConfigError("Cloud gateway returned no valid API endpoint.")
+        endpoint = _api_endpoint(prepared)
         return {
             "version": 2,
             "machineId": machine.machine_id,
@@ -476,6 +503,75 @@ class Gateway:
             "machineCapability": capability,
             "apiEndpoint": endpoint,
         }
+
+    def bundle_v3(self, prepared: dict, machine: Machine, image_id: str) -> dict:
+        """The controller-runtime bundle for a machine launched from `image_id`.
+
+        Refused unless the image carries the controller capability, and built
+        only after the slot's login key grant exists.
+        """
+        self.cloud.validate_image(image_id, required_capabilities(Runtime.CONTROLLER))
+        if self.grants is None or self.config.login_kms_key_arn is None:
+            raise ConfigError("The controller runtime is not configured for this installation.")
+        role_arn = self.config.slot(machine.slot_id).role_arn
+        if role_arn is None:
+            raise ConfigError("The machine slot has no role for login key grants.")
+        endpoint = _api_endpoint(prepared)
+        controller = prepared.get("controller")
+        if not isinstance(controller, dict) or set(controller) != {"id", "credential"}:
+            raise ConfigError("Cloud gateway returned no valid controller.")
+        controller_id = controller["id"]
+        credential = controller["credential"]
+        if not isinstance(controller_id, str) or not CONTROLLER_ID_RE.fullmatch(controller_id):
+            raise ConfigError("Cloud gateway returned an invalid controller id.")
+        if not isinstance(credential, str) or not CONTROLLER_CREDENTIAL_RE.fullmatch(credential):
+            raise ConfigError("Cloud gateway returned no valid controller credential.")
+        kms = prepared.get("kms")
+        if not isinstance(kms, dict) or set(kms) != {"key_arn", "context"}:
+            raise ConfigError("Cloud gateway returned no valid login key.")
+        if kms["key_arn"] != self.config.login_kms_key_arn:
+            raise ConfigError("Cloud gateway returned a login key other than the configured one.")
+        context = validate_context(kms["context"])
+        if context["switch:controller_id"] != controller_id:
+            raise ConfigError("Cloud gateway returned a login key context for another controller.")
+        grant: Grant = self.grants.ensure_grant(
+            machine.slot_id, role_arn, machine.generation, context
+        )
+        return {
+            "version": 3,
+            "machineId": machine.machine_id,
+            "assignment": {
+                "installationId": self.config.installation_id,
+                "slotId": machine.slot_id,
+                "generation": machine.generation,
+                "dataVolumeId": machine.data_volume_id,
+            },
+            "apiEndpoint": endpoint,
+            "controller": {"id": controller_id, "credential": credential},
+            "kms": {
+                "keyArn": self.config.login_kms_key_arn,
+                "region": self.config.region,
+                "grantTokens": [grant.token],
+                "context": context,
+            },
+        }
+
+
+def _api_endpoint(prepared: dict) -> str:
+    endpoint = prepared.get("api_endpoint")
+    url = urlsplit(endpoint) if isinstance(endpoint, str) else None
+    if url is None or url.scheme != "https" or not url.hostname:
+        raise ConfigError("Cloud gateway returned no valid API endpoint.")
+    return endpoint
+
+
+def _runtime(prepared: dict) -> Runtime:
+    """The runtime Core prepared the bundle for; a Core that predates runtimes means the worker."""
+    value = prepared.get("runtime", Runtime.WORKER.value)
+    try:
+        return Runtime(value)
+    except ValueError:
+        raise ConfigError("Cloud gateway returned an unknown machine runtime.") from None
 
 
 def _at_rest(machine: Machine) -> bool:
