@@ -31,7 +31,7 @@ import {
 } from '@switch-console/agent-providers';
 import { ConfigurationError, ReasonedError } from './errors';
 import { errorMessage, type Logger } from './log';
-import type { DataLayout } from './paths';
+import { agentWorkspace, type DataLayout } from './paths';
 import type { Isolation, Provider } from './schemas';
 
 const execute = promisify(execFile);
@@ -102,7 +102,7 @@ export interface AgentRuntime extends AgentRunner {
   deleteCredentials(agentId: string): Promise<void>;
   /**
    * `directory` from the definition, or a workspace under the data directory.
-   * A directory inside `DataLayout.workspaces` is made when missing; any other
+   * A directory inside the workspaces folder is made when missing; any other
    * must already exist.
    */
   workingDirectory(name: string, directory: string | null): Promise<string>;
@@ -261,6 +261,8 @@ export class InProcessRuntime implements AgentRuntime {
   constructor(
     private readonly deps: {
       layout: DataLayout;
+      /** Where agents with no directory of their own work. */
+      workspaces: string;
       /** The `shared-host-daemon.mjs` bundle from agent-providers: what each session runs. */
       bundlePath: string;
       /** The stream the agent's agent host hears its events on. */
@@ -311,7 +313,7 @@ export class InProcessRuntime implements AgentRuntime {
 
   async workingDirectory(name: string, directory: string | null): Promise<string> {
     if (directory === null) {
-      const path = this.deps.layout.workspace(name);
+      const path = agentWorkspace(this.deps.workspaces, name);
       await mkdir(path, { recursive: true });
       return path;
     }
@@ -324,7 +326,7 @@ export class InProcessRuntime implements AgentRuntime {
         'definition_invalid',
         `The working directory '${directory}' is not an absolute path.`
       );
-    if (isInside(this.deps.layout.workspaces, expanded)) {
+    if (isInside(this.deps.workspaces, expanded)) {
       const path = resolve(expanded);
       await mkdir(path, { recursive: true });
       return path;

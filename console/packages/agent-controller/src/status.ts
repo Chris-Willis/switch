@@ -303,7 +303,7 @@ export class StatusCollector {
       /** Whether the relay has the agent attached; see `mapAgentProcess`. */
       attached: (agentId: string) => boolean;
       dataDir: string;
-      /** `DataLayout.workspaces`, reported so the server can name an agent's directory. */
+      /** Where agents with no directory of their own work, reported so the server can name it. */
       workspacesDir: string;
       version: string;
       now: () => number;

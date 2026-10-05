@@ -82,7 +82,8 @@ beforeEach(() => {
   attempts = 0;
   failOpens = 0;
   runtime = new InProcessRuntime({
-    layout: dataLayout(join(dir, 'data'), join(dir, 'data', 'workspaces')),
+    layout: dataLayout(join(dir, 'data')),
+    workspaces: join(dir, 'data', 'workspaces'),
     bundlePath: bundle,
     openStream,
     log: silentLogger,
@@ -172,9 +173,7 @@ describe('InProcessRuntime', () => {
       () => existsSync(join(dir, 'data', 'watchers', 'agent-1', 'health.json')),
       'the health file'
     );
-    expect(
-      await observeOnDisk(dataLayout(join(dir, 'data'), join(dir, 'data', 'workspaces')), 'agent-1')
-    ).toMatchObject({
+    expect(await observeOnDisk(dataLayout(join(dir, 'data')), 'agent-1')).toMatchObject({
       alive: true,
       health: { pid: process.pid, current: true },
     });

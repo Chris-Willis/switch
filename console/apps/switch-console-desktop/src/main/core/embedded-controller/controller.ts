@@ -1,11 +1,11 @@
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { getServer } from '@main/core/switch-servers/servers-store';
 import type {
   EmbeddedControllerOverview,
   MachineDetailsChange,
 } from '@shared/core/embedded-controller/embedded-controller';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import { defaultWorkspacePath } from './controller-files';
+import { defaultWorkspacePath, serverWorkspacesDir } from './controller-files';
 import { embeddedControllerService } from './embedded-controllers';
 
 /** "Run managed agents on this computer", per Switch server. */
@@ -36,7 +36,9 @@ export const embeddedControllerController = createRPCController({
    * directory, which the form refuses anyway.
    */
   defaultWorkspace: async (params: { serverId: string; name: string }): Promise<string | null> => {
-    const path = defaultWorkspacePath(join(homedir(), '.switch', 'agents'), params.name);
+    const server = await getServer(params.serverId);
+    if (!server) throw new Error(`No server ${params.serverId} in Console.`);
+    const path = defaultWorkspacePath(serverWorkspacesDir(homedir(), server.apiUrl), params.name);
     if (path === null) return null;
     const home = homedir();
     return path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;

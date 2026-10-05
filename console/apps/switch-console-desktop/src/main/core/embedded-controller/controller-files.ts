@@ -20,6 +20,15 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 const WORKSPACE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 
 /**
+ * Where a controller on this computer puts agents with no directory of their
+ * own, for a server: `~/.switch/agents/<server address>`, as the controller's
+ * `serverWorkspacesDir` names it.
+ */
+export function serverWorkspacesDir(home: string, server: string): string {
+  return join(home, '.switch', 'agents', new URL(server).host.replace(/[^A-Za-z0-9._-]+/g, '-'));
+}
+
+/**
  * The workspace a controller on this computer makes for an agent with no
  * directory: `<workspaces>/<name>`, as its data layout names it.
  */

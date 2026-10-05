@@ -58,21 +58,28 @@ export type DataLayout = {
   agentDir: (agentId: string) => string;
   agentCredentials: (agentId: string) => string;
   watcherRoot: (agentId: string) => string;
-  /** Where an agent's working directory goes when nothing else names one. */
-  workspaces: string;
-  workspace: (name: string) => string;
 };
 
 /**
- * Where agents' working directories go when their definition names none: one
- * short folder in the home directory, shared by every controller on the
- * machine, rather than inside a controller's data directory.
+ * Where agents with no directory of their own work, for one server: a short
+ * folder in the home directory named after the server's address, shared by
+ * every controller on the machine that talks to it, rather than a path inside
+ * a controller's data directory.
  */
-export function defaultWorkspacesDir(): string {
-  return join(homedir(), '.switch', 'agents');
+export function serverWorkspacesDir(server: string): string {
+  const { host } = new URL(server);
+  const segment = host.replace(/[^A-Za-z0-9._-]+/g, '-');
+  if (!isSafeSegment(segment))
+    throw new ConfigurationError(`The server address '${server}' cannot name a folder.`);
+  return join(homedir(), '.switch', 'agents', segment);
 }
 
-export function dataLayout(root: string, workspaces: string): DataLayout {
+/** An agent's working directory under `workspaces`, when its definition names none. */
+export function agentWorkspace(workspaces: string, name: string): string {
+  return join(workspaces, safeSegment(name, 'agent name'));
+}
+
+export function dataLayout(root: string): DataLayout {
   return {
     root,
     database: join(root, 'controller.db'),
@@ -81,8 +88,6 @@ export function dataLayout(root: string, workspaces: string): DataLayout {
     agentCredentials: (agentId) =>
       join(root, 'agents', safeSegment(agentId, 'agent id'), 'credentials.json'),
     watcherRoot: (agentId) => join(root, 'watchers', safeSegment(agentId, 'agent id')),
-    workspaces,
-    workspace: (name) => join(workspaces, safeSegment(name, 'agent name')),
   };
 }
 

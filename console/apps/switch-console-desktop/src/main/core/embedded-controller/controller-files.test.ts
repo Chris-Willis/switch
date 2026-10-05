@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   controllerDataDir,
   defaultWorkspacePath,
+  serverWorkspacesDir,
   EnrollmentFile,
   turnOffWatchers,
   wipeControllerIdentity,
@@ -64,6 +65,9 @@ describe('controller data directory', () => {
       '/home/me/.switch/agents/pm-agent'
     );
     expect(defaultWorkspacePath('/home/me/.switch/agents', '../escape')).toBeNull();
+    expect(serverWorkspacesDir('/home/me', 'http://localhost:8000')).toBe(
+      '/home/me/.switch/agents/localhost-8000'
+    );
     expect(defaultWorkspacePath('/home/me/.switch/agents', '')).toBeNull();
   });
 

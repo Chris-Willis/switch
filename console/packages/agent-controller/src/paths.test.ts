@@ -5,9 +5,10 @@ import { describe, expect, it } from 'vitest';
 import {
   dataLayout,
   defaultDataDir,
-  defaultWorkspacesDir,
+  agentWorkspace,
   ensureDataDir,
   isSafeSegment,
+  serverWorkspacesDir,
 } from './paths';
 
 describe('defaultDataDir', () => {
@@ -46,14 +47,21 @@ describe('ensureDataDir', () => {
 
 describe('dataLayout', () => {
   it('keeps server-supplied names to one path segment', () => {
-    const layout = dataLayout('/data', '/data/workspaces');
+    const layout = dataLayout('/data');
     expect(layout.agentCredentials('agent-1')).toBe('/data/agents/agent-1/credentials.json');
     expect(layout.watcherRoot('agent-1')).toBe('/data/watchers/agent-1');
-    expect(layout.workspaces).toBe('/data/workspaces');
-    expect(defaultWorkspacesDir()).toBe(join(homedir(), '.switch', 'agents'));
-    expect(layout.workspace('scout')).toBe('/data/workspaces/scout');
+    expect(serverWorkspacesDir('http://localhost:8000')).toBe(
+      join(homedir(), '.switch', 'agents', 'localhost-8000')
+    );
+    expect(serverWorkspacesDir('https://switch.example.com/')).toBe(
+      join(homedir(), '.switch', 'agents', 'switch.example.com')
+    );
+    expect(agentWorkspace('/home/me/.switch/agents/localhost-8000', 'scout')).toBe(
+      '/home/me/.switch/agents/localhost-8000/scout'
+    );
+    expect(() => agentWorkspace('/w', '../escape')).toThrow(/cannot be used/);
     expect(() => layout.watcherRoot('../x')).toThrow(/cannot be used as a directory name/);
-    expect(() => layout.workspace('a/b')).toThrow();
+    expect(() => agentWorkspace('/w', 'a/b')).toThrow();
     for (const bad of ['', '.', '..', '.hidden', 'a/b', 'a..b'])
       expect(isSafeSegment(bad)).toBe(false);
     expect(isSafeSegment('00000000-0000-4000-8000-0000000000a1')).toBe(true);

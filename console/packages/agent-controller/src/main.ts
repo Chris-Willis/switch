@@ -21,7 +21,7 @@ import {
   workspaceSharedHostBundle,
 } from './handover';
 import { createLogger, errorMessage } from './log';
-import { dataLayout, defaultWorkspacesDir, ensureDataDir, resolveDataDir } from './paths';
+import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
 import { definitionProblem } from './reconcile';
 import {
   assertSupportedPlatform,
@@ -72,7 +72,7 @@ function bundlePath(flag: string | undefined): string {
 async function openState(dataDirFlag: string | undefined) {
   const dataDir = resolveDataDir(dataDirFlag);
   await ensureDataDir(dataDir);
-  const layout = dataLayout(dataDir, defaultWorkspacesDir());
+  const layout = dataLayout(dataDir);
   return {
     dataDir,
     layout,
@@ -198,10 +198,11 @@ async function runCommand(args: string[]): Promise<number> {
       {
         store,
         secrets,
-        runtime: (openStream) =>
+        runtime: (openStream, workspaces) =>
           new AgentRuntimes(
             new InProcessRuntime({
               layout,
+              workspaces,
               bundlePath: sharedHostBundle,
               openStream,
               log,
@@ -213,7 +214,7 @@ async function runCommand(args: string[]): Promise<number> {
         fetch,
         log,
         dataDir,
-        workspacesDir: layout.workspaces,
+        workspacesFor: serverWorkspacesDir,
         version: VERSION,
         now: Date.now,
         random: Math.random,

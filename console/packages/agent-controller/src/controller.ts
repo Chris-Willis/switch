@@ -62,15 +62,18 @@ export const DEFAULT_TIMING: ControllerTiming = {
 export type ControllerDeps = {
   store: ControllerStore;
   secrets: SecretStore;
-  /** Builds how agents run here, given the stream each agent's agent host hears its events on. */
-  runtime: (openStream: (agentId: string) => OpenAgentStream) => AgentRuntime;
+  /**
+   * Builds how agents run here, given the stream each agent's agent host hears
+   * its events on and the folder agents with no directory of their own work in.
+   */
+  runtime: (openStream: (agentId: string) => OpenAgentStream, workspaces: string) => AgentRuntime;
   locator: ProviderLocator;
   fetch: Fetch;
   log: Logger;
   /** Where disk space is measured and provider checks run. */
   dataDir: string;
-  /** Where agents' working directories go when their definition names none. */
-  workspacesDir: string;
+  /** Where agents' working directories go when their definition names none, for a server. */
+  workspacesFor: (server: string) => string;
   version: string;
   now: () => number;
   random: () => number;
@@ -214,7 +217,11 @@ export async function runController(
       store.saveCursor(agentId, cursor, new Date(deps.now()).toISOString()),
     onChange: () => reporter?.request(),
   });
-  const runtime = deps.runtime((agentId) => (streamDeps) => hub.open(agentId, streamDeps));
+  const workspaces = deps.workspacesFor(identity.server);
+  const runtime = deps.runtime(
+    (agentId) => (streamDeps) => hub.open(agentId, streamDeps),
+    workspaces
+  );
   const relay = new LocalRelay({
     log,
     version: deps.version,
@@ -321,7 +328,7 @@ export async function runController(
     providers,
     attached: (agentId) => delivery(agentId).attached(agentId),
     dataDir: deps.dataDir,
-    workspacesDir: deps.workspacesDir,
+    workspacesDir: workspaces,
     version: deps.version,
     now: deps.now,
   });

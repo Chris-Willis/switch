@@ -37,7 +37,7 @@ beforeEach(() => {
   bundle = join(dir, 'fake-bundle.cjs');
   writeFileSync(bundle, FAKE_BUNDLE);
   runtime = new DetachedRuntime({
-    layout: dataLayout(join(dir, 'data'), join(dir, 'data', 'workspaces')),
+    layout: dataLayout(join(dir, 'data')),
     bundlePath: bundle,
   });
 });
