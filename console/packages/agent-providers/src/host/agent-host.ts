@@ -762,7 +762,11 @@ export async function runAgentHost(
       const { pid } = z
         .object({ pid: z.number().int().positive() })
         .parse(JSON.parse(await readFile(ownerPath, 'utf8')));
-      process.kill(pid, 0);
+      try {
+        process.kill(pid, 0);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EPERM') throw error;
+      }
       throw new Error('The shared SDK watcher is already running.');
     } catch (error) {
       if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;

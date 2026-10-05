@@ -392,6 +392,30 @@ it('stays down while a takeover marker says another client holds the connection'
   ).rejects.toThrow('credentials.json');
 });
 
+it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+  'refuses to run while the recorded owner is a process it may not signal',
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'shared-watch-eperm-'));
+    roots.push(root);
+    paths.root = root;
+    await writeFlags(root, { enabled: true, spawn: true });
+    await writeFile(join(root, 'shared-owner.lock'), JSON.stringify({ pid: 1, token: 'other' }));
+    const { supervision } = sessionHosts();
+
+    await expect(
+      runAgentHost(
+        root,
+        watchable(root),
+        new AbortController().signal,
+        supervision,
+        new WatcherControl(),
+        null,
+        openSwitchStream
+      )
+    ).rejects.toThrow('already running');
+  }
+);
+
 it('asks again for an event it assigned but died before routing', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-unrouted-'));
   roots.push(root);
