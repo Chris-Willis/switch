@@ -483,7 +483,7 @@ class SwitchConfig(BaseSettings):
     # mounted and the bearer middleware never treats a token as a controller's.
     agent_management_enabled: bool = False
     # Signs controller access tokens. Required (at least 32 characters) when
-    # agent management is on, and deliberately separate from JWT_SECRET_KEY so
+    # agent management is on, and deliberately separate from SECRET_KEYS so
     # rotating one never invalidates the other.
     controller_token_secret: str | None = None
     # How often a controller must report status. Sent to controllers as
