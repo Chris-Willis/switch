@@ -793,6 +793,52 @@
         "width": 6,
         "height": 4
       }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agent buffer events walked per read, p50 / p95 by operation (cap 2000), needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p50:switch.agent.buffer.scanned{$env,$service} by {operation}",
+            "display_type": "line"
+          },
+          {
+            "q": "p95:switch.agent.buffer.scanned{$env,$service} by {operation}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 75,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agent buffer read duration p95 / p99 (ms) by operation, needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p95:switch.agent.buffer.scan.duration{$env,$service} by {operation}",
+            "display_type": "line"
+          },
+          {
+            "q": "p99:switch.agent.buffer.scan.duration{$env,$service} by {operation}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 75,
+        "width": 6,
+        "height": 4
+      }
     }
   ]
 }
