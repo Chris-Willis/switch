@@ -23,7 +23,7 @@ import { Label } from '@renderer/lib/ui/label';
 import { StatusBadge, type StatusTone } from '@renderer/lib/ui/status-badge';
 import { Switch } from '@renderer/lib/ui/switch';
 import { Textarea } from '@renderer/lib/ui/textarea';
-import { IDLE_RULE } from '@shared/core/agent-migration/agent-migration';
+import { MOVE_RULE } from '@shared/core/agent-migration/agent-migration';
 import {
   type EmbeddedControllerOverview,
   MAX_MACHINE_DESCRIPTION,
@@ -491,7 +491,7 @@ function ConsoleAgentsHere({ serverId }: { serverId: string }) {
       <p className="text-sm text-foreground">Agents this Console runs</p>
       <p className="text-xs text-foreground-muted">
         Move every agent this Console runs on this computer for this server onto its controller, so
-        Switch manages them. {IDLE_RULE} Agents that cannot move are left as they are, with the
+        Switch manages them. {MOVE_RULE} Agents that cannot move are left as they are, with the
         reason.
       </p>
       {names.length > 0 && (

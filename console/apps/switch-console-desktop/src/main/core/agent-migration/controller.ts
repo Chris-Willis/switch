@@ -1,6 +1,7 @@
 import type {
   AgentMigrationState,
   MoveAllResult,
+  MoveToManagedResult,
   NewAgentMachine,
 } from '@shared/core/agent-migration/agent-migration';
 import { createRPCController } from '@shared/lib/ipc/rpc';
@@ -12,15 +13,10 @@ import type { AddManagedAgentParams, AddManagedAgentResult } from './new-managed
 export const agentMigrationController = createRPCController({
   getState: (agentId: string): Promise<AgentMigrationState> => agentMigrationService.state(agentId),
 
-  moveToManaged: (agentId: string): Promise<void> => agentMigrationService.moveToManaged(agentId),
+  moveToManaged: (agentId: string): Promise<MoveToManagedResult> =>
+    agentMigrationService.moveToManaged(agentId),
 
   stopManaging: (agentId: string): Promise<void> => agentMigrationService.stopManaging(agentId),
-
-  /** Cancels a move or return still waiting for a turn to end. */
-  cancel: (agentId: string): Promise<void> => {
-    agentMigrationService.cancel(agentId);
-    return Promise.resolve();
-  },
 
   moveAllOnThisComputer: (serverId: string): Promise<MoveAllResult> =>
     agentMigrationService.moveAll({ kind: 'this-computer', serverId }),

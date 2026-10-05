@@ -15,8 +15,6 @@ const CONSOLE: AgentMigrationState = {
   target: { kind: 'this-computer', serverId: 'server-1', machineName: 'build-box' },
   blocker: null,
   canEnableTarget: false,
-  movesWithParent: null,
-  subagents: [],
   notCarried: [],
   managed: null,
 };
@@ -128,19 +126,19 @@ describe('where an agent runs', () => {
     });
   });
 
-  it('shows a move in flight, including the wait for a turn', () => {
-    const waiting: AgentMigrationState = {
+  it('shows a move in flight', () => {
+    const telling: AgentMigrationState = {
       ...CONSOLE,
-      operation: { kind: 'moving', stage: 'waiting-for-turn', busySessions: ['s-1', 's-2'] },
+      operation: { kind: 'moving', stage: 'telling-rooms' },
     };
-    expect(migrationSummary(waiting)).toEqual({
+    expect(migrationSummary(telling)).toEqual({
       label: 'Moving…',
       tone: 'busy',
-      detail: 'Waiting for the current turn to end (2 sessions working)…',
+      detail: 'Telling the rooms it was working in that it is moving…',
     });
-    expect(
-      operationLabel({ kind: 'returning', stage: 'waiting-for-controller', busySessions: [] })
-    ).toBe('Waiting for the machine to stop it…');
+    expect(operationLabel({ kind: 'returning', stage: 'waiting-for-controller' })).toBe(
+      'Waiting for the machine to stop it…'
+    );
   });
 });
 
@@ -156,16 +154,15 @@ describe('the action offered', () => {
     );
   });
 
-  it('is Stop managing once moved, and nothing for a subagent that moves with its parent', () => {
-    expect(migrationAction(MANAGED)?.label).toBe('Stop managing');
-    expect(migrationAction({ ...MANAGED, movesWithParent: 'builder' })).toBeNull();
+  it('is Stop managing once moved', () => {
+    expect(migrationAction(MANAGED).label).toBe('Stop managing');
   });
 
   it('is held while a move is in flight', () => {
     expect(
       migrationAction({
         ...CONSOLE,
-        operation: { kind: 'moving', stage: 'adopting', busySessions: [] },
+        operation: { kind: 'moving', stage: 'adopting' },
       })?.disabledReason
     ).toBe('Working…');
   });

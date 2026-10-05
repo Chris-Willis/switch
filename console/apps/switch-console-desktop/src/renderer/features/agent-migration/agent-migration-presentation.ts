@@ -21,14 +21,12 @@ export function operationLabel(operation: MigrationOperation): string {
   switch (operation.stage) {
     case 'checking':
       return moving ? 'Checking it can move…' : 'Checking it can come back…';
-    case 'waiting-for-turn':
-      return `Waiting for the current turn to end (${operation.busySessions.length} session${operation.busySessions.length === 1 ? '' : 's'} working)…`;
+    case 'telling-rooms':
+      return 'Telling the rooms it was working in that it is moving…';
     case 'adopting':
       return 'Placing it on the machine…';
     case 'stopping-console-watcher':
       return 'Stopping this Console’s watcher…';
-    case 'preparing-machine':
-      return 'Preparing the machine…';
     case 'releasing':
       return moving ? 'Starting it on the machine…' : 'Asking Switch to stop managing it…';
     case 'waiting-for-controller':
@@ -52,8 +50,7 @@ export function migrationSummary(state: AgentMigrationState): MigrationSummary {
     return { label: 'Run by this Console', tone: 'neutral', detail: null };
   const where = targetName(state.target);
   const managed = state.managed;
-  if (!managed)
-    return { label: 'Managed', tone: 'ok', detail: `Runs on ${where}, with its parent.` };
+  if (!managed) return { label: 'Managed', tone: 'ok', detail: `Runs on ${where}.` };
   if (managed.machine.kind === 'removed')
     return {
       label: 'Machine removed',
@@ -95,9 +92,8 @@ export type MigrationAction = {
   disabledReason: string | null;
 };
 
-/** The one action offered for the agent: move it, or bring it back. Null for a subagent. */
-export function migrationAction(state: AgentMigrationState): MigrationAction | null {
-  if (state.movesWithParent) return null;
+/** The one action offered for the agent: move it, or bring it back. */
+export function migrationAction(state: AgentMigrationState): MigrationAction {
   const busy = state.operation ? 'Working…' : null;
   if (state.runner === 'managed')
     return { kind: 'return', label: 'Stop managing', disabledReason: busy ?? state.blocker };
