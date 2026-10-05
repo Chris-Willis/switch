@@ -12,11 +12,46 @@ import asyncio
 import json
 import time
 import uuid
-from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
+
+from switch_core.bridges.agent.protocol.control_relay import (
+    HEALTH_SUBSCRIPTION as HEALTH_SUBSCRIPTION,
+)
+from switch_core.bridges.agent.protocol.control_relay import (
+    RELAY_REPLY_ENVELOPE_BYTES as RELAY_REPLY_ENVELOPE_BYTES,
+)
+from switch_core.bridges.agent.protocol.control_relay import (
+    RELAY_REPLY_LIMIT_BYTES as RELAY_REPLY_LIMIT_BYTES,
+)
+from switch_core.bridges.agent.protocol.control_relay import (
+    RELAY_REQUEST_LIMIT_BYTES as RELAY_REQUEST_LIMIT_BYTES,
+)
+from switch_core.bridges.agent.protocol.control_relay import (
+    RELAY_RESOLVED_RETENTION_SECONDS,
+    PendingRelay,
+    RelayError,
+)
+from switch_core.bridges.agent.protocol.control_relay import (
+    RELAY_TIMEOUT_LIMIT_MS as RELAY_TIMEOUT_LIMIT_MS,
+)
+from switch_core.bridges.agent.protocol.control_relay import (
+    ConsoleView as ConsoleView,
+)
+from switch_core.bridges.agent.protocol.control_relay import (
+    RelayViews as RelayViews,
+)
+from switch_core.bridges.agent.protocol.control_relay import (
+    classify_message as classify_message,
+)
+from switch_core.bridges.agent.protocol.control_relay import (
+    frame_size as frame_size,
+)
+from switch_core.bridges.agent.protocol.control_relay import (
+    subscribe_message as subscribe_message,
+)
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_connections import (
@@ -39,19 +74,6 @@ FRAME_QUEUE_BYTES = 8 * 1024 * 1024
 
 IDLE_REPORT_EVERY_SECONDS = 30
 IDLE_FRESH_FOR_SECONDS = 75
-
-RELAY_REQUEST_LIMIT_BYTES = 2 * 1024 * 1024
-RELAY_REPLY_LIMIT_BYTES = 1024 * 1024
-#: Room for the reply's envelope around a value at the limit.
-RELAY_REPLY_ENVELOPE_BYTES = 64 * 1024
-RELAY_TIMEOUT_LIMIT_MS = 30_000
-#: How long a resolved relay is remembered, so a second reply is refused
-#: rather than reported unknown.
-RELAY_RESOLVED_RETENTION_SECONDS = 60.0
-
-#: Bound on one Console relay stream's undelivered frames.
-CONSOLE_VIEW_FRAMES = 1000
-CONSOLE_VIEW_BYTES = 4 * 1024 * 1024
 
 #: What a room is told, by notice reason, when a message was not processed.
 NOTICE_MESSAGES = {
@@ -76,38 +98,6 @@ NOTICE_MESSAGES = {
     "unreachable": "My cloud worker is not connected right now: it may still be starting, or it may be unreachable. I have kept your message and will process it when the worker connects.",
 }
 
-#: The subscription name a watcher pushes health under.
-HEALTH_SUBSCRIPTION = "health"
-
-MUTATING_MESSAGES = frozenset(
-    {"command", "place", "forget", "attachment", "attachmentCancel"}
-)
-REFUSED_MESSAGES = frozenset({"room", "approvals", "ensure"})
-READ_ONLY_MESSAGES = frozenset(
-    {
-        "snapshot",
-        "subscribe",
-        "unsubscribe",
-        "health",
-        "watchHealth",
-        "list",
-        "journal",
-        "page",
-    }
-)
-
-MessageKind = Literal["mutating", "read_only"]
-
-
-class RelayError(Exception):
-    """A relay that could not be answered, with the code Console acts on."""
-
-    def __init__(self, code: str, message: str, status: int) -> None:
-        super().__init__(message)
-        self.code = code
-        self.status = status
-
-
 HOSTED_WORKER_ONLY_MESSAGE = (
     "This agent runs on a cloud worker; only its attached worker may do this."
 )
@@ -130,57 +120,10 @@ class WorkerBusyError(RelayError):
         )
 
 
-def classify_message(message: dict[str, Any]) -> MessageKind:
-    """Whether a relayed message changes the worker's state.
-
-    The message is one element of the host control vocabulary. `room`,
-    `approvals` and `ensure` are the watcher's own and are refused; anything
-    unrecognised is refused too rather than guessed at.
-    """
-    if not isinstance(message, dict):
-        raise RelayError("refused_message", "A relayed message is an object.", 400)
-    if "sessionId" in message:
-        request = message.get("request")
-        if set(message) != {"sessionId", "request"} or not isinstance(request, dict):
-            raise RelayError(
-                "refused_message",
-                "A session request carries sessionId and request only.",
-                400,
-            )
-        kind = request.get("type")
-        if kind in REFUSED_MESSAGES:
-            raise RelayError(
-                "refused_message",
-                f"Session request {kind!r} is the watcher's own.",
-                400,
-            )
-        if kind == "command":
-            return "mutating"
-        if kind == "snapshot":
-            return "read_only"
-        raise RelayError("refused_message", f"Unknown session request {kind!r}.", 400)
-    if len(message) != 1:
-        raise RelayError(
-            "refused_message", "A relayed message names exactly one request.", 400
-        )
-    (name,) = message
-    if name in REFUSED_MESSAGES:
-        raise RelayError("refused_message", f"{name!r} cannot be relayed.", 400)
-    if name in MUTATING_MESSAGES:
-        return "mutating"
-    if name in READ_ONLY_MESSAGES:
-        return "read_only"
-    raise RelayError("refused_message", f"Unknown relayed message {name!r}.", 400)
-
-
 def hosted_launch_of(metadata: dict[str, Any] | None) -> str | None:
     """The hosted launch an agent runs under, from its metadata; None if local."""
     value = (metadata or {}).get("hosted_launch_id")
     return value if isinstance(value, str) else None
-
-
-def frame_size(data: dict[str, Any]) -> int:
-    return len(json.dumps(data, separators=(",", ":")).encode())
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,23 +220,6 @@ class WorkerFrames:
 
     def __bool__(self) -> bool:
         return bool(self._frames)
-
-
-@dataclass
-class PendingRelay:
-    id: str
-    tenant_id: str
-    agent_id: str
-    launch_id: str
-    launch_revision: int
-    relay_seq: int | None
-    core_boot: int
-    connection_id: str
-    generation: int
-    boot_id: str
-    deadline: float
-    future: asyncio.Future[dict[str, Any]] = field(repr=False)
-    timer: asyncio.TimerHandle | None = field(default=None, repr=False)
 
 
 class PendingRelays:
@@ -408,146 +334,6 @@ class PendingRelays:
             and relay.launch_id == launch_id
             for relay in self._by_id.values()
         )
-
-
-class ConsoleView:
-    """One Console relay stream's undelivered frames.
-
-    Bounded; an overflow drops what is buffered and says `resync`, so the
-    Console rebuilds its view instead of applying a view with holes in it.
-    """
-
-    def __init__(self, subscriptions: frozenset[str]) -> None:
-        self.subscriptions = subscriptions
-        self.wake = asyncio.Event()
-        self._frames: deque[tuple[str, dict[str, Any], int]] = deque()
-        self._bytes = 0
-
-    def push(self, event: str, data: dict[str, Any]) -> None:
-        size = frame_size(data)
-        if (
-            len(self._frames) + 1 > CONSOLE_VIEW_FRAMES
-            or self._bytes + size > CONSOLE_VIEW_BYTES
-        ):
-            self._frames.clear()
-            self._bytes = 0
-            event, data = "resync", {"sessionId": None, "reason": "overflow"}
-            size = frame_size(data)
-        self._frames.append((event, data, size))
-        self._bytes += size
-        self.wake.set()
-
-    def drain(self) -> list[tuple[str, dict[str, Any]]]:
-        frames = [(event, data) for event, data, _ in self._frames]
-        self._frames.clear()
-        self._bytes = 0
-        return frames
-
-
-@dataclass
-class _Subscription:
-    views: set[ConsoleView] = field(default_factory=set)
-    #: The worker generation this subscription was last asked of.
-    subscribed_generation: int | None = None
-    #: The last push forwarded, as (generation, seq).
-    last: tuple[int, int] | None = None
-
-
-def subscribe_message(subscription: str, on: bool) -> dict[str, Any]:
-    """The relayed message that starts or stops a worker subscription."""
-    if subscription == HEALTH_SUBSCRIPTION:
-        return {"watchHealth": on}
-    return {"subscribe": subscription} if on else {"unsubscribe": subscription}
-
-
-class RelayViews:
-    """Console live views of hosted workers, one worker subscription each.
-
-    A worker subscription is held once per (agent, session) however many
-    Console streams watch it, and released with the last of them.
-    """
-
-    def __init__(self) -> None:
-        self._subs: dict[tuple[str, str], _Subscription] = {}
-
-    def open(self, agent_id: str, view: ConsoleView) -> None:
-        for name in view.subscriptions:
-            self._subs.setdefault((agent_id, name), _Subscription()).views.add(view)
-
-    def close(self, agent_id: str, view: ConsoleView) -> list[tuple[str, int | None]]:
-        """Drop the view; the subscriptions nothing watches any more.
-
-        Each comes with the generation it was subscribed at, so the caller
-        unsubscribes only a worker that was asked.
-        """
-        released = []
-        for name in view.subscriptions:
-            sub = self._subs.get((agent_id, name))
-            if sub is None:
-                continue
-            sub.views.discard(view)
-            if not sub.views:
-                del self._subs[(agent_id, name)]
-                released.append((name, sub.subscribed_generation))
-        return released
-
-    def unsubscribed(self, agent_id: str, generation: int) -> list[str]:
-        """Subscriptions the worker at `generation` has not been asked for yet.
-
-        Marked asked as they are returned, so one Console stream subscribes
-        for all of them.
-        """
-        names = []
-        for (agent, name), sub in self._subs.items():
-            if agent == agent_id and sub.subscribed_generation != generation:
-                sub.subscribed_generation = generation
-                names.append(name)
-        return names
-
-    def subscribe_failed(self, agent_id: str, name: str, error: RelayError) -> None:
-        """Tell every view of a subscription the worker could not be asked, and ask again later."""
-        sub = self._subs.get((agent_id, name))
-        if sub is None:
-            return
-        sub.subscribed_generation = None
-        session_id = None if name == HEALTH_SUBSCRIPTION else name
-        for view in sub.views:
-            view.push(
-                "error",
-                {"sessionId": session_id, "code": error.code, "message": str(error)},
-            )
-
-    def deliver(
-        self, agent_id: str, generation: int, pushes: list[dict[str, Any]]
-    ) -> list[str]:
-        """Forward a worker's pushes in order; the subscriptions nobody holds."""
-        unsubscribe: list[str] = []
-        for push in pushes:
-            name = push["subscription"]
-            sub = self._subs.get((agent_id, name))
-            if sub is None:
-                if name not in unsubscribe:
-                    unsubscribe.append(name)
-                continue
-            seq = push["seq"]
-            session_id = None if name == HEALTH_SUBSCRIPTION else name
-            if sub.last is not None and sub.last[0] == generation:
-                if seq <= sub.last[1]:
-                    continue
-                if seq != sub.last[1] + 1:
-                    for view in sub.views:
-                        view.push("resync", {"sessionId": session_id, "reason": "gap"})
-            sub.last = (generation, seq)
-            for key in ("event", "failure", "health"):
-                if key in push:
-                    frame = (
-                        {"health": push[key]}
-                        if key == "health"
-                        else {"sessionId": session_id, key: push[key]}
-                    )
-                    for view in sub.views:
-                        view.push(key, frame)
-        return unsubscribe
 
 
 def offer_key(boot: int, conn: AgentConnection) -> str:

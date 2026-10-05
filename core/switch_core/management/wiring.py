@@ -24,6 +24,7 @@ from switch_core.bridges.agent.operations.agent_management import (
     enable_agent_management,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.protocol.control_relay import ControlRelays
 from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.config import SwitchConfig
 from switch_core.db.session_scope import tenant_session
@@ -34,13 +35,17 @@ from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.gateway.controller_relay import controller_relay_router
 from switch_core.management.agent_operations import ManagementAgentOperations
 from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.bindings import load_bindings
+from switch_core.management.control_relay_routes import (
+    ControlRelayNotifier,
+    control_relay_router,
+)
 from switch_core.management.controller_routes import router as controller_router
 from switch_core.management.dependencies import init_management_dependencies
 from switch_core.management.gateway_routes import router as gateway_router
-from switch_core.management.notifier import ControllerNotifier
 from switch_core.management.service import ManagementService, ManagementSettings
 
 GATEWAY_PREFIX = "/management"
@@ -56,6 +61,7 @@ class Management:
     authenticator: ManagementAuthenticator
     agent_operations: ManagementAgentOperations
     session_factory: async_sessionmaker[AsyncSession]
+    control_relays: ControlRelays
 
     def install(
         self,
@@ -69,8 +75,12 @@ class Management:
             authenticator=self.authenticator,
             session_factory=self.session_factory,
         )
+        agent_bridge_app.include_router(control_relay_router(self.control_relays))
         agent_bridge_app.include_router(controller_router)
         gateway_app.include_router(gateway_router, prefix=GATEWAY_PREFIX)
+        gateway_app.include_router(
+            controller_relay_router(self.control_relays), prefix=GATEWAY_PREFIX
+        )
         protocol.set_agent_removal_listener(self.agent_removed)
         enable_agent_management(self.agent_operations)
 
@@ -98,6 +108,7 @@ def build_management(
     clock: Callable[[], datetime],
 ) -> Management:
     controllers = AgentControllerStore()
+    control_relays = ControlRelays()
     presence.use_auth_cache(auth_cache)
     service = ManagementService(
         settings=ManagementSettings(
@@ -105,7 +116,7 @@ def build_management(
             status_interval_seconds=status_interval_seconds,
             server_url=server_url,
         ),
-        notifier=ControllerNotifier(),
+        notifier=ControlRelayNotifier(control_relays),
         controllers=controllers,
         definitions=AgentDefinitionStore(),
         operations=AgentControllerOperationStore(),
@@ -128,6 +139,7 @@ def build_management(
             service=service, session_factory=session_factory
         ),
         session_factory=session_factory,
+        control_relays=control_relays,
     )
 
 
