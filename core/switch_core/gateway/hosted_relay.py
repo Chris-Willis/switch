@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnection
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
-from switch_core.bridges.agent.protocol.hosted_workers import (
+from switch_core.bridges.agent.protocol.control_relay import (
     HEALTH_SUBSCRIPTION,
     RELAY_REQUEST_LIMIT_BYTES,
     RELAY_TIMEOUT_LIMIT_MS,
