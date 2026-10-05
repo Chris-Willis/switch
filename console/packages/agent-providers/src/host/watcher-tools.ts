@@ -207,6 +207,14 @@ export async function announceStartFailure(input: {
     agent_id: input.identity.agentId,
   });
   const owner = detail.isError ? null : detail.structuredContent?.owner_name;
+  if (typeof owner === 'string' && owner && !(await inRoom(ctx, owner))) {
+    const posted = await callOperation(ctx, 'post_message', {
+      body: `I couldn't start a session, and my owner (${owner}) needs to fix it: ${input.failure} Then address me again.`,
+      ...thread,
+    });
+    if (posted.isError) throw new Error(resultText(posted));
+    return;
+  }
   if (typeof owner === 'string' && owner) {
     const targeted = await callOperation(ctx, 'send_targeted_message', {
       body: `I couldn't start a session, and it needs you to fix it: ${input.failure} Then address me again.`,
@@ -234,6 +242,23 @@ export async function announceStartFailure(input: {
     ...thread,
   });
   if (posted.isError) throw new Error(resultText(posted));
+}
+
+/**
+ * Whether `name` is a participant of the room the caller is placed in, so it
+ * can be addressed. When the room's participants cannot be read this answers
+ * true and leaves the targeted send to say what is wrong.
+ */
+async function inRoom(ctx: CallerContext, name: string): Promise<boolean> {
+  const listed = await callOperation(ctx, 'list_participants', {});
+  if (listed.isError) {
+    console.warn(`Could not read the room's participants: ${resultText(listed)}`);
+    return true;
+  }
+  const participants = z
+    .array(z.object({ name: z.string() }))
+    .parse(JSON.parse(resultText(listed)));
+  return participants.some((participant) => participant.name === name);
 }
 
 /** What moving a room to a session did. */

@@ -1223,7 +1223,7 @@ it('tells the room it is starting a session when its stream leaves that to it, b
   vi.mocked(ensureSharedProcess).mockImplementation(async ({ root: sessionRoot }) =>
     hosts.start(sessionRoot)
   );
-  const calls = switchOperations({ owner: 'ada' });
+  const calls = switchOperations({ owner: 'ada', members: ['ada'] });
   const opened: SwitchEventStreamDeps[] = [];
   const controllerStream: OpenAgentStream = (deps) => {
     opened.push(deps);
@@ -1279,7 +1279,7 @@ it('leaves telling the room to Switch on its own connection', async () => {
   vi.mocked(ensureSharedProcess).mockImplementation(async ({ root: sessionRoot }) =>
     hosts.start(sessionRoot)
   );
-  const calls = switchOperations({ owner: 'ada' });
+  const calls = switchOperations({ owner: 'ada', members: ['ada'] });
   const abort = new AbortController();
   const run = runAgentHost(
     root,
@@ -2049,7 +2049,11 @@ it('reports a room connection that is turned off, and a watcher that failed', as
 });
 
 /** Answers the Switch operations the watcher calls as a session, recording each. */
-function switchOperations(answers: { owner: string | null; refuseTargeted?: boolean }) {
+function switchOperations(answers: {
+  owner: string | null;
+  members: string[];
+  refuseTargeted?: boolean;
+}) {
   const calls: { name: string; body: Record<string, unknown>; session: string | null }[] = [];
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const name = String(url).split('/ops/')[1] ?? '';
@@ -2061,6 +2065,10 @@ function switchOperations(answers: { owner: string | null; refuseTargeted?: bool
     });
     if (name === 'get_agent_detail')
       return new Response(JSON.stringify({ result: { owner_name: answers.owner } }));
+    if (name === 'list_participants')
+      return new Response(
+        JSON.stringify({ result: answers.members.map((member) => ({ name: member })) })
+      );
     if (name === 'send_targeted_message' && answers.refuseTargeted)
       return new Response('Targets not in room: ada', { status: 400 });
     return new Response(JSON.stringify({ result: { event_id: 'posted' } }));
@@ -2077,7 +2085,7 @@ it('stops starting a session whose host failed, keeps its message, and tells its
   const config = await spawning(root);
   const hosts = sessionHosts();
   hosts.fail = SIGN_IN;
-  const calls = switchOperations({ owner: 'ada' });
+  const calls = switchOperations({ owner: 'ada', members: ['ada'] });
   const error = vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -2101,8 +2109,12 @@ it('stops starting a session whose host failed, keeps its message, and tells its
     // Told at once rather than after the wait for a host to come up.
     expect(Date.now() - started).toBeLessThan(5000);
     const sessionId = placementsOf(published).room!;
-    expect(calls.map((call) => call.name)).toEqual(['get_agent_detail', 'send_targeted_message']);
-    expect(calls[1]).toEqual({
+    expect(calls.map((call) => call.name)).toEqual([
+      'get_agent_detail',
+      'list_participants',
+      'send_targeted_message',
+    ]);
+    expect(calls[2]).toEqual({
       name: 'send_targeted_message',
       session: sessionId,
       body: {
@@ -2152,7 +2164,7 @@ it('tells the room without addressing anyone when the owner cannot be addressed,
   const config = await spawning(root);
   const hosts = sessionHosts();
   hosts.fail = SIGN_IN;
-  const calls = switchOperations({ owner: 'ada', refuseTargeted: true });
+  const calls = switchOperations({ owner: 'ada', members: ['ada'], refuseTargeted: true });
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   const error = vi.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -2187,6 +2199,46 @@ it('tells the room without addressing anyone when the owner cannot be addressed,
       )
     );
     expect(streams).toHaveLength(1);
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
+it('tells the room without addressing the owner when the owner is not in it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-owner-absent-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  hosts.fail = SIGN_IN;
+  const calls = switchOperations({ owner: 'ada', members: ['grace'] });
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(1, 'room'));
+    await eventually(() => calls.some((call) => call.name === 'post_message'));
+    expect(calls.map((call) => call.name)).toEqual([
+      'get_agent_detail',
+      'list_participants',
+      'post_message',
+    ]);
+    expect(calls[2]!.body).toEqual({
+      body: `I couldn't start a session, and my owner (ada) needs to fix it: ${SIGN_IN} Then address me again.`,
+    });
+    expect(warn.mock.calls.some((call) => String(call[0]).includes('ada'))).toBe(false);
   } finally {
     abort.abort();
     await run;
@@ -2686,7 +2738,7 @@ it('tells the room once a session keeps not taking a message, instead of startin
   const config = await spawning(root);
   const hosts = sessionHosts();
   hosts.drop = true;
-  const calls = switchOperations({ owner: 'ada' });
+  const calls = switchOperations({ owner: 'ada', members: ['ada'] });
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   const error = vi.spyOn(console, 'error').mockImplementation(() => {});
 
