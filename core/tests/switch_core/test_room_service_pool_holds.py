@@ -151,6 +151,7 @@ def _service(
     svc._provisioning = provisioning  # type: ignore[assignment]
     svc._client_lifecycle = _RunningClients(running)  # type: ignore[assignment]
     svc._collab_lifecycle = _RunningClients({})  # type: ignore[assignment]
+    svc._room_cache = None
     return svc, provisioning
 
 
