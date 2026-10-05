@@ -67,7 +67,14 @@ export function useAgentMigrationState(agentId: string) {
  * Switch's agent management, which runs it on a machine's controller, and
  * brings it back to this Console.
  */
-export function ManagedAgentSection({ agentId }: { agentId: string }) {
+export function ManagedAgentSection({
+  agentId,
+  onReturned,
+}: {
+  agentId: string;
+  /** Called once the agent is back with this Console; null when the page already shows it. */
+  onReturned: (() => void) | null;
+}) {
   const queryClient = useQueryClient();
   const query = useAgentMigrationState(agentId);
   const [confirming, setConfirming] = useState<'move' | 'return' | null>(null);
@@ -81,6 +88,7 @@ export function ManagedAgentSection({ agentId }: { agentId: string }) {
   });
   const giveBack = useMutation({
     mutationFn: () => rpc.agentMigration.stopManaging(agentId),
+    onSuccess: () => onReturned?.(),
     onSettled: refresh,
   });
   const enable = useMutation({

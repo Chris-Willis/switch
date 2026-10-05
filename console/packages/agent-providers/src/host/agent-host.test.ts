@@ -1487,6 +1487,29 @@ it('takes the model, approval mode, instructions and advanced configuration from
   expect(cleared.start.input).not.toHaveProperty('agentDefinition');
 });
 
+it('gives a session the credentials and binary of whoever runs its watcher now', () => {
+  const root = '/state';
+  const controller = watchable(root);
+  controller.execution!.credentialsPath = '/data/agents/agent-1/credentials.json';
+  controller.execution!.binaryPath = '/usr/local/bin/claude';
+  const saved = watchable(root);
+  saved.session = {
+    ...saved.session,
+    agentId: controller.session.agentId,
+    sessionId: 'room-session',
+  };
+  saved.execution!.credentialsPath = '/work/agent/.switch/agents/agent.json';
+  delete saved.execution!.binaryPath;
+
+  const refreshed = withDefinitionOf(saved, controller);
+
+  expect(definitionChanged(saved, controller)).toBe(true);
+  expect(refreshed.execution).toMatchObject({
+    credentialsPath: '/data/agents/agent-1/credentials.json',
+    binaryPath: '/usr/local/bin/claude',
+  });
+});
+
 it('leaves a session that runs as a definition file on disk as the agent it runs as', () => {
   const root = '/state';
   const edited = watchable(root);

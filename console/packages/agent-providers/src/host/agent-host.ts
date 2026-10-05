@@ -364,8 +364,9 @@ export async function stopSupersededSessions(
  * `config` with what its agent's definition decides — the model, the approval
  * mode, the instructions and skill the provider is given, and what the
  * agent's advanced configuration becomes: the agent definition Claude Code
- * runs as and the Codex profile — taken from the watcher's `template` as it
- * stands now. Everything else stays the session's own: its identity,
+ * runs as and the Codex profile — and the credentials and provider binary of
+ * whoever runs the watcher, taken from the watcher's `template` as it stands
+ * now. Everything else stays the session's own: its identity,
  * directory and native conversation, so a session started after its agent was
  * edited resumes its conversation under the edit instead of under what the
  * agent was when the session was first created.
@@ -391,6 +392,12 @@ export function withDefinitionOf(
     else delete next.start.input.agentDefinition;
   }
   if (next.execution && template.execution) {
+    // Whoever runs the watcher now is who the session reaches Switch as: the
+    // same room can be served by Console's watcher one day and a controller's
+    // the next, each with credentials of its own.
+    next.execution.credentialsPath = template.execution.credentialsPath;
+    if (template.execution.binaryPath === undefined) delete next.execution.binaryPath;
+    else next.execution.binaryPath = template.execution.binaryPath;
     next.execution.context = template.execution.context;
     if (template.execution.instructions === undefined) delete next.execution.instructions;
     else next.execution.instructions = template.execution.instructions;
