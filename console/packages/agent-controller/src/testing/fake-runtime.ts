@@ -56,6 +56,10 @@ export class FakeRuntime implements AgentRuntime {
     return structuredClone(this.observation(agentId));
   }
 
+  watcherRoot(agentId: string): string {
+    return `/data/watchers/${agentId}`;
+  }
+
   credentialsPath(agentId: string): string {
     return `/data/agents/${agentId}/credentials.json`;
   }
@@ -139,6 +143,7 @@ export class FakeRuntime implements AgentRuntime {
 
 /** Every provider installed at `/usr/bin/<provider>`, unless listed as missing. */
 export class FakeLocator implements ProviderLocator {
+  readonly authSource = 'local';
   readonly missing = new Set<Provider>();
 
   async locate(provider: Provider): Promise<LocatedProvider | null> {
