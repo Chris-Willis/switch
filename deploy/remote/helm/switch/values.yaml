@@ -87,7 +87,8 @@ ingress:
 #      GATEWAY_ADMIN_PASSWORD,
 #      JWT_SECRET_KEY (optional, legacy — see secrets.jwtSecretKey),
 #      MATTERMOST_ADMIN_PASSWORD + MATTERMOST_USER_PASSWORD (if mattermost.enabled),
-#      GATEWAY_OIDC_CLIENT_SECRET (if switchCore.oidc.enabled).
+#      GATEWAY_OIDC_CLIENT_SECRET (if switchCore.oidc.enabled),
+#      CONTROLLER_TOKEN_SECRET (if switchCore.agentManagementEnabled).
 secrets:
   # Name of a pre-existing Secret to read all of the above from. Empty = the
   # chart manages its own Secret from the values below.
@@ -112,6 +113,11 @@ secrets:
   # credentials keep working; the first boot re-encrypts stored credentials
   # under secretKeys. Remove it afterwards.
   jwtSecretKey: ""
+  # Signs the access tokens agent controllers use. Required (at least 32
+  # characters) when switchCore.agentManagementEnabled is true. Kept separate
+  # from secretKeys so rotating one never invalidates the other. Generate one
+  # with: openssl rand -hex 32
+  controllerTokenSecret: ""
   gatewayAdminEmail: ""
   gatewayAdminPassword: ""
   mattermostAdminPassword: ""
@@ -238,6 +244,9 @@ switchCore:
   signupEnabled: false
   # Most users created per rolling hour, counting every way a user is created.
   signupMaxPerHour: 20
+  # Agent management: controllers that run agents for this deployment. Off by
+  # default. When enabled, secrets.controllerTokenSecret is required.
+  agentManagementEnabled: false
   # Gateway OIDC login (bring-your-own IdP, e.g. Okta). Disabled by default;
   # set enabled=true and supply issuerUrl/clientId (plus
   # secrets.gatewayOidcClientSecret) to gate the gateway behind OIDC. Provider
