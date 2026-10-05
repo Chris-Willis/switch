@@ -14,7 +14,7 @@ import pytest
 
 from switch_core.bridges.agent.protocol.types import AgentEvent
 from switch_core.clients.agent_consumer import AgentConsumer
-from switch_core.transport import InboundMessage, RoomRef
+from switch_core.transport import InboundMedia, InboundMessage, RoomRef
 
 _LOGGER = "switch_core.clients.agent_consumer"
 
@@ -94,3 +94,42 @@ async def test_the_debug_line_is_still_logged_when_debug_is_on(dumps, caplog):
     lines = [r for r in caplog.records if "Enqueuing event" in r.getMessage()]
     assert len(lines) == 1
     assert '"body": "hello"' in lines[0].getMessage()
+
+
+@pytest.mark.parametrize("level", [logging.INFO, logging.DEBUG])
+@pytest.mark.asyncio
+async def test_a_media_event_is_serialised_only_when_debug_is_on(dumps, caplog, level):
+    caplog.set_level(level, logger=_LOGGER)
+    enqueued: list[AgentEvent] = []
+    media = InboundMedia(
+        room_id="!room:server",
+        event_id="$media",
+        sender="@someone:switch.local",
+        timestamp=1,
+        content={"body": "a file"},
+        body="a file",
+        uri="mxc://server/file",
+    )
+
+    await AgentConsumer._emit_media(
+        _consumer(enqueued),  # type: ignore[arg-type]
+        RoomRef(room_id="!room:server"),
+        media,
+        SimpleNamespace(  # type: ignore[arg-type]
+            room_id="room-1", bridge_id=None, channel_type="channel_public"
+        ),
+        False,
+        "someone",
+        None,
+        [],
+        "a file",
+    )
+
+    assert len(enqueued) == 1
+    logged = [r for r in caplog.records if "Enqueuing media event" in r.getMessage()]
+    if level == logging.DEBUG:
+        assert dumps == [1]
+        assert len(logged) == 1
+    else:
+        assert dumps == []
+        assert logged == []
