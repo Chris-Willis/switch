@@ -122,7 +122,6 @@ Always the first frame on a stream.
 | `spawn_capable` | Whether this client can start a session on demand |
 | `rooms` | The covered room set, sorted |
 | `cursor` | Where the connection is reading from |
-| `epoch` | Which server process numbered the sequence. Keep it with your cursor and send it back as `epoch` when you reopen; a different one means the server restarted, and you get the restart `gap` even when your cursor looks valid. From agent-protocol 8 |
 | `protocol` | The protocol revision in force |
 | `heartbeat_interval_seconds` | The interval to beat on |
 | `server`, `client` | The server's version and the contract range it speaks and accepts, and an echo of what the client declared |
@@ -133,7 +132,7 @@ Always the first frame on a stream.
 
 | Frame | Fields | Emitted when |
 |---|---|---|
-| `gap` | `from_sequence`, `resumed_at`, `reason` | The server restarted since the client's cursor was numbered: the epoch the client sent back differs from the server's, or, from a client that sent none, the cursor is ahead of the buffer head (the buffer is in memory, so a restart resets the sequence). Also when the cursor is below the dropped-through watermark at open, or it expires mid-stream |
+| `gap` | `from_sequence`, `resumed_at`, `reason` | The cursor is ahead of the buffer head — the buffer is in memory, so a restart resets the sequence — or the cursor is below the dropped-through watermark at open, or it expires mid-stream |
 | `evicted` | `reason` | Another stream attaches to the same connection id, the connection is closed server-side, or the heartbeat lapses while the stream is open |
 | `subscription_changed` | `rooms`, `reason` | The covered room set changes, including a room going dark because a sibling connection claimed it |
 | `room_released` | `room_id`, `session_id` (nullable) | Another connection of the agent took over this connection's claim on the room or its session's placement there. `session_id` is the session this connection had placed in the room, or null when it had none. Sent only to clients declaring agent-protocol 6 or later |
