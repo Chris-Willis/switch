@@ -5,7 +5,8 @@ the agent and answered from there. Two kinds of host answer: a hosted worker,
 which attaches over its own protocol 7 stream (`hosted_workers.py`), and an
 agents controller, which is sent `agent.control` frames on its one stream and
 replies over management routes. Both answer the same control vocabulary
-(`classify_message`) within the same limits, and both feed Console views
+(`classify_message`; a controller also takes `ensure`, see
+`classify_control_message`) within the same limits, and both feed Console views
 (`ConsoleView`, `RelayViews`) the same frames.
 
 Everything here is memory only and per Core boot. A relay lost to a restart
@@ -57,6 +58,9 @@ READ_ONLY_MESSAGES = frozenset(
         "page",
     }
 )
+
+#: Start or restart a session; relayed to a controller only.
+CONTROL_START_MESSAGE = "ensure"
 
 MessageKind = Literal["mutating", "read_only"]
 
@@ -111,6 +115,17 @@ def classify_message(message: dict[str, Any]) -> MessageKind:
     if name in READ_ONLY_MESSAGES:
         return "read_only"
     raise RelayError("refused_message", f"Unknown relayed message {name!r}.", 400)
+
+
+def classify_control_message(message: dict[str, Any]) -> MessageKind:
+    """`classify_message` for a relay to an agent's controller.
+
+    A controller starts and restarts its agents' sessions on Console's
+    request, so `ensure` passes here where a hosted worker refuses it.
+    """
+    if isinstance(message, dict) and set(message) == {CONTROL_START_MESSAGE}:
+        return "mutating"
+    return classify_message(message)
 
 
 def frame_size(data: dict[str, Any]) -> int:
@@ -265,19 +280,9 @@ class RelayViews:
             _show(sub, session_id, push)
         return unsubscribe
 
-    def forward(self, agent_id: str, name: str, items: list[dict[str, Any]]) -> bool:
-        """Forward unsequenced pushes for one subscription in the order given.
-
-        False when no Console view holds the subscription, so its source can
-        drop it.
-        """
-        sub = self._subs.get((agent_id, name))
-        if sub is None:
-            return False
-        session_id = None if name == HEALTH_SUBSCRIPTION else name
-        for item in items:
-            _show(sub, session_id, item)
-        return True
+    def holds(self, agent_id: str, name: str) -> bool:
+        """Whether a Console view still holds the subscription."""
+        return (agent_id, name) in self._subs
 
 
 def _show(sub: _Subscription, session_id: str | None, push: dict[str, Any]) -> None:
