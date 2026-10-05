@@ -392,6 +392,8 @@ export function withDefinitionOf(
   }
   if (next.execution && template.execution) {
     next.execution.context = template.execution.context;
+    if (template.execution.instructions === undefined) delete next.execution.instructions;
+    else next.execution.instructions = template.execution.instructions;
     next.execution.skill = template.execution.skill;
     next.execution.codexConfig = template.execution.codexConfig;
   }
