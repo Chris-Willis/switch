@@ -16,18 +16,18 @@ export function serverNotSignedIn(serverId: string | null): boolean {
 
 /**
  * The server's cloud agents, from its launch list; no worker is asked. Not
- * asked while signed out: the sidebar already says to sign in.
+ * asked until signed in: the sidebar says to sign in meanwhile.
  *
  * `null` means the server has no cloud agents. It is not asked again until its
  * session or declared version changes, which is when it may have gained them.
  */
 export function useCloudAgents(serverId: string | null) {
-  const signedOut = serverNotSignedIn(serverId);
+  const signedIn = serverId !== null && switchServersStore.isConnected(serverId);
   const user = serverId === null ? null : (switchServersStore.statusFor(serverId)?.user ?? null);
   return useQuery({
     queryKey: ['cloud-agents', serverId, user?.id ?? null, user?.server?.version ?? null],
     queryFn: () => rpc.sdkHost.cloudAgents(serverId!),
-    enabled: serverId !== null && !signedOut,
+    enabled: signedIn,
     refetchInterval: (query) => (query.state.data === null ? false : 5000),
     retry: false,
   });
@@ -39,12 +39,12 @@ export function useCloudAgents(serverId: string | null) {
  * `['cloud-agents']`, so every refresh of the list refreshes this too.
  */
 export function useCloudMachines(serverId: string | null) {
-  const signedOut = serverNotSignedIn(serverId);
+  const signedIn = serverId !== null && switchServersStore.isConnected(serverId);
   const user = serverId === null ? null : (switchServersStore.statusFor(serverId)?.user ?? null);
   return useQuery({
     queryKey: ['cloud-agents', serverId, 'machines', user?.id ?? null],
     queryFn: () => rpc.sdkHost.cloudMachines(serverId!),
-    enabled: serverId !== null && !signedOut,
+    enabled: signedIn,
     refetchInterval: (query) => (query.state.data === null ? false : 5000),
     retry: false,
   });
