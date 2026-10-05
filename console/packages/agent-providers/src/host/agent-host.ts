@@ -34,7 +34,7 @@ import {
   sharedSessionsBase,
   type Supervision,
 } from './launch';
-import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
+import { releaseOwner, replaceOwner, withOwnershipLockOutlasting } from './ownership-lock';
 import { SessionPlacements } from './placements';
 import { roomInboxHolds, roomInputId } from './room-inbox';
 import {
@@ -762,18 +762,25 @@ export async function runAgentHost(
 ): Promise<void> {
   const ownerPath = join(root, 'shared-owner.lock');
   const owner = { pid: process.pid, token: randomUUID() };
-  await withOwnershipLock(root, async () => {
-    try {
-      const { pid } = z
-        .object({ pid: z.number().int().positive() })
-        .parse(JSON.parse(await readFile(ownerPath, 'utf8')));
-      process.kill(pid, 0);
-      throw new Error('The shared SDK watcher is already running.');
-    } catch (error) {
-      if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
-    }
-    await replaceOwner(ownerPath, owner);
-  });
+  // Outlasting: a Console restarting starts this while the one it replaces
+  // may still be shutting down, holding the lock.
+  const owned = await withOwnershipLockOutlasting(
+    root,
+    async () => {
+      try {
+        const { pid } = z
+          .object({ pid: z.number().int().positive() })
+          .parse(JSON.parse(await readFile(ownerPath, 'utf8')));
+        process.kill(pid, 0);
+        throw new Error('The shared SDK watcher is already running.');
+      } catch (error) {
+        if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      }
+      await replaceOwner(ownerPath, owner);
+    },
+    signal
+  );
+  if (!owned) return;
   const stop = new AbortController();
   const abort = () => stop.abort(signal.reason);
   signal.addEventListener('abort', abort, { once: true });
