@@ -211,6 +211,9 @@ describe('runController', () => {
       () => reportsFor('agent-1').some((entry) => entry.process === 'running' && entry.attached),
       'a status report with the agent attached'
     );
+    expect(core.statusReports.at(-1)!.activity).toEqual([
+      expect.objectContaining({ agent_id: 'agent-1', busy: expect.any(Boolean) }),
+    ]);
     core.pushEvent('agent-1', 1, addressed(1));
     await waitFor(() => events.length === 1, 'the event at the watcher');
     expect(events[0]).toMatchObject({ type: 'message', room_id: 'room-a', sequence: 1 });

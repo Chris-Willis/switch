@@ -205,6 +205,15 @@ export const agentStatusSchema = z
   );
 export type AgentStatus = z.infer<typeof agentStatusSchema>;
 
+/** Whether an agent has work in hand, for the server to decide when its machine may sleep. */
+export const agentActivitySchema = z.object({
+  agent_id: id,
+  busy: z.boolean(),
+  sessions: z.number().int().nonnegative(),
+  last_activity_at: time.nullable(),
+});
+export type AgentActivity = z.infer<typeof agentActivitySchema>;
+
 export const statusReportSchema = z.object({
   seq: z.number().int().positive(),
   observed_at: time,
@@ -227,6 +236,7 @@ export const statusReportSchema = z.object({
   providers: z.array(providerStatusSchema),
   tools: z.array(toolStatusSchema),
   agents: z.array(agentStatusSchema),
+  activity: z.array(agentActivitySchema).optional(),
 });
 export type StatusReport = z.infer<typeof statusReportSchema>;
 

@@ -9,6 +9,7 @@ import { pluginRegistry } from '@switch-console/plugins/agents';
 import { errorMessage, type Logger } from './log';
 import type { AgentObservation, AgentRuntime } from './runtime';
 import {
+  type AgentActivity,
   type AgentAssignment,
   type AgentStatus,
   type Assignment,
@@ -325,14 +326,6 @@ export function mapAgentProcess(input: {
     detail: 'The agent host is not running and recorded no failure.',
   };
 }
-
-/** Whether an agent has work in hand, for the server to decide when its machine may sleep. */
-export type AgentActivity = {
-  agent_id: string;
-  busy: boolean;
-  sessions: number;
-  last_activity_at: string | null;
-};
 
 /**
  * Builds status reports: the machine, the providers as last checked, and every
