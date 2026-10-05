@@ -7,7 +7,8 @@ there; these cover what is particular to the socket.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import asyncio
+from collections.abc import AsyncGenerator, Iterator
 from typing import Any
 
 import pytest
@@ -215,3 +216,44 @@ def test_a_socket_the_server_closed_under_it_ends_cleanly(
     conn = protocol.connections.get("c1")
     assert conn is not None
     assert not conn.stream_attached
+
+
+def test_a_stream_that_fails_closes_the_socket_as_an_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, caplog: Any
+) -> None:
+    async def failing(**kwargs: Any) -> AsyncGenerator[Any]:
+        raise RuntimeError("approval resync failed")
+        yield
+
+    monkeypatch.setattr(handlers, "event_frames", failing)
+    with client.websocket_connect(_url()) as ws:
+        with pytest.raises(WebSocketDisconnect) as closed:
+            _next(ws, "connection_state")
+
+    assert closed.value.code == 1011
+    assert "delivery failed" in caplog.text
+
+
+async def test_a_cancelled_pump_closes_its_stream() -> None:
+    """Cancelled while the outbox is full, the pump is not inside the stream,
+    so only closing it runs the stream's cleanup there and then."""
+    closed = asyncio.Event()
+
+    async def frames() -> AsyncGenerator[Any]:
+        try:
+            while True:
+                yield "frame"
+        finally:
+            closed.set()
+
+    stream = frames()
+    outbox: asyncio.Queue[Any] = asyncio.Queue(maxsize=1)
+    pump = asyncio.create_task(handlers._pump_frames(stream, outbox))
+    while not outbox.full():
+        await asyncio.sleep(0)
+
+    pump.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pump
+
+    assert closed.is_set()

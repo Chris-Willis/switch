@@ -1132,8 +1132,16 @@ async def connection_socket(
         # cleanup (detaching it from the connection) inside that task.
         pump.cancel()
         pongs.cancel()
+        failure = pump.exception() if pump.done() and not pump.cancelled() else None
+        if failure is not None:
+            logger.error(
+                "[STREAM] agent=%s connection=%s delivery failed, closing its socket",
+                agent.id,
+                conn.id,
+                exc_info=failure,
+            )
         try:
-            await websocket.close()
+            await websocket.close(code=1011 if failure is not None else 1000)
         except RuntimeError:
             pass  # the client closed it first
 
@@ -1145,8 +1153,13 @@ _SOCKET_OUTBOX = 64
 async def _pump_frames(
     frames: AsyncGenerator[Frame], outbox: asyncio.Queue[Frame]
 ) -> None:
-    async for frame in frames:
-        await outbox.put(frame)
+    # Closed here: cancelled while waiting on the outbox, the stream would
+    # otherwise detach only when the generator is garbage collected.
+    try:
+        async for frame in frames:
+            await outbox.put(frame)
+    finally:
+        await frames.aclose()
 
 
 async def _receive_pongs(
