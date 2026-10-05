@@ -4,10 +4,12 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { afterEach, expect, it, vi } from 'vitest';
-import { AttachmentTransfers } from './attachment-transfers';
+import { AttachmentTransfers, ControlError } from './attachment-transfers';
 import {
   CONTROL_FILE,
+  CONTROL_LINE_LIMIT_BYTES,
   ControlClient,
   ensureSessions,
   ensureThroughWatcher,
@@ -455,4 +457,32 @@ it('starts a session for an agents controller by its id alone, through the watch
     })
   ).rejects.toThrow('by its id alone');
   expect(ensured).toHaveBeenCalledTimes(1);
+});
+
+it('hands a refusal’s code to the client, which raises it as the same error', async () => {
+  const { stop, serving, client } = await started();
+  const console = client();
+  await console.ready;
+  const refused = await console.send({ page: { snapshotId: 'snapshot', index: 0 } }).then(
+    () => null,
+    (error: unknown) => error
+  );
+  expect(refused).toBeInstanceOf(ControlError);
+  expect(refused).toMatchObject({
+    code: 'refused_message',
+    message: 'Pages are served only to relayed answers.',
+  });
+  console.close();
+  stop.abort();
+  await serving;
+});
+
+it('drops a connection that sends a line longer than its limit', async () => {
+  const stream = new PassThrough();
+  const console = new ControlClient(stream, 'token');
+  const closed = new Promise<Error>((resolve) => console.onClose(resolve));
+  stream.push('x'.repeat(CONTROL_LINE_LIMIT_BYTES / 2));
+  stream.push('x'.repeat(CONTROL_LINE_LIMIT_BYTES / 2 + 1));
+  expect((await closed).message).toMatch(/longer than/);
+  await expect(console.ready).rejects.toThrow(/longer than/);
 });

@@ -252,16 +252,33 @@ export function ensureThroughWatcher(watcher: WatcherControl): EnsureSession {
 /** How long a request waits for the session's host to be ready. */
 const REQUEST_WAIT_MS = 30000;
 
-function lines(socket: Socket | Duplex, onLine: (line: string) => void): void {
+/** The longest line Console's end reads from the control port before it drops the connection. */
+export const CONTROL_LINE_LIMIT_BYTES = 4 * 1024 * 1024;
+
+function lines(
+  socket: Socket | Duplex,
+  onLine: (line: string) => void,
+  limit: { bytes: number; onOverflow: () => void } | null
+): void {
   let buffered = '';
+  const tooLong = (text: string) => limit !== null && Buffer.byteLength(text) > limit.bytes;
   socket.on('data', (chunk: Buffer) => {
     buffered += chunk.toString('utf8');
     let at = buffered.indexOf('\n');
     while (at !== -1) {
       const line = buffered.slice(0, at);
       buffered = buffered.slice(at + 1);
+      if (tooLong(line)) {
+        buffered = '';
+        limit!.onOverflow();
+        return;
+      }
       if (line) onLine(line);
       at = buffered.indexOf('\n');
+    }
+    if (tooLong(buffered)) {
+      buffered = '';
+      limit!.onOverflow();
     }
   });
 }
@@ -284,37 +301,42 @@ export async function serveControl(
     const peer = new ControlPeer(send);
     socket.on('close', () => peer.close());
     socket.on('error', () => socket.destroy());
-    lines(socket, (line) => {
-      let parsed: z.infer<typeof clientMessageSchema>;
-      try {
-        parsed = clientMessageSchema.parse(JSON.parse(line));
-      } catch {
-        socket.destroy();
-        return;
-      }
-      if (!authenticated) {
-        if (!('token' in parsed) || parsed.token !== token) {
+    lines(
+      socket,
+      (line) => {
+        let parsed: z.infer<typeof clientMessageSchema>;
+        try {
+          parsed = clientMessageSchema.parse(JSON.parse(line));
+        } catch {
           socket.destroy();
           return;
         }
-        authenticated = true;
-        send({ authenticated: true });
-        return;
-      }
-      if ('token' in parsed) return;
-      const { id, ...message } = parsed;
-      void handleControlMessage(context, peer, message as ControlMessage, () => {}).then(
-        (value) => send({ id, ok: true, value: value ?? null }),
-        (error: unknown) =>
-          send({
-            id,
-            ok: false,
-            error: error instanceof Error ? error.message : String(error),
-            unavailable: error instanceof SessionUnavailableError,
-            ...(error instanceof SessionHostFailedError ? { failure: error.failure } : {}),
-          })
-      );
-    });
+        if (!authenticated) {
+          if (!('token' in parsed) || parsed.token !== token) {
+            socket.destroy();
+            return;
+          }
+          authenticated = true;
+          send({ authenticated: true });
+          return;
+        }
+        if ('token' in parsed) return;
+        const { id, ...message } = parsed;
+        void handleControlMessage(context, peer, message as ControlMessage, () => {}).then(
+          (value) => send({ id, ok: true, value: value ?? null }),
+          (error: unknown) =>
+            send({
+              id,
+              ok: false,
+              error: error instanceof Error ? error.message : String(error),
+              unavailable: error instanceof SessionUnavailableError,
+              ...(error instanceof SessionHostFailedError ? { failure: error.failure } : {}),
+              ...(error instanceof ControlError ? { code: error.code, detail: error.detail } : {}),
+            })
+        );
+      },
+      null
+    );
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -349,6 +371,8 @@ const serverMessageSchema = z.union([
     error: z.string().optional(),
     unavailable: z.boolean().optional(),
     failure: z.string().optional(),
+    code: z.string().optional(),
+    detail: z.record(z.string(), z.unknown()).optional(),
   }),
   z.object({ sessionId: z.string(), event: serverEventSchema }),
   z.object({ sessionId: z.string(), failure: z.string().nullable() }),
@@ -406,36 +430,51 @@ export class ControlClient {
     };
     stream.on('error', (error: Error) => fail(error));
     stream.on('close', () => fail(new SidecarConnectionClosedError()));
-    lines(stream, (line) => {
-      let json: unknown;
-      try {
-        json = JSON.parse(line);
-      } catch {
-        stream.destroy(new Error('The control port sent a line that is not JSON.'));
-        return;
+    lines(
+      stream,
+      (line) => {
+        let json: unknown;
+        try {
+          json = JSON.parse(line);
+        } catch {
+          stream.destroy(new Error('The control port sent a line that is not JSON.'));
+          return;
+        }
+        const message = serverMessageSchema.safeParse(json);
+        if (!message.success) return;
+        const data = message.data;
+        if ('authenticated' in data) authenticate();
+        else if ('event' in data)
+          for (const listener of this.listeners.get(data.sessionId) ?? []) listener(data.event);
+        else if ('sessionId' in data)
+          for (const listener of this.failureListeners.get(data.sessionId) ?? [])
+            listener(data.failure);
+        else if ('health' in data)
+          for (const listener of this.healthListeners) listener(data.health);
+        else {
+          const pending = this.pending.get(data.id);
+          if (!pending) return;
+          this.pending.delete(data.id);
+          const message = data.error ?? 'The sidecar refused the request.';
+          if (data.ok) pending.resolve(data.value);
+          else if (data.failure !== undefined)
+            pending.reject(new SessionHostFailedError(data.failure));
+          else if (data.unavailable) pending.reject(new SessionUnavailableError(message));
+          else if (data.code !== undefined)
+            pending.reject(new ControlError(data.code, message, data.detail ?? {}));
+          else pending.reject(new Error(message));
+        }
+      },
+      {
+        bytes: CONTROL_LINE_LIMIT_BYTES,
+        onOverflow: () =>
+          stream.destroy(
+            new Error(
+              `The control port sent a line longer than ${CONTROL_LINE_LIMIT_BYTES} bytes; the connection was closed.`
+            )
+          ),
       }
-      const message = serverMessageSchema.safeParse(json);
-      if (!message.success) return;
-      const data = message.data;
-      if ('authenticated' in data) authenticate();
-      else if ('event' in data)
-        for (const listener of this.listeners.get(data.sessionId) ?? []) listener(data.event);
-      else if ('sessionId' in data)
-        for (const listener of this.failureListeners.get(data.sessionId) ?? [])
-          listener(data.failure);
-      else if ('health' in data) for (const listener of this.healthListeners) listener(data.health);
-      else {
-        const pending = this.pending.get(data.id);
-        if (!pending) return;
-        this.pending.delete(data.id);
-        const message = data.error ?? 'The sidecar refused the request.';
-        if (data.ok) pending.resolve(data.value);
-        else if (data.failure !== undefined)
-          pending.reject(new SessionHostFailedError(data.failure));
-        else if (data.unavailable) pending.reject(new SessionUnavailableError(message));
-        else pending.reject(new Error(message));
-      }
-    });
+    );
     stream.write(`${JSON.stringify({ token })}\n`);
   }
 
