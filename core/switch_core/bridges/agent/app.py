@@ -125,20 +125,7 @@ def create_agent_bridge_app(
 
     app = FastAPI(title="Switch Agent Bridge API")
 
-    @app.exception_handler(HTTPException)
-    async def log_http_exceptions(request: Request, exc: HTTPException) -> JSONResponse:
-        if exc.status_code >= 400:
-            logger.error(
-                "%s %s → %d: %s",
-                request.method,
-                request.url.path,
-                exc.status_code,
-                exc.detail,
-            )
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={"detail": exc.detail},
-        )
+    app.exception_handler(HTTPException)(log_http_exceptions)
 
     @app.exception_handler(RequestValidationError)
     async def log_validation_errors(
@@ -198,6 +185,24 @@ def create_agent_bridge_app(
     app.add_middleware(RequestContextMiddleware)
 
     return app, protocol
+
+
+async def log_http_exceptions(request: Request, exc: HTTPException) -> JSONResponse:
+    if exc.status_code >= 400:
+        # A 4xx is the caller's mistake or an expected refusal; only a 5xx is
+        # the bridge's own failure.
+        logger.log(
+            logging.ERROR if exc.status_code >= 500 else logging.WARNING,
+            "%s %s → %d: %s",
+            request.method,
+            request.url.path,
+            exc.status_code,
+            exc.detail,
+        )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+    )
 
 
 class LegacyAgentPageRedirectMiddleware:
