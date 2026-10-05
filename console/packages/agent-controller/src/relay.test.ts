@@ -611,6 +611,26 @@ describe('forwarding to Switch', () => {
     expect(forwarded.body).toEqual({ row: 1 });
   });
 
+  it('forwards a hosted GitHub credential request as the controller, naming the agent', async () => {
+    core.scripted.push({
+      method: 'POST',
+      path: '/hosted/github-credential',
+      status: 200,
+      body: { token: 'placeholder', expires_at: '2026-01-01T01:00:00Z' },
+    });
+    const response = await post('/hosted/github-credential', { repository: 'org/repo' });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      token: 'placeholder',
+      expires_at: '2026-01-01T01:00:00Z',
+    });
+    const forwarded = core.requests.at(-1)!;
+    expect(forwarded.method).toBe('POST');
+    expect(forwarded.headers.authorization).toMatch(/^Bearer access-token-/);
+    expect(forwarded.headers['x-switch-agent-id']).toBe(AGENT);
+    expect(forwarded.body).toEqual({ repository: 'org/repo' });
+  });
+
   it('names the room of a shared agent’s call from its host in the controller', async () => {
     const shared = relay.mint('agent-2');
     const response = await fetch(`${relay.endpoint}/agents/agent-2/ops/post_message`, {

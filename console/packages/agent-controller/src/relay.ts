@@ -190,7 +190,8 @@ const placementsSchema = z.object({
 
 const LOCAL_ROUTE = /^\/agents\/([^/]+)\/(events|connection\/[^/]+)$/;
 /** The prefixes forwarded to Switch. Anything else, the management routes above all, stays here. */
-const FORWARDED = /^\/(agents\/[^/]+\/.+|agent-sessions\/.+|sessions\/.+|version|health)$/;
+const FORWARDED =
+  /^\/(agents\/[^/]+\/.+|agent-sessions\/.+|sessions\/.+|hosted\/github-credential|version|health)$/;
 /** `/agents/<segment>/...` routes whose segment is not an agent. */
 const AGENTLESS_SEGMENTS = new Set(['rooms', 'feature-flags']);
 
