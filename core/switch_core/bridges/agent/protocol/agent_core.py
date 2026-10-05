@@ -32,6 +32,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 from switch_core.bridges.agent.protocol.agent_detail import (
     AgentProfileUpdate,
     assemble_agent_detail,
+    for_viewer,
     list_agent_summaries,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
@@ -3575,6 +3576,9 @@ class AgentCore:
         `known_agent_type` are exact matches. Sorted by name.
         """
         async with self.session_factory() as session:
+            _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
             summaries = await list_agent_summaries(
                 session,
                 self.agent_store,
@@ -3583,21 +3587,26 @@ class AgentCore:
                 owner_name=owner_name,
                 known_agent_type=known_agent_type,
             )
-        return [s.model_dump() for s in summaries]
+        viewer = Principal(owner_id, owner_is_admin)
+        return [for_viewer(s, viewer).model_dump() for s in summaries]
 
     async def get_agent_detail(
         self, agent_id: str, target_agent_id: str
     ) -> AgentDetail:
         """Return full detail for `target_agent_id`, mirroring the gateway
-        GET /agents/{id}. Readable by any authenticated agent.
+        GET /agents/{id}. Readable by any authenticated agent, as its owner
+        may see it.
 
         Raises ValueError if the target agent does not exist.
         """
         async with self.session_factory() as session:
+            _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
             agent = await self.agent_store.get(session, target_agent_id)
             if agent is None:
                 raise ValueError(f"Agent not found: {target_agent_id}")
-            return await assemble_agent_detail(
+            detail = await assemble_agent_detail(
                 session,
                 agent=agent,
                 agent_store=self.agent_store,
@@ -3607,6 +3616,7 @@ class AgentCore:
                 room_role_store=self.room_role_store,
                 connections=self.connections,
             )
+        return for_viewer(detail, Principal(owner_id, owner_is_admin))
 
     async def require_same_owner(self, agent_id: str, target_agent_id: str) -> None:
         """Refuse unless the calling agent's owner owns `target_agent_id`.

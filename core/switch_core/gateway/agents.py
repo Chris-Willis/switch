@@ -20,6 +20,7 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     apply_agent_options,
     assemble_agent_detail,
     build_agent_summary,
+    for_viewer,
     list_agent_summaries,
 )
 from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
@@ -81,9 +82,14 @@ async def list_agents(
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
-    _user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[AgentSummary]:
-    return await list_agent_summaries(session, agent_store, user_store)
+    viewer = Principal(user.id, is_admin)
+    return [
+        for_viewer(summary, viewer)
+        for summary in await list_agent_summaries(session, agent_store, user_store)
+    ]
 
 
 @router.delete("/by-name/{agent_name}")
@@ -705,13 +711,14 @@ async def get_agent_detail(
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
-    _user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> AgentDetail:
     agent = await agent_store.get(session, agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
 
-    return await assemble_agent_detail(
+    detail = await assemble_agent_detail(
         session,
         agent=agent,
         agent_store=agent_store,
@@ -721,3 +728,4 @@ async def get_agent_detail(
         room_role_store=protocol.room_role_store,
         connections=protocol.connections,
     )
+    return for_viewer(detail, Principal(user.id, is_admin))

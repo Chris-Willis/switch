@@ -90,6 +90,13 @@ async def _make_agent(
     return agent
 
 
+async def _caller(session: AsyncSession) -> str:
+    """An agent of an unrelated owner, calling the read tools."""
+    viewer = await _make_user(session, "viewer")
+    agent = await _make_agent(session, "caller", owner_id=viewer.id, known=False)
+    return agent.id
+
+
 class TestListAgents:
     async def test_unfiltered_lists_all_sorted_by_name(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -99,10 +106,11 @@ class TestListAgents:
             owner = await _make_user(session, "owner")
             await _make_agent(session, "zeta", owner_id=owner.id)
             await _make_agent(session, "alpha", owner_id=owner.id)
+            caller = await _caller(session)
             await session.commit()
 
-        out = await svc.list_agents("caller", None, None, None)
-        assert [a["name"] for a in out] == ["alpha", "zeta"]
+        out = await svc.list_agents(caller, None, None, None)
+        assert [a["name"] for a in out] == ["alpha", "caller", "zeta"]
 
     async def test_name_contains_is_case_insensitive_substring(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -112,9 +120,10 @@ class TestListAgents:
             owner = await _make_user(session, "owner")
             await _make_agent(session, "data-bot", owner_id=owner.id)
             await _make_agent(session, "chatter", owner_id=owner.id)
+            caller = await _caller(session)
             await session.commit()
 
-        out = await svc.list_agents("caller", "BOT", None, None)
+        out = await svc.list_agents(caller, "BOT", None, None)
         assert [a["name"] for a in out] == ["data-bot"]
 
     async def test_owner_name_filter(
@@ -126,9 +135,10 @@ class TestListAgents:
             owner_b = await _make_user(session, "bob")
             await _make_agent(session, "a1", owner_id=owner_a.id)
             await _make_agent(session, "b1", owner_id=owner_b.id)
+            caller = await _caller(session)
             await session.commit()
 
-        out = await svc.list_agents("caller", None, "alice", None)
+        out = await svc.list_agents(caller, None, "alice", None)
         assert [a["name"] for a in out] == ["a1"]
         assert out[0]["owner_name"] == "alice"
 
@@ -140,9 +150,10 @@ class TestListAgents:
             owner = await _make_user(session, "owner")
             await _make_agent(session, "known", owner_id=owner.id, known=True)
             await _make_agent(session, "other", owner_id=owner.id, known=False)
+            caller = await _caller(session)
             await session.commit()
 
-        out = await svc.list_agents("caller", None, None, "claude-code")
+        out = await svc.list_agents(caller, None, None, "claude-code")
         assert [a["name"] for a in out] == ["known"]
 
 
@@ -154,15 +165,16 @@ class TestGetAgentDetail:
         async with session_factory() as session:
             owner = await _make_user(session, "owner")
             agent = await _make_agent(session, "target", owner_id=owner.id)
+            caller = await _caller(session)
             await session.commit()
             agent_id = agent.id
 
-        detail = await svc.get_agent_detail("caller", agent_id)
+        detail = await svc.get_agent_detail(caller, agent_id)
         assert detail.name == "target"
         assert detail.agent_type == "session_addressable"
         assert detail.known_agent_type == "claude-code"
         assert detail.known_agent_options is not None
-        assert detail.known_agent_options["repo_dir"] is None
+        assert "repo_dir" not in detail.known_agent_options
         assert detail.rooms == []
         assert detail.sessions == []
         assert detail.children == []
@@ -171,8 +183,58 @@ class TestGetAgentDetail:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         svc = _service(session_factory)
+        async with session_factory() as session:
+            caller = await _caller(session)
+            await session.commit()
         with pytest.raises(ValueError, match="Agent not found"):
-            await svc.get_agent_detail("caller", "nope")
+            await svc.get_agent_detail(caller, "nope")
+
+
+class TestOwnerOnlyOptions:
+    async def _seed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> tuple[str, str, str]:
+        async with session_factory() as session:
+            owner = await _make_user(session, "owner")
+            target = await _make_agent(session, "target", owner_id=owner.id)
+            target.metadata_ = {
+                "known_agent_type": "claude-code",
+                "known_agent_options": {
+                    **(target.metadata_ or {})["known_agent_options"],
+                    "repo_dir": "/home/owner/src",
+                },
+            }
+            sibling = await _make_agent(session, "sibling", owner_id=owner.id)
+            stranger = await _caller(session)
+            await session.commit()
+            return target.id, sibling.id, stranger
+
+    async def test_the_owners_agent_sees_the_local_folder(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory)
+        target, sibling, _stranger = await self._seed(session_factory)
+
+        detail = await svc.get_agent_detail(sibling, target)
+        [listed] = await svc.list_agents(sibling, "target", None, None)
+
+        assert detail.known_agent_options is not None
+        assert detail.known_agent_options["repo_dir"] == "/home/owner/src"
+        assert listed["known_agent_options"]["repo_dir"] == "/home/owner/src"
+
+    async def test_another_owners_agent_does_not(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory)
+        target, _sibling, stranger = await self._seed(session_factory)
+
+        detail = await svc.get_agent_detail(stranger, target)
+        [listed] = await svc.list_agents(stranger, "target", None, None)
+
+        assert detail.known_agent_options is not None
+        assert "repo_dir" not in detail.known_agent_options
+        assert detail.known_agent_options["channels_enabled"] is True
+        assert "repo_dir" not in listed["known_agent_options"]
 
 
 def _profile(

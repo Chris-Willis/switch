@@ -24,6 +24,7 @@ from switch_core.addressing import (
 )
 from switch_core.agent_display_name import normalise_display_name
 from switch_core.agent_icon import normalise_icon_url
+from switch_core.authz import Principal, can_manage
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.db.models import Agent, AgentSession
@@ -41,6 +42,28 @@ from switch_core.gateway.schemas import (
     AgentSummary,
     AgentToolSummary,
 )
+
+# Known-agent options that describe the owner's own machine (a local folder
+# path), shown only to the owner and tenant admins.
+OWNER_ONLY_OPTIONS = frozenset({"repo_dir"})
+
+
+def for_viewer[SummaryT: AgentSummary](
+    summary: SummaryT, viewer: Principal
+) -> SummaryT:
+    """The summary or detail as `viewer` may see it: without the owner-only
+    known-agent options unless `viewer` owns the agent or is an admin."""
+    update: dict[str, Any] = {}
+    if isinstance(summary, AgentDetail):
+        update["children"] = [for_viewer(child, viewer) for child in summary.children]
+    options = summary.known_agent_options
+    if options is not None and not can_manage(viewer, summary.owner_id):
+        update["known_agent_options"] = {
+            key: value
+            for key, value in options.items()
+            if key not in OWNER_ONLY_OPTIONS
+        }
+    return summary.model_copy(update=update) if update else summary
 
 
 class AgentOptionsNotEditable(Exception):
