@@ -34,6 +34,7 @@ from switch_core.gateway.provider_connections import (
 )
 from switch_core.providers.credentials import validate_provider_credential
 from switch_core.providers.hosted import HostedControllerSettings
+from switch_core.providers.sealing import seal_login
 from switch_core.providers.verification import ACTIVE, latest
 from switch_core.tenant_context import tenant_scope
 
@@ -219,12 +220,23 @@ async def result(
         raise HTTPException(409, "Connection check is no longer current.")
     verified_at = datetime.now(UTC)
     if job.result is True:
+        if job.encrypted_credential is None:
+            raise HTTPException(409, "Connection check has no credential to save.")
+        sealed = await seal_login(
+            session,
+            config,
+            owner_id=job.user_id,
+            provider=job.provider,
+            kind=job.kind,
+            credential=config.keyring.decrypt(job.encrypted_credential),
+            now=verified_at,
+        )
         values = dict(
             tenant_id=require_tenant_id(),
             user_id=job.user_id,
             provider=job.provider,
             kind=job.kind,
-            encrypted_credential=job.encrypted_credential,
+            encrypted_credential=None if sealed else job.encrypted_credential,
             verified_at=verified_at,
             verification_status="verified",
         )

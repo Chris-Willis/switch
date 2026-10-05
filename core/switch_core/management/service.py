@@ -27,6 +27,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_icon import (
@@ -50,6 +51,8 @@ from switch_core.db.models import (
     AgentController,
     AgentControllerOperation,
     ApiKey,
+    HostedMachine,
+    require_tenant_id,
 )
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.db.stores.agent_controller_operation_store import (
@@ -59,6 +62,10 @@ from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.hosted_machine_store import (
+    HostedMachineStore,
+    accepts_controller_exchange,
+)
 from switch_core.gateway.known_agents import KNOWN_AGENTS, KnownAgent
 from switch_core.management import reason_codes, tokens
 from switch_core.management.errors import ManagementError, not_found
@@ -92,6 +99,11 @@ OPERATION_TTL = timedelta(hours=1)
 OPERATION_LIST_LIMIT = 200
 
 V1_OPERATION_KINDS = frozenset({"agent.restart", "provider.recheck"})
+
+CLOUD_CONTROLLER_KIND = "ec2"
+CLOUD_CONTROLLER_NAME = "Switch cloud"
+CLOUD_CONTROLLER_VERSION = "pending"
+CLOUD_CONTROLLER_PLATFORM = {"os": "linux", "arch": "unknown", "os_version": "unknown"}
 
 
 @dataclass(frozen=True)
@@ -277,7 +289,17 @@ class ManagementService:
         *,
         controller_id: str,
         credential: str,
+        instance_id: str | None,
+        boot_id: str | None,
     ) -> tuple[str, datetime]:
+        """Exchange a credential for an access token.
+
+        An ec2 controller says which instance and boot it runs on, and only
+        the instance Core has seen as its machine's, while that machine is
+        starting or running, gets a token: a credential copied off a machine
+        is no use anywhere else, and a replaced instance cannot outlive its
+        replacement.
+        """
         invalid = ManagementError(
             401, reason_codes.INVALID_CREDENTIAL, "The credential is not valid."
         )
@@ -297,18 +319,74 @@ class ManagementService:
             raise ManagementError(
                 401, reason_codes.CONTROLLER_REVOKED, "The controller has been revoked."
             )
+        if controller.kind == CLOUD_CONTROLLER_KIND:
+            await self._check_cloud_instance(session, controller, instance_id, boot_id)
         return tokens.mint_access_token(
             secret=self.settings.token_secret,
             controller_id=controller.id,
             tenant_id=tenant_id,
             owner_id=controller.owner_id,
+            credential_id=key.id,
             now=self.now(),
         )
+
+    async def _check_cloud_instance(
+        self,
+        session: AsyncSession,
+        controller: AgentController,
+        instance_id: str | None,
+        boot_id: str | None,
+    ) -> None:
+        if not instance_id or not boot_id:
+            raise ManagementError(
+                401,
+                reason_codes.INVALID_CREDENTIAL,
+                "An ec2 controller must send X-Switch-Host-Instance-Id and "
+                "X-Switch-Host-Boot-Id with its credential.",
+            )
+        machine = await HostedMachineStore().linking_controller(session, controller.id)
+        if machine is None or not accepts_controller_exchange(machine, instance_id):
+            logger.warning(
+                "Refused a token exchange for ec2 controller %s from instance %s "
+                "(boot %s): machine %s is %s/%s on instance %s",
+                controller.id,
+                instance_id,
+                boot_id,
+                machine.id if machine is not None else None,
+                machine.state if machine is not None else None,
+                machine.desired_state if machine is not None else None,
+                machine.instance_id if machine is not None else None,
+            )
+            raise ManagementError(
+                409,
+                reason_codes.INSTANCE_MISMATCH,
+                "This instance is not the one running the controller's cloud "
+                "machine, or that machine is not starting or running.",
+                retryable=True,
+            )
 
     async def rotate_credential(
         self, session: AsyncSession, principal: ControllerPrincipal
     ) -> str:
         controller = await self._principal_controller(session, principal)
+        if await HostedMachineStore().linking_controller(session, controller.id):
+            raise ManagementError(
+                403,
+                reason_codes.FORBIDDEN,
+                "A Switch cloud controller's credential is issued with its "
+                "machine and cannot be rotated by the controller.",
+            )
+        credential = await self._replace_credential(session, controller)
+        await session.commit()
+        self.presence.credential_replaced(controller.id)
+        return credential
+
+    async def _replace_credential(
+        self, session: AsyncSession, controller: AgentController
+    ) -> str:
+        """Give the controller a new credential and delete the old one, which
+        retires every access token exchanged for it. The caller commits, then
+        tells `presence.credential_replaced`."""
         key, credential = await self._new_hash_only_key(
             session,
             owner_id=controller.owner_id,
@@ -317,12 +395,113 @@ class ManagementService:
         )
         old_key_id = controller.api_key_id
         await self.controllers.set_credential(
-            session, principal.tenant_id, controller.id, key.id
+            session, controller.tenant_id, controller.id, key.id
         )
+        controller.api_key_id = key.id
         if old_key_id is not None:
             await self.api_keys.delete(session, old_key_id)
-        await session.commit()
         return credential
+
+    # ── Switch cloud controllers ──────────────────────────────────────────────
+
+    async def cloud_controller(
+        self, session: AsyncSession, machine: HostedMachine
+    ) -> tuple[AgentController, bool]:
+        """The ec2 controller a cloud machine runs as, linked to it. Returns it
+        and whether it was linked just now.
+
+        The machine's own controller while it is not revoked; otherwise the
+        oldest live one any of the owner's machines ever ran as; otherwise a
+        new one. Only a controller a machine was linked to counts: an owner
+        can enroll a controller that says it is ec2, and that one is never
+        taken over. The caller holds the machine's lock and commits.
+        """
+        if machine.controller_id is not None:
+            linked = await self.controllers.get(
+                session, machine.tenant_id, machine.controller_id
+            )
+            if linked is not None and linked.revoked_at is None:
+                return linked, False
+        reused = await session.scalar(
+            select(AgentController)
+            .join(
+                HostedMachine,
+                (HostedMachine.tenant_id == AgentController.tenant_id)
+                & (HostedMachine.controller_id == AgentController.id),
+            )
+            .where(
+                AgentController.tenant_id == require_tenant_id(),
+                AgentController.owner_id == machine.owner_id,
+                AgentController.kind == CLOUD_CONTROLLER_KIND,
+                AgentController.revoked_at.is_(None),
+            )
+            .order_by(AgentController.created_at)
+            .limit(1)
+        )
+        if reused is None:
+            key, _ = await self._new_hash_only_key(
+                session,
+                owner_id=machine.owner_id,
+                key_type=CONTROLLER_KEY_TYPE,
+                label=f"controller {CLOUD_CONTROLLER_NAME}",
+            )
+            reused = await self.controllers.create(
+                session,
+                owner_id=machine.owner_id,
+                name=CLOUD_CONTROLLER_NAME,
+                description=None,
+                kind=CLOUD_CONTROLLER_KIND,
+                platform=CLOUD_CONTROLLER_PLATFORM,
+                version=CLOUD_CONTROLLER_VERSION,
+                public_key=None,
+                api_key_id=key.id,
+            )
+            logger.info(
+                "Created Switch cloud controller %s for user %s on machine %s",
+                reused.id,
+                machine.owner_id,
+                machine.id,
+            )
+        machine.controller_id = reused.id
+        return reused, True
+
+    def credential_replaced(self, controller_id: str) -> None:
+        self.presence.credential_replaced(controller_id)
+
+    async def cloud_credential(
+        self,
+        session: AsyncSession,
+        machine: HostedMachine,
+        controller: AgentController,
+        stored: str | None,
+    ) -> tuple[str, bool]:
+        """The controller credential for the machine's current revision, and
+        whether it was replaced just now.
+
+        `stored` is what the machine kept for this revision. It is returned
+        again while it is still the controller's credential; anything else
+        mints a new one and deletes the old, so at most one is ever valid.
+        """
+        if stored is not None and controller.api_key_id is not None:
+            key = await self.api_keys.get(session, controller.api_key_id)
+            if key is not None and key.key_hash == tokens.hash_secret(stored):
+                return stored, False
+        return await self._replace_credential(session, controller), True
+
+    async def cloud_controller_for_owner(
+        self, session: AsyncSession, tenant_id: str, owner_id: str, controller_id: str
+    ) -> AgentController:
+        """A Switch cloud controller of the owner's, or 404 for any other."""
+        controller = await self.owned_controller(
+            session, tenant_id, owner_id, controller_id
+        )
+        if (
+            controller.kind != CLOUD_CONTROLLER_KIND
+            or await HostedMachineStore().linking_controller(session, controller.id)
+            is None
+        ):
+            raise not_found("Controller")
+        return controller
 
     # ── The controller's own view ─────────────────────────────────────────────
 

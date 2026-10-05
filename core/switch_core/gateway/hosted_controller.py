@@ -2,7 +2,7 @@ import logging
 import secrets
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Protocol
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.config import SwitchConfig
 from switch_core.db.models import (
+    AgentController,
     HostedLaunch,
     HostedMachine,
     HostedOperation,
@@ -35,6 +36,11 @@ from switch_core.gateway.dependencies import (
 from switch_core.gateway.hosted_launches import controller_settings, finish_removal
 from switch_core.providers.github_revocations import revoke_pending
 from switch_core.providers.hosted import HostedControllerSettings
+from switch_core.providers.sealing import (
+    controller_context,
+    kms_settings,
+    seal_stored_logins,
+)
 from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
@@ -44,6 +50,43 @@ router = APIRouter(prefix="/hosted-controller")
 QUEUED_TIMEOUT = timedelta(minutes=10)
 DELETING_RESUME_AFTER = timedelta(minutes=5)
 AGENT_STOP_TIMEOUT = timedelta(minutes=10)
+
+
+class CloudControllers(Protocol):
+    """What preparing a machine on the controller runtime needs from agent
+    management, which owns controllers and their credentials. Management
+    installs it (`set_cloud_controllers`); Core never imports management."""
+
+    async def cloud_controller(
+        self, session: AsyncSession, machine: HostedMachine
+    ) -> tuple[AgentController, bool]: ...
+
+    async def cloud_credential(
+        self,
+        session: AsyncSession,
+        machine: HostedMachine,
+        controller: AgentController,
+        stored: str | None,
+    ) -> tuple[str, bool]: ...
+
+    def credential_replaced(self, controller_id: str) -> None: ...
+
+
+_cloud_controllers: CloudControllers | None = None
+
+
+def set_cloud_controllers(provider: CloudControllers | None) -> None:
+    global _cloud_controllers
+    _cloud_controllers = provider
+
+
+def cloud_controllers() -> CloudControllers:
+    if _cloud_controllers is None:
+        raise RuntimeError(
+            "A cloud machine runs the agent controller, and agent management "
+            "is not enabled to provide it (AGENT_MANAGEMENT_ENABLED)."
+        )
+    return _cloud_controllers
 
 
 async def controller_session(
@@ -139,6 +182,17 @@ def _needs_sweep(machine: HostedMachine, now: datetime, idle_minutes: int) -> bo
     )
 
 
+async def controller_idle_evidence(
+    session: AsyncSession, machine: HostedMachine
+) -> bool:
+    """Whether a machine on the agent controller is provably idle.
+
+    Not measured yet, so never: such a machine is not put to sleep for
+    idleness.
+    """
+    return False
+
+
 async def _should_sleep(
     session: AsyncSession,
     machine: HostedMachine,
@@ -151,6 +205,8 @@ async def _should_sleep(
     Counted agents are the ones meant to run and not in error. A busy one
     renews its own activity, so it keeps the machine awake for another window.
     """
+    if machine.runtime == "controller":
+        return await controller_idle_evidence(session, machine)
     idle = True
     for candidate in await HostedMachineStore().launches(session, machine.id):
         await lock_launch(session, candidate.id)
@@ -394,6 +450,10 @@ async def prepare(
         raise HTTPException(
             409, "The cloud machine's owner is no longer a workspace member."
         )
+    if machine.runtime == "controller":
+        return await _prepare_controller(
+            session, machine, settings, config, cloud_controllers(), now
+        )
     capability = HostedMachineStore().issue_capability(machine, config.keyring)
     if machine.state == "queued":
         machine.state = "provisioning"
@@ -408,6 +468,70 @@ async def prepare(
         "api_endpoint": settings.agent_api_endpoint,
     }
     await session.commit()
+    return result
+
+
+async def _prepare_controller(
+    session: AsyncSession,
+    machine: HostedMachine,
+    settings: HostedControllerSettings,
+    config: SwitchConfig,
+    management: CloudControllers,
+    now: datetime,
+) -> dict:
+    """Prepare a machine that runs the shared agent controller: its ec2
+    controller and that controller's credential for this revision, and the
+    KMS key and context the controller's logins are sealed under.
+
+    A retry at one revision returns the same credential; a new revision
+    replaces it, which retires the old one and every token exchanged for it.
+    A controller linked just now gets every login its owner already holds,
+    sealed for it.
+    """
+    kms = kms_settings(config)
+    store = HostedMachineStore()
+    controller, linked = await management.cloud_controller(session, machine)
+    if linked:
+        sealed = await seal_stored_logins(
+            session, config, config.keyring, controller, now
+        )
+        logger.info(
+            "Cloud machine %s runs as controller %s; sealed %d stored login(s) for it",
+            machine.id,
+            controller.id,
+            sealed,
+        )
+    credential, replaced = await management.cloud_credential(
+        session,
+        machine,
+        controller,
+        store.stored_controller_credential(machine, config.keyring),
+    )
+    if replaced:
+        store.store_controller_credential(machine, credential, config.keyring)
+    if machine.state == "queued":
+        machine.state = "provisioning"
+        machine.updated_at = now
+    result = {
+        "machine_id": machine.id,
+        "slot_id": machine.slot_id,
+        "generation": machine.generation,
+        "revision": machine.revision,
+        "runtime": "controller",
+        "bundle_revision": machine.controller_credential_revision,
+        "api_endpoint": settings.agent_api_endpoint,
+        "controller": {"id": controller.id, "credential": credential},
+        "kms": {
+            "key_arn": kms.key_arn,
+            "region": kms.region,
+            "context": controller_context(
+                require_tenant_id(), controller.owner_id, controller.id
+            ),
+        },
+    }
+    await session.commit()
+    if replaced:
+        management.credential_replaced(controller.id)
     return result
 
 

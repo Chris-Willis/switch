@@ -84,6 +84,16 @@ def owned_flow(github: GitHubConnections, flow_id: str, user_id: str) -> GitHubF
     return flow
 
 
+def github_identity(row: ProviderConnection, config: SwitchConfig) -> dict:
+    """A GitHub connection's stored credentials. GitHub logins are never
+    sealed, so the keyring copy is always there."""
+    if row.encrypted_credential is None:
+        raise RuntimeError(
+            f"GitHub connection of user {row.user_id} has no stored credential"
+        )
+    return dict(json.loads(config.keyring.decrypt(row.encrypted_credential)))
+
+
 def conditions(user_id: str) -> tuple:
     return (
         ProviderConnection.tenant_id == require_tenant_id(),
@@ -330,7 +340,7 @@ async def confirm(
         )
     )
     for other in other_links:
-        identity = json.loads(config.keyring.decrypt(other.encrypted_credential))
+        identity = github_identity(other, config)
         if identity.get("user_id") == flow.credentials["user_id"]:
             raise HTTPException(
                 409,
@@ -340,11 +350,7 @@ async def confirm(
         select(ProviderConnection).where(*conditions(user.id))
     )
     previous_token = (
-        json.loads(config.keyring.decrypt(previous.encrypted_credential))[
-            "access_token"
-        ]
-        if previous
-        else None
+        github_identity(previous, config)["access_token"] if previous else None
     )
     await queue_revocation(session, (GitHubIssuedToken.owner_id == user.id,))
     encrypted = config.keyring.encrypt(json.dumps(flow.credentials))
@@ -412,7 +418,7 @@ async def _credentials(
         )
         if row is None:
             return None
-        credentials = json.loads(config.keyring.decrypt(row.encrypted_credential))
+        credentials = github_identity(row, config)
         if credentials["expires_at"] < time.time() + 60:
             if credentials["refresh_expires_at"] <= time.time():
                 raise GitHubAuthorizationError(
@@ -504,11 +510,7 @@ async def disconnect(
 ) -> Response:
     await lock(session, user.id)
     row = await session.scalar(select(ProviderConnection).where(*conditions(user.id)))
-    token = (
-        json.loads(config.keyring.decrypt(row.encrypted_credential))["access_token"]
-        if row
-        else None
-    )
+    token = github_identity(row, config)["access_token"] if row else None
     await queue_revocation(session, (GitHubIssuedToken.owner_id == user.id,))
     await session.execute(delete(ProviderConnection).where(*conditions(user.id)))
     await session.commit()

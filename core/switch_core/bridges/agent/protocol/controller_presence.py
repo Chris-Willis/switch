@@ -252,6 +252,12 @@ class ControllerPresence:
             binding = self._bindings[agent_id]
             self._bindings[agent_id] = replace(binding, controller_name=name)
 
+    def credential_replaced(self, controller_id: str) -> None:
+        """The controller's credential was replaced: forget what tokens
+        exchanged for the old one authenticated as."""
+        if self._auth_cache is not None:
+            self._auth_cache.invalidate_controller(controller_id)
+
     def revoke_controller(self, controller_id: str) -> None:
         """A revoked controller's stream ends and it cannot open another.
 

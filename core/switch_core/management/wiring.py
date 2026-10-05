@@ -34,6 +34,7 @@ from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.gateway.hosted_controller import set_cloud_controllers
 from switch_core.management.agent_operations import ManagementAgentOperations
 from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.bindings import load_bindings
@@ -73,6 +74,7 @@ class Management:
         gateway_app.include_router(gateway_router, prefix=GATEWAY_PREFIX)
         protocol.set_agent_removal_listener(self.agent_removed)
         enable_agent_management(self.agent_operations)
+        set_cloud_controllers(self.service)
 
     async def agent_removed(self, tenant_id: str, agent_id: str) -> None:
         async with tenant_session(self.session_factory, tenant_id) as session:

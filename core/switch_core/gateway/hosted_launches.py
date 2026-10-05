@@ -813,6 +813,12 @@ async def create(
     if body.provider == "claude":
         if not body.definition:
             raise HTTPException(422, "Claude Code requires an agent definition.")
+        if connection.encrypted_credential is None:
+            raise HTTPException(
+                409,
+                "Your Claude login is sealed for your Switch cloud controller; "
+                "cloud worker agents cannot use it.",
+            )
         try:
             await verifier.verify(
                 connection.kind,

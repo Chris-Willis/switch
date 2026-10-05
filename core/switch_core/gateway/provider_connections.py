@@ -29,6 +29,7 @@ from switch_core.providers.claude_verifier import (
     ClaudeVerifier,
 )
 from switch_core.providers.credentials import validate_provider_credential
+from switch_core.providers.sealing import revoke_logins, seal_login
 from switch_core.providers.verification import ACTIVE, latest, queue, summary
 
 OtherProvider = Literal["codex", "cursor", "opencode", "antigravity"]
@@ -108,7 +109,22 @@ async def connect_claude(
     except ClaudeVerificationError as error:
         raise HTTPException(422, str(error)) from None
     now = datetime.now(UTC)
-    await store.save(session, user.id, kind, config.keyring.encrypt(credential), now)
+    sealed = await seal_login(
+        session,
+        config,
+        owner_id=user.id,
+        provider="claude",
+        kind=kind,
+        credential=credential,
+        now=now,
+    )
+    await store.save(
+        session,
+        user.id,
+        kind,
+        None if sealed else config.keyring.encrypt(credential),
+        now,
+    )
     await bump_machine_agents(session, user.id)
     await session.commit()
     await ring_credential_change(
@@ -168,6 +184,7 @@ async def disconnect_claude(
     except ProviderConnectionBusy as error:
         raise HTTPException(409, str(error)) from None
     await store.delete(session, user.id)
+    await revoke_logins(session, user.id, "claude", datetime.now(UTC))
     await bump_machine_agents(session, user.id)
     await session.commit()
     await ring_credential_change(session, protocol.connections, user.id, "claude", None)
@@ -249,12 +266,21 @@ async def connect_other_provider(
             config.keyring,
         )
     now = datetime.now(UTC)
+    sealed = await seal_login(
+        session,
+        config,
+        owner_id=user.id,
+        provider=provider,
+        kind=payload["kind"],
+        credential=credential,
+        now=now,
+    )
     values = {
         "tenant_id": require_tenant_id(),
         "user_id": user.id,
         "provider": provider,
         "kind": payload["kind"],
-        "encrypted_credential": config.keyring.encrypt(credential),
+        "encrypted_credential": None if sealed else config.keyring.encrypt(credential),
         "verified_at": now,
         "verification_status": "configured",
     }
@@ -316,6 +342,7 @@ async def disconnect_other_provider(
             ),
         )
     )
+    await revoke_logins(session, user.id, provider, datetime.now(UTC))
     await bump_machine_agents(session, user.id)
     await session.commit()
     await ring_credential_change(session, protocol.connections, user.id, provider, None)

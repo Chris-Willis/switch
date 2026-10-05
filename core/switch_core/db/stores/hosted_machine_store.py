@@ -72,6 +72,18 @@ def machine_starting(machine: HostedMachine) -> bool:
     }
 
 
+def accepts_controller_exchange(machine: HostedMachine, instance_id: str) -> bool:
+    """Whether an ec2 controller on `instance_id` may exchange its credential:
+    the machine is meant to run, is starting or running, and Core has seen
+    that instance as the machine's."""
+    return (
+        machine.desired_state == "running"
+        and machine.state in {"provisioning", "ready"}
+        and machine.instance_id is not None
+        and secrets.compare_digest(machine.instance_id, instance_id)
+    )
+
+
 def retention_expired(machine: HostedMachine, now: datetime) -> bool:
     return (
         machine.desired_state == "retained"
@@ -146,6 +158,21 @@ class HostedMachineStore:
                 select(HostedMachine).where(
                     HostedMachine.tenant_id == require_tenant_id(),
                     HostedMachine.owner_id == owner_id,
+                    HostedMachine.state != "deleted",
+                )
+            ),
+        )
+
+    async def linking_controller(
+        self, session: AsyncSession, controller_id: str
+    ) -> HostedMachine | None:
+        """The live machine that runs as ec2 controller `controller_id`."""
+        return cast(
+            HostedMachine | None,
+            await session.scalar(
+                select(HostedMachine).where(
+                    HostedMachine.tenant_id == require_tenant_id(),
+                    HostedMachine.controller_id == controller_id,
                     HostedMachine.state != "deleted",
                 )
             ),
@@ -361,6 +388,29 @@ class HostedMachineStore:
         machine.machine_capability_hash = capability_hash(capability)
         machine.machine_capability_revision = machine.revision
         return capability
+
+    @staticmethod
+    def stored_controller_credential(
+        machine: HostedMachine, keyring: Keyring
+    ) -> str | None:
+        """The controller credential issued at the machine's current revision,
+        or None when this revision has not been issued one."""
+        if (
+            machine.controller_credential_revision == machine.revision
+            and machine.controller_credential_encrypted is not None
+        ):
+            return keyring.decrypt(machine.controller_credential_encrypted)
+        return None
+
+    @staticmethod
+    def store_controller_credential(
+        machine: HostedMachine, credential: str, keyring: Keyring
+    ) -> None:
+        """Keep the credential just issued for the machine's current revision,
+        so a retried prepare at that revision returns it again. The caller
+        commits."""
+        machine.controller_credential_encrypted = keyring.encrypt(credential)
+        machine.controller_credential_revision = machine.revision
 
     @staticmethod
     def capability_matches(machine: HostedMachine, capability: str) -> bool:
