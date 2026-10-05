@@ -85,6 +85,14 @@ class TestTheBorrower:
     def test_code_outside_switch_core_is_unknown(self) -> None:
         assert describe_borrower() == (UNKNOWN_CALLER, ())
 
+    def test_a_test_tree_under_a_switch_core_path_is_not_ours(self) -> None:
+        source = "def borrow():\n    return describe_borrower()\n"
+        namespace: dict[str, object] = {"describe_borrower": describe_borrower}
+        test_file = "/srv/switch/core/tests/switch_core/rooms/test_fake.py"
+        exec(compile(source, test_file, "exec"), namespace)
+
+        assert namespace["borrow"]() == (UNKNOWN_CALLER, ())  # type: ignore[operator]
+
 
 class TestHoldTime:
     def test_every_checkout_is_timed_by_its_caller(self, registry) -> None:
