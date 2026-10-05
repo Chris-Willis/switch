@@ -2195,6 +2195,9 @@ async def update_agent_detail(
         desired_state: "running" or "stopped".
     The machine must be online with the provider installed and logged in;
     otherwise nothing is changed and the error gives a reason code to relay.
+    Changes reach the agent's running sessions on their own, with no reset:
+    a session mid-turn picks them up when the turn ends, and a running
+    conversation is told its new instructions.
 
     Returns:
         The `get_agent_detail` shape plus `managed`: for a managed agent, the
