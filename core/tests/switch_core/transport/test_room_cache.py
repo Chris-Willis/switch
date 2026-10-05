@@ -507,6 +507,36 @@ class TestLettingGo:
         assert await reader is None
         assert cache.stats().rooms == 0, "a discarded fill came back to life"
 
+    async def test_an_eviction_during_a_fill_still_serves_its_waiters(
+        self,
+    ) -> None:
+        """The rows were read once already; a waiter reading them again
+        because the entry was evicted would multiply the load under churn."""
+        store = _Store()
+        cache = _cache(store, max_rooms=1)
+        cache.attach(TENANT, ROOM, "a")
+        cache.attach(TENANT, "other", "b")
+        store.commit()
+        store.commit("other")
+        store.gate = asyncio.Event()
+        woken = cache.tick()
+        waiters = [asyncio.create_task(_read(cache, 0, woken)) for _ in range(3)]
+        await _until(lambda: store.reads == 1)
+        # Another room's read takes the only slot and evicts this one mid-fill.
+        other = asyncio.create_task(_read(cache, 0, cache.tick(), room_id="other"))
+        await _until(lambda: store.reads == 2)
+
+        store.gate.set()
+
+        for waiter in waiters:
+            page = await waiter
+            assert page is not None, "an evicted fill sent its waiter to the database"
+            assert _seqs(page) == [1]
+            assert page.done
+        assert _seqs(await other) == [1]
+        assert cache.stats().rooms == 1, "the evicted room came back"
+        assert store.reads == 2
+
     async def test_the_byte_limit_evicts_the_least_recently_read_room(
         self,
     ) -> None:
