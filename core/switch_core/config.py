@@ -454,6 +454,18 @@ class SwitchConfig(BaseSettings):
     # evicted past this, so a flood of tokens cannot grow the process.
     agent_auth_cache_max_entries: int = 4096
 
+    # Share one read of a room's new messages between every client in it
+    # (`transport/room_cache.py`). Without it, a room of N agents reads each
+    # new page N times, which is what exhausted the pool in a restart burst.
+    # Off by default while it is proved on dev. The limits bound memory, not
+    # correctness: anything outside them is read from the database as before.
+    room_delivery_cache_enabled: bool = False
+    room_delivery_cache_max_bytes: int = 64 * 1024 * 1024
+    room_delivery_cache_max_rooms: int = 5000
+    # At least one delivery page (200), or a fill could not be held.
+    room_delivery_cache_max_rows_per_room: int = 1000
+    room_delivery_cache_max_age_seconds: float = 300.0
+
     # Postgres terminates a connection that sits inside an open transaction
     # without executing anything for longer than this (a Postgres interval such
     # as "15s"), turning a slot that never comes back into a loud, attributable
