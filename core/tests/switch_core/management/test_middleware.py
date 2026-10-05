@@ -26,6 +26,7 @@ from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.db.models import TENANT_ZERO_ID, Tenant
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.keys import Keyring
 from switch_core.management import tokens
 from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.wiring import create_management
@@ -286,7 +287,7 @@ class TestTheFlagOff:
         class _Config:
             agent_auth_cache_ttl_seconds = 1
             agent_auth_cache_max_entries = 16
-            jwt_secret_key = "x"
+            keyring = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
             oauth_issuer_url = None
             oauth_audience = None
             oauth_verify_issuer = True

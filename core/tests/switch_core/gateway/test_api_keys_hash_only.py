@@ -16,13 +16,15 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.crypto import encrypt_token
 from switch_core.db.models import ApiKey
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.api_keys import router as api_keys_router
-from tests.switch_core.management.harness import JWT_SECRET, add_member, cookies_for
+from switch_core.keys import Keyring
+from tests.switch_core.management.harness import add_member, cookies_for
+
+TEST_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
 
 
 def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
@@ -37,7 +39,7 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
     app.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
     app.dependency_overrides[gw_deps.get_api_key_store] = lambda: ApiKeyStore()
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
-        jwt_secret_key=JWT_SECRET, gateway_tenant_choice_enabled=False
+        keyring=TEST_KEYRING, gateway_tenant_choice_enabled=False
     )
     return app
 
@@ -58,7 +60,7 @@ async def test_hash_only_keys_are_not_listed_revealed_or_deleted(
         visible = ApiKey(
             user_id=owner.id,
             key_hash="registration",
-            encrypted_key=encrypt_token("plain", JWT_SECRET),
+            encrypted_key=TEST_KEYRING.encrypt("plain"),
             label="mine",
             type="registration",
         )

@@ -26,7 +26,6 @@ from switch_core.bridges.agent.dependencies import (
 )
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -47,6 +46,7 @@ from switch_core.gateway.dependencies import (
 from switch_core.gateway.hosted_controller import router as controller_router
 from switch_core.gateway.hosted_launches import router as launch_router
 from switch_core.gateway.hosted_machines import router as machine_router
+from switch_core.keys import Keyring
 from switch_core.providers.hosted import HostedControllerSettings
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
     make_owner,
@@ -66,6 +66,7 @@ from tests.switch_core.hosted_wire_fixtures import (
     request_fixture,
 )
 
+TEST_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
 TOKEN = "SYNTHETIC-CONTROLLER-CREDENTIAL-FOR-TESTS"
 CONTROLLER = {"Authorization": "Bearer " + TOKEN}
 IDLE_STOP_MINUTES = 30
@@ -112,7 +113,7 @@ async def wire(session_factory, monkeypatch, tmp_path):
             session,
             owner,
             "setup-token",
-            encrypt_token("SYNTHETIC-CLAUDE", "test-secret"),
+            TEST_KEYRING.encrypt("SYNTHETIC-CLAUDE"),
             datetime.now(UTC),
         )
         await session.commit()

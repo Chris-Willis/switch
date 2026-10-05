@@ -11,7 +11,6 @@ from sqlalchemy import func, select, text
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentExistsError
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
     HostedLaunch,
@@ -42,12 +41,15 @@ from switch_core.gateway.schemas import (
     UpdateAgentDisplayNameRequest,
     UpdateAgentIconRequest,
 )
+from switch_core.keys import Keyring
 from switch_core.providers.claude_verifier import ClaudeVerificationError
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
     make_service,
     register,
 )
 from tests.switch_core.hosted_machine_helpers import seed_machine
+
+TEST_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
 
 ICON = "https://cdn.example.com/9.x/bottts/png?seed=helper"
 
@@ -85,7 +87,7 @@ async def launch_app(session_factory, monkeypatch):
             session,
             owner.id,
             "setup-token",
-            encrypt_token("SYNTHETIC-CREDENTIAL", "SYNTHETIC-KEY"),
+            TEST_KEYRING.encrypt("SYNTHETIC-CREDENTIAL"),
             datetime.now(UTC),
         )
         await session.commit()
@@ -103,7 +105,7 @@ async def launch_app(session_factory, monkeypatch):
         hosted_agents_per_owner=3,
         hosted_sessions_per_agent=2,
         hosted_disk_retention_days=7,
-        jwt_secret_key="SYNTHETIC-KEY",
+        keyring=TEST_KEYRING,
     )
     protocol = make_service(session_factory)
     protocol.connections = AgentConnectionRegistry()

@@ -2,7 +2,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     HostedLaunch,
     HostedMachine,
@@ -19,7 +18,10 @@ from switch_core.db.stores.hosted_launch_store import (
 )
 from switch_core.db.stores.hosted_machine_store import HostedMachineStore
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
+from switch_core.keys import Keyring
 from switch_core.tenant_context import tenant_scope
+
+TEST_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
 
 SLOTS = ["slot-a", "slot-b"]
 
@@ -51,7 +53,7 @@ async def launches(session_factory):
             session,
             "launch-owner",
             "setup-token",
-            encrypt_token("SYNTHETIC-CLAUDE", "test-secret"),
+            TEST_KEYRING.encrypt("SYNTHETIC-CLAUDE"),
             datetime.now(UTC),
         )
         await session.commit()
