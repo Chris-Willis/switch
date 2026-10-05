@@ -7,6 +7,7 @@ existing agent, partial updates, unmanaging, and revocation.
 
 from __future__ import annotations
 
+import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -17,6 +18,8 @@ from switch_core.management.gateway_routes import router as gateway_router
 from switch_core.management.notifier import ASSIGNMENT_CHANGED, CREDENTIAL_REVOKED
 from tests.switch_core.gateway.agent_route_harness import add_agent
 from tests.switch_core.management.harness import (
+    WORKSPACES_DIR,
+    EnrolledController,
     Harness,
     add_member,
     build_harness,
@@ -27,6 +30,7 @@ from tests.switch_core.management.harness import (
     platform,
     provider,
     report_status,
+    status_report,
 )
 
 
@@ -557,8 +561,166 @@ class TestManagedAgents:
             view = await client.get(
                 f"/gateway/management/agents/{agent_id}", cookies=cookies_for(owner)
             )
-        assert view.json()["status"] == entry
+        assert view.json()["status"] == {**entry, "directory": None}
         assert view.json()["controller_state"] == "online"
+
+
+async def report_machine(
+    client: httpx.AsyncClient,
+    controller: EnrolledController,
+    seq: int,
+    *,
+    workspaces_dir: str | None,
+) -> None:
+    """A status report naming `workspaces_dir`, or one from a controller
+    that predates the field when it is None."""
+    report = status_report(seq, providers=[provider("claude")], agents=[])
+    if workspaces_dir is None:
+        del report["machine"]["workspaces_dir"]
+    else:
+        report["machine"]["workspaces_dir"] = workspaces_dir
+    response = await client.put(
+        f"/v1/management/controllers/{controller.controller_id}/status",
+        json=report,
+        headers=controller.headers,
+    )
+    assert response.status_code == 200, response.text
+
+
+class TestTheWorkingDirectory:
+    async def test_create_names_the_machines_workspace_for_the_agent(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client, owner, name="reviewer", controller_id=controller.controller_id
+            )
+            chosen = await create_managed_agent(
+                client,
+                owner,
+                name="writer",
+                controller_id=controller.controller_id,
+                definition_body=definition(directory="/srv/writer"),
+            )
+            listed = await client.get(
+                "/gateway/management/controllers", cookies=cookies_for(owner)
+            )
+            assignment = await client.get(
+                f"/v1/management/controllers/{controller.controller_id}/assignment",
+                headers=controller.headers,
+            )
+        assert created.status_code == 201, created.text
+        assert created.json()["definition"]["directory"] == f"{WORKSPACES_DIR}/reviewer"
+        assert chosen.json()["definition"]["directory"] == "/srv/writer"
+        assert listed.json()[0]["workspaces_dir"] == WORKSPACES_DIR
+        directories = {
+            entry["definition"]["name"]: entry["definition"]["directory"]
+            for entry in assignment.json()["agents"]
+        }
+        assert directories == {
+            "reviewer": f"{WORKSPACES_DIR}/reviewer",
+            "writer": "/srv/writer",
+        }
+
+    async def test_an_update_or_a_move_names_the_target_machines_workspace(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        cookies = cookies_for(owner)
+        async with harness.client() as client:
+            first = await enroll_console(harness, client, owner, "one")
+            second = await enroll_console(harness, client, owner, "two")
+            await report_machine(client, first, 1, workspaces_dir="/one/workspaces")
+            await report_machine(client, second, 1, workspaces_dir="/two/workspaces")
+            created = await create_managed_agent(
+                client,
+                owner,
+                name="reviewer",
+                controller_id=first.controller_id,
+                definition_body=definition(directory="/srv/reviewer"),
+            )
+            path = f"/gateway/management/agents/{created.json()['agent_id']}"
+            cleared = await client.patch(
+                path, json={"definition": definition(directory=None)}, cookies=cookies
+            )
+            moved = await client.patch(
+                path, json={"controller_id": second.controller_id}, cookies=cookies
+            )
+            kept = await client.put(
+                path,
+                json={
+                    "controller_id": first.controller_id,
+                    "desired_state": "running",
+                    "definition": definition(directory="/srv/kept"),
+                },
+                cookies=cookies,
+            )
+        assert created.json()["definition"]["directory"] == "/srv/reviewer"
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["definition"]["directory"] == "/one/workspaces/reviewer"
+        assert moved.status_code == 200, moved.text
+        assert moved.json()["definition"]["directory"] == "/two/workspaces/reviewer"
+        assert kept.json()["definition"]["directory"] == "/srv/kept"
+
+    async def test_a_controller_that_has_not_said_leaves_it_null(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_machine(client, controller, 1, workspaces_dir=None)
+            created = await create_managed_agent(
+                client, owner, name="reviewer", controller_id=controller.controller_id
+            )
+            unplaced = await create_managed_agent(
+                client, owner, name="spare", controller_id=None
+            )
+            listed = await client.get(
+                "/gateway/management/controllers", cookies=cookies_for(owner)
+            )
+        assert created.status_code == 201, created.text
+        assert created.json()["definition"]["directory"] is None
+        assert unplaced.json()["definition"]["directory"] is None
+        assert listed.json()[0]["workspaces_dir"] is None
+
+    async def test_the_status_carries_where_the_agent_runs(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client, owner, name="reviewer", controller_id=controller.controller_id
+            )
+            agent_id = created.json()["agent_id"]
+            await report_status(
+                client,
+                controller,
+                2,
+                providers=[provider("claude")],
+                agents=[
+                    {
+                        "agent_id": agent_id,
+                        "applied_revision": 1,
+                        "process": "running",
+                        "attached": True,
+                        "sessions": {"active": 0, "ids": []},
+                        "restarts_10m": 0,
+                        "oom_kills": 0,
+                        "directory": f"{WORKSPACES_DIR}/reviewer",
+                        "since": "2026-01-01T00:00:00Z",
+                    }
+                ],
+            )
+            listed = await client.get(
+                "/gateway/management/agents", cookies=cookies_for(owner)
+            )
+        [view] = listed.json()
+        assert view["status"]["directory"] == f"{WORKSPACES_DIR}/reviewer"
 
 
 class TestRevocation:

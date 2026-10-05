@@ -206,8 +206,11 @@ async def create_agent(
             `get_advanced_config(provider)` lists; a field left out is left
             unset. Each value is checked against that field. Null for none.
         instructions: Standing instructions for the agent (at most 32 KiB).
-        directory: The working directory on the machine, or null for a fresh
-            workspace the machine chooses.
+        directory: The working directory on the machine, or null for the
+            machine's own workspace for the agent; Switch fills that path in
+            when the machine has reported where it keeps workspaces, and the
+            machine makes the directory if it is missing. Any other directory
+            must already exist there.
         auto_approve: Let the agent run tools without asking for approval.
         display_name: A human label shown next to `name`, or null for none.
         icon_url: An https link to the agent's icon, or null for the robot
@@ -252,16 +255,19 @@ async def list_managed_agents() -> list[dict[str, Any]]:
 
     Returns:
         A list of managed agents, each {agent_id, name, display_name,
-        description, provider, model, advanced_config, machine, desired_state,
-        actual, revision}.
+        description, provider, model, advanced_config, directory, machine,
+        desired_state, actual, revision}.
+        `directory` is the working directory the definition names (null only
+        when its machine has not said where it keeps workspaces).
         `machine` is {id, name, state} (null when the agent is not placed on
         a machine), `state` being "online", "unknown" or "revoked".
         `desired_state` is what your owner wants: "running" or "stopped".
         `actual` is what the machine last reported for the agent,
-        {process, reason, detail, applied_revision, since}, or null before it
-        has reported on it; `process` is one of "pending", "starting",
-        "running", "stopping", "stopped", "crashed" or "failed", and
-        `reason` says why when it is crashed or failed. `revision` is the
+        {process, reason, detail, applied_revision, since, directory}, or
+        null before it has reported on it; `process` is one of "pending",
+        "starting", "running", "stopping", "stopped", "crashed" or "failed",
+        and `reason` says why when it is crashed or failed. `actual.directory`
+        is where it runs, null until the machine has resolved it. `revision` is the
         definition's revision: the agent runs the current definition once
         `actual.applied_revision` equals it.
     """

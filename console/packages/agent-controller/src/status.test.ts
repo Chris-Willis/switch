@@ -305,6 +305,7 @@ describe('StatusCollector', () => {
       providers,
       attached: () => true,
       dataDir: dir,
+      workspacesDir: join(dir, 'workspaces'),
       version: '0.1.0',
       now: () => clock,
     });
@@ -324,7 +325,9 @@ describe('StatusCollector', () => {
       sessions: { active: 2, ids: ['session-a', 'session-b'] },
       restarts_10m: 1,
     });
+    expect(first.agents[0]!.directory).toBeNull();
     expect(first.machine.sessions_running).toBe(2);
+    expect(first.machine.workspaces_dir).toBe(join(dir, 'workspaces'));
     expect(first.machine.disk_total_bytes).toBeGreaterThan(0);
 
     clock += 1000;
@@ -336,12 +339,24 @@ describe('StatusCollector', () => {
     expect(second.agents[0]!.since).toBe('2026-01-01T11:30:00Z');
     expect(statusFingerprint(second)).toBe(statusFingerprint(first));
 
+    runtime.agents.set(
+      'agent-1',
+      observed({
+        alive: true,
+        health: health('connecting'),
+        configured: { provider: 'claude', cwd: '/work/scout' },
+      })
+    );
+    const resolved = await collector.collect(assignment);
+    expect(resolved.agents[0]!.directory).toBe('/work/scout');
+    expect(statusFingerprint(resolved)).not.toBe(statusFingerprint(second));
+
     runtime.agents.set('agent-1', observed({ failure: 'boom' }));
     const third = await collector.collect(assignment);
     expect(third.agents[0]).toMatchObject({
       process: 'failed',
       since: new Date(clock).toISOString(),
     });
-    expect(statusFingerprint(third)).not.toBe(statusFingerprint(second));
+    expect(statusFingerprint(third)).not.toBe(statusFingerprint(resolved));
   });
 });

@@ -14,7 +14,7 @@ const DOT: Record<ReturnType<typeof machineTone>, string> = {
 /**
  * The machine a managed agent runs on, as a pill beside its provider, opening
  * onto a card: which machine, whether it is answering, what is wrong when
- * something is, and where and how the agent runs there.
+ * something is, and how the agent and the machine's providers are doing.
  */
 export function ManagedMachinePill({
   agent,
@@ -98,12 +98,6 @@ function MachineCard({
       <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
         <dt className="text-foreground-muted">Agent</dt>
         <dd className="min-w-0 truncate">{state.label}</dd>
-        <dt className="text-foreground-muted">Directory</dt>
-        <dd className="min-w-0 truncate font-mono" title={agent.definition.directory ?? undefined}>
-          {agent.definition.directory ?? 'Chosen by the machine'}
-        </dd>
-        <dt className="text-foreground-muted">Isolation</dt>
-        <dd>{agent.definition.isolation === 'isolated' ? 'Own process' : 'Shared'}</dd>
         <dt className="text-foreground-muted">Providers</dt>
         <dd className="min-w-0">
           {machinesError

@@ -10,7 +10,15 @@ import {
 } from './server-run-locations';
 
 function machine(patch: Partial<OwnedMachine> & { id: string }): OwnedMachine {
-  return { name: patch.id, kind: 'daemon', state: 'online', providers: [], local: null, ...patch };
+  return {
+    name: patch.id,
+    kind: 'daemon',
+    state: 'online',
+    providers: [],
+    local: null,
+    workspacesDir: null,
+    ...patch,
+  };
 }
 
 const MACHINES = [

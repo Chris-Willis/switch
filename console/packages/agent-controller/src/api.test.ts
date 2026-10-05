@@ -369,6 +369,7 @@ function statusReport() {
       mem_total_bytes: 2,
       sessions_running: 0,
       sessions_max: 0,
+      workspaces_dir: '/data/workspaces',
     },
     providers: [],
     tools: [],

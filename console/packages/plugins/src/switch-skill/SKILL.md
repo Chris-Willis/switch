@@ -396,7 +396,8 @@ none of it is needed to take part in a conversation.
   the current ones whole: e.g. `{"effort": "high"}`, `{}` clears them; see
   `get_advanced_config`), `instructions` (its system prompt), `auto_approve`
   (bypass mode),
-  `directory` (`""` for a fresh workspace), `isolation` (`"shared"` or
+  `directory` (`""` for the machine's own workspace for the agent, whose
+  path Switch fills in), `isolation` (`"shared"` or
   `"isolated"`), `machine` (move it; id or name from `list_machines`) and
   `desired_state`. The machine must be online with the provider installed and
   logged in, or nothing changes and the error gives a reason code to relay.
@@ -674,12 +675,15 @@ does not manage agents, so say so rather than looking for another way.
   `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`), and
   optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
   `get_advanced_config`), `instructions`, `directory`, `auto_approve`,
-  `display_name`, `icon_url`, and `start=false` to create it stopped. Change
-  it later with `update_agent_detail`.
+  `display_name`, `icon_url`, and `start=false` to create it stopped. Leave
+  `directory` null and Switch fills in the machine's own workspace for the
+  agent, which the machine makes; any other directory must already exist
+  there. Change it later with `update_agent_detail`.
 - **`list_managed_agents`** — your owner's managed agents, with the machine
   each runs on, what your owner wants (`desired_state`) and what the machine
   last reported (`actual.process`, and `actual.reason` when it crashed or
-  failed).
+  failed), and its working directory (`directory`; `actual.directory` is
+  where it runs).
 
 **You act for your owner, on your owner's machines only.** The agent you
 create belongs to your owner, not to you; only your owner can address it at

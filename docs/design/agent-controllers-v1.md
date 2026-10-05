@@ -125,7 +125,9 @@ Controller access token (`{id}` must match the token's `cid`, otherwise `403 for
   - Returns `{controller_id, credential}`.
 - `GET    /gateway/management/controllers`
   - Returns the list, each with its `description`, derived `state` (`online|unknown|revoked`),
-    `last_seen_at` and its last `status`.
+    `last_seen_at`, its last `status`, and `workspaces_dir`: the directory the controller makes
+    agents' workspaces in, from that status (`machine.workspaces_dir`), null when it has not
+    reported one.
 - `PATCH  /gateway/management/controllers/{id}`
   - Body: `{name?, description?}`, at least one. Renames the machine and/or changes its
     description; `description: null` (or blank) clears it. Same limits as at enrollment;
@@ -135,6 +137,8 @@ Controller access token (`{id}` must match the token's `cid`, otherwise `403 for
 - `DELETE /gateway/management/controllers/{id}`
   - Revokes it: deletes the credential, sends the `credential.revoked` nudge, and leaves definitions placed but shown.
 - `GET    /gateway/management/agents` and `GET /gateway/management/agents/{agent_id}`.
+  - Each agent's `status` is its entry in its controller's last status report, with
+    `directory` always present: where the agent runs, null until the controller resolved it.
 - `POST   /gateway/management/agents` creates and places a new agent.
   - Body: `{name, description, display_name?, controller_id, desired_state, definition}`.
   - It registers the agent through `AgentCore.register_agent`, using the known-agent spec for the provider
@@ -158,6 +162,15 @@ Controller access token (`{id}` must match the token's `cid`, otherwise `403 for
 - `provider_login_missing` or `provider_login_expired`
 
 A provider whose `auth` is `unknown` passes.
+
+**The working directory is always named.** On create, and on every change through PUT, PATCH
+or `update_agent_detail`, a definition whose `directory` is null gets
+`<workspaces_dir>/<agent name>`, the controller's own workspace for the agent (its
+`DataLayout.workspace(name)`), when the target controller has reported `workspaces_dir`.
+A move clears a directory equal to the old controller's workspace for the agent before filling
+in the new one's. A controller that has not reported `workspaces_dir` leaves it null, and still
+reports the directory it resolved in the agent's status. The controller makes a missing
+directory inside its workspaces directory; any other directory must already exist.
 
 Any change that affects a controller bumps its `assignment_revision` and nudges it.
 
@@ -237,8 +250,9 @@ registers every declared operation and filters by the registry per request).
 - `list_managed_agents()`: the owner's managed agents, each `{agent_id, name, display_name,
   description, provider, model, advanced_config, machine: {id, name, state} | null,
   desired_state, actual:
-  {process, reason, detail, applied_revision, since} | null, revision}`, `actual` being the
-  agent's entry in its controller's last status.
+  {process, reason, detail, applied_revision, since, directory} | null, revision}`, `actual`
+  being the agent's entry in its controller's last status, plus top-level `directory`, the one
+  the definition names.
 
 **The capability.** `agents.can_manage_agents` (boolean, default false) gates all four,
 listing included since it discloses the owner's machines. It is the agent's, read from its
@@ -289,15 +303,15 @@ exactly the answer a missing one does.
   - Running, and not applied or at an older revision:
     1. Ensure the credentials: fetch from the credentials endpoint if there is no local file, or after an auth failure.
     2. Write them to `<data>/agents/<id>/credentials.json` (0600), outside the agent's working directory.
-    3. Ensure the working directory: `definition.directory`, otherwise `<data>/workspaces/<name>`.
+    3. Ensure the working directory: `definition.directory`, otherwise `<data>/workspaces/<name>`. A missing directory inside `<data>/workspaces/` is made; any other must exist.
     4. Write the agent host root `<data>/agent hosts/<id>/` with `watch.json {enabled:true, spawn:true}` and a `SharedHostConfig` template, as the Console builds.
     5. Start the agent host (`runAgentHost`) in the controller's process, after stopping the running one when the revision changed. Its sessions are the controller's child processes.
   - Stopped or removed: write `watch.json {enabled:false}`, stop the agent host and its sessions, and delete the credentials of removed agents.
   - Nothing an agent runs outlives the controller: stopping the controller stops every agent host and session, and the next run starts them again from their journals and confirmed cursors.
 - **Status:** sent on every change, and every `report_within_s`.
-  - Machine: os, arch, disk, memory, sessions.
+  - Machine: os, arch, disk, memory, sessions, and `workspaces_dir` (`<data>/workspaces`, absolute).
   - Providers: installed via a PATH lookup, auth via the bundle's `--probe`, cached for 10 min. `provider.recheck` forces a probe.
-  - Agents: read from each running agent host's state and `supervisor/failure.json`, mapped to the contract's process states and reason codes.
+  - Agents: read from each running agent host's state and `supervisor/failure.json`, mapped to the contract's process states and reason codes, with `directory`, the working directory its agent host was configured with.
 - **Operations:** `agent.restart` restarts the agent host. `provider.recheck` forces a probe and reports.
 
 ---

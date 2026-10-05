@@ -2186,7 +2186,8 @@ async def update_agent_detail(
             `provider`, pass the new provider's settings (or {}) too.
         instructions: Its system prompt (at most 32 KiB).
         auto_approve: Bypass mode: run tools without asking for approval.
-        directory: Working directory on its machine; "" for a fresh workspace.
+        directory: Working directory on its machine; "" for the machine's
+            own workspace for the agent, whose path Switch fills in.
         isolation: "shared" (inside the machine's controller) or "isolated"
             (a process of its own).
         machine: Move it to this machine (`id` or exact `name` from

@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, stat, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import {
@@ -100,7 +100,11 @@ export interface AgentRuntime extends AgentRunner {
   readCredentials(agentId: string): Promise<RelayCredentials | null>;
   writeCredentials(agentId: string, credentials: RelayCredentials): Promise<void>;
   deleteCredentials(agentId: string): Promise<void>;
-  /** `directory` from the definition, or a workspace under the data directory. */
+  /**
+   * `directory` from the definition, or a workspace under the data directory.
+   * A directory inside `DataLayout.workspaces` is made when missing; any other
+   * must already exist.
+   */
   workingDirectory(name: string, directory: string | null): Promise<string>;
   probe(provider: Provider, binaryPath: string, cwd: string): Promise<ProviderReadiness>;
 }
@@ -143,6 +147,12 @@ export async function removeOptional(path: string): Promise<void> {
   await unlink(path).catch((error: NodeJS.ErrnoException) => {
     if (error.code !== 'ENOENT') throw error;
   });
+}
+
+/** `path` is strictly below `root`, after resolving `..` segments. */
+export function isInside(root: string, path: string): boolean {
+  const rest = relative(resolve(root), resolve(path));
+  return rest !== '' && rest !== '..' && !rest.startsWith(`..${sep}`) && !isAbsolute(rest);
 }
 
 export function alive(pid: number): boolean {
@@ -314,6 +324,11 @@ export class InProcessRuntime implements AgentRuntime {
         'definition_invalid',
         `The working directory '${directory}' is not an absolute path.`
       );
+    if (isInside(this.deps.layout.workspaces, expanded)) {
+      const path = resolve(expanded);
+      await mkdir(path, { recursive: true });
+      return path;
+    }
     let isDirectory: boolean;
     try {
       isDirectory = (await stat(expanded)).isDirectory();

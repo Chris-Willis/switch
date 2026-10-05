@@ -42,6 +42,18 @@ export function managedAgentState(agent: ManagedAgentView): ManagedAgentState {
   }
 }
 
+/**
+ * Where a machine makes an agent's workspace when the agent names no directory:
+ * its workspaces folder, then the agent's name. Null when the machine has not
+ * said where it keeps them, or there is no name yet.
+ */
+export function machineWorkspaceFor(machine: OwnedMachine, name: string): string | null {
+  const dir = machine.workspacesDir;
+  if (dir === null || name.trim() === '') return null;
+  const separator = dir.includes('\\') && !dir.includes('/') ? '\\' : '/';
+  return `${dir.replace(/[\\/]+$/, '')}${separator}${name.trim()}`;
+}
+
 export function managedAgentLabel(agent: ManagedAgentView): string {
   return agent.displayName || agent.name;
 }

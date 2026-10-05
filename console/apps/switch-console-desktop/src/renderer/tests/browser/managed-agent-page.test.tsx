@@ -74,13 +74,14 @@ const AGENT: ManagedAgentView = {
     directory: '/work/pm',
     isolation: 'shared',
   },
-  status: { process: 'running', attached: true, reason: null, detail: null },
+  status: { process: 'running', attached: true, reason: null, detail: null, directory: null },
 };
 
 const LAPTOP: OwnedMachine = {
   ...AGENT.machine!,
   local: { kind: 'this-computer' },
   providers: [{ provider: 'claude', ready: true, problem: null }],
+  workspacesDir: '/home/me/workspaces',
 };
 
 let container: HTMLDivElement;
@@ -118,7 +119,7 @@ beforeEach(async () => {
       </QueryClientProvider>
     );
   });
-  await vi.waitFor(() => expect(disclosure().textContent).toMatch(/5 settings/));
+  await vi.waitFor(() => expect(disclosure().textContent).toMatch(/3 settings/));
 });
 
 afterEach(() => {
@@ -172,8 +173,12 @@ it('lays out the agent the way a Console agent’s page does', () => {
     'Bypass permissions',
     'Can manage agents',
     'Who can talk to your agent',
+    'Directory',
+    'Run in its own process',
   ])
     expect(text).toContain(row);
+  expect(container.querySelector('[title="/work/pm"]')?.textContent).toBe('/work/pm');
+  expect(text).not.toContain('Chosen by the machine');
   expect(disclosure().textContent).toContain('opus · high');
   expect(text).not.toContain('Unsaved changes');
 });
@@ -181,13 +186,7 @@ it('lays out the agent the way a Console agent’s page does', () => {
 it('shows the model first, then the server’s fields for the provider', async () => {
   await act(async () => disclosure().click());
   const labels = [...container.querySelectorAll('label')].map((label) => label.textContent);
-  expect(labels.slice(1, 6)).toEqual([
-    'Model (optional)',
-    'Directory (optional)',
-    'Run in its own process',
-    'Effort (optional)',
-    'Tools (optional)',
-  ]);
+  expect(labels.slice(1, 4)).toEqual(['Model (optional)', 'Effort (optional)', 'Tools (optional)']);
   expect(modelCatalogue).toHaveBeenCalledWith({
     providerId: 'claude',
     sshHost: null,
@@ -222,4 +221,34 @@ it('shows the server’s refusal, and saves nothing else', async () => {
   );
   expect(workspaces.updateAgentDescription).not.toHaveBeenCalled();
   expect(container.textContent).toContain('Unsaved changes');
+});
+
+it('saves where and how the agent runs from General, with the other definition edits', async () => {
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('[aria-label="Run in its own process"]')!.click()
+  );
+  expect(container.textContent).toContain('Unsaved changes');
+  await act(async () => button(/^Save/)!.click());
+  expect(managedAgents.update).toHaveBeenCalledWith({
+    serverId: 'server-1',
+    agentId: 'agent-1',
+    changes: { definition: { isolation: 'isolated' } },
+  });
+});
+
+it('shows where the machine will make the agent’s directory when nothing names one', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={client}>
+        <ManagedAgentPage
+          key="unplaced"
+          agent={{ ...AGENT, definition: { ...AGENT.definition, directory: null } }}
+        />
+      </QueryClientProvider>
+    );
+  });
+  await vi.waitFor(() =>
+    expect(container.querySelector('[title="/home/me/workspaces/pm-agent"]')).not.toBeNull()
+  );
 });

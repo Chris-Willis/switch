@@ -269,6 +269,7 @@ class ManagementAgentOperations:
             "provider": row.definition.get("provider"),
             "model": row.definition.get("model"),
             "advanced_config": row.definition.get("advanced_config", {}),
+            "directory": row.definition.get("directory"),
             "machine": None
             if controller is None
             else {
@@ -285,6 +286,7 @@ class ManagementAgentOperations:
                 "detail": status.get("detail"),
                 "applied_revision": status.get("applied_revision"),
                 "since": status.get("since"),
+                "directory": status.get("directory"),
             },
             "revision": row.revision,
         }

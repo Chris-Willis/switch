@@ -185,6 +185,9 @@ class MachineStatus(_StatusBody):
     mem_total_bytes: int
     sessions_running: int
     sessions_max: int
+    # The absolute directory the controller makes agents' workspaces in. A
+    # controller older than this field does not send it.
+    workspaces_dir: str | None = None
 
 
 class ProviderStatus(_StatusBody):
@@ -216,6 +219,9 @@ class AgentStatus(_StatusBody):
     sessions: AgentSessions
     restarts_10m: int
     oom_kills: int
+    # The absolute working directory the agent runs in; null before the
+    # controller resolved one, absent from a controller older than this field.
+    directory: str | None = None
     since: str
     reason: str | None = None
     detail: str | None = None
@@ -473,6 +479,16 @@ def operation_view(operation: AgentControllerOperation) -> dict[str, Any]:
     }
 
 
+def workspaces_dir_of(controller: AgentController) -> str | None:
+    """The workspaces directory the controller last reported, or None when
+    its last report did not carry one."""
+    if controller.status is None:
+        return None
+    machine = controller.status.get("machine")
+    directory = machine.get("workspaces_dir") if isinstance(machine, dict) else None
+    return directory if isinstance(directory, str) and directory else None
+
+
 def controller_view(controller: AgentController, state: str) -> dict[str, Any]:
     return {
         "id": controller.id,
@@ -485,6 +501,7 @@ def controller_view(controller: AgentController, state: str) -> dict[str, Any]:
         "last_seen_at": wire_time_or_none(controller.last_seen_at),
         "status": controller.status,
         "assignment_revision": controller.assignment_revision,
+        "workspaces_dir": workspaces_dir_of(controller),
         "created_at": wire_time(controller.created_at),
         "revoked_at": wire_time_or_none(controller.revoked_at),
     }
@@ -493,13 +510,15 @@ def controller_view(controller: AgentController, state: str) -> dict[str, Any]:
 def agent_status_from(
     controller: AgentController | None, agent_id: str
 ) -> dict[str, Any] | None:
-    """The agent's entry in its controller's last status report, if there is one."""
+    """The agent's entry in its controller's last status report, if there is
+    one. `directory` is always present: null when the controller has not
+    resolved one or predates the field."""
     if controller is None or controller.status is None:
         return None
     agents = controller.status.get("agents")
     for entry in agents if isinstance(agents, list) else []:
         if isinstance(entry, dict) and entry.get("agent_id") == agent_id:
-            return entry
+            return {**entry, "directory": entry.get("directory")}
     return None
 
 

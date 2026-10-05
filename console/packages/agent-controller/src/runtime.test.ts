@@ -16,7 +16,7 @@ import { type OpenAgentStream, readSharedCredentials } from '@switch-console/age
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
 import { dataLayout } from './paths';
-import { InProcessRuntime, observeOnDisk } from './runtime';
+import { InProcessRuntime, isInside, observeOnDisk } from './runtime';
 import { buildWatcherTemplate } from './template';
 
 /** Stands in for the shared-host bundle: answers `--probe`. Sessions are never started here. */
@@ -279,5 +279,30 @@ describe('InProcessRuntime', () => {
     await expect(runtime.workingDirectory('scout', bundle)).rejects.toMatchObject({
       reason: 'definition_invalid',
     });
+  });
+
+  it('makes a missing directory inside the workspaces directory, and only there', async () => {
+    const named = join(dir, 'data', 'workspaces', 'chosen', 'nested');
+    expect(await runtime.workingDirectory('scout', named)).toBe(named);
+    expect(statSync(named).isDirectory()).toBe(true);
+    const escaping = join(dir, 'data', 'workspaces', '..', 'outside');
+    await expect(runtime.workingDirectory('scout', escaping)).rejects.toMatchObject({
+      reason: 'definition_invalid',
+    });
+    expect(existsSync(join(dir, 'data', 'outside'))).toBe(false);
+    await expect(runtime.workingDirectory('scout', join(dir, 'data', 'workspaces'))).resolves.toBe(
+      join(dir, 'data', 'workspaces')
+    );
+  });
+});
+
+describe('isInside', () => {
+  it('is true strictly below the root', () => {
+    expect(isInside('/data/workspaces', '/data/workspaces/scout')).toBe(true);
+    expect(isInside('/data/workspaces', '/data/workspaces/a/b')).toBe(true);
+    expect(isInside('/data/workspaces', '/data/workspaces')).toBe(false);
+    expect(isInside('/data/workspaces', '/data/workspaces/../x')).toBe(false);
+    expect(isInside('/data/workspaces', '/data/workspaces-other/x')).toBe(false);
+    expect(isInside('/data/workspaces', '/data/workspaces/..scout')).toBe(true);
   });
 });

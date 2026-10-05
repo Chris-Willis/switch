@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { ManagedAgentView, OwnedMachine } from '@shared/core/managed-agents/managed-agents';
-import { machineProblem, machineTone, managedAgentState } from './managed-agent-state';
+import {
+  machineProblem,
+  machineTone,
+  machineWorkspaceFor,
+  managedAgentState,
+} from './managed-agent-state';
 
 const AGENT: ManagedAgentView = {
   serverId: 'server-1',
@@ -22,7 +27,7 @@ const AGENT: ManagedAgentView = {
     directory: null,
     isolation: 'shared',
   },
-  status: { process: 'running', attached: true, reason: null, detail: null },
+  status: { process: 'running', attached: true, reason: null, detail: null, directory: null },
 };
 
 describe('managedAgentState', () => {
@@ -44,7 +49,13 @@ describe('managedAgentState', () => {
     expect(
       managedAgentState({
         ...AGENT,
-        status: { process: 'failed', attached: false, reason: 'crash_loop', detail: 'Exited 1' },
+        status: {
+          process: 'failed',
+          attached: false,
+          reason: 'crash_loop',
+          detail: 'Exited 1',
+          directory: null,
+        },
       })
     ).toEqual({ label: 'Failed', tone: 'problem', detail: 'Exited 1' });
   });
@@ -71,7 +82,24 @@ const LAPTOP: OwnedMachine = {
   ...AGENT.machine!,
   local: { kind: 'this-computer' },
   providers: [{ provider: 'claude', ready: true, problem: null }],
+  workspacesDir: null,
 };
+
+describe('machineWorkspaceFor', () => {
+  it('joins the machine’s workspaces folder and the agent’s name', () => {
+    expect(machineWorkspaceFor({ ...LAPTOP, workspacesDir: '/srv/ws/' }, 'pm-agent')).toBe(
+      '/srv/ws/pm-agent'
+    );
+    expect(machineWorkspaceFor({ ...LAPTOP, workspacesDir: 'C:\\ws' }, 'pm-agent')).toBe(
+      'C:\\ws\\pm-agent'
+    );
+  });
+
+  it('is null without a folder or a name', () => {
+    expect(machineWorkspaceFor(LAPTOP, 'pm-agent')).toBeNull();
+    expect(machineWorkspaceFor({ ...LAPTOP, workspacesDir: '/srv/ws' }, ' ')).toBeNull();
+  });
+});
 
 describe('machineProblem', () => {
   it('finds nothing wrong with an agent running on an answering machine', () => {
@@ -90,7 +118,13 @@ describe('machineProblem', () => {
   it('gives the agent’s failure in its machine’s words', () => {
     const failed = {
       ...AGENT,
-      status: { process: 'failed', attached: false, reason: 'crash_loop', detail: 'Exited 1' },
+      status: {
+        process: 'failed',
+        attached: false,
+        reason: 'crash_loop',
+        detail: 'Exited 1',
+        directory: null,
+      },
     };
     expect(machineProblem(failed, LAPTOP)).toBe('Exited 1');
   });

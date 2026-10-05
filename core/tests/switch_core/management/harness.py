@@ -72,6 +72,10 @@ def fixture(name: str) -> Any:
     return json.loads((FIXTURES / name).read_text())
 
 
+# Where the status fixture's controller says it makes agents' workspaces.
+WORKSPACES_DIR: str = fixture("status_request.json")["machine"]["workspaces_dir"]
+
+
 @dataclass
 class Clock:
     """A clock a test moves by hand."""

@@ -303,6 +303,8 @@ export class StatusCollector {
       /** Whether the relay has the agent attached; see `mapAgentProcess`. */
       attached: (agentId: string) => boolean;
       dataDir: string;
+      /** `DataLayout.workspaces`, reported so the server can name an agent's directory. */
+      workspacesDir: string;
       version: string;
       now: () => number;
     }
@@ -339,6 +341,7 @@ export class StatusCollector {
         restarts_10m: this.deps.store.restartsSince(entry.agent_id, nowMs - 10 * 60 * 1000),
         // v1 does not observe OOM kills; nothing here can count one.
         oom_kills: 0,
+        directory: observation.configured?.cwd ?? null,
         since,
         ...(mapped.reason ? { reason: mapped.reason } : {}),
         ...(mapped.detail ? { detail: mapped.detail } : {}),
@@ -363,6 +366,7 @@ export class StatusCollector {
         sessions_running: agents.reduce((total, agent) => total + agent.sessions.active, 0),
         // v1 enforces no session limit; 0 says so rather than inventing one.
         sessions_max: 0,
+        workspaces_dir: this.deps.workspacesDir,
       },
       providers: this.deps.providers.snapshot(),
       tools: [],
@@ -387,6 +391,7 @@ export function statusFingerprint(report: Omit<StatusReport, 'seq'>): string {
       a.reason,
       a.detail,
       a.sessions.ids,
+      a.directory,
     ]),
   });
 }

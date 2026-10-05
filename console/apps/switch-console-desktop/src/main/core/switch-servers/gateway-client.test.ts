@@ -1700,10 +1700,13 @@ describe('agent management calls', () => {
           state: 'online',
           last_seen_at: null,
           revoked_at: null,
+          workspaces_dir: '/data/workspaces',
         },
       ])
     );
-    expect((await fetchManagementControllers(SERVER))[0]?.description).toBe('The office box');
+    const [machine] = await fetchManagementControllers(SERVER);
+    expect(machine?.description).toBe('The office box');
+    expect(machine?.workspacesDir).toBe('/data/workspaces');
 
     fetchMock.mockImplementation(async () => respond(200, {}));
     await updateManagementController(SERVER, 'controller-1', { name: 'laptop', description: null });
@@ -1750,6 +1753,7 @@ describe('agent management calls', () => {
       ])
     );
     const machines = await fetchManagementControllers(SERVER);
+    expect(machines.map((machine) => machine.workspacesDir)).toEqual([null, null, null, null]);
     expect(machines.map((machine) => [machine.id, machine.providers])).toEqual([
       [
         'reported',
@@ -1838,7 +1842,22 @@ describe('agent management calls', () => {
             directory: '/work/scout',
             isolation: 'isolated',
           },
-          status: { process: 'failed', attached: false, reason: 'crash_loop', detail: 'x' },
+          status: {
+            process: 'failed',
+            attached: false,
+            reason: 'crash_loop',
+            detail: 'x',
+            directory: '/work/scout',
+          },
+        },
+        {
+          agent_id: 'agent-3',
+          name: 'older',
+          display_name: null,
+          controller_id: 'controller-1',
+          desired_state: 'running',
+          definition: { provider: 'codex', directory: null },
+          status: { process: 'running', attached: true },
         },
         {
           agent_id: 'agent-2',
@@ -1868,7 +1887,31 @@ describe('agent management calls', () => {
         isolation: 'isolated',
         directory: '/work/scout',
         autoApprove: true,
-        status: { process: 'failed', attached: false, reason: 'crash_loop', detail: 'x' },
+        status: {
+          process: 'failed',
+          attached: false,
+          reason: 'crash_loop',
+          detail: 'x',
+          directory: '/work/scout',
+        },
+      },
+      {
+        agentId: 'agent-3',
+        name: 'older',
+        displayName: null,
+        iconUrl: null,
+        description: '',
+        controllerId: 'controller-1',
+        desiredState: 'running',
+        revision: 0,
+        provider: 'codex',
+        model: null,
+        advancedConfig: {},
+        instructions: '',
+        isolation: 'shared',
+        directory: null,
+        autoApprove: false,
+        status: { process: 'running', attached: true, reason: null, detail: null, directory: null },
       },
       {
         agentId: 'agent-2',

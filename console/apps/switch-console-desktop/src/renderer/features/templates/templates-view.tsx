@@ -584,6 +584,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
 
   return (
     <ServerPage
+      width={1000}
       title="Templates"
       description="A template is one YAML document that creates a room, an agent, or a group of them. Use one, fill in its inputs, and everything it describes appears on this workspace."
       action={

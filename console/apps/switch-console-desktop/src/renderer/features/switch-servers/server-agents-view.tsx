@@ -96,6 +96,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
 
   return (
     <ServerPage
+      width={880}
       title="Your Agents"
       description={`Agents on ${server?.name ?? 'this server'}. Add one, set how it is addressed, and start sessions.`}
       action={

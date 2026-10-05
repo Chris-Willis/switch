@@ -2615,6 +2615,11 @@ export type ManagementController = {
   revokedAt: string | null;
   /** Each provider as the controller last reported it; empty before it has reported. */
   providers: ControllerProviderReport[];
+  /**
+   * The absolute directory the controller makes agents' workspaces in, as it
+   * last reported; null before it has, or when it or the server predates it.
+   */
+  workspacesDir: string | null;
 };
 
 /** A provider as a controller reports it: installed, and whether its login works. */
@@ -2641,7 +2646,10 @@ export type ManagedAgent = {
   advancedConfig: Record<string, AdvancedConfigValue>;
   instructions: string;
   isolation: 'shared' | 'isolated';
-  /** The working directory on its machine; null for a workspace the machine chooses. */
+  /**
+   * The working directory on its machine. The server fills in the machine's
+   * workspace for the agent; null only when the machine has not said where that is.
+   */
   directory: string | null;
   autoApprove: boolean;
   status: {
@@ -2649,6 +2657,8 @@ export type ManagedAgent = {
     attached: boolean;
     reason: string | null;
     detail: string | null;
+    /** The absolute working directory it runs in; null until the machine resolved one. */
+    directory: string | null;
   } | null;
 };
 
@@ -2661,6 +2671,7 @@ type ManagementControllerJson = {
   last_seen_at: string | null;
   revoked_at: string | null;
   status?: unknown;
+  workspaces_dir?: string | null;
 };
 
 type ManagedAgentJson = {
@@ -2686,6 +2697,7 @@ type ManagedAgentJson = {
     attached: boolean;
     reason?: string | null;
     detail?: string | null;
+    directory?: string | null;
   } | null;
 };
 
@@ -2734,6 +2746,7 @@ export async function fetchManagementControllers(
     lastSeenAt: json.last_seen_at,
     revokedAt: json.revoked_at,
     providers: providerReports(json.status),
+    workspacesDir: json.workspaces_dir ?? null,
   }));
 }
 
@@ -2807,6 +2820,7 @@ function toManagedAgent(json: ManagedAgentJson): ManagedAgent {
           attached: json.status.attached,
           reason: json.status.reason ?? null,
           detail: json.status.detail ?? null,
+          directory: json.status.directory ?? null,
         }
       : null,
   };

@@ -187,6 +187,7 @@ describe('status report', () => {
       mem_total_bytes: 2,
       sessions_running: 0,
       sessions_max: 0,
+      workspaces_dir: '/data/workspaces',
     },
     providers: [],
     tools: [],
@@ -199,6 +200,7 @@ describe('status report', () => {
         sessions: { active: 0, ids: [] },
         restarts_10m: 0,
         oom_kills: 0,
+        directory: null,
         since: '2026-01-01T00:00:00Z',
         reason: 'internal',
       },
@@ -207,6 +209,13 @@ describe('status report', () => {
 
   it('accepts a full snapshot', () => {
     expect(statusReportSchema.safeParse(report).success).toBe(true);
+  });
+
+  it('requires the workspaces directory and each agent’s directory', () => {
+    const { workspaces_dir: _dir, ...machine } = report.machine;
+    expect(statusReportSchema.safeParse({ ...report, machine }).success).toBe(false);
+    const { directory: _directory, ...agent } = report.agents[0]!;
+    expect(statusReportSchema.safeParse({ ...report, agents: [agent] }).success).toBe(false);
   });
 
   it('requires a reason for a failed agent', () => {

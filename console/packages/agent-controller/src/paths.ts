@@ -58,10 +58,13 @@ export type DataLayout = {
   agentDir: (agentId: string) => string;
   agentCredentials: (agentId: string) => string;
   watcherRoot: (agentId: string) => string;
+  /** Where an agent's working directory goes when nothing else names one. */
+  workspaces: string;
   workspace: (name: string) => string;
 };
 
 export function dataLayout(root: string): DataLayout {
+  const workspaces = join(root, 'workspaces');
   return {
     root,
     database: join(root, 'controller.db'),
@@ -70,7 +73,8 @@ export function dataLayout(root: string): DataLayout {
     agentCredentials: (agentId) =>
       join(root, 'agents', safeSegment(agentId, 'agent id'), 'credentials.json'),
     watcherRoot: (agentId) => join(root, 'watchers', safeSegment(agentId, 'agent id')),
-    workspace: (name) => join(root, 'workspaces', safeSegment(name, 'agent name')),
+    workspaces,
+    workspace: (name) => join(workspaces, safeSegment(name, 'agent name')),
   };
 }
 

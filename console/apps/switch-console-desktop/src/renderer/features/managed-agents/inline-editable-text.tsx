@@ -57,7 +57,7 @@ export function InlineEditableText({
       aria-label={`Edit ${label.toLowerCase()}`}
       title="Click to edit"
       className={cn(
-        '-mx-1 max-w-full cursor-text truncate rounded-sm px-1 text-left hover:bg-[var(--sel-soft)]',
+        '-mx-1 max-w-full cursor-text rounded-sm px-1 text-left [overflow-wrap:anywhere] hover:bg-[var(--sel-soft)]',
         !value && mutedPlaceholder && 'text-foreground-muted',
         className
       )}

@@ -118,6 +118,7 @@ type StatusReport = {
     disk_free_bytes: number; disk_total_bytes: number
     mem_free_bytes: number;  mem_total_bytes: number
     sessions_running: number; sessions_max: number
+    workspaces_dir?: string            // absolute; where agents' workspaces are made when the definition names no directory. Absent from older controllers
   }
   providers: ProviderStatus[]
   tools: ToolStatus[]
@@ -145,6 +146,7 @@ type AgentStatus = {
   sessions: { active: number; ids: string[] }
   restarts_10m: number
   oom_kills: number
+  directory?: string | null                // absolute working directory it runs in; null before one was resolved. Absent from older controllers
   since: Time                              // when it entered the current process state
   reason?: ReasonCode                      // required when process is crashed or failed
   detail?: string                          // human-readable. Never contains secrets

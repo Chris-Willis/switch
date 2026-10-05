@@ -1,6 +1,6 @@
 import { Bot } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
@@ -63,12 +63,14 @@ export const SidebarAgentRow = observer(function SidebarAgentRow({
             weight as the provider glyphs it replaced without growing the row or
             shifting the label. */}
         <span className="relative flex size-[18px] shrink-0 items-center justify-center">
-          <AgentAvatar
-            name={label}
-            iconUrl={iconUrl}
-            size={21}
-            className={cn('-mx-[1.5px] bg-transparent', dimmed && 'opacity-60')}
-          />
+          <span className="-mx-[1.5px] flex shrink-0" style={presence ? PRESENCE_NOTCH : undefined}>
+            <AgentAvatar
+              name={label}
+              iconUrl={iconUrl}
+              size={21}
+              className={cn('bg-transparent', dimmed && 'opacity-60')}
+            />
+          </span>
           {presence && <PresenceDot presence={presence} />}
         </span>
         <SidebarMenuAction
@@ -110,6 +112,14 @@ const DOT_COLOR: Record<AgentPresence['tone'], string> = {
   pending: 'bg-foreground-muted',
 };
 
+/**
+ * A see-through circle cut from the avatar's corner, a little larger than the
+ * dot centred in it, so the dot stands clear on whatever is behind the row.
+ * The dot's centre is at 18px of the 21px avatar.
+ */
+const NOTCH_MASK = 'radial-gradient(circle at 18px 18px, transparent 5px, #000 5.5px)';
+const PRESENCE_NOTCH: CSSProperties = { maskImage: NOTCH_MASK, WebkitMaskImage: NOTCH_MASK };
+
 function PresenceDot({ presence }: { presence: AgentPresence }) {
   return (
     <Tooltip>
@@ -119,7 +129,7 @@ function PresenceDot({ presence }: { presence: AgentPresence }) {
             role="img"
             aria-label={presence.label}
             className={cn(
-              'absolute -right-[2px] -bottom-[2px] size-[7px] rounded-full ring-2 ring-[var(--material)]',
+              'absolute -right-[2px] -bottom-[2px] size-[7px] rounded-full',
               DOT_COLOR[presence.tone]
             )}
           />

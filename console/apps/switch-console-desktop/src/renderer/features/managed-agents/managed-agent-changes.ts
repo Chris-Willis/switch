@@ -10,7 +10,9 @@ import type {
   AdvancedConfigField,
   ManagedAgentChanges,
   ManagedAgentView,
+  OwnedMachine,
 } from '@shared/core/managed-agents/managed-agents';
+import { machineWorkspaceFor } from './managed-agent-state';
 
 /**
  * The model, a definition field of its own rather than part of the provider's
@@ -19,24 +21,9 @@ import type {
  */
 export const MODEL_FIELD: RepoAgentField = { key: 'model', label: 'Model', type: 'text' };
 
-export const DIRECTORY_FIELD: RepoAgentField = {
-  key: 'definition-directory',
-  label: 'Directory',
-  type: 'text',
-  placeholder: 'Chosen by the machine',
-  help: 'The working directory, absolute on its machine. Leave it empty and the machine makes a fresh workspace.',
-};
-
-export const OWN_PROCESS_FIELD: RepoAgentField = {
-  key: 'definition-own-process',
-  label: 'Run in its own process',
-  type: 'boolean',
-  help: 'Isolated from the other agents on its machine, instead of inside the machine’s controller.',
-};
-
 /** Every field the managed agent page's Advanced configuration shows, in order. */
 export function managedAdvancedFields(schema: AdvancedConfigField[]): RepoAgentField[] {
-  return [MODEL_FIELD, DIRECTORY_FIELD, OWN_PROCESS_FIELD, ...schema];
+  return [MODEL_FIELD, ...schema];
 }
 
 /**
@@ -63,23 +50,43 @@ export type Draft = {
   iconUrl: string | null;
   instructions: string;
   autoApprove: boolean;
-  /** The model, directory and isolation, and every field of the provider's schema. */
+  /** Where it runs on its machine; empty for wherever the machine chooses. */
+  directory: string;
+  ownProcess: boolean;
+  /** The model, and every field of the provider's schema. */
   form: FormState;
 };
 
-export function draftOf(agent: ManagedAgentView, schema: AdvancedConfigField[]): Draft {
+/**
+ * The directory the page shows: the one the definition names, else the one its
+ * machine reports running it in, else where the machine will make it.
+ */
+export function shownDirectory(agent: ManagedAgentView, machine: OwnedMachine | null): string {
+  return (
+    agent.definition.directory ??
+    agent.status?.directory ??
+    (machine ? machineWorkspaceFor(machine, agent.name) : null) ??
+    ''
+  );
+}
+
+export function draftOf(
+  agent: ManagedAgentView,
+  schema: AdvancedConfigField[],
+  machine: OwnedMachine | null
+): Draft {
   return {
     displayName: agent.displayName ?? '',
     description: agent.description,
     iconUrl: agent.iconUrl,
     instructions: agent.definition.instructions,
     autoApprove: agent.definition.autoApprove,
+    directory: shownDirectory(agent, machine),
+    ownProcess: agent.definition.isolation === 'isolated',
     form: {
       ...emptyForm(schema),
       ...formFromAttributes(schema, agent.definition.advancedConfig),
       [MODEL_FIELD.key]: agent.definition.model ?? '',
-      [DIRECTORY_FIELD.key]: agent.definition.directory ?? '',
-      [OWN_PROCESS_FIELD.key]: agent.definition.isolation === 'isolated',
     },
   };
 }
@@ -108,12 +115,10 @@ export function editOf(
   const model = String(after.form[MODEL_FIELD.key] ?? '').trim() || null;
   if (model !== (String(before.form[MODEL_FIELD.key] ?? '').trim() || null))
     definition.model = model;
-  const directory = String(after.form[DIRECTORY_FIELD.key] ?? '').trim() || null;
-  if (directory !== (String(before.form[DIRECTORY_FIELD.key] ?? '').trim() || null))
-    definition.directory = directory;
-  const isolated = after.form[OWN_PROCESS_FIELD.key] === true;
-  if (isolated !== (before.form[OWN_PROCESS_FIELD.key] === true))
-    definition.isolation = isolated ? 'isolated' : 'shared';
+  const directory = after.directory.trim() || null;
+  if (directory !== (before.directory.trim() || null)) definition.directory = directory;
+  if (after.ownProcess !== before.ownProcess)
+    definition.isolation = after.ownProcess ? 'isolated' : 'shared';
   const advancedConfig = advancedConfigFromForm(schema, after.form);
   if (
     JSON.stringify(advancedConfig) !== JSON.stringify(advancedConfigFromForm(schema, before.form))

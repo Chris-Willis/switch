@@ -290,7 +290,7 @@ It holds:
 | `secrets/controller-credential` | The controller credential (see below). Absent when the credential is handed over with `--credential-stdin`. |
 | `agents/<id>/credentials.json` | Each agent's relay endpoint and relay token, in the layout the shared host reads. No Switch credential. |
 | `agent hosts/<id>/` | Each agent's agent host state root: `watch.json`, `config.json`, `health.json` (what `status` reads), its journal, and `supervisor/failure.json` once it has failed for good. |
-| `workspaces/<name>/` | The working directory of an agent whose definition sets none. |
+| `workspaces/<name>/` | The working directory of an agent whose definition sets none (the server fills this path in once the controller reports `machine.workspaces_dir`). A missing directory under `workspaces/` is made; any other must already exist. |
 
 Sessions an agent host starts keep their state where the shared host puts it
 (`~/.local/state/switch/sdk-sessions/`), as they do under Console.

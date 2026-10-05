@@ -20,8 +20,10 @@ rebinds the agent, which is what fences the old controller out.
 from __future__ import annotations
 
 import logging
+import ntpath
+import posixpath
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -77,6 +79,7 @@ from switch_core.management.schemas import (
     managed_agent_view,
     operation_view,
     operation_wire,
+    workspaces_dir_of,
 )
 
 logger = logging.getLogger(__name__)
@@ -663,9 +666,9 @@ class ManagementService:
         provider: str,
         *,
         check_placement: bool,
-    ) -> None:
+    ) -> AgentController | None:
         if controller_id is None:
-            return
+            return None
         controller = await self.owned_controller(
             session, tenant_id, owner_id, controller_id
         )
@@ -676,6 +679,7 @@ class ManagementService:
                 now=self.now(),
                 interval_seconds=self.settings.status_interval_seconds,
             )
+        return controller
 
     async def _bump_and_collect(
         self, session: AsyncSession, tenant_id: str, controller_ids: set[str | None]
@@ -717,15 +721,15 @@ class ManagementService:
         """Register a new agent through the known-agent spec for its provider,
         and place it. Placement is checked before anything is registered, so a
         refusal leaves nothing behind."""
-        definition = request.definition
-        await self._check_target(
+        controller = await self._check_target(
             session,
             tenant_id,
             owner_id,
             request.controller_id,
-            definition.provider,
+            request.definition.provider,
             check_placement=True,
         )
+        definition = with_directory(request.definition, controller, request.name)
         try:
             icon_url = normalise_icon_url(request.icon_url) or generated_icon_url(
                 request.name
@@ -837,7 +841,7 @@ class ManagementService:
         to_running = target.desired_state == "running" and (
             existing is None or existing.desired_state != "running"
         )
-        await self._check_target(
+        controller = await self._check_target(
             session,
             tenant_id,
             owner_id,
@@ -845,6 +849,26 @@ class ManagementService:
             definition.provider,
             check_placement=moved or to_running,
         )
+        directory = definition.directory
+        if (
+            moved
+            and directory is not None
+            and existing is not None
+            and existing.controller_id is not None
+        ):
+            previous = await self.controllers.get(
+                session, tenant_id, existing.controller_id
+            )
+            # The old machine's workspace for the agent means nothing on the new one.
+            if directory == default_directory(previous, agent.name):
+                directory = None
+        if directory is None:
+            directory = default_directory(controller, agent.name)
+        if directory != definition.directory:
+            definition = definition.model_copy(update={"directory": directory})
+            target = replace(
+                target, definition={**target.definition, "directory": directory}
+            )
         if existing is not None and (
             existing.controller_id == target.controller_id
             and existing.desired_state == target.desired_state
@@ -1062,6 +1086,34 @@ def placement_from(
         desired_state=desired_state,
         definition=definition.model_dump(),
     )
+
+
+def default_directory(controller: AgentController | None, name: str) -> str | None:
+    """The workspace `controller` makes for an agent named `name` when its
+    definition names no directory (the controller's `DataLayout.workspace`),
+    or None when the controller has not reported where it keeps them."""
+    if controller is None:
+        return None
+    root = workspaces_dir_of(controller)
+    if root is None:
+        return None
+    platform = controller.platform or {}
+    if platform.get("os") == "windows":
+        return ntpath.join(root, name)
+    return posixpath.join(root, name)
+
+
+def with_directory(
+    definition: DefinitionV1, controller: AgentController | None, name: str
+) -> DefinitionV1:
+    """The definition, naming its machine's workspace for the agent when it
+    names no directory and the machine has said where that is."""
+    if definition.directory is not None:
+        return definition
+    directory = default_directory(controller, name)
+    if directory is None:
+        return definition
+    return definition.model_copy(update={"directory": directory})
 
 
 def _known_agent_registration(

@@ -43,6 +43,7 @@ describe('dataLayout', () => {
     const layout = dataLayout('/data');
     expect(layout.agentCredentials('agent-1')).toBe('/data/agents/agent-1/credentials.json');
     expect(layout.watcherRoot('agent-1')).toBe('/data/watchers/agent-1');
+    expect(layout.workspaces).toBe('/data/workspaces');
     expect(layout.workspace('scout')).toBe('/data/workspaces/scout');
     expect(() => layout.watcherRoot('../x')).toThrow(/cannot be used as a directory name/);
     expect(() => layout.workspace('a/b')).toThrow();

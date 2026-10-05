@@ -90,7 +90,7 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
   const room = query.data;
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto flex w-full max-w-4xl flex-col gap-8 px-10 py-8">
+      <div className="mx-auto flex w-full max-w-[880px] flex-col gap-8 px-10 py-8">
         <RoomHeading serverId={switchRoomsStore.roomServerId(roomId)} room={room} />
         {/* Keyed on the room so the drafts below belong to the room on screen:
             switching rooms starts a fresh form rather than carrying half-typed

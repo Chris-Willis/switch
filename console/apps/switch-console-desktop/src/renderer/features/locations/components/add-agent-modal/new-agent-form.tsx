@@ -60,7 +60,7 @@ import { AgentIdentityFields, AgentSettingsSection } from './configure-agent-pan
 import { LaunchProfileConfig } from './launch-profile-config';
 import { LocalDirectorySelector } from './local-directory-selector';
 import { MachineProviderPicker } from './machine-provider-picker';
-import { ManagedDirectoryField } from './managed-directory-field';
+import { ManagedDirectoryField, useSuggestedManagedDirectory } from './managed-directory-field';
 import { machineDisabledReason } from './managed-run-location';
 import {
   CanManageAgentsField,
@@ -126,6 +126,8 @@ export const NewAgentForm = observer(function NewAgentForm({
   // Typed directly, with no commit step: it used to need one because committing
   // fired the directory scans, and there are none left to fire.
   const [remoteRepoDir, setRemoteRepoDir] = useState('');
+  // A machine run's directory as the user edited it; null while it follows the name.
+  const [editedMachineDir, setEditedMachineDir] = useState<string | null>(null);
   const { data: remoteHosts } = useQuery({
     queryKey: ['remote-hosts'],
     queryFn: () => rpc.remoteHosts.listHosts(),
@@ -264,6 +266,7 @@ export const NewAgentForm = observer(function NewAgentForm({
   const { setProviderId } = pickState;
   useEffect(() => {
     setRemoteRepoDir('');
+    setEditedMachineDir(null);
     setProviderId(isCloudRun ? 'claude' : null);
   }, [runHost, isCloudRun, setProviderId]);
 
@@ -341,7 +344,14 @@ export const NewAgentForm = observer(function NewAgentForm({
     managedSettingsRef.current = settings;
   }, []);
 
-  const trimmedRemoteDir = canonicalDir(remoteRepoDir);
+  // An edit cleared back to empty runs the agent in the suggested place again.
+  const suggestedMachineDir = useSuggestedManagedDirectory(
+    pickState.serverId,
+    serverMachine,
+    form.agentName
+  );
+  const machineDir = editedMachineDir?.trim() ? editedMachineDir : (suggestedMachineDir.path ?? '');
+  const trimmedRemoteDir = canonicalDir(isMachineRun ? machineDir : remoteRepoDir);
   const dir = isCloudRun ? '' : isRemoteRun || isMachineRun ? trimmedRemoteDir : pickState.path;
 
   // Never create an agent on a host we know we cannot reach — it would be born
@@ -366,7 +376,7 @@ export const NewAgentForm = observer(function NewAgentForm({
 
   // A relative remote dir would resolve against whatever directory the SSH
   // session starts in. Caught here so it greys the button out with a reason.
-  // On a server machine the directory may be left empty: the machine makes a fresh workspace.
+  // On a server machine the directory may be unknown: the machine makes a fresh workspace.
   const remoteDirIsAbsolute = isMachineRun
     ? trimmedRemoteDir === '' || isAbsoluteRemoteDir(trimmedRemoteDir)
     : !isRemoteRun || isAbsoluteRemoteDir(trimmedRemoteDir);
@@ -966,7 +976,13 @@ export const NewAgentForm = observer(function NewAgentForm({
                           : serverMachine?.local?.kind === 'ssh-host'
                             ? serverMachine.local.sshHost
                             : null,
-                        dir,
+                        // Not the suggested directory, which changes with every
+                        // keystroke of the name and does not exist yet: the
+                        // folder it will be made in answers the same.
+                        dir:
+                          isMachineRun && !editedMachineDir?.trim()
+                            ? (serverMachine?.workspacesDir ?? '')
+                            : dir,
                       }
                 }
                 onChange={onManagedSettingsChange}
@@ -1009,14 +1025,13 @@ export const NewAgentForm = observer(function NewAgentForm({
                   if (pickState.serverId) navigate('server', { serverId: pickState.serverId });
                 }}
               >
-                {isMachineRun && serverMachine && pickState.serverId && (
+                {isMachineRun && serverMachine && (
                   <ManagedDirectoryField
-                    serverId={pickState.serverId}
                     machine={serverMachine}
                     machineLabel={runLocationLabel}
-                    agentName={form.agentName}
-                    value={remoteRepoDir}
-                    onChange={setRemoteRepoDir}
+                    value={editedMachineDir ?? suggestedMachineDir.path ?? ''}
+                    suggested={suggestedMachineDir}
+                    onChange={setEditedMachineDir}
                   />
                 )}
                 {managedRun && (

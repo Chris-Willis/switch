@@ -132,7 +132,8 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
 
 /**
  * The header's arrangement, whatever agent it is about: the mark on the left,
- * then the title with its badges, the agent's own name when the title is a
+ * then the title with its badges (which wrap under a title too long to share
+ * its line, rather than shortening it), the agent's own name when the title is a
  * display name, its description, and the page's actions.
  */
 export function AgentHeaderLayout({
@@ -155,8 +156,8 @@ export function AgentHeaderLayout({
     <header className="flex shrink-0 items-start gap-5 pt-10">
       <span className="flex size-[88px] shrink-0 items-center justify-center">{avatar}</span>
       <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <h1 className="truncate text-3xl font-semibold tracking-tight text-foreground">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1.5">
+          <h1 className="min-w-0 text-3xl font-semibold tracking-tight [overflow-wrap:anywhere] text-foreground">
             {title}
           </h1>
           {badges}

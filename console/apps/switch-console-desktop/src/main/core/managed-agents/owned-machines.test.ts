@@ -11,6 +11,7 @@ function controller(patch: Partial<ManagementController> & { id: string }): Mana
     lastSeenAt: null,
     revokedAt: null,
     providers: [],
+    workspacesDir: null,
     ...patch,
   };
 }
@@ -50,6 +51,7 @@ describe('ownedMachines', () => {
           id: 'laptop',
           kind: 'console',
           providers: [{ provider: 'claude', installed: true, auth: 'ok' }],
+          workspacesDir: '/data/workspaces',
         }),
         controller({ id: 'box', state: 'unknown' }),
         controller({ id: 'cloud-vm' }),
@@ -64,6 +66,7 @@ describe('ownedMachines', () => {
         kind: 'console',
         state: 'online',
         providers: [{ provider: 'claude', ready: true, problem: null }],
+        workspacesDir: '/data/workspaces',
         local: { kind: 'this-computer' },
       },
       {
@@ -72,6 +75,7 @@ describe('ownedMachines', () => {
         kind: 'daemon',
         state: 'unknown',
         providers: [],
+        workspacesDir: null,
         local: { kind: 'ssh-host', sshHost: 'devbox' },
       },
       {
@@ -80,6 +84,7 @@ describe('ownedMachines', () => {
         kind: 'daemon',
         state: 'online',
         providers: [],
+        workspacesDir: null,
         local: null,
       },
     ]);

@@ -39,6 +39,7 @@ export function ownedMachines(
         kind: controller.kind,
         state: controller.state,
         providers: controller.providers.map(machineProvider),
+        workspacesDir: controller.workspacesDir,
         local:
           controller.id === local.thisComputer
             ? { kind: 'this-computer' }

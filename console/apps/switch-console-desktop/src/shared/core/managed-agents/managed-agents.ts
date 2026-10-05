@@ -27,7 +27,10 @@ export type ManagedAgentView = {
     advancedConfig: Record<string, AdvancedConfigValue>;
     instructions: string;
     autoApprove: boolean;
-    /** The working directory on its machine; null for a workspace the machine chooses. */
+    /**
+     * The working directory on its machine. The server fills in the machine's
+     * workspace for the agent; null only when the machine has not said where that is.
+     */
     directory: string | null;
     isolation: 'shared' | 'isolated';
   };
@@ -37,6 +40,8 @@ export type ManagedAgentView = {
     attached: boolean;
     reason: string | null;
     detail: string | null;
+    /** The absolute working directory it runs in; null until the machine resolved one. */
+    directory: string | null;
   } | null;
 };
 
@@ -65,6 +70,11 @@ export type MachineLocal = { kind: 'this-computer' } | { kind: 'ssh-host'; sshHo
 export type OwnedMachine = ManagedMachine & {
   /** Empty before the machine has reported. */
   providers: MachineProvider[];
+  /**
+   * Where the machine makes agents' workspaces (an agent's is `<workspacesDir>/<name>`);
+   * null before it has said.
+   */
+  workspacesDir: string | null;
   local: MachineLocal;
 };
 

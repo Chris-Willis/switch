@@ -146,7 +146,7 @@ const ManagedAgentPanel = observer(function ManagedAgentPanel() {
   const agent = agents.data?.find((listed) => listed.agentId === params.agentId);
   if (agents.error)
     return (
-      <ServerPage title={params.name} description="">
+      <ServerPage width={900} title={params.name} description="">
         <p role="alert" className="text-sm text-destructive">
           {failureText(agents.error, 'The agent could not be read from its server.')}
         </p>
@@ -154,7 +154,7 @@ const ManagedAgentPanel = observer(function ManagedAgentPanel() {
     );
   if (agents.data === null)
     return (
-      <ServerPage title={params.name} description="">
+      <ServerPage width={900} title={params.name} description="">
         <p role="alert" className="text-sm text-destructive">
           This server no longer runs managed agents.
         </p>
@@ -162,13 +162,13 @@ const ManagedAgentPanel = observer(function ManagedAgentPanel() {
     );
   if (!agents.data)
     return (
-      <ServerPage title={params.name} description="Loading…">
+      <ServerPage width={900} title={params.name} description="Loading…">
         {null}
       </ServerPage>
     );
   if (!agent)
     return (
-      <ServerPage title={params.name} description="">
+      <ServerPage width={900} title={params.name} description="">
         <p role="alert" className="text-sm text-destructive">
           This agent is no longer on its Switch server.
         </p>

@@ -9,7 +9,8 @@
     "mem_free_bytes": 8589934592,
     "mem_total_bytes": 17179869184,
     "sessions_running": 1,
-    "sessions_max": 4
+    "sessions_max": 4,
+    "workspaces_dir": "/home/user/.local/state/switch/agent-controller/workspaces"
   },
   "providers": [
     {
@@ -43,6 +44,7 @@
       "sessions": { "active": 1, "ids": ["00000000-0000-4000-8000-0000000000e1"] },
       "restarts_10m": 0,
       "oom_kills": 0,
+      "directory": "/home/user/.local/state/switch/agent-controller/workspaces/scout",
       "since": "2026-01-01T00:00:00Z"
     },
     {
@@ -53,6 +55,7 @@
       "sessions": { "active": 0, "ids": [] },
       "restarts_10m": 5,
       "oom_kills": 0,
+      "directory": null,
       "since": "2026-01-01T00:00:00Z",
       "reason": "crash_loop",
       "detail": "The watcher exited 5 times in 10 minutes; not restarting it again."

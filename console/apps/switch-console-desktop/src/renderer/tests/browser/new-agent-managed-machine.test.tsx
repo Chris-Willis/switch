@@ -11,6 +11,7 @@ import type { NewAgentMachine } from '@shared/core/agent-migration/agent-migrati
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 
 const embeddedEnable = vi.hoisted(() => vi.fn());
+const defaultWorkspace = vi.hoisted(() => vi.fn());
 const hostEnable = vi.hoisted(() => vi.fn());
 const modelCatalogue = vi.hoisted(() => vi.fn());
 const advancedConfigSchema = vi.hoisted(() => vi.fn());
@@ -26,7 +27,7 @@ vi.hoisted(() => {
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: vi.fn() },
   rpc: {
-    embeddedController: { enable: embeddedEnable },
+    embeddedController: { enable: embeddedEnable, defaultWorkspace },
     hostControllers: { enable: hostEnable },
     agents: { modelCatalogue },
     managedAgents: { advancedConfigSchema },
@@ -36,6 +37,10 @@ vi.mock('@renderer/lib/ipc', () => ({
 vi.mock('@renderer/lib/components/agent-icon', () => ({ AgentIcon: () => null }));
 
 import { MachineProviderPicker } from '@renderer/features/locations/components/add-agent-modal/machine-provider-picker';
+import {
+  ManagedDirectoryField,
+  useSuggestedManagedDirectory,
+} from '@renderer/features/locations/components/add-agent-modal/managed-directory-field';
 import {
   CanManageAgentsField,
   ManagedAdvancedConfig,
@@ -47,6 +52,7 @@ let root: Root | null = null;
 
 beforeEach(() => {
   embeddedEnable.mockReset().mockResolvedValue(undefined);
+  defaultWorkspace.mockReset().mockResolvedValue('/home/me/.switch/workspaces/pm-agent');
   hostEnable.mockReset().mockResolvedValue(undefined);
   modelCatalogue
     .mockReset()
@@ -246,7 +252,44 @@ describe('can manage agents, set as the agent is created', () => {
     expect(toggle.getAttribute('aria-checked')).toBe('false');
     await act(async () => toggle.click());
     expect(onChange).toHaveBeenCalledWith(true, expect.anything());
-    expect(el.textContent).toMatch(/Agents it creates do not get this permission/);
+    expect(el.textContent).toMatch(/Let this agent create agents on your machines\./);
+    expect(el.querySelector('[aria-label="More info about managing agents"]')).not.toBeNull();
+  });
+});
+
+function DirectoryHarness({ machine, name }: { machine: OwnedMachine; name: string }) {
+  const suggested = useSuggestedManagedDirectory('server-1', machine, name);
+  return (
+    <ManagedDirectoryField
+      machine={machine}
+      machineLabel={machine.name}
+      value={suggested.path ?? ''}
+      suggested={suggested}
+      onChange={() => {}}
+    />
+  );
+}
+
+describe('the directory a new managed agent runs in', () => {
+  it('starts as the machine’s workspaces folder and the agent’s name', async () => {
+    const el = await render(
+      <DirectoryHarness machine={{ ...BOX, workspacesDir: '/srv/ws' }} name="pm-agent" />
+    );
+    expect(el.querySelector<HTMLInputElement>('input[aria-label="Directory"]')?.value).toBe(
+      '/srv/ws/pm-agent'
+    );
+    expect(el.textContent).toMatch(/Where the agent runs on build-box\./);
+    expect(defaultWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('asks this computer where it keeps workspaces when its machine has not said', async () => {
+    const el = await render(
+      <DirectoryHarness machine={{ ...BOX, local: { kind: 'this-computer' } }} name="pm-agent" />
+    );
+    await vi.waitFor(() =>
+      expect(el.querySelector('[title="/home/me/.switch/workspaces/pm-agent"]')).not.toBeNull()
+    );
+    expect(defaultWorkspace).toHaveBeenCalledWith({ serverId: 'server-1', name: 'pm-agent' });
   });
 });
 
@@ -256,6 +299,7 @@ const BOX: OwnedMachine = {
   kind: 'daemon',
   state: 'online',
   local: null,
+  workspacesDir: null,
   providers: [
     { provider: 'claude', ready: true, problem: null },
     { provider: 'codex', ready: false, problem: 'not logged in' },

@@ -35,6 +35,7 @@ from switch_core.db.models import (
     User,
 )
 from tests.switch_core.management.harness import (
+    WORKSPACES_DIR,
     EnrolledController,
     Harness,
     add_member,
@@ -660,6 +661,7 @@ class TestListManagedAgents:
             "provider": "claude",
             "model": None,
             "advanced_config": {},
+            "directory": f"{WORKSPACES_DIR}/builder",
             "machine": {
                 "id": controller.controller_id,
                 "name": "laptop",
@@ -676,6 +678,7 @@ class TestListManagedAgents:
             "detail": None,
             "applied_revision": 1,
             "since": "2026-01-01T00:00:00Z",
+            "directory": None,
         }
 
 

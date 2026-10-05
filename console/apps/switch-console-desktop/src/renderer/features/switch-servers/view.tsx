@@ -219,7 +219,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
 
   return (
     <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-auto bg-background">
-      <div className="mx-auto w-full max-w-4xl space-y-6 p-6">
+      <div className="mx-auto w-full max-w-[880px] space-y-6 p-6">
         <header className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
             <WorkspaceAvatar name={title} size="lg" active />

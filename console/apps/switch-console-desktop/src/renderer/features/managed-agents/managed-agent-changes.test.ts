@@ -2,15 +2,15 @@ import { describe, expect, it } from 'vitest';
 import type {
   AdvancedConfigField,
   ManagedAgentView,
+  OwnedMachine,
 } from '@shared/core/managed-agents/managed-agents';
 import {
   advancedConfigFromForm,
-  DIRECTORY_FIELD,
   draftOf,
   editIsEmpty,
   editOf,
   MODEL_FIELD,
-  OWN_PROCESS_FIELD,
+  shownDirectory,
 } from './managed-agent-changes';
 
 const SCHEMA: AdvancedConfigField[] = [
@@ -54,16 +54,17 @@ const AGENT: ManagedAgentView = {
 
 describe('editOf', () => {
   it('sends nothing when nothing changed', () => {
-    const before = draftOf(AGENT, SCHEMA);
+    const before = draftOf(AGENT, SCHEMA, null);
     expect(editIsEmpty(editOf(AGENT, SCHEMA, before, before))).toBe(true);
   });
 
   it('sends only the definition fields that changed', () => {
-    const before = draftOf(AGENT, SCHEMA);
+    const before = draftOf(AGENT, SCHEMA, null);
     const after = {
       ...before,
       autoApprove: true,
-      form: { ...before.form, [OWN_PROCESS_FIELD.key]: true, [MODEL_FIELD.key]: ' sonnet ' },
+      ownProcess: true,
+      form: { ...before.form, [MODEL_FIELD.key]: ' sonnet ' },
     };
     expect(editOf(AGENT, SCHEMA, before, after)).toEqual({
       changes: { definition: { autoApprove: true, isolation: 'isolated', model: 'sonnet' } },
@@ -71,7 +72,7 @@ describe('editOf', () => {
   });
 
   it('replaces the whole advanced configuration when one of its fields changed', () => {
-    const before = draftOf(AGENT, SCHEMA);
+    const before = draftOf(AGENT, SCHEMA, null);
     const after = { ...before, form: { ...before.form, effort: 'max', maxTurns: '12' } };
     expect(editOf(AGENT, SCHEMA, before, after).changes.definition).toEqual({
       advancedConfig: { effort: 'max', tools: ['Read'], maxTurns: 12 },
@@ -79,7 +80,7 @@ describe('editOf', () => {
   });
 
   it('leaves a cleared field out rather than sending it empty', () => {
-    const before = draftOf(AGENT, SCHEMA);
+    const before = draftOf(AGENT, SCHEMA, null);
     const after = { ...before, form: { ...before.form, effort: '', tools: '' } };
     expect(editOf(AGENT, SCHEMA, before, after).changes.definition).toEqual({
       advancedConfig: {},
@@ -91,7 +92,7 @@ describe('editOf', () => {
       ...AGENT,
       definition: { ...AGENT.definition, advancedConfig: { effort: 'high', legacy: 'x' } },
     };
-    const before = draftOf(agent, SCHEMA);
+    const before = draftOf(agent, SCHEMA, null);
     const after = { ...before, form: { ...before.form, effort: 'max' } };
     expect(editOf(agent, SCHEMA, before, after).changes.definition.advancedConfig).toEqual({
       legacy: 'x',
@@ -100,11 +101,8 @@ describe('editOf', () => {
   });
 
   it('clears the model and the directory to leave them to the provider and the machine', () => {
-    const before = draftOf(AGENT, SCHEMA);
-    const after = {
-      ...before,
-      form: { ...before.form, [MODEL_FIELD.key]: '', [DIRECTORY_FIELD.key]: '  ' },
-    };
+    const before = draftOf(AGENT, SCHEMA, null);
+    const after = { ...before, directory: '  ', form: { ...before.form, [MODEL_FIELD.key]: '' } };
     expect(editOf(AGENT, SCHEMA, before, after).changes.definition).toEqual({
       model: null,
       directory: null,
@@ -112,7 +110,7 @@ describe('editOf', () => {
   });
 
   it('sends the display name, description and icon on their own', () => {
-    const before = draftOf(AGENT, SCHEMA);
+    const before = draftOf(AGENT, SCHEMA, null);
     const after = { ...before, displayName: ' PM ', description: 'Writes specs', iconUrl: 'x.png' };
     expect(editOf(AGENT, SCHEMA, before, after)).toEqual({
       changes: { definition: {} },
@@ -120,6 +118,45 @@ describe('editOf', () => {
       description: 'Writes specs',
       iconUrl: 'x.png',
     });
+  });
+});
+
+describe('shownDirectory', () => {
+  const MACHINE: OwnedMachine = {
+    ...AGENT.machine!,
+    providers: [],
+    local: null,
+    workspacesDir: '/srv/workspaces/',
+  };
+  const unset = { ...AGENT, definition: { ...AGENT.definition, directory: null } };
+  const reported = {
+    ...unset,
+    status: {
+      process: 'running',
+      attached: true,
+      reason: null,
+      detail: null,
+      directory: '/run/pm',
+    },
+  };
+
+  it('prefers the definition, then where the machine runs it, then where it will', () => {
+    expect(shownDirectory(AGENT, MACHINE)).toBe('/work/pm');
+    expect(shownDirectory(reported, MACHINE)).toBe('/run/pm');
+    expect(shownDirectory(unset, MACHINE)).toBe('/srv/workspaces/pm-agent');
+  });
+
+  it('is empty when nothing says where it runs', () => {
+    expect(shownDirectory(unset, { ...MACHINE, workspacesDir: null })).toBe('');
+    expect(shownDirectory(unset, null)).toBe('');
+  });
+
+  it('sends nothing for the directory it shows until it is edited', () => {
+    const before = draftOf(unset, SCHEMA, MACHINE);
+    expect(editIsEmpty(editOf(unset, SCHEMA, before, before))).toBe(true);
+    expect(
+      editOf(unset, SCHEMA, before, { ...before, directory: '/work/other' }).changes.definition
+    ).toEqual({ directory: '/work/other' });
   });
 });
 

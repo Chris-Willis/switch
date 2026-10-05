@@ -3,6 +3,7 @@ import { Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useMemo, useState } from 'react';
 import { ManagedAgentSection } from '@renderer/features/agent-migration/managed-agent-section';
+import { LocalDirectorySelector } from '@renderer/features/locations/components/add-agent-modal/local-directory-selector';
 import type {
   FormState,
   FormValue,
@@ -32,6 +33,7 @@ import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { workspaceAgentsQueryKey } from '@renderer/lib/stores/use-workspace-agents';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
+import { Input } from '@renderer/lib/ui/input';
 import { Switch } from '@renderer/lib/ui/switch';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import type {
@@ -62,6 +64,8 @@ import {
 
 const NO_FIELDS: AdvancedConfigField[] = [];
 
+const DIRECTORY_PLACEHOLDER = 'Where the agent runs';
+
 const SESSIONS_START_WHEN_ADDRESSED =
   'Sessions of an agent on a machine start when it is addressed in a room.';
 
@@ -90,7 +94,8 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
   const schema = schemaQuery.data?.[agent.definition.provider] ?? NO_FIELDS;
   const fields = useMemo(() => managedAdvancedFields(schema), [schema]);
 
-  const saved = useMemo(() => draftOf(agent, schema), [agent, schema]);
+  const machine = machines.data?.find((candidate) => candidate.id === agent.machine?.id) ?? null;
+  const saved = useMemo(() => draftOf(agent, schema, machine), [agent, schema, machine]);
   const [edits, setEdits] = useState<Edits>(NO_EDITS);
   const draft: Draft = { ...saved, ...edits.values, form: { ...saved.form, ...edits.form } };
   const edit = editOf(agent, schema, saved, draft);
@@ -162,7 +167,7 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[820px] flex-col gap-10 px-8 pb-20">
+        <div className="mx-auto flex w-full max-w-[900px] flex-col gap-10 px-8 pb-20">
           <AgentHeaderLayout
             avatar={
               <AgentIconPicker
@@ -271,6 +276,49 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
                 agentName={agent.name}
                 showName={false}
               />
+              <SettingRow
+                title="Directory"
+                info={{
+                  label: 'More info about the directory',
+                  content:
+                    'The working directory, a full path on its machine. Its sessions start there.',
+                }}
+                description={`Where the agent runs on ${agent.machine?.name ?? 'its machine'}.`}
+                control={null}
+              >
+                {machine?.local?.kind === 'this-computer' ? (
+                  <LocalDirectorySelector
+                    title="Choose the agent's working directory"
+                    message="The agent runs its sessions here."
+                    path={draft.directory}
+                    onPathChange={(path) => setValue('directory', path)}
+                    placeholder={DIRECTORY_PLACEHOLDER}
+                  />
+                ) : (
+                  <Input
+                    aria-label="Directory"
+                    value={draft.directory}
+                    placeholder={DIRECTORY_PLACEHOLDER}
+                    onChange={(event) => setValue('directory', event.target.value)}
+                  />
+                )}
+              </SettingRow>
+              <SettingRow
+                title="Run in its own process"
+                info={{
+                  label: 'More info about running in its own process',
+                  content:
+                    'Isolated from the other agents on its machine, instead of inside the machine’s controller.',
+                }}
+                description="Keep it apart from the other agents on its machine."
+                control={
+                  <Switch
+                    aria-label="Run in its own process"
+                    checked={draft.ownProcess}
+                    onCheckedChange={(checked) => setValue('ownProcess', checked)}
+                  />
+                }
+              />
             </section>
             <div className="flex flex-col gap-2">
               <AdvancedConfigDisclosure
@@ -278,14 +326,14 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
                 form={draft.form}
                 summary={summariseValues([MODEL_FIELD, ...schema], saved.form)}
                 catalogue={catalogue}
-                intro="The agent's model, where it works on its machine, and its provider's settings. Its instructions are above, and its name is fixed."
+                intro="The agent's model and its provider's settings. Its instructions are above, and its name is fixed."
                 onFieldChange={setField}
               />
               {schemaQuery.error && (
                 <p role="alert" className="text-xs text-foreground-destructive">
                   {failureText(
                     schemaQuery.error,
-                    `The server's settings for ${provider ?? agent.definition.provider} could not be read, so only the model, directory and isolation can be changed.`
+                    `The server's settings for ${provider ?? agent.definition.provider} could not be read, so only the model can be changed here.`
                   )}
                 </p>
               )}
@@ -336,7 +384,7 @@ function useHostCatalogue(
   const providerId = isValidProviderId(agent.definition.provider)
     ? agent.definition.provider
     : null;
-  const dir = agent.definition.directory;
+  const dir = agent.definition.directory ?? agent.status?.directory ?? null;
   const sshHost = machine?.local?.kind === 'ssh-host' ? machine.local.sshHost : null;
   const query = useQuery({
     queryKey: ['agent-model-catalogue', providerId, sshHost ?? 'local', dir],
@@ -357,7 +405,7 @@ function useHostCatalogue(
     );
   if (dir === null)
     return unavailable(
-      'The agent has no fixed directory (its machine makes one), so there is nowhere to ask. You can enter a model ID.'
+      'The machine has not said which directory the agent runs in yet, so there is nowhere to ask. You can enter a model ID.'
     );
   if (query.error)
     return unavailable(failureText(query.error, 'The machine’s models could not be read.'));

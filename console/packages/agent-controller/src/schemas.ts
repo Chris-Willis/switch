@@ -193,6 +193,8 @@ export const agentStatusSchema = z
     sessions: z.object({ active: z.number().int().nonnegative(), ids: z.array(z.string()) }),
     restarts_10m: z.number().int().nonnegative(),
     oom_kills: z.number().int().nonnegative(),
+    /** The absolute working directory the agent runs in, or null before one was resolved. */
+    directory: z.string().min(1).nullable(),
     since: time,
     reason: reasonCode.optional(),
     detail: z.string().optional(),
@@ -219,6 +221,8 @@ export const statusReportSchema = z.object({
     mem_total_bytes: z.number().nonnegative(),
     sessions_running: z.number().int().nonnegative(),
     sessions_max: z.number().int().nonnegative(),
+    /** The absolute directory agents' workspaces are made in when nothing else names one. */
+    workspaces_dir: z.string().min(1),
   }),
   providers: z.array(providerStatusSchema),
   tools: z.array(toolStatusSchema),

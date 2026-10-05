@@ -581,7 +581,10 @@ export function SessionV1Chat({
             viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <= 24;
         }}
       >
-        <div ref={transcriptContent} className="mx-auto flex max-w-3xl flex-col gap-5 px-5 py-6">
+        <div
+          ref={transcriptContent}
+          className="mx-auto flex max-w-[720px] flex-col gap-5 px-5 py-6"
+        >
           {noticesAfter(null)}
           {view.snapshot?.items.map((item) => (
             <div key={item.itemId}>
@@ -685,7 +688,7 @@ export function SessionV1Chat({
           )}
         </div>
       </div>
-      <div className="mx-auto w-full max-w-3xl px-5 pb-5">
+      <div className="mx-auto w-full max-w-[720px] px-5 pb-5">
         {held && (
           <div role="status" className="mb-2 flex items-center gap-2 text-sm text-foreground-muted">
             <Loader2 className="size-3 shrink-0 animate-spin" />
