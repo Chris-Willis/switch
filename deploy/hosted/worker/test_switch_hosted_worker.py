@@ -459,6 +459,67 @@ class BundleTests(unittest.TestCase):
         storage.assert_not_called()
 
 
+class ControllerLayoutRepairTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, self.temporary, True)
+        self.paths = worker.Paths(self.temporary / "data", self.temporary / "run")
+        self.paths.data.mkdir()
+        self.paths.marker_directory.mkdir(mode=0o700)
+        self.agent_uid = os.getuid() + 1
+        self.agent_gid = os.getgid() + 1
+        fchown = mock.patch.object(worker.os, "fchown")
+        self.fchown = fchown.start()
+        self.addCleanup(fchown.stop)
+
+    def test_a_volume_without_the_controller_marker_is_left_alone(self):
+        (self.paths.agents / AGENT).mkdir(parents=True)
+        (self.paths.agents / AGENT).chmod(0o2770)
+        worker.repair_controller_layout(self.paths, self.agent_uid, self.agent_gid)
+        self.fchown.assert_not_called()
+        self.assertEqual(
+            stat.S_IMODE((self.paths.agents / AGENT).stat().st_mode), 0o2770
+        )
+
+    def test_returns_what_the_controller_layout_shared_to_the_agent_privately(self):
+        marker = self.paths.marker_directory / worker.CONTROLLER_LAYOUT
+        marker.write_text("{}")
+        agent = self.paths.agents / AGENT
+        watcher = agent / "watcher"
+        watcher.mkdir(parents=True)
+        self.paths.agents.chmod(0o750)
+        agent.chmod(0o2770)
+        watcher.chmod(0o2770)
+        config = watcher / "config.json"
+        config.write_text("{}")
+        config.chmod(0o640)
+        outside = self.temporary / "outside"
+        outside.write_text("")
+        outside.chmod(0o644)
+        (agent / "escape").symlink_to(outside)
+        (self.paths.worktrees / AGENT).mkdir(parents=True)
+        (self.paths.worktrees / AGENT).chmod(0o2770)
+
+        with self.assertLogs("switch-hosted-worker", "WARNING") as logged:
+            worker.repair_controller_layout(self.paths, self.agent_uid, self.agent_gid)
+
+        self.assertIn("controller layout", logged.output[0])
+        self.assertEqual(stat.S_IMODE(self.paths.agents.stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE(self.paths.worktrees.stat().st_mode), 0o755)
+        for path, mode in (
+            (agent, 0o700),
+            (watcher, 0o700),
+            (config, 0o600),
+            (self.paths.worktrees / AGENT, 0o700),
+        ):
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), mode, path)
+        self.assertEqual(stat.S_IMODE(outside.stat().st_mode), 0o644)
+        owners = [call.args[1:] for call in self.fchown.call_args_list]
+        self.assertEqual(owners.count((worker.ROOT_UID, 0)), 2)
+        self.assertEqual(owners.count((self.agent_uid, self.agent_gid)), 4)
+        self.assertFalse(marker.exists())
+
+
 class BundleFileTests(RootPatched):
     def test_bundle_file_is_private_and_holds_only_machine_fields(self):
         paths = worker.Paths(self.temporary / "data", self.temporary / "run")

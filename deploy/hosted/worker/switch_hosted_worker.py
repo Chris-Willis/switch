@@ -89,6 +89,7 @@ PROVIDER_CONTEXT = (
 INVALID_CONFIG = "invalid-config"
 SETUP_FAILED = "setup-failed"
 OWNERSHIP_INVALID = "ownership-invalid"
+CONTROLLER_LAYOUT = "controller-v1"
 
 
 class WorkerError(RuntimeError):
@@ -1708,6 +1709,73 @@ def _agent_directories(root: Path, parts: tuple[str, ...], uid: int, gid: int) -
         os.close(descriptor)
 
 
+def _private_to_agent(descriptor: int, uid: int, gid: int) -> None:
+    details = os.fstat(descriptor)
+    if details.st_uid == ROOT_UID:
+        return
+    if details.st_uid != uid or details.st_gid != gid:
+        os.fchown(descriptor, uid, gid)
+    mode = stat.S_IMODE(details.st_mode)
+    if mode != mode & 0o700:
+        os.fchmod(descriptor, mode & 0o700)
+
+
+def repair_controller_layout(paths: Paths, uid: int, gid: int) -> None:
+    """Take the volume back from the controller layout switch-machine-boot left on it.
+
+    The controller layout hands the agent and worktree roots to switch-controller,
+    shared with agents through the group. Here they go back to root and every
+    entry below that root does not own becomes the agent's again, private to it.
+    Nothing is followed through a symlink. The marker goes last, so a pass cut
+    short repeats, and a later controller boot migrates the volume again.
+    """
+    marker = paths.marker_directory / CONTROLLER_LAYOUT
+    if not marker.exists() and not marker.is_symlink():
+        return
+    logger.warning(
+        "The data volume is on the controller layout; returning %s and %s to the worker.",
+        paths.agents,
+        paths.worktrees,
+    )
+    data = os.open(paths.data, DIRECTORY_FLAGS)
+    try:
+        for top in (paths.agents, paths.worktrees):
+            try:
+                root = os.open(top.name, DIRECTORY_FLAGS, dir_fd=data)
+            except FileNotFoundError:
+                continue
+            try:
+                os.fchown(root, ROOT_UID, 0)
+                os.fchmod(root, 0o755)
+                for _path, directories, files, parent in os.fwalk(
+                    ".", dir_fd=root, follow_symlinks=False
+                ):
+                    for name in directories:
+                        child = os.open(name, DIRECTORY_FLAGS, dir_fd=parent)
+                        try:
+                            _private_to_agent(child, uid, gid)
+                        finally:
+                            os.close(child)
+                    for name in files:
+                        details = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                        if not stat.S_ISREG(details.st_mode):
+                            continue
+                        child = os.open(
+                            name,
+                            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                            dir_fd=parent,
+                        )
+                        try:
+                            _private_to_agent(child, uid, gid)
+                        finally:
+                            os.close(child)
+            finally:
+                os.close(root)
+    finally:
+        os.close(data)
+    marker.unlink()
+
+
 def prepare_layout(paths: Paths, uid: int, gid: int) -> None:
     _root_directory(paths.agents, 0o755, 0)
     _root_directory(paths.worktrees, 0o755, 0)
@@ -2573,6 +2641,7 @@ def main(argv: list[str] | None = None) -> int:
         prepare_runtime_directory(commands, paths, gid)
         write_bundle(paths, bundle)
         storage, _formatted = prepare_storage(commands, config)
+        repair_controller_layout(paths, uid, gid)
         ownership_blocked = reconcile_marker(
             identity,
             config,
