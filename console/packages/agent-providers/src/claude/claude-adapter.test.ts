@@ -136,6 +136,7 @@ describe('ClaudeAdapter session lifecycle', () => {
     expect(options.systemPrompt).toEqual({
       type: 'preset',
       preset: 'claude_code',
+      snapshot: false,
       append: 'Switch context',
     });
     expect(options.mcpServers).toEqual({
@@ -357,7 +358,8 @@ describe('ClaudeAdapter session lifecycle', () => {
     expect(sdk.options()).toMatchObject({
       resume: 'earlier',
       model: 'claude-sonnet-4-6',
-      systemPrompt: { append: 'Answer in one word.' },
+      // Not recorded, so a resumed conversation takes the instructions given now.
+      systemPrompt: { append: 'Answer in one word.', snapshot: false },
     });
   });
 

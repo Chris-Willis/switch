@@ -432,9 +432,14 @@ export class ClaudeAdapter implements ProviderAdapter {
       ...(effort ? { effort } : {}),
       ...(input.resume ? { resume: nativeSessionId } : { sessionId: nativeSessionId }),
       ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
+      // Never recorded: the agent's instructions can change between launches
+      // of the same conversation, and a recorded prompt is replayed as-is on
+      // every resume (recent Claude Code CLIs record one even with an append),
+      // so an edited agent would go on answering under its old instructions.
       systemPrompt: {
         type: 'preset',
         preset: 'claude_code',
+        snapshot: false,
         ...(input.systemContext ? { append: input.systemContext } : {}),
       },
       includePartialMessages: true,
