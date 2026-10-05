@@ -233,7 +233,7 @@ def control_relay_router(relays: ControlRelays) -> APIRouter:
         if relay.future.done():
             return JSONResponse(
                 error_body(
-                    "relay_resolved",
+                    reason_codes.RELAY_RESOLVED,
                     "This relay has already been answered or has expired.",
                     retryable=False,
                 ),

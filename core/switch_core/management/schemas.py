@@ -356,26 +356,6 @@ class ControllerBeatRequest(_ControllerStreamBody):
     cursors: dict[str, int]
 
 
-# ── Controller stream frames ──────────────────────────────────────────────────
-
-
-class AgentControlFrame(_ControllerBody):
-    """`agent.control`: relay one control message to an agent on the
-    controller, and answer it on `POST .../control/{relay_id}` before
-    `deadline_ms` has passed."""
-
-    relay_id: str = Field(min_length=1, max_length=128)
-    agent_id: str = Field(pattern=AGENT_ID_PATTERN)
-    message: dict[str, Any]
-    deadline_ms: int = Field(gt=0)
-
-
-class AgentControlCancelFrame(_ControllerBody):
-    """`agent.control_cancel`: the relay is no longer awaited."""
-
-    relay_id: str = Field(min_length=1, max_length=128)
-
-
 # ── Sealed provider logins ────────────────────────────────────────────────────
 
 

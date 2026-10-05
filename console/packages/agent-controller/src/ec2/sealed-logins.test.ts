@@ -1,6 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from '../log';
 import { type Ec2Layout, ec2Layout } from '../paths';
@@ -162,5 +163,45 @@ describe('SealedLogins', () => {
     });
     delete envelopes.claude;
     expect(await logins.readiness('claude')).toMatchObject({ status: 'unconfigured' });
+  });
+});
+
+describe('a login Core sealed', () => {
+  const core = JSON.parse(
+    readFileSync(
+      fileURLToPath(
+        new URL(
+          '../../../../../core/tests/switch_core/management/fixtures/sealed-vector.json',
+          import.meta.url
+        )
+      ),
+      'utf8'
+    )
+  ) as {
+    data_key: string;
+    aad: string;
+    plaintext: string;
+    envelope: { key_arn: string; encrypted_key: string; context: Record<string, string> };
+  };
+
+  it('opens to the plaintext Core sealed, under the additional data Core sealed it with', async () => {
+    const { 'switch:provider': _provider, ...context } = core.envelope.context;
+    const logins = new SealedLogins({
+      fetchEnvelope: async () => core.envelope,
+      decrypt: async (input) => {
+        expect(Buffer.from(input.ciphertext).toString('base64')).toBe(core.envelope.encrypted_key);
+        expect(input.context).toEqual(core.envelope.context);
+        return Buffer.from(core.data_key, 'base64');
+      },
+      kms: {
+        keyArn: core.envelope.key_arn,
+        grantTokens: [],
+        context: context as typeof CONTEXT,
+      },
+      layout,
+      log: silentLogger,
+    });
+    expect(canonicalAad(core.envelope.context, 3).toString('utf8')).toBe(core.aad);
+    expect(await logins.current('codex')).toEqual(JSON.parse(core.plaintext));
   });
 });
