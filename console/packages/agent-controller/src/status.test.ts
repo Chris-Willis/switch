@@ -6,6 +6,7 @@ import { silentLogger } from './log';
 import { type AgentObservation, emptyObservation } from './runtime';
 import { type AgentAssignment, statusReportSchema } from './schemas';
 import {
+  FixedProviderLocator,
   mapAgentProcess,
   PathProviderLocator,
   PROVIDER_TTL_MS,
@@ -191,12 +192,12 @@ describe('providerStatusFrom', () => {
   });
 
   it('maps a missing CLI and each readiness answer', () => {
-    expect(providerStatusFrom('claude', null, null, at)).toMatchObject({
+    expect(providerStatusFrom('claude', null, null, at, 'local')).toMatchObject({
       installed: false,
       auth: 'unknown',
       reason: 'provider_not_installed',
     });
-    expect(providerStatusFrom('claude', located, readiness('authenticated'), at)).toEqual({
+    expect(providerStatusFrom('claude', located, readiness('authenticated'), at, 'local')).toEqual({
       provider: 'claude',
       installed: true,
       version: '2.0.0',
@@ -204,18 +205,21 @@ describe('providerStatusFrom', () => {
       auth_source: 'local',
       checked_at: at,
     });
-    expect(providerStatusFrom('claude', located, readiness('unauthenticated'), at)).toMatchObject({
+    expect(
+      providerStatusFrom('claude', located, readiness('authenticated'), at, 'sealed')
+    ).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    expect(providerStatusFrom('claude', located, readiness('unauthenticated'), at, 'local')).toMatchObject({
       auth: 'missing',
       reason: 'provider_login_missing',
     });
-    expect(providerStatusFrom('claude', located, readiness('unconfigured'), at)).toMatchObject({
+    expect(providerStatusFrom('claude', located, readiness('unconfigured'), at, 'local')).toMatchObject({
       auth: 'missing',
     });
-    expect(providerStatusFrom('claude', located, readiness('unknown'), at)).toMatchObject({
+    expect(providerStatusFrom('claude', located, readiness('unknown'), at, 'local')).toMatchObject({
       auth: 'unknown',
       auth_source: null,
     });
-    expect(providerStatusFrom('claude', located, null, at)).toMatchObject({
+    expect(providerStatusFrom('claude', located, null, at, 'local')).toMatchObject({
       auth: 'unknown',
       reason: 'internal',
     });
@@ -324,7 +328,11 @@ describe('StatusCollector', () => {
       since: '2026-01-01T11:30:00Z',
       sessions: { active: 2, ids: ['session-a', 'session-b'] },
       restarts_10m: 1,
+      oom_kills: 0,
     });
+    expect(first.activity).toEqual([
+      { agent_id: 'agent-1', busy: true, sessions: 2, last_activity_at: null },
+    ]);
     expect(first.agents[0]!.directory).toBeNull();
     expect(first.machine.sessions_running).toBe(2);
     expect(first.machine.workspaces_dir).toBe(join(dir, 'workspaces'));
@@ -358,5 +366,46 @@ describe('StatusCollector', () => {
       since: new Date(clock).toISOString(),
     });
     expect(statusFingerprint(third)).not.toBe(statusFingerprint(resolved));
+    expect(third.activity[0]!.busy).toBe(false);
+
+    runtime.agents.set(
+      'agent-1',
+      observed({
+        alive: true,
+        health: health('connected'),
+        activity: { busy: false, lastActivityAt: '2026-01-01T11:00:00Z' },
+        unit: { restarts10m: 2, oomKills: 1 },
+      })
+    );
+    const unit = await collector.collect(assignment);
+    expect(unit.agents[0]).toMatchObject({ restarts_10m: 3, oom_kills: 1 });
+    expect(unit.activity).toEqual([
+      { agent_id: 'agent-1', busy: false, sessions: 2, last_activity_at: '2026-01-01T11:00:00Z' },
+    ]);
+  });
+});
+
+describe('FixedProviderLocator', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'controller-fixed-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('reads each CLI at its configured path, and reports sealed logins', async () => {
+    const script = join(dir, 'cursor-agent');
+    writeFileSync(script, '#!/bin/sh\necho "2026.01.15-abc"\n');
+    chmodSync(script, 0o755);
+    const missing = join(dir, 'missing');
+    const locator = new FixedProviderLocator({
+      claude: missing,
+      codex: missing,
+      opencode: missing,
+      antigravity: missing,
+      cursor: script,
+    });
+    expect(locator.authSource).toBe('sealed');
+    expect(await locator.locate('cursor')).toEqual({ path: script, version: '2026.01.15-abc' });
+    expect(await locator.locate('claude')).toBeNull();
   });
 });
