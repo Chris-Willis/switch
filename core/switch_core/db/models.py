@@ -3086,6 +3086,7 @@ class AgentController(TenantScoped, Base):
             "kind IN ('console', 'daemon', 'ec2')", name="ck_agent_controllers_kind"
         ),
         Index("ix_agent_controllers_owner_id", "owner_id"),
+        Index("ix_agent_controllers_tenant_id", "tenant_id"),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -3142,6 +3143,7 @@ class AgentControllerEnrollmentCode(TenantScoped, Base):
             ["agent_controllers.tenant_id", "agent_controllers.id"],
             name="fk_agent_controller_enrollment_codes_controller",
         ),
+        Index("ix_agent_controller_enrollment_codes_tenant_id", "tenant_id"),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -3240,6 +3242,7 @@ class AgentControllerOperation(TenantScoped, Base):
             "controller_id",
             "state",
         ),
+        Index("ix_agent_controller_operations_tenant_id", "tenant_id"),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
