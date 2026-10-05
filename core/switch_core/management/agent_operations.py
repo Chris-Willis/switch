@@ -341,10 +341,19 @@ class ManagementAgentOperations:
         self,
         tenant_id: str,
         owner_id: str,
+        caller_agent_id: str,
         agent_id: str,
         changes: ManagedAgentChanges,
         protocol: AgentCore,
     ) -> dict[str, Any]:
+        if caller_agent_id == agent_id:
+            raise AgentManagementRefused(
+                reason_codes.FORBIDDEN,
+                f"{NOTHING_CHANGED}: an agent cannot change its own provider, "
+                "model, advanced config, instructions, auto-approve, directory, "
+                "isolation, machine or run state; only your owner can, in the "
+                f"Switch gateway ({reason_codes.FORBIDDEN}).",
+            )
         async with tenant_session(self._session_factory, tenant_id) as session:
             agent = await self._service.agents.get(session, agent_id)
             row = await self._service.definitions.get_for_agent(

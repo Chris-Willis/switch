@@ -2180,8 +2180,8 @@ async def update_agent_detail(
             even their other agents, you included), "owner_and_owner_agents"
             (your owner and any agent they own) or "anyone".
 
-    A managed agent (one `list_managed_agents` shows) only, and only with the
-    "can manage agents" capability:
+    A managed agent (one `list_managed_agents` shows) only, never yourself,
+    and only with the "can manage agents" capability:
         provider: "claude", "codex", "opencode", "antigravity" or "cursor".
         model: The model to run; "" for the provider's default.
         advanced_config: The provider's advanced settings, replacing the
@@ -2237,7 +2237,12 @@ async def update_agent_detail(
             )
         permitted = await permitted_to_manage()
         managed = await port.update_managed_agent(
-            permitted.tenant_id, permitted.owner.id, agent_id, changes, protocol
+            permitted.tenant_id,
+            permitted.owner.id,
+            caller_id,
+            agent_id,
+            changes,
+            protocol,
         )
     elif port is not None:
         permission = await management_permission()
