@@ -62,6 +62,10 @@ logger = logging.getLogger(__name__)
 
 Scope = Literal["single", "all"]
 DeliveryFilter = Literal["all", "addressed"]
+# How a connection's stream reaches its client. `sse` is the event stream an
+# agent runtime built before the WebSocket still asks for, served for a
+# compatibility window and told apart so we can see those clients drain.
+Transport = Literal["websocket", "sse"]
 
 # Refuse a client that cannot meet this server's protocol rather than degrading
 # in ways neither side can see. The runtime lives on the user's machine and
@@ -405,6 +409,8 @@ class AgentConnection:
     # agent belongs to that no sibling has claimed.
     rooms: set[str] = field(default_factory=set)
     stream_attached: bool = False
+    # What the attached stream travels over, as of the last attach.
+    stream_transport: Transport = "websocket"
     # How many heartbeats this connection has received. Diagnostic: it is the
     # difference between a client that never started beating and one that beat
     # and then stopped, which the timestamp alone cannot tell you.
@@ -505,6 +511,7 @@ class AgentConnectionRegistry:
         cursor: int,
         declaration: ClientDeclaration,
         expected_generation: int | None,
+        transport: Transport = "websocket",
     ) -> AgentConnection:
         """Open a connection, or reattach to one the client already owns.
 
@@ -563,6 +570,7 @@ class AgentConnectionRegistry:
             existing.last_beat = time.monotonic()
             existing.closure = None
             existing.stream_attached = True
+            existing.stream_transport = transport
             existing.stream_generation = self._new_incarnation()
             # Wake the stream this one replaces, so its client hears it was
             # taken over now rather than on the stream's next idle tick.
@@ -573,11 +581,13 @@ class AgentConnectionRegistry:
             existing.declaration = declaration
             self._reset_worker(existing)
             logger.info(
-                "[CONN] reattached agent=%s connection=%s scope=%s generation=%s",
+                "[CONN] reattached agent=%s connection=%s scope=%s generation=%s "
+                "transport=%s",
                 agent_id,
                 connection_id,
                 scope,
                 existing.stream_generation,
+                transport,
             )
             return existing
 
@@ -596,6 +606,7 @@ class AgentConnectionRegistry:
             last_beat=now,
             opened_at=now,
             stream_attached=True,
+            stream_transport=transport,
             stream_generation=self._new_incarnation(),
             declaration=declaration,
         )
@@ -603,7 +614,7 @@ class AgentConnectionRegistry:
         owned.add(connection_id)
         logger.info(
             "[CONN] opened agent=%s connection=%s scope=%s filter=%s spawn=%s "
-            "client=%s version=%s protocol=%s",
+            "client=%s version=%s protocol=%s transport=%s",
             agent_id,
             connection_id,
             scope,
@@ -614,6 +625,7 @@ class AgentConnectionRegistry:
             f"{floor}-{declaration.speaks}"
             if declaration.declares_protocol
             else "unknown",
+            transport,
         )
         return conn
 

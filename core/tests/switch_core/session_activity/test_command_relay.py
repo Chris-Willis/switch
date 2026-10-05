@@ -8,6 +8,7 @@ from fastapi import FastAPI
 
 from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
+    SESSION_COMMAND_PROTOCOL_REVISION,
     AgentConnectionRegistry,
     ClientDeclaration,
 )

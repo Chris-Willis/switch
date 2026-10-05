@@ -19,7 +19,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from switch_core.bridges.agent.api import handlers
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
-from switch_core.bridges.agent.dependencies import get_protocol
+from switch_core.bridges.agent.dependencies import get_config, get_protocol
 from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
     AgentConnectionRegistry,
@@ -75,6 +75,7 @@ def client(
     app = FastAPI()
     app.include_router(handlers.router, prefix="/agents")
     app.dependency_overrides[get_protocol] = lambda: protocol
+    app.dependency_overrides[get_config] = lambda: None
     agent = Agent(
         id=AGENT_ID, name="agent", metadata_={"known_agent_type": "claude-code"}
     )

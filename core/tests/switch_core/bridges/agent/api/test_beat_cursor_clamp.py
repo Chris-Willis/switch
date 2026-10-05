@@ -130,6 +130,6 @@ async def test_a_heartbeat_from_the_old_boot_cannot_undo_the_gap_position():
     protocol.event_buffer = EventBuffer(sequence_base=2 << 32)
     sequence = protocol.event_buffer.enqueue(AGENT_ID, ROOM_ID, _message())
     conn = _connect(protocol, cursor=2 << 32)
-    await _beat(protocol, cursor=(1 << 32) + 2)
+    _beat(protocol, cursor=(1 << 32) + 2)
     assert conn.cursor == 2 << 32
     assert protocol.event_buffer.read_from(AGENT_ID, conn.cursor)[0].seq == sequence
