@@ -524,7 +524,9 @@ class AgentConsumer(Consumer[AgentActor]):
             ),
         )
 
-        logger.debug("Enqueuing event %s", agent_event.model_dump_json(indent=2))
+        # Serialising runs once per agent per message, so only when it will be seen.
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Enqueuing event %s", agent_event.model_dump_json(indent=2))
         self._event_buffer.enqueue(
             self.agent.id,
             meta.room_id,
@@ -736,7 +738,10 @@ class AgentConsumer(Consumer[AgentActor]):
             ),
         )
 
-        logger.debug("Enqueuing media event %s", agent_event.model_dump_json(indent=2))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Enqueuing media event %s", agent_event.model_dump_json(indent=2)
+            )
         self._event_buffer.enqueue(
             self.agent.id,
             meta.room_id,
