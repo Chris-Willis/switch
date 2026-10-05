@@ -8,6 +8,7 @@ import {
   machineRunLocations,
   reconciledRunLocation,
   sshHostIsMachine,
+  switchCloudMachine,
   thisComputerIsMachine,
 } from './server-run-locations';
 
@@ -112,5 +113,26 @@ describe('reconciling the run location off Switch Cloud', () => {
     expect(reconciledRunLocation(machineRunLocation('vm'), MACHINES, false)).toBeNull();
     expect(reconciledRunLocation(machineRunLocation('gone'), MACHINES, false)).toBe('local');
     expect(reconciledRunLocation(machineRunLocation('vm'), null, false)).toBe('local');
+  });
+});
+
+describe('the Switch cloud machine', () => {
+  const cloud = machine({ id: 'cloud', name: 'switch-cloud', kind: 'ec2' });
+
+  it('is the owner’s ec2 controller, which Switch cloud then places agents on', () => {
+    expect(switchCloudMachine([...MACHINES, cloud])?.id).toBe('cloud');
+  });
+
+  it('is none without an ec2 controller, so Switch cloud stays a hosted launch', () => {
+    expect(switchCloudMachine(MACHINES)).toBeNull();
+    expect(switchCloudMachine([])).toBeNull();
+    expect(switchCloudMachine(null)).toBeNull();
+    expect(switchCloudMachine([machine({ id: 'old', kind: 'ec2', state: 'revoked' })])).toBeNull();
+  });
+
+  it('is offered as Switch cloud, not as one of the listed machines', () => {
+    expect(machineRunLocations([...MACHINES, cloud]).map((option) => option.value)).toEqual(
+      machineRunLocations(MACHINES).map((option) => option.value)
+    );
   });
 });

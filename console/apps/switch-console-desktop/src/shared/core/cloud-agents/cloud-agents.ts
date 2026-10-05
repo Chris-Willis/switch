@@ -6,20 +6,37 @@ import { z } from 'zod';
  * the launch's worker and are reached through the server's relay, so where a
  * local or SSH agent is named by its Console agent id, a cloud one is named by
  * this key and the same session calls take either.
+ *
+ * A launch its cloud machine's controller runs (a managed agent on the owner's
+ * `ec2` controller) is relayed through the managed agent instead, so its key
+ * names the agent (`cloudControllerAgentKey`) rather than the launch.
  */
 
 const PREFIX = 'cloud:';
+const AGENT_MARK = 'agent=';
 
 export function cloudAgentKey(serverId: string, requestId: string): string {
   return `${PREFIX}${serverId}:${requestId}`;
 }
 
-export function parseCloudAgentKey(key: string): { serverId: string; requestId: string } | null {
+export function cloudControllerAgentKey(serverId: string, agentId: string): string {
+  return `${PREFIX}${serverId}:${AGENT_MARK}${agentId}`;
+}
+
+/** What a cloud agent key names: a hosted launch, or a managed agent its cloud machine's controller runs. */
+export type CloudAgentTarget =
+  | { serverId: string; kind: 'launch'; requestId: string }
+  | { serverId: string; kind: 'agent'; agentId: string };
+
+export function parseCloudAgentKey(key: string): CloudAgentTarget | null {
   if (!key.startsWith(PREFIX)) return null;
   const at = key.lastIndexOf(':');
   const serverId = key.slice(PREFIX.length, at);
-  const requestId = key.slice(at + 1);
-  return serverId && requestId ? { serverId, requestId } : null;
+  const rest = key.slice(at + 1);
+  if (!serverId || !rest) return null;
+  if (!rest.startsWith(AGENT_MARK)) return { serverId, kind: 'launch', requestId: rest };
+  const agentId = rest.slice(AGENT_MARK.length);
+  return agentId ? { serverId, kind: 'agent', agentId } : null;
 }
 
 export const cloudLaunchSchema = z.object({
@@ -129,11 +146,14 @@ export type CloudSessions = {
  * A launch with its worker's sessions, or why they could not be read.
  * `sessions` is null until the worker has been asked. `machine` is the
  * machine the launch runs on, null when it has none or it is not listed.
+ * `controllerId` is the cloud machine's controller that runs the launch's
+ * agent as a managed agent, null for a launch its worker runs.
  */
 export type CloudAgent = CloudSessions & {
   key: string;
   launch: CloudLaunch;
   machine: CloudMachine | null;
+  controllerId: string | null;
 };
 
 export type CloudAgentPhase = 'sleeping' | 'waking' | 'machine_stopped' | 'machine_error';

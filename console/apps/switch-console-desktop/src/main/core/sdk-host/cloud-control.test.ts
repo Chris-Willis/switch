@@ -11,6 +11,11 @@ const server = vi.hoisted(() => ({
   machineActions: [] as unknown[],
   wakeRace: false,
   relayClients: 0,
+  relayBasePaths: [] as string[],
+  relayRequests: [] as { path: string; init: unknown }[],
+  management: true,
+  controllers: [] as { id: string; kind: string }[],
+  managedAgents: [] as Record<string, unknown>[],
   relayList: (async () => []) as () => Promise<unknown[]>,
 }));
 const kvRows = vi.hoisted(() => new Map<string, unknown>());
@@ -40,8 +45,12 @@ const { FakeGatewayError } = vi.hoisted(() => ({
 
 vi.mock('@switch-console/agent-providers', () => ({
   CloudRelayClient: class {
-    constructor() {
+    constructor(
+      readonly fetchRelay: (path: string, init: unknown) => Promise<unknown>,
+      basePath: string
+    ) {
       server.relayClients += 1;
+      server.relayBasePaths.push(basePath);
     }
     isClosed = false;
     onClose() {}
@@ -71,9 +80,22 @@ vi.mock('@main/core/workspaces/workspace-session', () => ({
     fn({ id: serverId }),
 }));
 
+const { FakeManagementUnavailable } = vi.hoisted(() => ({
+  FakeManagementUnavailable: class extends Error {},
+}));
+
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
   GatewayError: FakeGatewayError,
-  gatewayRequest: vi.fn(),
+  AgentManagementUnavailableError: FakeManagementUnavailable,
+  fetchManagementControllers: vi.fn(async () => {
+    if (!server.management) throw new FakeManagementUnavailable('no management');
+    return server.controllers;
+  }),
+  fetchManagedAgents: vi.fn(async () => server.managedAgents),
+  gatewayRequest: vi.fn(async (_server: unknown, path: string, init: unknown) => {
+    server.relayRequests.push({ path, init });
+    return {};
+  }),
   gatewayFetch: vi.fn(
     async (_server: unknown, path: string, init: { method?: string; body?: unknown }) => {
       if (path === '/hosted-launches') return { json: async () => server.launches };
@@ -139,8 +161,14 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
 }));
 
 const { CloudRelayError } = await import('@switch-console/agent-providers');
-const { listCloudAgents, listCloudSessions, runCloudSessionOperation, wakeCloudAgent } =
-  await import('./cloud-control');
+const {
+  cloudControl,
+  cloudRelayBasePath,
+  listCloudAgents,
+  listCloudSessions,
+  runCloudSessionOperation,
+  wakeCloudAgent,
+} = await import('./cloud-control');
 
 const agent = 'cloud:server:00000000-0000-4000-8000-000000000001';
 const sessionId = '00000000-0000-4000-8000-0000000000aa';
@@ -157,6 +185,11 @@ beforeEach(() => {
   server.machineActions = [];
   server.wakeRace = false;
   server.relayClients = 0;
+  server.relayBasePaths = [];
+  server.relayRequests = [];
+  server.management = true;
+  server.controllers = [];
+  server.managedAgents = [];
 });
 
 const machineId = '3f1c2b4a-0000-4000-8000-000000000001';
@@ -467,5 +500,115 @@ describe('the sessions last read from a worker', () => {
     server.launches = [];
     await listCloudAgents('server');
     expect(kvRows.size).toBe(0);
+  });
+});
+
+describe('an agent its cloud machine’s controller runs', () => {
+  const requestId = '00000000-0000-4000-8000-000000000001';
+  const controllerAgent = 'cloud:server:agent=agent';
+
+  function managed(overrides: Record<string, unknown>) {
+    return {
+      agentId: 'agent',
+      controllerId: 'cloud-controller',
+      desiredState: 'running',
+      status: { process: 'running', attached: true, reason: null, detail: null, directory: null },
+      ...overrides,
+    };
+  }
+
+  it('relays a launch through its own routes and a controller’s agent through the agent’s', () => {
+    expect(cloudRelayBasePath({ serverId: 'server', kind: 'launch', requestId })).toBe(
+      `/hosted-launches/${requestId}/relay`
+    );
+    expect(cloudRelayBasePath({ serverId: 'server', kind: 'agent', agentId: 'agent_1-a' })).toBe(
+      '/management/agents/agent_1-a/control'
+    );
+    expect(() =>
+      cloudRelayBasePath({ serverId: 'server', kind: 'agent', agentId: '../agent' })
+    ).toThrow(/not a Switch agent id/);
+  });
+
+  it('hands the relay client the base path its key names, and sends its calls to the gateway as given', async () => {
+    const client = (await cloudControl(controllerAgent)) as unknown as {
+      fetchRelay: (path: string, init: unknown) => Promise<unknown>;
+    };
+    expect(server.relayBasePaths).toEqual(['/management/agents/agent/control']);
+    await client.fetchRelay('/management/agents/agent/control/stream?subscribe=one', {
+      method: 'GET',
+      body: undefined,
+      signal: undefined,
+    });
+    expect(server.relayRequests.map((each) => each.path)).toEqual([
+      '/management/agents/agent/control/stream?subscribe=one',
+    ]);
+  });
+
+  it('is keyed by its agent when the launch’s agent is managed on an ec2 controller', async () => {
+    server.controllers = [{ id: 'cloud-controller', kind: 'ec2' }];
+    server.managedAgents = [managed({})];
+    server.machines = [machine({})];
+    server.launches = [launch(requestId, { machine_id: machineId, state: 'stopped' })];
+    const [listed] = (await listCloudAgents('server'))!;
+    expect(listed).toMatchObject({
+      key: controllerAgent,
+      controllerId: 'cloud-controller',
+      problem: null,
+    });
+  });
+
+  it('stays a launch without an ec2 controller or without agent management', async () => {
+    server.launches = [launch(requestId, {})];
+    server.managedAgents = [managed({ controllerId: 'laptop' })];
+    server.controllers = [{ id: 'laptop', kind: 'console' }];
+    expect((await listCloudAgents('server'))?.[0]).toMatchObject({ key: agent, controllerId: null });
+    server.management = false;
+    expect((await listCloudAgents('server'))?.[0]).toMatchObject({ key: agent, controllerId: null });
+  });
+
+  it.each([
+    ['agent_stopped', machine({}), { desiredState: 'stopped' }, false],
+    [
+      'agent_crashed',
+      machine({}),
+      { status: { process: 'crashed', attached: false, reason: null, detail: 'Exited 1.' } },
+      false,
+    ],
+    [
+      'worker_sleeping',
+      machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'idle', sleeping: true }),
+      {},
+      true,
+    ],
+    ['worker_waking', machine({ state: 'provisioning' }), {}, false],
+    [
+      'machine_stopped',
+      machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'owner' }),
+      {},
+      false,
+    ],
+  ])('reports %s from its machine and managed agent', async (code, onMachine, overrides, wake) => {
+    server.controllers = [{ id: 'cloud-controller', kind: 'ec2' }];
+    server.managedAgents = [managed(overrides)];
+    server.machines = [onMachine];
+    server.launches = [launch(requestId, { machine_id: machineId })];
+    const [listed] = (await listCloudAgents('server'))!;
+    expect(listed?.problem).toMatchObject({ code, wakeAvailable: wake });
+  });
+
+  it('wakes the machine of the launch its agent was created by', async () => {
+    server.machines = [
+      machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'idle', sleeping: true }),
+    ];
+    server.launches = [launch(requestId, { machine_id: machineId })];
+    expect(await wakeCloudAgent(controllerAgent)).toMatchObject({ desired_state: 'running' });
+    expect(server.machineActions).toEqual([{ action: 'start', revision: 4 }]);
+  });
+
+  it('refuses a session start or restart rather than queueing one no worker would apply', async () => {
+    expect(
+      await runCloudSessionOperation(controllerAgent, sessionId, sessionId, 'start')
+    ).toMatchObject({ state: 'failed', code: 'unsupported' });
+    expect(server.operations.size).toBe(0);
   });
 });

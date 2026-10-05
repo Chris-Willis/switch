@@ -24,14 +24,19 @@ import { type PlaceOutcome, type WatcherHealth, watcherHealthSchema } from './wa
  *
  * A cloud worker accepts no inbound connection, so where a sidecar is reached
  * over its loopback control port this goes through the Switch gateway: one
- * `POST …/relay` per request, answered by the worker's watcher, and one
- * `GET …/relay/stream` per live view. The messages are the control
+ * `POST <base>` per request, answered by the worker's watcher, and one
+ * `GET <base>/stream` per live view. The messages are the control
  * vocabulary's (`ControlMessage`), and the methods are `ControlClient`'s, so
  * the callers of either do not tell them apart. Large answers arrive in pages
  * and are reassembled here; attachments go up in chunks.
+ *
+ * The base is where Switch relays for the agent: a hosted launch's
+ * (`/hosted-launches/{id}/relay`) or, for an agent its cloud machine's
+ * controller runs, the managed agent's (`/management/agents/{id}/control`).
+ * Both take the same requests and answer with the same replies and frames.
  */
 
-/** One call to the launch's relay routes; `path` is relative to the launch. */
+/** One call to the relay routes; `path` is relative to the gateway and starts with the base path. */
 export type RelayFetch = (
   path: string,
   init: { method: 'GET' | 'POST'; body: unknown; signal: AbortSignal }
@@ -71,6 +76,10 @@ const replySchema = z.object({
   value: z.unknown().optional(),
   error: z.object({ code: z.string(), message: z.string() }).optional(),
   wake_available: z.boolean().optional(),
+});
+/** Agent management's error envelope, which its routes answer a refusal before any relay with. */
+const managementErrorSchema = z.object({
+  error: z.object({ code: z.string(), message: z.string() }),
 });
 
 const firstPageSchema = z.object({
@@ -141,9 +150,11 @@ async function readReply(response: Response): Promise<z.infer<typeof replySchema
   }
   const reply = replySchema.safeParse(body);
   if (reply.success) return reply.data;
+  const envelope = managementErrorSchema.safeParse(body);
+  if (envelope.success) return { ok: false, error: envelope.data.error };
   const detail = z.object({ detail: z.unknown() }).safeParse(body);
   if (response.status === 404)
-    throw new CloudRelayError('not_found', 'Cloud launch not found.', 404, false);
+    throw new CloudRelayError('not_found', 'Cloud agent not found.', 404, false);
   throw new CloudRelayError(
     'http',
     `Switch answered the relay with ${response.status}: ${JSON.stringify(detail.success ? detail.data.detail : body).slice(0, 500)}`,
@@ -194,8 +205,13 @@ export class CloudRelayClient {
   private healthStream: RelayStream | null = null;
   private readonly views = new Set<(reason: string) => void>();
 
+  /**
+   * `basePath` is the agent's relay, relative to the gateway: requests are
+   * posted to it and live views read from `<basePath>/stream`.
+   */
   constructor(
     private readonly fetchRelay: RelayFetch,
+    readonly basePath: string,
     private readonly options: CloudRelayOptions
   ) {
     if (options.timeoutMs > RELAY_TIMEOUT_MS)
@@ -209,7 +225,7 @@ export class CloudRelayClient {
   private async once(message: ControlMessage): Promise<unknown> {
     let response: Response;
     try {
-      response = await this.fetchRelay('/relay', {
+      response = await this.fetchRelay(this.basePath, {
         method: 'POST',
         body: { message, timeout_ms: this.options.timeoutMs },
         signal: AbortSignal.timeout(this.options.timeoutMs + 15_000),
@@ -392,7 +408,7 @@ export class CloudRelayClient {
     });
     let opened = false;
     void (async () => {
-      const response = await this.fetchRelay(`/relay/stream?${query}`, {
+      const response = await this.fetchRelay(`${this.basePath}/stream?${query}`, {
         method: 'GET',
         body: undefined,
         signal: abort.signal,

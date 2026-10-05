@@ -7,9 +7,13 @@ import {
 import type { Attachment, Session } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import {
+  AgentManagementUnavailableError,
+  fetchManagedAgents,
+  fetchManagementControllers,
   GatewayError,
   gatewayFetch,
   gatewayRequest,
+  type ManagedAgent,
 } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { withServerWorkspaceSession } from '@main/core/workspaces/workspace-session';
@@ -18,6 +22,8 @@ import {
   type CloudAgent,
   cloudAgentKey,
   cloudAgentPhase,
+  type CloudAgentTarget,
+  cloudControllerAgentKey,
   type CloudLaunch,
   cloudLaunchSchema,
   type CloudMachine,
@@ -39,16 +45,31 @@ import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
  * the launch. One relay client per launch, made on first use and again after
  * it closes. Transcripts stay on the worker: every snapshot, list and event
  * is asked of it through the relay.
+ *
+ * A launch whose agent is a managed agent on the owner's cloud machine
+ * controller (kind `ec2`) is run by that controller, not by a worker: it is
+ * keyed by the agent and relayed through the agent's control routes, which
+ * take the same messages and answer the same way.
  */
 
 export function isCloudAgent(agentId: string): boolean {
   return parseCloudAgentKey(agentId) !== null;
 }
 
-function launchOf(agentId: string): { serverId: string; requestId: string } {
+function targetOf(agentId: string): CloudAgentTarget {
   const key = parseCloudAgentKey(agentId);
   if (!key) throw new Error(`${agentId} is not a cloud agent.`);
   return key;
+}
+
+const AGENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** Where Switch relays for a cloud agent, relative to the gateway. */
+export function cloudRelayBasePath(target: CloudAgentTarget): string {
+  if (target.kind === 'launch') return launchPath(target.requestId, '/relay');
+  if (!AGENT_ID.test(target.agentId))
+    throw new Error(`${JSON.stringify(target.agentId)} is not a Switch agent id.`);
+  return `/management/agents/${target.agentId}/control`;
 }
 
 async function requireCloudServer(serverId: string): Promise<void> {
@@ -93,18 +114,20 @@ const KEEPS_LAST_SESSIONS = new Set(['machine_stopped', 'worker_sleeping', 'work
 export async function cloudControl(agentId: string): Promise<CloudRelayClient> {
   const existing = clients.get(agentId);
   if (existing && !existing.isClosed) return existing;
-  const { serverId, requestId } = launchOf(agentId);
+  const target = targetOf(agentId);
+  const { serverId } = target;
   await requireCloudServer(serverId);
   const client = new CloudRelayClient(
     (path, init) =>
       withServerWorkspaceSession(serverId, (server) =>
-        gatewayRequest(server, launchPath(requestId, path), {
+        gatewayRequest(server, path, {
           authenticated: true,
           method: init.method,
           body: init.body,
           signal: init.signal,
         })
       ),
+    cloudRelayBasePath(target),
     { retryMs: 20_000, timeoutMs: RELAY_TIMEOUT_MS }
   );
   client.onClose(() => {
@@ -145,6 +168,33 @@ export async function listServerCloudMachines(serverId: string): Promise<CloudMa
     if ((await listCloudLaunches(server)) === null) return null;
     return listCloudMachines(server);
   });
+}
+
+/**
+ * The caller's managed agents that a cloud machine's controller runs, by
+ * agent id: those placed on one of their `ec2` controllers. Empty when the
+ * server has no agent management or the caller has no cloud machine
+ * controller, which is every launch still run by its worker.
+ */
+export async function listControllerCloudAgents(
+  server: SwitchServer
+): Promise<Map<string, ManagedAgent & { controllerId: string }>> {
+  let controllers;
+  try {
+    controllers = await fetchManagementControllers(server);
+  } catch (error) {
+    if (error instanceof AgentManagementUnavailableError) return new Map();
+    throw error;
+  }
+  const cloud = new Set(
+    controllers.filter((controller) => controller.kind === 'ec2').map((each) => each.id)
+  );
+  if (cloud.size === 0) return new Map();
+  const placed = new Map<string, ManagedAgent & { controllerId: string }>();
+  for (const agent of await fetchManagedAgents(server))
+    if (agent.controllerId !== null && cloud.has(agent.controllerId))
+      placed.set(agent.agentId, { ...agent, controllerId: agent.controllerId });
+  return placed;
 }
 
 /**
@@ -205,6 +255,61 @@ function launchProblem(
 }
 
 /**
+ * Why a launch its cloud machine's controller runs cannot be asked, or null
+ * when it can. The machine says first, as for a worker's launch; the agent's
+ * own state is the managed agent's, which its controller reports, since the
+ * launch's is no longer reported once a controller runs it.
+ */
+function controllerAgentProblem(
+  launch: CloudLaunch,
+  machine: CloudMachine | null,
+  agent: ManagedAgent
+): CloudRelayProblem | null {
+  if (launch.desired_state === 'deleted')
+    return {
+      code: 'worker_not_attached',
+      message: 'The cloud agent is being removed.',
+      wakeAvailable: false,
+    };
+  if (machine?.state === 'error')
+    return {
+      code: 'machine_error',
+      message: machine.error ?? 'The cloud machine is in error.',
+      wakeAvailable: false,
+    };
+  if (machine?.desired_state === 'stopped' && machine.stop_reason === 'owner')
+    return {
+      code: 'machine_stopped',
+      message: 'The owner stopped the cloud machine.',
+      wakeAvailable: false,
+    };
+  if (agent.desiredState === 'stopped')
+    return { code: 'agent_stopped', message: 'The agent is stopped.', wakeAvailable: false };
+  if (machine?.sleeping)
+    return {
+      code: 'worker_sleeping',
+      message: 'The cloud machine is asleep.',
+      wakeAvailable: true,
+    };
+  if (
+    machine?.desired_state === 'running' &&
+    ['queued', 'provisioning', 'stopping', 'stopped', 'retained'].includes(machine.state)
+  )
+    return {
+      code: 'worker_waking',
+      message: 'The cloud machine is starting.',
+      wakeAvailable: false,
+    };
+  if (agent.status?.process === 'crashed' || agent.status?.process === 'failed')
+    return {
+      code: 'agent_crashed',
+      message: agent.status.detail ?? 'The agent crashed.',
+      wakeAvailable: false,
+    };
+  return null;
+}
+
+/**
  * The server's cloud agents, read from the launch and machine lists, or null
  * when the server has no cloud agents. A launch whose worker cannot be asked
  * says why; the sessions of one that can are asked of its worker by
@@ -218,8 +323,17 @@ export async function listCloudAgents(serverId: string): Promise<CloudAgent[] | 
       launch.state !== 'deleted' &&
       (launch.desired_state !== 'deleted' || launch.state === 'deleting')
   );
+  const controllerAgents = await onCloudServer(serverId, listControllerCloudAgents);
+  const runBy = (launch: CloudLaunch) =>
+    launch.agent_id === null ? undefined : controllerAgents.get(launch.agent_id);
+  const keyOf = (launch: CloudLaunch) => {
+    const agent = runBy(launch);
+    return agent
+      ? cloudControllerAgentKey(serverId, agent.agentId)
+      : cloudAgentKey(serverId, launch.request_id);
+  };
   const stored = await lastSessions.getAll();
-  const keys = new Set(launches.map((launch) => cloudAgentKey(serverId, launch.request_id)));
+  const keys = new Set(launches.map(keyOf));
   for (const key of Object.keys(stored))
     if (parseCloudAgentKey(key)?.serverId === serverId && !keys.has(key))
       await lastSessions.del(key);
@@ -232,12 +346,16 @@ export async function listCloudAgents(serverId: string): Promise<CloudAgent[] | 
   );
   return launches.map((launch): CloudAgent => {
     const machine = launch.machine_id === null ? null : (machines.get(launch.machine_id) ?? null);
-    const key = cloudAgentKey(serverId, launch.request_id);
-    const problem = launchProblem(launch, machine);
+    const agent = runBy(launch);
+    const key = keyOf(launch);
+    const problem = agent
+      ? controllerAgentProblem(launch, machine, agent)
+      : launchProblem(launch, machine);
     return {
       key,
       launch,
       machine,
+      controllerId: agent?.controllerId ?? null,
       sessions: problem && KEEPS_LAST_SESSIONS.has(problem.code) ? (stored[key] ?? null) : null,
       problem,
     };
@@ -283,12 +401,9 @@ export async function listCloudSessions(agentId: string): Promise<CloudSessions>
  * the machine waking.
  */
 export async function wakeCloudAgent(agentId: string): Promise<CloudMachine> {
-  const { serverId, requestId } = launchOf(agentId);
-  const launch = cloudLaunchSchema.parse(
-    await onCloudServer(serverId, async (server) =>
-      (await gatewayFetch(server, launchPath(requestId), { authenticated: true })).json()
-    )
-  );
+  const target = targetOf(agentId);
+  const { serverId } = target;
+  const launch = await launchOfTarget(target);
   if (launch.machine_id === null)
     throw new Error(`The cloud agent ${launch.name} has no machine to start.`);
   const machineId = launch.machine_id;
@@ -327,6 +442,27 @@ export async function wakeCloudAgent(agentId: string): Promise<CloudMachine> {
   }
 }
 
+/**
+ * The launch a cloud agent key names. One keyed by its agent is the launch
+ * that agent was created by: the machine the controller runs on is its.
+ */
+async function launchOfTarget(target: CloudAgentTarget): Promise<CloudLaunch> {
+  if (target.kind === 'launch')
+    return cloudLaunchSchema.parse(
+      await onCloudServer(target.serverId, async (server) =>
+        (await gatewayFetch(server, launchPath(target.requestId), { authenticated: true })).json()
+      )
+    );
+  const launch = (await onCloudServer(target.serverId, listCloudLaunches))?.find(
+    (each) => each.agent_id === target.agentId && each.desired_state !== 'deleted'
+  );
+  if (!launch)
+    throw new Error(
+      `The cloud agent ${target.agentId} has no launch on its Switch server, so there is no cloud machine to start.`
+    );
+  return launch;
+}
+
 const OPERATION_WAIT_MS = 180_000;
 
 function errorMessage(error: unknown): string {
@@ -357,7 +493,14 @@ export async function runCloudSessionOperation(
 ): Promise<CloudOperationOutcome> {
   if (action === 'start' && operationId !== sessionId)
     throw new Error('A cloud session start is identified by its session id.');
-  const { serverId, requestId } = launchOf(agentId);
+  const target = targetOf(agentId);
+  if (target.kind === 'agent')
+    return {
+      state: 'failed',
+      message: `Switch cannot ${action} a session yet for a cloud agent its cloud machine's controller runs.`,
+      code: 'unsupported',
+    };
+  const { serverId, requestId } = target;
   let operation: CloudOperation;
   try {
     operation = cloudOperationSchema.parse(

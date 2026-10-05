@@ -96,6 +96,7 @@ function agent(overrides: Partial<CloudAgent>): CloudAgent {
       oom_kills: 0,
     },
     machine: null,
+    controllerId: null,
     sessions: null,
     problem: null,
     ...overrides,
