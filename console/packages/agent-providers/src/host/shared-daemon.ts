@@ -64,7 +64,7 @@ async function watch(
   const hosted = withHostedWorker ? await hostedWorker(config, resolve(root), context) : null;
   // Console reads the watcher's connection state from this file, with the
   // rest of the host's watcher state, rather than from the control port.
-  const stopRecording = recordWatcherHealth(resolve(root), control);
+  const stopRecording = recordWatcherHealth(resolve(root), control, links);
   // A watcher that stops (disabled, stood down after a takeover, or
   // signalled) takes the process with it: the control port and every
   // session host go too, so the supervisor sees a clean exit and does not

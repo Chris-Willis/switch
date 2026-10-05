@@ -525,7 +525,7 @@ export class InProcessRuntime implements AgentRuntime {
     const control = new WatcherControl();
     const sessions = inProcessSupervision(this.deps.bundlePath, this.links);
     // For `status`, which runs in another process and reads only disk.
-    const stopRecording = recordWatcherHealth(root, control);
+    const stopRecording = recordWatcherHealth(root, control, null);
     const done = (async () => {
       let detach = () => {};
       try {

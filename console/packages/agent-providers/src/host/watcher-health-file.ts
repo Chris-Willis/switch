@@ -3,6 +3,7 @@ import { rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { fileMode } from './host-permissions';
+import type { SessionLinks } from './session-channel';
 import { type WatcherControl, watcherHealthSchema } from './watcher-tools';
 
 /**
@@ -25,22 +26,45 @@ export const WATCHER_HEALTH_FILE = 'health.json';
 export const watcherHealthFileSchema = watcherHealthSchema.extend({
   pid: z.number().int().positive(),
   updatedAt: z.string(),
+  /**
+   * Whether any of the watcher's session hosts has work in hand (one that
+   * has not said counts as busy), and when one last had: written only by a
+   * watcher that is the parent of its agent's sessions alone.
+   */
+  busy: z.boolean().optional(),
+  lastActivityAt: z.string().nullable().optional(),
 });
 
 export type WatcherHealthFile = z.infer<typeof watcherHealthFileSchema>;
 
 /**
  * Keep `health.json` in `root` in step with what the watcher reports to
- * `control`, from now until the returned function is called. Written whole,
- * under a temporary name and renamed into place, so a reader never sees half
- * of it; and in order, so an older state never lands after a newer one.
+ * `control`, and with whether the session hosts in `sessions` are busy, from
+ * now until the returned function is called. `sessions` is null where the
+ * links carry other agents' sessions too. Written whole, under a temporary
+ * name and renamed into place, so a reader never sees half of it; and in
+ * order, so an older state never lands after a newer one.
  */
-export function recordWatcherHealth(root: string, control: WatcherControl): () => void {
+export function recordWatcherHealth(
+  root: string,
+  control: WatcherControl,
+  sessions: SessionLinks | null
+): () => void {
   const path = join(root, WATCHER_HEALTH_FILE);
   let writing: Promise<void> = Promise.resolve();
+  let busy = false;
+  let lastActivityAt: string | null = null;
+  const activity = () => {
+    if (!sessions) return {};
+    const now = sessions.live().some((sessionRoot) => sessions.busy(sessionRoot)?.busy !== false);
+    if (now || busy) lastActivityAt = new Date().toISOString();
+    busy = now;
+    return { busy, lastActivityAt };
+  };
   const write = () => {
     const body: WatcherHealthFile = {
       ...control.health(),
+      ...activity(),
       pid: process.pid,
       updatedAt: new Date().toISOString(),
     };
@@ -55,5 +79,10 @@ export function recordWatcherHealth(root: string, control: WatcherControl): () =
       });
   };
   write();
-  return control.onHealth(write);
+  const stopHealth = control.onHealth(write);
+  const stopBusy = sessions?.onBusy(write) ?? (() => {});
+  return () => {
+    stopHealth();
+    stopBusy();
+  };
 }
