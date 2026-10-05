@@ -305,3 +305,41 @@ async def test_the_database_sampler_starts_with_the_metrics_exporter(monkeypatch
         assert built, "the sampler never built its engine"
     finally:
         await observability.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_connection_kind_that_empties_out_is_reported_as_zero(monkeypatch):
+    """Otherwise the dashboard keeps drawing its last count, which is exactly
+    the line that has to reach zero before an old transport can be removed."""
+    connected = {("websocket", "agent-runtime"): 2, ("detached", "agent-runtime"): 1}
+    observability = start_observability(
+        config=_config(
+            monkeypatch,
+            OTLP_ENDPOINT="https://collector.example",
+            DEPLOYMENT_ID=DEPLOYMENT_ID,
+            OTLP_EXPORT_INTERVAL_SECONDS="3600",
+        ),
+        version="1.0.0",
+        session_factory=_session_factory(),
+        probes=_probes(agents_connected=lambda: dict(connected)),
+    )
+    try:
+
+        def reading() -> dict[tuple[str, str], float]:
+            payload = {p.name: p for p in metrics().collect()}[
+                "switch.agents.connected"
+            ]
+            return {
+                (n.attributes["transport"], n.attributes["client"]): n.value
+                for n in payload.numbers
+            }
+
+        assert reading()[("detached", "agent-runtime")] == 1.0
+        del connected[("detached", "agent-runtime")]
+        assert reading() == {
+            ("websocket", "agent-runtime"): 2.0,
+            ("detached", "agent-runtime"): 0.0,
+            ("websocket", "unknown"): 0.0,
+        }
+    finally:
+        await observability.aclose()

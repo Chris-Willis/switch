@@ -127,6 +127,7 @@ class DbServerSampler:
                 exc_info=True,
             )
             self.disabled = True
+            self._latest = None
             await self.aclose()
             return None
         except Exception as exc:
