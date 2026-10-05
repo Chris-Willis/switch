@@ -250,7 +250,7 @@ class PostgresTransport:
         try:
             rooms = await self.joined_rooms()
             if not rooms:
-                logger.error(
+                logger.info(
                     "Client %s is receiving but is a member of no room: it will "
                     "hear nothing until something adds it to one. Membership "
                     "is the client_rooms table, so a client whose rows were "
