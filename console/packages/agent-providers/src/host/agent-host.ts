@@ -880,7 +880,7 @@ export async function runAgentHost(
         for (const [sessionId, entry] of pumps) {
           if (sharedSessionRoot(sessionId) !== readyRoot) continue;
           if (entry.failed === null) continue;
-          console.warn(
+          console.info(
             `Session ${sessionId} is running again; handing it the ${entry.queue.length} room message(s) that waited for it.`
           );
           entry.failed = null;
@@ -1315,7 +1315,7 @@ export async function runAgentHost(
         }
         if (!waiting.events.length) {
           held.delete(roomId);
-          console.warn(
+          console.info(
             `Room ${roomId} has a session again; the messages held for it were delivered.`
           );
         } else if (Date.now() - waiting.since >= HELD_DISCLOSURE_MS) {
@@ -1699,7 +1699,7 @@ export async function runAgentHost(
             );
           }
           if (moved.displaced)
-            console.warn(
+            console.info(
               `Room ${roomId} moved from session ${moved.displaced} to session ${sessionId}.`
             );
           return { sessionId, roomId, ...moved };

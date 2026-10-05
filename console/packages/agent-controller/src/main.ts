@@ -20,7 +20,7 @@ import {
   resolveSharedHostBundle,
   workspaceSharedHostBundle,
 } from './handover';
-import { createLogger, errorMessage } from './log';
+import { createLogger, errorMessage, routeConsoleTo } from './log';
 import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
 import { definitionProblem } from './reconcile';
 import {
@@ -157,6 +157,7 @@ async function runCommand(args: string[]): Promise<number> {
     level: process.env.SWITCH_CONTROLLER_LOG_LEVEL,
     write: (line) => process.stderr.write(line),
   });
+  routeConsoleTo(log);
   const credential = values['credential-stdin']
     ? await readCredential(process.stdin, CREDENTIAL_STDIN_TIMEOUT_MS)
     : null;

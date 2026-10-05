@@ -1,3 +1,5 @@
+import { format } from 'node:util';
+
 export type LogFields = Record<string, unknown>;
 
 export type Logger = {
@@ -35,6 +37,19 @@ export function createLogger(input: {
     warn: (message, fields) => emit('warn', message, fields),
     error: (message, fields) => emit('error', message, fields),
   };
+}
+
+/**
+ * Sends what code in this process writes with `console` (the agent hosts the
+ * controller runs in-process) through `log`, at the level it was written at,
+ * so a reader of the log can tell a notice from a failure.
+ */
+export function routeConsoleTo(log: Logger): void {
+  console.debug = (...args: unknown[]) => log.debug(format(...args));
+  console.log = (...args: unknown[]) => log.info(format(...args));
+  console.info = (...args: unknown[]) => log.info(format(...args));
+  console.warn = (...args: unknown[]) => log.warn(format(...args));
+  console.error = (...args: unknown[]) => log.error(format(...args));
 }
 
 export const silentLogger: Logger = {
