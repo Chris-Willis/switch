@@ -478,22 +478,17 @@ describe('runController', () => {
     expect(store.revokedAt()).not.toBeNull();
   });
 
-  it('starts no cached agent while Switch refuses the credential, and starts it once Switch accepts it', async () => {
+  it('stops for good, starting no cached agent, when Switch does not know its credential', async () => {
     store.saveAssignment({ revision: 1, agents: [agent(1)] }, '"1"', '2026-01-01T00:00:00Z');
     store.recordApplied('agent-1', 1, '2026-01-01T00:00:00Z');
     core.setAssignment({ revision: 1, agents: [agent(1)] });
-    const credential = core.credential;
     core.credential = 'a-credential-this-controller-does-not-hold';
     running = runController(deps(), stop.signal);
-    await waitFor(
-      () => core.requests.filter((r) => r.path.endsWith('/token')).length >= 3,
-      'the stream retrying the exchange'
-    );
+    await expect(running).rejects.toBeInstanceOf(ConfigurationError);
+    await expect(running).rejects.toThrow(/Enroll it again/);
     expect(runtime.launches('agent-1')).toEqual([]);
-    core.credential = credential;
-    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
-    stop.abort();
-    expect(await running).toBe('stopped');
+    expect(core.requests.filter((r) => r.path.endsWith('/token'))).toHaveLength(1);
+    expect(core.opens).toEqual([]);
   });
 
   it('runs on an adopted identity with the credential in memory, and writes it nowhere', async () => {

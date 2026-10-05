@@ -148,8 +148,10 @@ class SerialQueue {
  *
  * Before any of that, the credential is exchanged, and only then is the cached
  * assignment reconciled: a controller revoked while it was down ends with
- * `'revoked'` without starting an agent, and one whose credential Switch
- * refuses starts none until Switch accepts it. A server that cannot be reached
+ * `'revoked'` without starting an agent, one whose credential Switch does not
+ * know (`invalid_credential`) throws a `ConfigurationError` without starting
+ * one, since only enrolling again can fix it, and one whose credential Switch
+ * refuses otherwise starts none until Switch accepts it. A server that cannot be reached
  * gives no verdict, so the cached agents start anyway and come back after a
  * reboot while it is down.
  */
@@ -503,12 +505,16 @@ export async function runController(
   };
 
   /** Switch's verdict on the credential, asked before any cached agent starts. */
-  const firstToken = async (): Promise<'accepted' | 'revoked' | 'refused' | 'unreachable'> => {
+  const firstToken = async (): Promise<
+    'accepted' | 'revoked' | 'unknown_credential' | 'refused' | 'unreachable'
+  > => {
     try {
       await tokens.get();
       return 'accepted';
     } catch (error) {
       if (isRevoked(error)) return 'revoked';
+      if (error instanceof ControllerApiError && error.code === 'invalid_credential')
+        return 'unknown_credential';
       if (error instanceof ControllerApiError && !error.retryable) {
         log.error(
           'Switch refused this controller’s credential; no agent starts until it accepts it.',
@@ -523,6 +529,20 @@ export async function runController(
     }
   };
   const verdict = await firstToken();
+  if (verdict === 'unknown_credential') {
+    signal.removeEventListener('abort', forward);
+    stop.abort();
+    try {
+      await queue.drain();
+      await reporter.idle();
+    } finally {
+      await runtime.close();
+      await relay.close();
+    }
+    throw new ConfigurationError(
+      `Switch does not know this controller's credential (controller ${identity.controllerId} on ${identity.server}): the machine was removed or its credential replaced. Enroll it again with a new code.`
+    );
+  }
   credentialRefused = verdict === 'refused';
   if (verdict === 'revoked') await revoke();
   else await reconcileLocally();

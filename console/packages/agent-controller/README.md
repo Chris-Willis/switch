@@ -78,7 +78,9 @@ node packages/agent-controller/dist/cli.mjs status [--data-dir <dir>]
   a newer controller wrote; a shared-host bundle that is missing, not a file
   or unreadable; an unsupported platform (Windows); a data directory that
   holds no identity, or no credential (revoked earlier and wiped, or never
-  enrolled); and with `--credential-stdin`, a credential that does not arrive
+  enrolled); a credential Switch answers `invalid_credential` for when `run`
+  first exchanges it (the machine was removed, or its credential replaced, so
+  only enrolling again fixes it); and with `--credential-stdin`, a credential that does not arrive
   (stdin is a terminal, closes empty, holds more than one token, cannot be
   read, or stays open past 10 s). The reason is the last line on stderr,
   prefixed `switch-agent-controller: `. Once the controller is running,
