@@ -1,5 +1,6 @@
 import type {
   AgentMigrationState,
+  MoveAllProgress,
   MoveAllResult,
   MoveToManagedResult,
   NewAgentMachine,
@@ -18,15 +19,22 @@ export const agentMigrationController = createRPCController({
 
   stopManaging: (agentId: string): Promise<void> => agentMigrationService.stopManaging(agentId),
 
-  moveAllOnThisComputer: (serverId: string): Promise<MoveAllResult> =>
-    agentMigrationService.moveAll({ kind: 'this-computer', serverId }),
+  /** Moves every agent of a workspace that can move, on this computer and on every SSH host. */
+  moveAllInWorkspace: (scope: { serverId: string; workspaceId: string }): Promise<MoveAllResult> =>
+    agentMigrationService.moveAll({ kind: 'workspace', ...scope }),
 
-  stopManagingAllOnThisComputer: (serverId: string): Promise<MoveAllResult> =>
-    agentMigrationService.stopManagingAll({ kind: 'this-computer', serverId }),
+  stopManagingAllInWorkspace: (scope: {
+    serverId: string;
+    workspaceId: string;
+  }): Promise<MoveAllResult> =>
+    agentMigrationService.stopManagingAll({ kind: 'workspace', ...scope }),
 
-  /** The Console agents moved onto this computer for a server, by name. */
-  movedOntoThisComputer: (serverId: string): Promise<string[]> =>
-    agentMigrationService.movedOnto({ kind: 'this-computer', serverId }),
+  /** How far moving every agent of a workspace has got. */
+  moveAllProgressInWorkspace: (scope: {
+    serverId: string;
+    workspaceId: string;
+  }): Promise<MoveAllProgress> =>
+    agentMigrationService.moveAllProgress({ kind: 'workspace', ...scope }),
 
   /** Whether a new agent on this machine (an SSH host, or this computer) runs as a managed agent. */
   newAgentMachine: (params: {

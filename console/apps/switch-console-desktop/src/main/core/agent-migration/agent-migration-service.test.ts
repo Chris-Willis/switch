@@ -610,3 +610,61 @@ describe('moving every agent on a machine', () => {
     });
   });
 });
+
+describe('moving every agent of a workspace', () => {
+  const REMOTE: MigrationAgent = {
+    ...PARENT,
+    id: 'agent-2',
+    name: 'trainer',
+    switchAgentId: 'switch-2',
+    sshHost: 'gpu-1',
+    dir: '/srv/trainer',
+  };
+  const ELSEWHERE: MigrationAgent = {
+    ...PARENT,
+    id: 'agent-3',
+    name: 'other',
+    switchAgentId: 'switch-3',
+    workspaceId: 'workspace-2',
+  };
+  const all = [PARENT, REMOTE, ELSEWHERE];
+  const service = () =>
+    new AgentMigrationService({
+      ...deps(),
+      agents: {
+        ...deps().agents,
+        get: async (agentId) => all.find((agent) => agent.id === agentId) ?? null,
+        list: async () => all,
+      },
+    });
+  const scope = { kind: 'workspace', serverId: 'server-1', workspaceId: WORKSPACE } as const;
+
+  it('takes the agents on SSH hosts too, not another workspace’s, and says when it is complete', async () => {
+    const migration = service();
+    expect(await migration.moveAllProgress(scope)).toEqual({
+      managed: [],
+      remaining: [
+        { name: 'builder', reason: null },
+        { name: 'trainer', reason: null },
+      ],
+    });
+    const moved = await migration.moveAll(scope);
+    expect(moved.moved.map((agent) => agent.name)).toEqual(['builder', 'trainer']);
+    expect(await migration.moveAllProgress(scope)).toEqual({
+      managed: ['builder', 'trainer'],
+      remaining: [],
+    });
+    const back = await migration.stopManagingAll(scope);
+    expect(back.moved.map((agent) => agent.name)).toEqual(['builder', 'trainer']);
+  });
+
+  it('counts an agent that cannot move as remaining, with the reason', async () => {
+    world.eligibility = { management: true, owner: 'Grace', ownedByMe: false };
+    const progress = await service().moveAllProgress(scope);
+    expect(progress.managed).toEqual([]);
+    expect(progress.remaining[0]).toMatchObject({
+      name: 'builder',
+      reason: expect.stringMatching(/owner/),
+    });
+  });
+});

@@ -2,6 +2,7 @@ import type {
   AgentMigrationState,
   MigrationOperation,
   MigrationTarget,
+  MoveAllProgress,
   MoveAllResult,
 } from '@shared/core/agent-migration/agent-migration';
 
@@ -111,4 +112,33 @@ export function moveAllSummary(result: MoveAllResult, verb: 'Moved' | 'Brought b
   for (const agent of result.skipped) lines.push(`${agent.name} did not move: ${agent.reason}`);
   for (const agent of result.failed) lines.push(`${agent.name} failed: ${agent.message}`);
   return lines;
+}
+
+/** Whether "Move all" is complete: every agent in scope managed. */
+export function moveAllState(progress: MoveAllProgress): {
+  tone: MigrationTone;
+  label: string;
+  detail: string;
+} {
+  const total = progress.managed.length + progress.remaining.length;
+  if (total === 0)
+    return {
+      tone: 'neutral',
+      label: 'Nothing to move',
+      detail: 'This Console runs no agents for this workspace.',
+    };
+  if (progress.remaining.length === 0)
+    return {
+      tone: 'ok',
+      label: 'Complete',
+      detail: total === 1 ? 'The agent is managed.' : `All ${total} agents are managed.`,
+    };
+  const blocked = progress.remaining.filter((agent) => agent.reason !== null).length;
+  return {
+    tone: 'warn',
+    label: 'Not complete',
+    detail:
+      `${progress.managed.length} of ${total} moved.` +
+      (blocked ? ` ${blocked === 1 ? 'One cannot' : `${blocked} cannot`} move yet:` : ''),
+  };
 }

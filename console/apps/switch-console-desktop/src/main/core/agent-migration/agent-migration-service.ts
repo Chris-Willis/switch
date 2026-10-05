@@ -6,6 +6,7 @@ import type {
   MigrationOperation,
   MigrationStage,
   MigrationTarget,
+  MoveAllProgress,
   MoveAllResult,
   MoveToManagedResult,
 } from '@shared/core/agent-migration/agent-migration';
@@ -168,12 +169,37 @@ type Moving = {
 
 export type MoveScope =
   | { kind: 'this-computer'; serverId: string }
-  | { kind: 'ssh-host'; sshHost: string };
+  | { kind: 'ssh-host'; sshHost: string }
+  /** Every agent of a workspace, on this computer and on every SSH host. */
+  | { kind: 'workspace'; serverId: string; workspaceId: string };
 
-function inScope(record: ManagedAgentRecord, scope: MoveScope): boolean {
-  return scope.kind === 'this-computer'
-    ? record.placement.kind === 'this-computer' && record.placement.serverId === scope.serverId
-    : record.placement.kind === 'ssh-host' && record.placement.sshHost === scope.sshHost;
+function agentInScope(agent: MigrationAgent, scope: MoveScope): boolean {
+  switch (scope.kind) {
+    case 'this-computer':
+      return agent.sshHost === null && agent.serverId === scope.serverId;
+    case 'ssh-host':
+      return agent.sshHost === scope.sshHost;
+    case 'workspace':
+      return agent.serverId === scope.serverId && agent.workspaceId === scope.workspaceId;
+  }
+}
+
+/** Whether a moved agent is in scope; `agent` is its Console agent, null when that is gone. */
+function recordInScope(
+  record: ManagedAgentRecord,
+  agent: MigrationAgent | null,
+  scope: MoveScope
+): boolean {
+  switch (scope.kind) {
+    case 'this-computer':
+      return (
+        record.placement.kind === 'this-computer' && record.placement.serverId === scope.serverId
+      );
+    case 'ssh-host':
+      return record.placement.kind === 'ssh-host' && record.placement.sshHost === scope.sshHost;
+    case 'workspace':
+      return agent !== null && agentInScope(agent, scope);
+  }
 }
 
 /**
@@ -269,11 +295,7 @@ export class AgentMigrationService {
    */
   async moveAll(scope: MoveScope): Promise<MoveAllResult> {
     const result: MoveAllResult = { moved: [], skipped: [], failed: [] };
-    const agents = (await this.deps.agents.list()).filter((agent) =>
-      scope.kind === 'this-computer'
-        ? agent.sshHost === null && agent.serverId === scope.serverId
-        : agent.sshHost === scope.sshHost
-    );
+    const agents = (await this.deps.agents.list()).filter((agent) => agentInScope(agent, scope));
     for (const agent of agents) {
       const state = await this.state(agent.id).catch((error: unknown) => ({
         error: message(error),
@@ -305,8 +327,8 @@ export class AgentMigrationService {
   async stopManagingAll(scope: MoveScope): Promise<MoveAllResult> {
     const result: MoveAllResult = { moved: [], skipped: [], failed: [] };
     for (const record of await this.deps.store.list()) {
-      if (!inScope(record, scope)) continue;
       const agent = await this.deps.agents.get(record.agentId);
+      if (!recordInScope(record, agent, scope)) continue;
       const name = agent?.name ?? record.agentId;
       try {
         await this.stopManaging(record.agentId);
@@ -321,10 +343,34 @@ export class AgentMigrationService {
   /** The agents this Console moved onto one machine, by name. */
   async movedOnto(scope: MoveScope): Promise<string[]> {
     const names: string[] = [];
-    for (const record of await this.deps.store.list())
-      if (inScope(record, scope))
-        names.push((await this.deps.agents.get(record.agentId))?.name ?? record.agentId);
+    for (const record of await this.deps.store.list()) {
+      const agent = await this.deps.agents.get(record.agentId);
+      if (recordInScope(record, agent, scope)) names.push(agent?.name ?? record.agentId);
+    }
     return names;
+  }
+
+  /**
+   * How far moving every agent in scope has got: the ones managed now, and
+   * the ones Console still runs, with what keeps each from moving (null when
+   * nothing does and it just has not been moved). Complete when none remain.
+   */
+  async moveAllProgress(scope: MoveScope): Promise<MoveAllProgress> {
+    const progress: MoveAllProgress = { managed: [], remaining: [] };
+    for (const agent of await this.deps.agents.list()) {
+      if (!agentInScope(agent, scope)) continue;
+      try {
+        const state = await this.state(agent.id);
+        if (state.runner === 'managed') progress.managed.push(agent.name);
+        else progress.remaining.push({ name: agent.name, reason: state.blocker });
+      } catch (error) {
+        progress.remaining.push({
+          name: agent.name,
+          reason: `Its state cannot be read: ${message(error)}`,
+        });
+      }
+    }
+    return progress;
   }
 
   // ── State ──────────────────────────────────────────────────────────────────

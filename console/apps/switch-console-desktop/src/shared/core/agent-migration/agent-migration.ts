@@ -96,6 +96,12 @@ export type MoveAllResult = {
   failed: { agentId: string; name: string; message: string }[];
 };
 
+/** How far "Move all" has got; see `AgentMigrationService.moveAllProgress`. */
+export type MoveAllProgress = {
+  managed: string[];
+  remaining: { name: string; reason: string | null }[];
+};
+
 export type AgentMigrationEvent = {
   agentId: string;
   runner: AgentRunner;

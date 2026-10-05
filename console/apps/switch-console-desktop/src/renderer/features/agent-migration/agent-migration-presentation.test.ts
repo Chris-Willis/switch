@@ -3,6 +3,7 @@ import type { AgentMigrationState } from '@shared/core/agent-migration/agent-mig
 import {
   migrationAction,
   migrationSummary,
+  moveAllState,
   moveAllSummary,
   operationLabel,
   targetName,
@@ -187,5 +188,35 @@ describe('a Move all', () => {
     expect(moveAllSummary({ moved: [], skipped: [], failed: [] }, 'Brought back')).toEqual([
       'Brought back no agents.',
     ]);
+  });
+});
+
+describe('whether moving every agent is complete', () => {
+  it('is complete once every agent is managed', () => {
+    expect(moveAllState({ managed: ['a', 'b'], remaining: [] })).toMatchObject({
+      tone: 'ok',
+      label: 'Complete',
+      detail: 'All 2 agents are managed.',
+    });
+  });
+
+  it('is not complete while some still run in Console, and counts the ones that cannot move', () => {
+    expect(
+      moveAllState({
+        managed: ['a'],
+        remaining: [
+          { name: 'b', reason: null },
+          { name: 'c', reason: 'Its SSH host is not a machine.' },
+        ],
+      })
+    ).toMatchObject({
+      tone: 'warn',
+      label: 'Not complete',
+      detail: '1 of 3 moved. One cannot move yet:',
+    });
+  });
+
+  it('has nothing to move when Console runs no agents for the workspace', () => {
+    expect(moveAllState({ managed: [], remaining: [] }).label).toBe('Nothing to move');
   });
 });
