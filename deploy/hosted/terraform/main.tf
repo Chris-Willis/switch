@@ -89,7 +89,7 @@ resource "aws_iam_policy" "controller_assignments" {
         Null                        = { for key in local.login_grant_context_keys : "kms:EncryptionContext:${key}" => "false" }
       }
     },
-    { Sid = "ManageSlotLoginGrants", Effect = "Allow", Action = ["kms:ListGrants", "kms:RetireGrant", "kms:RevokeGrant"], Resource = var.login_kms_key_arn }
+    { Sid = "ManageSlotLoginGrants", Effect = "Allow", Action = ["kms:ListGrants", "kms:RevokeGrant"], Resource = var.login_kms_key_arn }
   ] })
 }
 resource "aws_iam_role_policy_attachment" "controller_assignments" {

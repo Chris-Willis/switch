@@ -153,8 +153,8 @@ run "rendered_permissions" {
     error_message = "Login grants must be Decrypt-only, to slot roles, constrained to the machine's tenant, owner and controller."
   }
   assert {
-    condition     = toset(one([for statement in jsondecode(aws_iam_policy.controller_assignments.policy).Statement : statement if statement.Sid == "ManageSlotLoginGrants"]).Action) == toset(["kms:ListGrants", "kms:RetireGrant", "kms:RevokeGrant"])
-    error_message = "The controller must be able to list, retire and revoke login grants."
+    condition     = toset(one([for statement in jsondecode(aws_iam_policy.controller_assignments.policy).Statement : statement if statement.Sid == "ManageSlotLoginGrants"]).Action) == toset(["kms:ListGrants", "kms:RevokeGrant"])
+    error_message = "The controller must be able to list and revoke login grants."
   }
   assert {
     condition = !anytrue([for statement in concat(jsondecode(aws_iam_role_policy.controller.policy).Statement, jsondecode(aws_iam_policy.controller_assignments.policy).Statement) :
@@ -171,5 +171,9 @@ run "rendered_permissions" {
   assert {
     condition     = output.slot_role_arns["example-slot"] == aws_iam_role.worker["example-slot"].arn
     error_message = "slot_role_arns must map each slot to its role."
+  }
+  assert {
+    condition     = output.machine_slots["example-slot"].role_arn == aws_iam_role.worker["example-slot"].arn
+    error_message = "machine_slots must name each slot's role, the grantee of its login grant."
   }
 }

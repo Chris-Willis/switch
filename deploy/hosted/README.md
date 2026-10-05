@@ -153,8 +153,14 @@ The chart accepts a non-secret `controllerConfig` map with:
 - `max_machines`: 1–100, and no more than the number of machine slots. It caps
   both the machines that are not deleted and the active EC2 instances.
 - `root_volume_gib`, `data_volume_gib`, `poll_interval_seconds`
-- `machine_slots`: slot ID to `{instance_profile_arn, assignment_secret_arn}`.
-  Copy it from the Terraform output `machine_slots`.
+- `machine_slots`: slot ID to `{instance_profile_arn, assignment_secret_arn,
+  role_arn}`. Copy it from the Terraform output `machine_slots`. `role_arn` is the
+  role behind the slot's instance profile; the controller grants it Decrypt on
+  the provider-login key.
+- `controller_image_id` and `login_kms_key_arn`, set both or neither: the
+  controller-runtime AMI and the full ARN of the provider-login KMS key, in the
+  controller's region. Terraform's `ec2:RunInstances` grant must allow
+  `controller_image_id` beside `image_id`.
 
 The instance type of a new machine comes from `instance_type` in the controller's
 `gateway.json` (see [Enable Console launches](#enable-console-launches)). It must

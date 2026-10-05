@@ -9,6 +9,7 @@ output "machine_slots" {
   value = { for id, slot in var.machine_slots : id => {
     instance_profile_arn  = aws_iam_instance_profile.worker[id].arn
     assignment_secret_arn = slot.secret_arn
+    role_arn              = aws_iam_role.worker[id].arn
   } }
 }
 
