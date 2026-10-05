@@ -53,8 +53,8 @@ HEARTBEAT_TTL_SECONDS = 6.0
 #
 # Both numbers come from artifacts.yaml, the one place a human declares them
 # (CHOO-1865). PROTOCOL_VERSION is the newest revision this server implements;
-# PROTOCOL_ACCEPTS is the oldest it still handles. They are equal today, and
-# the range is what compatibility is judged on so that they need not stay so.
+# PROTOCOL_ACCEPTS is the oldest it still handles. Compatibility is judged on
+# the range, so a revision that only adds can raise one without the other.
 _SERVER_AGENT_PROTOCOL = contract_range("agent-protocol", "switch-core")
 PROTOCOL_VERSION = _SERVER_AGENT_PROTOCOL.speaks
 PROTOCOL_ACCEPTS = _SERVER_AGENT_PROTOCOL.accepts

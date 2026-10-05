@@ -341,6 +341,20 @@ export class SwitchEventStream {
    */
   private generation: number | null = null;
   /**
+   * Which numbering our cursor counts in: the server process's epoch, as the
+   * last `connection_state` named it. Sent back as `epoch` on reopen, so the
+   * server knows rather than guesses whether it restarted since. Null before
+   * the first `connection_state`, and with a server that names none.
+   */
+  private epoch: string | null = null;
+  /**
+   * A new epoch a `connection_state` named, waiting for the restart gap the
+   * server sends right after it. Adopted only once that gap has reset the
+   * cursor: a socket lost in between would otherwise reopen with the new
+   * epoch and the old cursor, which the server would trust.
+   */
+  private restartedInto: string | null = null;
+  /**
    * Closed from the moment an open starts until the frame naming the
    * incarnation that open made arrives.
    *
@@ -721,6 +735,7 @@ export class SwitchEventStream {
         // first open of this object's life sends nothing, which is how a
         // deliberate takeover still works: it has no incarnation to claim.
         if (this.generation !== null) params.set('expected_generation', String(this.generation));
+        if (this.epoch !== null) params.set('epoch', this.epoch);
 
         const url = `${creds.apiEndpoint.replace(/^http/, 'ws')}/agents/${creds.agentId}/connection/ws?${params}`;
         for await (const frame of this.readSocket(url, socketAbort.signal, () => {
@@ -891,12 +906,19 @@ export class SwitchEventStream {
   private async handleFrame(frame: SocketFrame): Promise<void> {
     const { log, onGap, onEvicted, onEvent } = this.deps;
     switch (frame.event) {
-      case 'connection_state':
+      case 'connection_state': {
         if (typeof frame.data.generation === 'number') this.generation = frame.data.generation;
+        const epoch =
+          typeof frame.data.epoch === 'string' && frame.data.epoch ? frame.data.epoch : null;
+        this.restartedInto = null;
+        if (epoch !== null && this.epoch !== null && epoch !== this.epoch)
+          this.restartedInto = epoch;
+        else this.epoch = epoch;
         log.debug('SwitchEventStream: connection established', {
           event: 'switch_stream_connected',
           rooms: frame.data.rooms,
           generation: this.generation,
+          epoch: frame.data.epoch ?? null,
           // What the server says it is (CHOO-1865). Recorded, not acted on —
           // logging it is what makes "which versions are actually talking to
           // each other" answerable from a bug report rather than a guess.
@@ -915,6 +937,7 @@ export class SwitchEventStream {
         this.redeclare();
         this.deps.onConnected?.();
         return;
+      }
       case 'room_released': {
         const roomId = frame.data.room_id;
         const sessionId = frame.data.session_id ?? null;
@@ -956,15 +979,25 @@ export class SwitchEventStream {
         const resumedAt = frame.data.resumed_at;
         if (resumedAt !== undefined && (!Number.isSafeInteger(resumedAt) || Number(resumedAt) < 0))
           throw new Error('Switch returned an invalid gap resume cursor.');
+        // After a restart the new numbering may already be past our cursor,
+        // so the cursor moving forwards does not mean it was not reset.
+        const restarted = this.restartedInto !== null;
         await onGap({
           fromSequence: Number(frame.data.from_sequence ?? 0),
           reason: String(frame.data.reason ?? 'events were missed'),
           ...(rooms === undefined ? {} : { rooms }),
           ...(resumedAt === undefined
             ? {}
-            : { resumedAt: Number(resumedAt), cursorReset: Number(resumedAt) < this.cursor }),
+            : {
+                resumedAt: Number(resumedAt),
+                cursorReset: restarted || Number(resumedAt) < this.cursor,
+              }),
         });
         if (resumedAt !== undefined) this.cursor = Number(resumedAt);
+        if (restarted) {
+          this.epoch = this.restartedInto;
+          this.restartedInto = null;
+        }
         return;
       }
       case 'evicted': {

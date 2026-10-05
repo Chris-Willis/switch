@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -176,6 +177,11 @@ class EventBuffer:
     ) -> None:
         self._max_events = max_events_per_agent
         self._retention_seconds = retention_seconds
+        # Which numbering the sequence numbers below belong to. Random, so a
+        # buffer built by a later process, which starts counting from 1 again,
+        # never shares it. A client hands it back with its cursor, and a
+        # different one tells us for certain the cursor counts something else.
+        self.epoch = secrets.token_hex(8)
         self._events: dict[str, deque[BufferedEvent]] = {}
         self._next_seq: dict[str, int] = {}
         self._notify: dict[str, asyncio.Event] = {}

@@ -944,6 +944,7 @@ async def connection_socket(
     client: Annotated[str | None, Query()] = None,
     client_version: Annotated[str | None, Query()] = None,
     rooms: Annotated[str | None, Query()] = None,
+    epoch: Annotated[str | None, Query()] = None,
 ) -> None:
     """The agent's connection over one WebSocket: events down, heartbeats up.
 
@@ -960,6 +961,10 @@ async def connection_socket(
     A refusal on opening is sent as a `refused` frame carrying the status and
     detail an HTTP request would have been answered with, then the socket closes
     with code 4000 plus that status.
+
+    `epoch` is the one `connection_state` named when `start_from` was reached.
+    Sent back, it lets the server know for certain whether that cursor counts
+    in this process's numbering; absent, the server falls back to guessing.
     """
     await websocket.accept()
     try:
@@ -999,6 +1004,7 @@ async def connection_socket(
         registry=protocol.connections,
         buffer=protocol.event_buffer,
         approvals=protocol.approval_outcomes,
+        epoch=epoch or None,
     )
     # Bounded, so a client that reads slowly holds the stream back rather
     # than growing this queue.

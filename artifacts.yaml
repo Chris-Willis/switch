@@ -183,9 +183,18 @@ contracts:
     # revision that is not additive: `accepts` rises to 7 on both sides, and a
     # client still asking for the stream is refused with 410 and told to
     # update.
+    #
+    # Revision 8 adds the epoch: a random id each switch-core process picks
+    # at startup, published as `epoch` on `connection_state`. The client keeps
+    # it next to its cursor and sends it back as `epoch` when it reopens the
+    # socket. One that differs from the server's says for certain that the
+    # cursor was numbered by an earlier process, and the server answers with
+    # the restart gap even when the cursor looks valid. Additive, so `accepts`
+    # stays at 7: a client that sends no epoch is judged from its cursor, as
+    # before, and a server that publishes none leaves the client sending none.
     artifacts:
-      switch-core: { speaks: 7, accepts: 7 }
-      agent-runtime: { speaks: 7, accepts: 7 }
+      switch-core: { speaks: 8, accepts: 7 }
+      agent-runtime: { speaks: 8, accepts: 7 }
 
   gateway-api:
     description: >-
