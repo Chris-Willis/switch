@@ -36,7 +36,10 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'controller-runtime-'));
   bundle = join(dir, 'fake-bundle.cjs');
   writeFileSync(bundle, FAKE_BUNDLE);
-  runtime = new DetachedRuntime({ layout: dataLayout(join(dir, 'data')), bundlePath: bundle });
+  runtime = new DetachedRuntime({
+    layout: dataLayout(join(dir, 'data'), join(dir, 'data', 'workspaces')),
+    bundlePath: bundle,
+  });
 });
 
 afterEach(() => {

@@ -1,8 +1,14 @@
 import { mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { dataLayout, defaultDataDir, ensureDataDir, isSafeSegment } from './paths';
+import {
+  dataLayout,
+  defaultDataDir,
+  defaultWorkspacesDir,
+  ensureDataDir,
+  isSafeSegment,
+} from './paths';
 
 describe('defaultDataDir', () => {
   it('follows each OS’s convention', () => {
@@ -40,10 +46,11 @@ describe('ensureDataDir', () => {
 
 describe('dataLayout', () => {
   it('keeps server-supplied names to one path segment', () => {
-    const layout = dataLayout('/data');
+    const layout = dataLayout('/data', '/data/workspaces');
     expect(layout.agentCredentials('agent-1')).toBe('/data/agents/agent-1/credentials.json');
     expect(layout.watcherRoot('agent-1')).toBe('/data/watchers/agent-1');
     expect(layout.workspaces).toBe('/data/workspaces');
+    expect(defaultWorkspacesDir()).toBe(join(homedir(), '.switch', 'agents'));
     expect(layout.workspace('scout')).toBe('/data/workspaces/scout');
     expect(() => layout.watcherRoot('../x')).toThrow(/cannot be used as a directory name/);
     expect(() => layout.workspace('a/b')).toThrow();

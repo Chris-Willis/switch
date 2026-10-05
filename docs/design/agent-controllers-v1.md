@@ -303,13 +303,13 @@ exactly the answer a missing one does.
   - Running, and not applied or at an older revision:
     1. Ensure the credentials: fetch from the credentials endpoint if there is no local file, or after an auth failure.
     2. Write them to `<data>/agents/<id>/credentials.json` (0600), outside the agent's working directory.
-    3. Ensure the working directory: `definition.directory`, otherwise `<data>/workspaces/<name>`. A missing directory inside `<data>/workspaces/` is made; any other must exist.
+    3. Ensure the working directory: `definition.directory`, otherwise `~/.switch/agents/<name>`, a folder every controller on the machine shares. A missing directory inside `~/.switch/agents/` is made; any other must exist.
     4. Write the agent host root `<data>/agent hosts/<id>/` with `watch.json {enabled:true, spawn:true}` and a `SharedHostConfig` template, as the Console builds.
     5. Start the agent host (`runAgentHost`) in the controller's process, after stopping the running one when the revision changed. Its sessions are the controller's child processes.
   - Stopped or removed: write `watch.json {enabled:false}`, stop the agent host and its sessions, and delete the credentials of removed agents.
   - Nothing an agent runs outlives the controller: stopping the controller stops every agent host and session, and the next run starts them again from their journals and confirmed cursors.
 - **Status:** sent on every change, and every `report_within_s`.
-  - Machine: os, arch, disk, memory, sessions, and `workspaces_dir` (`<data>/workspaces`, absolute).
+  - Machine: os, arch, disk, memory, sessions, and `workspaces_dir` (`~/.switch/agents`, absolute).
   - Providers: installed via a PATH lookup, auth via the bundle's `--probe`, cached for 10 min. `provider.recheck` forces a probe.
   - Agents: read from each running agent host's state and `supervisor/failure.json`, mapped to the contract's process states and reason codes, with `directory`, the working directory its agent host was configured with.
 - **Operations:** `agent.restart` restarts the agent host. `provider.recheck` forces a probe and reports.

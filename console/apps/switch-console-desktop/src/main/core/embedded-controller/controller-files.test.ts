@@ -60,11 +60,11 @@ describe('controller data directory', () => {
   it('is one directory per server, and refuses an id that could leave it', () => {
     expect(controllerDataDir('/base', 'server-1')).toBe('/base/servers/server-1');
     expect(() => controllerDataDir('/base', '../escape')).toThrow(/cannot name a directory/);
-    expect(defaultWorkspacePath('/base/servers/server-1', 'pm-agent')).toBe(
-      '/base/servers/server-1/workspaces/pm-agent'
+    expect(defaultWorkspacePath('/home/me/.switch/agents', 'pm-agent')).toBe(
+      '/home/me/.switch/agents/pm-agent'
     );
-    expect(defaultWorkspacePath('/base/servers/server-1', '../escape')).toBeNull();
-    expect(defaultWorkspacePath('/base/servers/server-1', '')).toBeNull();
+    expect(defaultWorkspacePath('/home/me/.switch/agents', '../escape')).toBeNull();
+    expect(defaultWorkspacePath('/home/me/.switch/agents', '')).toBeNull();
   });
 
   it('turns off every watcher, and forgets the identity but not the work', async () => {

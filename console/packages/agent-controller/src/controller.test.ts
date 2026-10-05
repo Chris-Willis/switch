@@ -71,6 +71,7 @@ function deps(server = core.url): ControllerDeps {
     fetch,
     log: silentLogger,
     dataDir: dir,
+    workspacesDir: join(dir, 'workspaces'),
     version: '0.1.0',
     now: Date.now,
     random: () => 0,

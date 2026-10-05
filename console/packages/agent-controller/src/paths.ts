@@ -63,8 +63,16 @@ export type DataLayout = {
   workspace: (name: string) => string;
 };
 
-export function dataLayout(root: string): DataLayout {
-  const workspaces = join(root, 'workspaces');
+/**
+ * Where agents' working directories go when their definition names none: one
+ * short folder in the home directory, shared by every controller on the
+ * machine, rather than inside a controller's data directory.
+ */
+export function defaultWorkspacesDir(): string {
+  return join(homedir(), '.switch', 'agents');
+}
+
+export function dataLayout(root: string, workspaces: string): DataLayout {
   return {
     root,
     database: join(root, 'controller.db'),

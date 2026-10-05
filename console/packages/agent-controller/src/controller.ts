@@ -4,7 +4,7 @@ import { AccessTokens, ControllerClient, type Fetch, isRevoked } from './api';
 import { ConfigurationError } from './errors';
 import { errorMessage, type Logger } from './log';
 import { processPendingOperations } from './operations';
-import { dataLayout, isSafeSegment } from './paths';
+import { isSafeSegment } from './paths';
 import { definitionProblem, reconcile, type ReconcileDeps, startAgent } from './reconcile';
 import { DEFAULT_RELAY_TIMING, LocalRelay, RELAY_TOKEN_PREFIX, type RelayTiming } from './relay';
 import { UpstreamForwarder } from './relay-forward';
@@ -69,6 +69,8 @@ export type ControllerDeps = {
   log: Logger;
   /** Where disk space is measured and provider checks run. */
   dataDir: string;
+  /** Where agents' working directories go when their definition names none. */
+  workspacesDir: string;
   version: string;
   now: () => number;
   random: () => number;
@@ -319,7 +321,7 @@ export async function runController(
     providers,
     attached: (agentId) => delivery(agentId).attached(agentId),
     dataDir: deps.dataDir,
-    workspacesDir: dataLayout(deps.dataDir).workspaces,
+    workspacesDir: deps.workspacesDir,
     version: deps.version,
     now: deps.now,
   });
