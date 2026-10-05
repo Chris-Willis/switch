@@ -103,6 +103,16 @@ export { providerReadinessSchema } from './host/provider-readiness';
 export type { ProviderReadiness } from './host/provider-readiness';
 export { CONTROL_FILE, ControlClient, SidecarConnectionClosedError } from './host/control';
 export {
+  type ControlContext,
+  type ControlMessage,
+  controlMessageSchema,
+  ControlPeer,
+  type ControlPush,
+  handleControlMessage,
+  serveControl,
+} from './host/control';
+export { ControlError } from './host/attachment-transfers';
+export {
   CloudRelayClient,
   CloudRelayClosedError,
   CloudRelayError,
