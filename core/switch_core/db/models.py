@@ -3058,16 +3058,23 @@ class UsageBudget(TenantScoped, Base):
 # listed nor revealable through the user's API-key routes.
 CONTROLLER_KEY_TYPE = "controller"
 CONTROLLER_ENROLLMENT_KEY_TYPE = "controller_enrollment"
-HASH_ONLY_KEY_TYPES = frozenset({CONTROLLER_KEY_TYPE, CONTROLLER_ENROLLMENT_KEY_TYPE})
+# A revoked controller's credential, kept so its token exchange can be told it
+# was revoked. No route accepts it as a credential.
+CONTROLLER_REVOKED_KEY_TYPE = "controller_revoked"
+HASH_ONLY_KEY_TYPES = frozenset(
+    {CONTROLLER_KEY_TYPE, CONTROLLER_ENROLLMENT_KEY_TYPE, CONTROLLER_REVOKED_KEY_TYPE}
+)
 
 
 class AgentController(TenantScoped, Base):
     """A machine that runs managed agents on behalf of its owner.
 
     `api_key_id` is the controller's long-lived credential, an `api_keys` row of
-    type `controller` holding the hash only. It is null once the controller is
-    revoked, and also if the key is deleted from under it (removing a member
-    deletes every key they hold), which is treated the same as revocation. `status` is the last accepted status report verbatim and
+    type `controller` holding the hash only. Revoking the controller retypes
+    that row `controller_revoked` and keeps it linked, so the old credential is
+    accepted nowhere but can still be answered as revoked. It is null if the
+    key is deleted from under it (removing a member deletes every key they
+    hold), which is treated the same as revocation. `status` is the last accepted status report verbatim and
     `status_seq` its sequence number: a report with a sequence at or below it is
     ignored. `assignment_revision` bumps on every change to the set of agents
     the controller should run, and is what its ETag carries.

@@ -41,7 +41,9 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
     return app
 
 
-@pytest.mark.parametrize("key_type", ["controller", "controller_enrollment"])
+@pytest.mark.parametrize(
+    "key_type", ["controller", "controller_enrollment", "controller_revoked"]
+)
 async def test_hash_only_keys_are_not_listed_revealed_or_deleted(
     session_factory: async_sessionmaker[AsyncSession], key_type: str
 ) -> None:
