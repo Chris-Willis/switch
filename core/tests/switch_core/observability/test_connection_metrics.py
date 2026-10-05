@@ -172,7 +172,11 @@ def test_the_gauge_still_reports_zero_with_nobody_connected() -> None:
 # ── Refused ──────────────────────────────────────────────────────────────────
 
 
-async def test_a_request_for_the_old_event_stream_is_counted(registry) -> None:
+async def test_the_event_stream_is_served_so_never_refused_as_removed(
+    registry,
+) -> None:
+    """Kept for old clients for a compatibility window, so `transport_removed`
+    does not fire; a stream refused for another reason is counted for it."""
     with pytest.raises(HTTPException):
         await handlers.poll_events(
             agent_id=AGENT_ID,
@@ -182,8 +186,29 @@ async def test_a_request_for_the_old_event_stream_is_counted(registry) -> None:
         )
 
     assert _counts(registry, "switch.agent.connections_refused") == {
-        (("reason", "transport_removed"),): 1.0
+        (("reason", "other"),): 1.0
     }
+
+
+def test_a_stream_attached_over_sse_is_counted_as_sse() -> None:
+    connections = AgentConnectionRegistry()
+    connections.open(
+        agent_id="a1",
+        connection_id="c1",
+        scope="all",
+        delivery_filter="all",
+        spawn_capable=False,
+        cursor=0,
+        declaration=ClientDeclaration(speaks=6, accepts=1, artifact="agent-runtime"),
+        expected_generation=None,
+        transport="sse",
+    )
+    _open(connections, "a2", "c2", "agent-runtime")
+
+    readings = _connected_readings(_probes(connections.live_agents_by_transport))
+
+    assert readings[(("client", "agent-runtime"), ("transport", "sse"))] == 1.0
+    assert readings[(("client", "agent-runtime"), ("transport", "websocket"))] == 1.0
 
 
 class _Protocol:

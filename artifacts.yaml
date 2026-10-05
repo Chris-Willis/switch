@@ -178,23 +178,28 @@ contracts:
     # `/agents/{id}/connection/ws`, which carries the frames as JSON
     # (`event`, `data`, `id`) and the heartbeat: the server sends `ping` every
     # heartbeat interval and the client answers `pong` with its cursor. The
-    # token is checked once, when the socket opens. The Server-Sent Events
-    # stream and `POST /connection/beat` are gone, so this is the first
-    # revision that is not additive: `accepts` rises to 7 on both sides, and a
-    # client still asking for the stream is refused with 410 and told to
-    # update.
+    # token is checked once, when the socket opens. It is meant to replace the
+    # Server-Sent Events stream and `POST /connection/beat`, which would make it
+    # the first revision that is not additive, but that removal is deferred:
+    # the stream and the beat are kept beside the socket for a compatibility
+    # window, so `accepts` stays at 1 on both sides. switch-core serves either
+    # transport, and agent-runtime prefers the socket and falls back to the
+    # stream and its beat against a server with no socket. Both go, and
+    # `accepts` rises to 7, once `switch.agents.connected{transport:sse}` stays
+    # at zero.
     #
     # Revision 8 adds the epoch: a random id each switch-core process picks
     # at startup, published as `epoch` on `connection_state`. The client keeps
     # it next to its cursor and sends it back as `epoch` when it reopens the
     # socket. One that differs from the server's says for certain that the
     # cursor was numbered by an earlier process, and the server answers with
-    # the restart gap even when the cursor looks valid. Additive, so `accepts`
-    # stays at 7: a client that sends no epoch is judged from its cursor, as
-    # before, and a server that publishes none leaves the client sending none.
+    # the restart gap even when the cursor looks valid. It applies to both
+    # transports. Additive: a client that sends no epoch is judged from its
+    # cursor, as before, and a server that publishes none leaves the client
+    # sending none.
     artifacts:
-      switch-core: { speaks: 8, accepts: 7 }
-      agent-runtime: { speaks: 8, accepts: 7 }
+      switch-core: { speaks: 8, accepts: 1 }
+      agent-runtime: { speaks: 8, accepts: 1 }
 
   gateway-api:
     description: >-

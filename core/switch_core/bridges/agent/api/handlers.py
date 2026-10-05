@@ -21,7 +21,7 @@ from fastapi import (
 )
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
-from starlette.responses import Response
+from starlette.responses import Response, StreamingResponse
 
 from switch_core.bridges.agent.api.schemas import (
     AcceptTaskRequest,
@@ -29,6 +29,7 @@ from switch_core.bridges.agent.api.schemas import (
     AgentListResponse,
     BulkRegisterResult,
     CancelTaskRequest,
+    ConnectionBeatRequest,
     ConnectionPlacementsRequest,
     ConnectionRenewRequest,
     ConnectionSubscribeRequest,
@@ -89,11 +90,15 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     Closure,
     ConnectionError_,
     DeliveryFilter,
+    NoStreamAttachedError,
     ProtocolVersionError,
     RoomOccupiedError,
     Scope,
+    SupersededConnectionError,
     SupersededControlError,
     SupersededReattachError,
+    Transport,
+    UnfencedBeatError,
     UnfencedControlError,
     UnknownConnectionError,
     evicted_session_warning,
@@ -105,6 +110,7 @@ from switch_core.bridges.agent.protocol.stream import (
     Frame,
     encode_ws,
     event_frames,
+    sse_stream,
 )
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_KEY_TYPE,
@@ -725,26 +731,41 @@ async def poll_events(
     client: Annotated[str | None, Query()] = None,
     client_version: Annotated[str | None, Query()] = None,
     rooms: Annotated[str | None, Query()] = None,
+    epoch: Annotated[str | None, Query()] = None,
+    last_event_id: Annotated[str | None, Header(alias="last-event-id")] = None,
 ) -> EventResponse | Response:
-    """Deliver the agent's events as a long poll.
+    """Deliver the agent's events, as a push stream or a long poll.
 
-    The live connection is the WebSocket at `/connection/ws`. A request for the
-    old Server-Sent Events stream is refused with what to do about it.
+    The live connection is the WebSocket at `/connection/ws`. `Accept:
+    text/event-stream` opens the same connection as a Server-Sent Events
+    stream, with its heartbeat on `POST /connection/beat`: that is how an agent
+    runtime built before the WebSocket connects (agent-protocol revision 6 and
+    older), and it is kept for those clients for a compatibility window. It
+    goes once `switch.agents.connected{transport:sse}` stays at zero. Anything
+    else falls back to the long poll, served from the same buffer.
+
+    The declaration parameters are all optional and all default to None,
+    meaning *unknown* (CHOO-1865): a client that says nothing still connects.
     """
     if accept and "text/event-stream" in accept:
-        # The agent connection moved to one WebSocket, which carries both the
-        # events and the heartbeat. A client still asking for the stream is
-        # an old runtime, and is told what to do rather than left retrying.
-        metrics().increment(AGENT_CONNECTIONS_REFUSED, {"reason": "transport_removed"})
-        raise HTTPException(
-            status_code=410,
-            detail={
-                "code": "transport_removed",
-                "message": "The event stream over Server-Sent Events was "
-                "replaced by a WebSocket at /agents/{agent_id}/connection/ws.",
-                "remedy": "Update Switch Console, or the agent runtime, to a "
-                "version that connects over the WebSocket.",
-            },
+        return await _open_event_stream(
+            agent=agent,
+            protocol=protocol,
+            connection_id=connection_id,
+            scope=scope,
+            event_filter=event_filter,
+            start_from=start_from,
+            spawn_capable=spawn_capable,
+            declaration=ClientDeclaration(
+                speaks=protocol_version,
+                accepts=protocol_accepts,
+                artifact=client,
+                version=client_version,
+            ),
+            rooms=rooms,
+            last_event_id=last_event_id,
+            expected_generation=expected_generation,
+            epoch=epoch,
         )
     events = await protocol.poll_events(agent.id, timeout=timeout)
     if not events:
@@ -752,16 +773,26 @@ async def poll_events(
     return EventResponse(events=events)
 
 
-def _resolve_start_cursor(protocol: AgentCore, agent_id: str, start_from: str) -> int:
-    """Where a connection's events begin: the head, or a sequence number."""
-    if start_from in ("", "head"):
+def _resolve_start_cursor(
+    protocol: AgentCore,
+    agent_id: str,
+    start_from: str,
+    last_event_id: str | None = None,
+) -> int:
+    """Where a connection's events begin: the head, or a sequence number.
+
+    `Last-Event-ID` wins when present: an event-stream client that reconnects
+    sends it, and it is the most accurate statement of what it processed.
+    """
+    raw = last_event_id or start_from
+    if raw in ("", "head"):
         return protocol.event_buffer.head(agent_id)
     try:
-        return max(int(start_from), 0)
+        return max(int(raw), 0)
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
-            detail=f"start_from must be 'head' or a sequence number, got {start_from!r}",
+            detail=f"start_from must be 'head' or a sequence number, got {raw!r}",
         ) from exc
 
 
@@ -777,6 +808,8 @@ async def _open_connection(
     declaration: ClientDeclaration,
     rooms: str | None,
     expected_generation: int | None,
+    last_event_id: str | None = None,
+    transport: Transport = "websocket",
 ) -> AgentConnection:
     if not connection_id:
         raise HTTPException(
@@ -795,7 +828,7 @@ async def _open_connection(
             detail=f"filter must be 'all' or 'addressed', got {event_filter!r}",
         )
 
-    cursor = _resolve_start_cursor(protocol, agent.id, start_from)
+    cursor = _resolve_start_cursor(protocol, agent.id, start_from, last_event_id)
 
     try:
         conn = protocol.connections.open(
@@ -807,6 +840,7 @@ async def _open_connection(
             cursor=cursor,
             declaration=declaration,
             expected_generation=expected_generation,
+            transport=transport,
         )
     except SupersededReattachError as exc:
         # Structured, like the refused heartbeat: this is the same ending, and
@@ -896,14 +930,79 @@ async def _open_connection(
     return conn
 
 
+def _refusal_reason(exc: HTTPException) -> str:
+    """The `reason` a refused open is counted under."""
+    return "protocol" if isinstance(exc.__cause__, ProtocolVersionError) else "other"
+
+
+async def _open_event_stream(
+    *,
+    agent: Agent,
+    protocol: AgentCore,
+    connection_id: str | None,
+    scope: str,
+    event_filter: str,
+    start_from: str,
+    spawn_capable: bool,
+    declaration: ClientDeclaration,
+    rooms: str | None,
+    last_event_id: str | None,
+    expected_generation: int | None,
+    epoch: str | None,
+) -> StreamingResponse:
+    """The connection as a Server-Sent Events stream, for an old client.
+
+    Opens exactly as the socket does and streams the same frames from the same
+    loop, so the two cannot drift while both exist. A refusal is the HTTP
+    error the socket would have sent as its `refused` frame.
+    """
+    try:
+        conn = await _open_connection(
+            agent=agent,
+            protocol=protocol,
+            connection_id=connection_id,
+            scope=scope,
+            event_filter=event_filter,
+            start_from=start_from,
+            spawn_capable=spawn_capable,
+            declaration=declaration,
+            rooms=rooms,
+            expected_generation=expected_generation,
+            last_event_id=last_event_id,
+            transport="sse",
+        )
+    except HTTPException as exc:
+        metrics().increment(AGENT_CONNECTIONS_REFUSED, {"reason": _refusal_reason(exc)})
+        raise
+    return StreamingResponse(
+        sse_stream(
+            event_frames(
+                conn=conn,
+                registry=protocol.connections,
+                buffer=protocol.event_buffer,
+                approvals=protocol.approval_outcomes,
+                epoch=epoch or None,
+            )
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # Proxies that buffer would defeat the point of a push channel.
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 def _record_beat(
     protocol: AgentCore,
     agent_id: str,
     connection_id: str,
     cursor: int,
-    generation: int,
+    generation: int | None,
 ) -> AgentConnection:
-    """Count a client's answer to a ping as a beat, and adopt its cursor.
+    """Count a client's beat, and adopt its cursor: a pong on the socket, or a
+    `POST /connection/beat` from an event-stream client.
 
     The cursor is clamped to the buffer head first. The buffer is in memory,
     so a restart resets the sequence while a client keeps reporting the
@@ -919,6 +1018,40 @@ def _record_beat(
     conn = protocol.connections.beat(agent_id, connection_id, cursor, generation)
     protocol.event_buffer.confirm(agent_id, conn.id, cursor)
     return conn
+
+
+@router.post("/{agent_id}/connection/beat")
+async def connection_beat(
+    agent_id: str,
+    req: ConnectionBeatRequest,
+    agent: Annotated[Agent, Depends(get_agent_from_scope)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+) -> dict[str, Any]:
+    """The heartbeat of a connection held over the event stream.
+
+    The socket carries its own heartbeat; this is for a client built before it,
+    kept with the event stream for the same compatibility window. Proves the
+    client is alive and reports its cursor. Rejected when the connection is
+    unknown, dead, has no stream attached, or belongs to another incarnation.
+    A refusal carries a code beside its prose, because the remedies differ:
+    `taken_over` is terminal for the client that receives it, and the rest are
+    recovered by reopening.
+    """
+    try:
+        conn = _record_beat(
+            protocol, agent.id, req.connection_id, req.cursor, req.generation
+        )
+    except (
+        NoStreamAttachedError,
+        SupersededConnectionError,
+        UnfencedBeatError,
+    ) as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": exc.code, "message": str(exc)}
+        ) from exc
+    except UnknownConnectionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, "rooms": sorted(conn.rooms), "cursor": conn.cursor}
 
 
 # A WebSocket close code for each refusal that would otherwise be an HTTP
@@ -986,10 +1119,7 @@ async def connection_socket(
             expected_generation=expected_generation,
         )
     except HTTPException as exc:
-        reason = (
-            "protocol" if isinstance(exc.__cause__, ProtocolVersionError) else "other"
-        )
-        metrics().increment(AGENT_CONNECTIONS_REFUSED, {"reason": reason})
+        metrics().increment(AGENT_CONNECTIONS_REFUSED, {"reason": _refusal_reason(exc)})
         await websocket.send_json(
             {
                 "event": "refused",

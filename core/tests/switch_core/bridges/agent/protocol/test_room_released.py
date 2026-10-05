@@ -9,6 +9,7 @@ import pytest
 
 from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
+    ROOM_RELEASED_PROTOCOL_REVISION,
     AgentConnection,
     AgentConnectionRegistry,
     ClientDeclaration,
@@ -97,10 +98,12 @@ def test_displacing_a_sibling_on_the_same_connection_releases_nothing() -> None:
     assert conn.released_rooms == {}
 
 
-def test_a_client_that_cannot_take_the_frame_is_not_sent_it() -> None:
-    """A client that declared no revision gets only what every client takes."""
+@pytest.mark.parametrize("speaks", [ROOM_RELEASED_PROTOCOL_REVISION - 1, None])
+def test_a_client_that_cannot_take_the_frame_is_not_sent_it(speaks: int | None) -> None:
+    """A client from before the frame, or one that declared no revision, gets
+    only what every client takes."""
     registry = AgentConnectionRegistry()
-    loser = _open(registry, "loser", speaks=None, scope="single")
+    loser = _open(registry, "loser", speaks=speaks, scope="single")
     winner = _open(registry, "winner", speaks=PROTOCOL_VERSION, scope="all")
     registry.claim_room(loser, ROOM_A)
 
