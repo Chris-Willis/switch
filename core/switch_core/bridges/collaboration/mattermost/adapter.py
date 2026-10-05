@@ -379,6 +379,7 @@ class MattermostAdapter(PlatformAdapter):
 
         self._agent_bots: dict[str, dict[str, str]] = {}
         self._bot_drivers: dict[str, Driver] = {}
+        self._identity_locks: dict[str, asyncio.Lock] = {}
         self._bot_id_to_username: dict[str, str] = {}
         self._bridge_bot_ids: set[str] = set()
 
@@ -2031,6 +2032,14 @@ class MattermostAdapter(PlatformAdapter):
     # ── Agent identity ───────────────────────────────────────────────────────
 
     async def create_agent_identity(
+        self, agent_name: str, agent_description: str
+    ) -> None:
+        # The Mattermost calls inside yield, so two overlapping registrations
+        # of one agent would each mint a token and open a second socket.
+        async with self._identity_locks.setdefault(agent_name, asyncio.Lock()):
+            await self._create_agent_identity(agent_name, agent_description)
+
+    async def _create_agent_identity(
         self, agent_name: str, agent_description: str
     ) -> None:
         if not self._admin_driver or not self._main_loop:
