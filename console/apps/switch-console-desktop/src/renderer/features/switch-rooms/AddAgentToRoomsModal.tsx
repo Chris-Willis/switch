@@ -1,5 +1,5 @@
 import { observer } from 'mobx-react-lite';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { PickerCombobox } from '@renderer/lib/components/picker-combobox';
 import { ChosenRoomTile, RoomPickerRow } from '@renderer/lib/components/room-picker';
@@ -49,10 +49,17 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
 
   // Membership comes from the same cache the sidebar draws the room tree from,
   // so the rooms offered here and the rooms the agent is shown under cannot
-  // disagree. Undefined means it was never fetched — offering every room then
-  // would invite a join that is already in place, so say so instead.
+  // disagree. That cache only holds this install's agents up front, so an
+  // agent outside it (a managed agent, say) is read here. Offering every room
+  // while that read is pending would invite a join already in place, and
+  // when it failed the dialog says so.
+  useEffect(() => {
+    void switchRoomsStore.fetchAgentRooms(workspaceId, switchAgentId);
+  }, [workspaceId, switchAgentId]);
   const memberships = switchRoomsStore.roomsFor(workspaceId, switchAgentId);
-  const membershipUnknown = memberships === undefined;
+  const membershipError =
+    memberships === undefined ? switchRoomsStore.errorFor(workspaceId, switchAgentId) : null;
+  const membershipLoading = memberships === undefined && membershipError === null;
   const alreadyIn = new Set((memberships ?? []).map((m) => m.roomId));
 
   // Every room the server let us see, not only the ones this user created: an
@@ -128,17 +135,18 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
               }}
               searchText={(item) => item.name}
               renderItem={(item) => <RoomPickerRow room={item} />}
-              disabled={nothingToAdd}
+              disabled={nothingToAdd || membershipLoading}
               placeholder="Search rooms to add..."
               emptyText="No rooms found"
             />
-            {membershipUnknown && (
+            {membershipError !== null && (
               <p className="mt-1 text-xs text-foreground-warning">
-                Which rooms {agentName} is already in could not be read, so every room in the
-                workspace is listed. Adding it to one it already belongs to changes nothing.
+                Which rooms {agentName} is already in could not be read ({membershipError}), so
+                every room in the workspace is listed. Adding it to one it already belongs to
+                changes nothing.
               </p>
             )}
-            {nothingToAdd && !membershipUnknown && (
+            {nothingToAdd && memberships !== undefined && (
               <p className="mt-1 text-xs text-foreground-muted">
                 {agentName} is already in every room you can see in this workspace.
               </p>
