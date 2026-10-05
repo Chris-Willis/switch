@@ -731,7 +731,8 @@ class ManagementService:
     ) -> dict[str, Any]:
         """Register a new agent through the known-agent spec for its provider,
         and place it. Placement is checked before anything is registered, so a
-        refusal leaves nothing behind."""
+        refusal leaves nothing behind; a failure after registering deletes the
+        registered agent again."""
         controller = await self._check_target(
             session,
             tenant_id,
@@ -768,19 +769,24 @@ class ManagementService:
             raise ManagementError(409, reason_codes.VALIDATION_ERROR, str(exc)) from exc
         except ValueError as exc:
             raise ManagementError(422, reason_codes.VALIDATION_ERROR, str(exc)) from exc
-        row = await self.definitions.create(
-            session,
-            agent_id=result.agent_id,
-            owner_id=owner_id,
-            controller_id=request.controller_id,
-            desired_state=request.desired_state,
-            definition=definition.model_dump(),
-        )
-        revisions = await self._bump_and_collect(
-            session, tenant_id, {request.controller_id}
-        )
-        await session.commit()
-        await self._bind(session, tenant_id, row)
+        try:
+            row = await self.definitions.create(
+                session,
+                agent_id=result.agent_id,
+                owner_id=owner_id,
+                controller_id=request.controller_id,
+                desired_state=request.desired_state,
+                definition=definition.model_dump(),
+            )
+            revisions = await self._bump_and_collect(
+                session, tenant_id, {request.controller_id}
+            )
+            await session.commit()
+            await self._bind(session, tenant_id, row)
+        except Exception:
+            await session.rollback()
+            await self._discard_registered(protocol, result.agent_id)
+            raise
         self._nudge(revisions)
         logger.info(
             "Created managed agent %s on controller %s",
@@ -789,6 +795,24 @@ class ManagementService:
         )
         agent = await self._owned_agent(session, owner_id, result.agent_id)
         return await self._view(session, tenant_id, row, agent, {})
+
+    async def _discard_registered(self, protocol: AgentCore, agent_id: str) -> None:
+        """Delete an agent registered for a managed agent whose creation then
+        failed, so the failure leaves no agent behind. The caller re-raises the
+        original error; a failure here is logged beside it, not raised over it."""
+        try:
+            await protocol.delete_agent(agent_id=agent_id)
+        except Exception:
+            logger.error(
+                "Could not delete agent %s after creating it as a managed agent "
+                "failed; it is left registered with no definition",
+                agent_id,
+                exc_info=True,
+            )
+            return
+        logger.warning(
+            "Deleted agent %s: creating it as a managed agent failed", agent_id
+        )
 
     async def put_managed_agent(
         self,

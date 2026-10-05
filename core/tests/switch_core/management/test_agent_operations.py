@@ -623,6 +623,36 @@ class TestCreateAgent:
         assert "(validation_error)" in taken.json()["detail"]
         assert "helper" in taken.json()["detail"]
 
+    async def test_a_failure_after_registering_leaves_no_agent(
+        self,
+        harness: Harness,
+        client: httpx.AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        agent_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+
+        async def broken_create(*args: Any, **kwargs: Any) -> AgentDefinition:
+            raise RuntimeError("definition store is down")
+
+        monkeypatch.setattr(
+            harness.management.service.definitions, "create", broken_create
+        )
+
+        with pytest.raises(RuntimeError, match="definition store is down"):
+            await _call(
+                client, agent_id, "create_agent", bearer(key), _create_body("laptop")
+            )
+
+        assert await _agent_row(harness, "builder") is None
+        async with harness.session_factory() as session:
+            definitions = (await session.execute(select(AgentDefinition))).all()
+        assert definitions == []
+
 
 class TestListManagedAgents:
     async def test_shows_what_was_created_and_how_it_is_doing(
