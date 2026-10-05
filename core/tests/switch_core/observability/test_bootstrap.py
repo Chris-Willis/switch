@@ -14,6 +14,7 @@ from switch_core.config import SwitchConfig
 from switch_core.observability.bootstrap import RuntimeProbes, start_observability
 from switch_core.observability.metrics import metrics, uninstall
 from switch_core.observability.pool import PoolStats
+from switch_core.transport.room_cache import RoomCacheStats
 
 BASE_ENV = {
     "DB_HOST": "localhost",
@@ -191,6 +192,44 @@ async def test_an_endpoint_installs_the_registry_and_reports_state(monkeypatch):
         assert running == {"slack": 1.0, "mattermost": 1.0}
     finally:
         await observability.aclose()
+
+
+@pytest.mark.asyncio
+async def test_the_room_cache_reports_what_it_holds_only_when_on(monkeypatch):
+    """Off is absence, not a zero: an empty cache and no cache differ."""
+    config = _config(
+        monkeypatch,
+        OTLP_ENDPOINT="https://collector.example",
+        DEPLOYMENT_ID=DEPLOYMENT_ID,
+        OTLP_EXPORT_INTERVAL_SECONDS="3600",
+    )
+    off = start_observability(
+        config=config,
+        version="1.0.0",
+        session_factory=_session_factory(),
+        probes=_probes(),
+    )
+    try:
+        names = {p.name for p in metrics().collect()}
+        assert "switch.delivery_cache.bytes" not in names
+        assert "switch.delivery_cache.rooms" not in names
+    finally:
+        await off.aclose()
+
+    on = start_observability(
+        config=config,
+        version="1.0.0",
+        session_factory=_session_factory(),
+        probes=_probes(
+            room_cache_stats=lambda: RoomCacheStats(bytes=4096, rooms=3, rows=12)
+        ),
+    )
+    try:
+        payloads = {p.name: p for p in metrics().collect()}
+        assert payloads["switch.delivery_cache.bytes"].numbers[0].value == 4096.0
+        assert payloads["switch.delivery_cache.rooms"].numbers[0].value == 3.0
+    finally:
+        await on.aclose()
 
 
 @pytest.mark.asyncio

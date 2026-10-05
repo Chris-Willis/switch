@@ -376,6 +376,12 @@ switchCore:
   # it must stay under the 6s agent heartbeat TTL, and 0 disables the cache.
   authCache:
     ttlSeconds: 5
+  # Share one read of a room's new messages between every agent in it, rather
+  # than each reading the same rows. Off by default while it is proved on dev;
+  # turning it off again is the rollback. The memory limits default in
+  # switch-core (ROOM_DELIVERY_CACHE_MAX_*).
+  roomDeliveryCache:
+    enabled: false
   service:
     type: ClusterIP
     port: 8000
