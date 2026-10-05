@@ -31,7 +31,7 @@ vi.mock('@renderer/lib/ipc', () => ({
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
-  switchRoomsStore: { serversNotSignedIn: [], roomNameById: () => null },
+  switchRoomsStore: { workspacesNotSignedIn: [], roomNameById: () => null },
 }));
 
 vi.mock('@renderer/lib/layout/navigation-provider', () => ({

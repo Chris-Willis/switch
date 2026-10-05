@@ -81,7 +81,7 @@ async def _room_with_a_conversation(
     """One room, one human, one agent, one human message."""
     async with tenant_session(session_factory, tenant_id) as session:
         room = Room(
-            matrix_room_id=f"!{uuid.uuid4().hex[:10]}:test",
+            transport_room_id=f"!{uuid.uuid4().hex[:10]}:test",
             name=f"room-{uuid.uuid4().hex[:6]}",
             description="a room",
             channel_type="channel_public",
@@ -89,12 +89,12 @@ async def _room_with_a_conversation(
             metadata_={"created_by_kind": "user"},
         )
         human = Client(
-            matrix_user_id=f"@human-{uuid.uuid4().hex[:8]}:test",
+            transport_user_id=f"@human-{uuid.uuid4().hex[:8]}:test",
             display_name="a person",
             type="user",
         )
         agent = Client(
-            matrix_user_id=f"@agent-{uuid.uuid4().hex[:8]}:test",
+            transport_user_id=f"@agent-{uuid.uuid4().hex[:8]}:test",
             display_name="an agent",
             type="agent",
         )
@@ -115,7 +115,7 @@ async def _room_with_a_conversation(
                 room_id=room.id,
                 seq=1,
                 transport_event_id=f"$evt-{uuid.uuid4().hex}",
-                sender_id=human.matrix_user_id,
+                sender_id=human.transport_user_id,
                 sender_client_id=human.id,
                 event_type="m.room.message",
                 msgtype="m.text",

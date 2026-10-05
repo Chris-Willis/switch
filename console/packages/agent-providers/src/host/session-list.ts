@@ -10,12 +10,13 @@ import { sharedSessionsBase } from './launch';
  * Each session's host keeps its own record under the agent's host directory.
  * `readHostSessions` reads them; it is self-contained so the same source runs
  * in-process (a watcher answering `list`) and as `LIST_SCRIPT` under `node -e`
- * on a host Console reaches over SSH.
+ * on a host Console reaches over SSH. A null `agentId` reads every agent's
+ * sessions: the read covers every session directory either way.
  */
 export function readHostSessions(
   nodeFs: typeof fs,
   nodePath: typeof path,
-  agentId: string,
+  agentId: string | null,
   base: string
 ): ListedSession[] {
   const readJson = (file: string): unknown => {
@@ -78,7 +79,8 @@ export function readHostSessions(
       if (code === 'ENOENT' || code === 'ENOTDIR') continue;
       throw error;
     }
-    if (!config || !config.session || config.session.agentId !== agentId) continue;
+    if (!config || !config.session || !config.session.agentId) continue;
+    if (agentId !== null && config.session.agentId !== agentId) continue;
     const upserts = lines(nodePath.join(root, 'events.jsonl')).filter(
       (e) => e && e.body && e.body.type === 'session.upsert'
     );
@@ -110,13 +112,14 @@ export type ListedSession = {
 
 /**
  * `readHostSessions` as a `node -e` script: `node -e LIST_SCRIPT <agentId>
- * [base]` prints the listing as JSON. An empty base is the default one.
+ * [base]` prints the listing as JSON. An empty agent id lists every agent's
+ * sessions, and an empty base is the default one.
  */
 export const LIST_SCRIPT = `
 const path = require('node:path');
-const [agentId, baseArg] = process.argv.slice(1);
+const [agentArg, baseArg] = process.argv.slice(1);
 const base = baseArg || path.join(require('node:os').homedir(), '.local', 'state', 'switch', 'sdk-sessions');
-process.stdout.write(JSON.stringify((${readHostSessions.toString()})(require('node:fs'), path, agentId, base)));
+process.stdout.write(JSON.stringify((${readHostSessions.toString()})(require('node:fs'), path, agentArg || null, base)));
 `;
 
 const listedSchema = z.array(

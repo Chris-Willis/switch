@@ -30,8 +30,8 @@ from switch_core.gateway.known_agents import known_agent_for
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
-    from switch_core.clients.admin_client import AdminClient
-    from switch_core.clients.agent_client import AgentClient
+    from switch_core.clients.agent_consumer import AgentConsumer
+    from switch_core.clients.command_consumer import CommandConsumer
     from switch_core.clients.room_meta import RoomMeta
     from switch_core.db.models import Agent
 
@@ -49,23 +49,25 @@ AGENT_GREETINGS = [
     "Hi there! Just @{name} me when you're ready.",
 ]
 
-CommandHandler = Callable[["AgentClient", RoomRef, CommandEvent, bool], Awaitable[None]]
+CommandHandler = Callable[
+    ["AgentConsumer", RoomRef, CommandEvent, bool], Awaitable[None]
+]
 # (client, args, room_id) -> whether THIS agent is addressed by the command.
 # Targeting is a per-command policy (see Command.addressed) rather than a fixed
 # rule in on_command, so a command like `run-cmd` can interpret its args its
 # own way.
-CommandTargeting = Callable[["AgentClient", str, str], Awaitable[bool]]
+CommandTargeting = Callable[["AgentConsumer", str, str], Awaitable[bool]]
 # (host, room, event, meta) -> None. An admin-side usage check run by the
 # always-present admin client BEFORE agents act on a command. It posts a
 # system message when the command is misused (bad/missing target) and does
 # nothing when usage is valid; it never executes the command itself.
 CommandAdminCheck = Callable[
-    ["AdminClient", RoomRef, CommandEvent, "RoomMeta"], Awaitable[None]
+    ["CommandConsumer", RoomRef, CommandEvent, "RoomMeta"], Awaitable[None]
 ]
 
 
 async def _addressed_by_name_or_role(
-    client: AgentClient, args: str, room_id: str
+    client: AgentConsumer, args: str, room_id: str
 ) -> bool:
     """Default command targeting.
 
@@ -84,7 +86,7 @@ async def _addressed_by_name_or_role(
 
 
 async def _addressed_by_first_mention(
-    client: AgentClient, args: str, room_id: str
+    client: AgentConsumer, args: str, room_id: str
 ) -> bool:
     """Targeting for `run-cmd`: only the FIRST `@token` addresses an agent (by
     name or by a role it holds). Any further `@token` is data for the handler
@@ -100,7 +102,7 @@ async def _addressed_by_first_mention(
 
 
 async def _addressed_by_required_first_mention(
-    client: AgentClient, args: str, room_id: str
+    client: AgentConsumer, args: str, room_id: str
 ) -> bool:
     """Like `_addressed_by_first_mention`, but a missing target addresses NO
     ONE. Used by `!reset`, where a bare `!reset` must not silently reset every
@@ -113,14 +115,14 @@ async def _addressed_by_required_first_mention(
     return await _first_token_is_me(client, tokens[0], room_id)
 
 
-async def _addressed_everyone(client: AgentClient, args: str, room_id: str) -> bool:
+async def _addressed_everyone(client: AgentConsumer, args: str, room_id: str) -> bool:
     """Targeting for room-wide control commands (`!reset-all-agents`): every
     agent is addressed regardless of args, so the command always fans out to
     the whole room."""
     return True
 
 
-async def _first_token_is_me(client: AgentClient, first: str, room_id: str) -> bool:
+async def _first_token_is_me(client: AgentConsumer, first: str, room_id: str) -> bool:
     """Whether `@first` names this agent — by name, room alias, or a held role."""
     if client._args_tag_my_name(f"@{first}"):
         return True
@@ -131,7 +133,7 @@ async def _first_token_is_me(client: AgentClient, first: str, room_id: str) -> b
 
 
 async def _check_control_target(
-    host: AdminClient, room: RoomRef, event: CommandEvent, meta: RoomMeta
+    host: CommandConsumer, room: RoomRef, event: CommandEvent, meta: RoomMeta
 ) -> None:
     """Admin-side usage feedback for a target-required control command.
 
@@ -350,7 +352,7 @@ def _control_frame(
     }
 
 
-async def _room_surface(client: AgentClient, room_id: str) -> str:
+async def _room_surface(client: AgentConsumer, room_id: str) -> str:
     """The platform a room is bridged to, as a contract surface."""
     async with client.session_factory() as db:
         room = await db.get(Room, room_id)
@@ -363,7 +365,7 @@ async def _room_surface(client: AgentClient, room_id: str) -> str:
 
 
 async def _reply(
-    client: AgentClient | AdminClient,
+    client: AgentConsumer | CommandConsumer,
     room: RoomRef,
     event: CommandEvent,
     body: str,
@@ -387,7 +389,7 @@ async def _reply(
 
 
 async def _cmd_help(
-    client: AgentClient, room: RoomRef, event: CommandEvent, _is_direct: bool
+    client: AgentConsumer, room: RoomRef, event: CommandEvent, _is_direct: bool
 ) -> None:
     lines = ["**Available commands:**"]
     for cmd in COMMANDS:
@@ -398,7 +400,7 @@ async def _cmd_help(
 
 
 async def _reply_hosted_asleep(
-    client: AgentClient,
+    client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
     agent: Agent,
@@ -454,7 +456,7 @@ async def _reply_hosted_asleep(
 
 
 async def _dispatch_control_command(
-    client: AgentClient,
+    client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
     command: str,
@@ -598,7 +600,7 @@ async def _dispatch_control_command(
 
 
 async def _cmd_reset(
-    client: AgentClient, room: RoomRef, event: CommandEvent, _is_direct: bool
+    client: AgentConsumer, room: RoomRef, event: CommandEvent, _is_direct: bool
 ) -> None:
     await _dispatch_control_command(
         client,
@@ -619,7 +621,7 @@ async def _cmd_reset(
 
 
 async def _cmd_compact(
-    client: AgentClient, room: RoomRef, event: CommandEvent, _is_direct: bool
+    client: AgentConsumer, room: RoomRef, event: CommandEvent, _is_direct: bool
 ) -> None:
     await _dispatch_control_command(
         client,
@@ -639,7 +641,7 @@ async def _cmd_compact(
 
 
 async def _cmd_interrupt(
-    client: AgentClient, room: RoomRef, event: CommandEvent, _is_direct: bool
+    client: AgentConsumer, room: RoomRef, event: CommandEvent, _is_direct: bool
 ) -> None:
     await _dispatch_control_command(
         client,
@@ -659,7 +661,7 @@ async def _cmd_interrupt(
 
 
 async def _cmd_list_room_agents(
-    client: AgentClient,
+    client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -687,7 +689,7 @@ async def _cmd_list_room_agents(
 
 
 async def _cmd_list_aliases(
-    client: AgentClient,
+    client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -719,7 +721,7 @@ async def _cmd_list_aliases(
 
 
 async def _cmd_set_alias(
-    client: AgentClient,
+    client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -789,7 +791,7 @@ async def _cmd_set_alias(
 
 
 async def _cmd_remove_alias(
-    client: AgentClient,
+    client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -841,7 +843,7 @@ async def _cmd_remove_alias(
 
 
 async def _cmd_invite(
-    client: AgentClient,
+    client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -887,11 +889,11 @@ async def _cmd_invite(
             return
 
     # `invite-agent` is admin-owned, so only the always-present admin client
-    # runs this handler — the `room_service` reference lives on AdminClient.
+    # runs this handler — the `room_service` reference lives on CommandConsumer.
     # Reuse `add_agents_to_room` (the same path as the `invite_agent_to_room`
-    # MCP tool) so the agent is invited to Matrix AND added to any bridged
+    # MCP tool) so the agent is invited to the room AND added to any bridged
     # channel.
-    await cast("AdminClient", client)._room_service.add_agents_to_room(
+    await cast("CommandConsumer", client)._room_service.add_agents_to_room(
         meta.room_id, agent_names=[target.name]
     )
     await _reply(
@@ -960,7 +962,7 @@ def _format_status_lines(
 
 
 async def _cmd_status(
-    client: AgentClient,
+    client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -1002,7 +1004,7 @@ async def _cmd_status(
 
 
 async def _cmd_roles(
-    client: AgentClient,
+    client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -1040,7 +1042,7 @@ async def _cmd_roles(
 
 
 async def _cmd_list_documents(
-    client: AgentClient,
+    client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -1086,7 +1088,7 @@ async def _cmd_list_documents(
 
 
 async def _cmd_list_references(
-    client: AgentClient,
+    client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -1122,7 +1124,7 @@ async def _cmd_list_references(
 
 
 async def _cmd_room_url(
-    client: AgentClient,
+    client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -1149,7 +1151,7 @@ async def _cmd_room_url(
 
 
 async def _cmd_list_all_agents(
-    client: AgentClient,
+    client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -1181,7 +1183,7 @@ def _role_arg(args: str) -> str | None:
 
 
 async def _cmd_run_cmd(
-    client: AgentClient,
+    client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -1242,7 +1244,7 @@ async def _cmd_run_cmd(
 
 
 async def _cmd_agents_greet(
-    client: AgentClient,
+    client: AgentConsumer,
     room: RoomRef,
     event: CommandEvent,
     is_direct: bool,
@@ -1450,7 +1452,7 @@ COMMANDS_BY_NAME: dict[str, Command] = {cmd.name: cmd for cmd in COMMANDS}
 
 
 async def dispatch_command(
-    client: AgentClient, room: RoomRef, event: CommandEvent, is_direct: bool
+    client: AgentConsumer, room: RoomRef, event: CommandEvent, is_direct: bool
 ) -> bool:
     """Runs a command.
 
@@ -1475,7 +1477,7 @@ async def dispatch_command(
 
 
 async def dispatch_admin_command(
-    host: AdminClient, room: RoomRef, event: CommandEvent
+    host: CommandConsumer, room: RoomRef, event: CommandEvent
 ) -> None:
     """Run an admin-owned command on the admin client.
 
@@ -1500,4 +1502,4 @@ async def dispatch_admin_command(
     is_direct = await host._is_direct_room(room.room_id)
     # Admin-owned handlers use only the store/reply surface both clients share
     # (never `.agent`), so the admin host satisfies the handler's contract.
-    await cmd.handler(cast("AgentClient", host), room, event, is_direct)
+    await cmd.handler(cast("AgentConsumer", host), room, event, is_direct)

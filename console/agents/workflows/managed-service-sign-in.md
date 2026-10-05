@@ -1,12 +1,13 @@
 # Managed service onboarding
 
-Set `VITE_SWITCH_MANAGED_URL` to the HTTPS origin of the managed service when
-starting or building Console. The gateway and agent API must share that origin.
-The value is public build configuration, not a secret. A missing or invalid
-value produces a visible error before the sign-in form opens.
+Console learns the Switch Cloud origin from `SWITCH_CLOUD_URL` at run time or
+`MAIN_VITE_SWITCH_CLOUD_URL` baked into a build (see `console/AGENTS.md`). The
+gateway and agent API share that origin, and the server registered at it is the
+one Console treats as Switch Cloud. The value is public build configuration, not
+a secret. An invalid value shows as an error on the Cloud choice.
 
-Add server → Switch-managed reuses server registration, password/SSO sign-in,
-and encrypted session storage. A matching server entry and valid session are
+Add server → Cloud reuses server registration, password/SSO sign-in, and
+encrypted session storage. A matching server entry and valid session are
 reused. The provider selector shows the registered providers; Claude Code is the
 only enabled provider in this increment.
 

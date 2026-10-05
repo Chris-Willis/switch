@@ -19,9 +19,15 @@ const switchServers = vi.hoisted(() => ({
   ensureCloudMachine: vi.fn(),
 }));
 
+const workspaces = vi.hoisted(() => ({
+  list: vi.fn(async () => []),
+  getActiveId: vi.fn(async () => null),
+  serversWithoutMembership: vi.fn(async () => []),
+}));
+
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { switchServers },
+  rpc: { switchServers, workspaces },
 }));
 
 import {
@@ -44,9 +50,9 @@ let root: Root | null = null;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.stubEnv('VITE_SWITCH_MANAGED_URL', MANAGED_ORIGIN);
   runInAction(() => {
     switchServersStore.servers = [SERVER];
+    switchServersStore.switchCloudUrl = MANAGED_ORIGIN;
     switchServersStore.authConfigs.clear();
   });
   switchServers.getAuthConfig.mockResolvedValue({
@@ -68,7 +74,6 @@ afterEach(async () => {
   container?.remove();
   container = null;
   root = null;
-  vi.unstubAllEnvs();
 });
 
 const Harness = observer(function Harness({

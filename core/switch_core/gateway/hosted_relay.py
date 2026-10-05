@@ -21,7 +21,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.bridges.agent.protocol.connections import Connection
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnection
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.hosted_workers import (
     HEALTH_SUBSCRIPTION,
     RELAY_REQUEST_LIMIT_BYTES,
@@ -33,7 +34,6 @@ from switch_core.bridges.agent.protocol.hosted_workers import (
     frame_size,
     subscribe_message,
 )
-from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.stream import KEEPALIVE_INTERVAL_SECONDS
 from switch_core.db.models import HostedLaunch, HostedMachine, User, require_tenant_id
 from switch_core.db.session_scope import tenant_session
@@ -70,7 +70,7 @@ class RelayRequest(BaseModel):
     timeout_ms: int = Field(gt=0, le=RELAY_TIMEOUT_LIMIT_MS)
 
 
-def worker_info(conn: Connection | None) -> dict[str, Any] | None:
+def worker_info(conn: AgentConnection | None) -> dict[str, Any] | None:
     if conn is None or conn.worker is None:
         return None
     return {
@@ -92,11 +92,11 @@ def relay_error(error: RelayError, worker: dict[str, Any] | None) -> JSONRespons
 
 
 def relay_target(
-    protocol: ProtocolService,
+    protocol: AgentCore,
     launch: HostedLaunch,
     machine: HostedMachine | None,
     kind: str,
-) -> Connection:
+) -> AgentConnection:
     """The worker attached for the launch's current revision, or why there is none.
 
     A mutating message to an idle-sleeping machine is the caller's to wake
@@ -143,9 +143,9 @@ def relay_frame(
 
 
 def dispatch_read_only(
-    protocol: ProtocolService,
+    protocol: AgentCore,
     tenant_id: str,
-    conn: Connection,
+    conn: AgentConnection,
     message: dict[str, Any],
     timeout_ms: int,
 ) -> PendingRelay:
@@ -170,7 +170,7 @@ def dispatch_read_only(
 
 
 async def dispatch_mutating(
-    protocol: ProtocolService,
+    protocol: AgentCore,
     tenant_id: str,
     launch_id: str,
     message: dict[str, Any],
@@ -239,7 +239,7 @@ async def owned_launch(
 
 
 async def current_summary(
-    protocol: ProtocolService, tenant_id: str, launch_id: str
+    protocol: AgentCore, tenant_id: str, launch_id: str
 ) -> dict[str, Any] | None:
     """The launch summary as committed, after a mutating dispatch may have woken it."""
     async with tenant_session(protocol.session_factory, tenant_id) as session:
@@ -263,7 +263,7 @@ async def relay(
     raw: Annotated[bytes, Depends(request_body)],
     user: Annotated[User, Depends(get_current_user_in_transaction)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> JSONResponse:
     if len(raw) > RELAY_REQUEST_LIMIT_BYTES:
         return relay_error(
@@ -321,9 +321,9 @@ async def relay(
 
 
 def ask_worker(
-    protocol: ProtocolService,
+    protocol: AgentCore,
     tenant_id: str,
-    conn: Connection,
+    conn: AgentConnection,
     subscription: str,
     on: bool,
 ) -> None:
@@ -364,8 +364,8 @@ NO_WORKER = {"launch_revision": None, "boot_id": None, "generation": None}
 
 
 def launch_worker(
-    protocol: ProtocolService, agent_id: str, launch_id: str
-) -> Connection | None:
+    protocol: AgentCore, agent_id: str, launch_id: str
+) -> AgentConnection | None:
     conn = protocol.connections.attached_worker(agent_id)
     if conn is None or conn.worker is None or conn.worker.launch_id != launch_id:
         return None
@@ -373,7 +373,7 @@ def launch_worker(
 
 
 async def relay_events(
-    protocol: ProtocolService,
+    protocol: AgentCore,
     tenant_id: str,
     agent_id: str,
     launch_id: str,
@@ -417,7 +417,7 @@ async def relay_stream(
     request_id: UUID,
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     subscribe: Annotated[list[UUID] | None, Query()] = None,
     watch_health: Annotated[bool, Query(alias="watchHealth")] = False,
 ) -> StreamingResponse:

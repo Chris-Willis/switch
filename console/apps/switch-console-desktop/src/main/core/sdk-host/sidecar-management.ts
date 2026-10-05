@@ -1,7 +1,7 @@
 import { getRemoteAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { setControllerStopped } from '@main/core/switch-rooms/auto-session-store';
-import { applyControllerState, configureSharedWatcher } from './shared-watcher';
+import { applyControllerState, configureAgentHost } from './agent-host';
 
 export async function manageAgentSidecar(
   agentId: string,
@@ -21,13 +21,13 @@ export async function manageAgentSidecar(
   // one, so this no longer touches that setting.
   await setControllerStopped(agentId, action === 'stop');
   if (action === 'stop') {
-    await configureSharedWatcher(agentId, { connected: false, spawning: false }, 'explicit');
+    await configureAgentHost(agentId, { connected: false, spawning: false }, 'explicit');
     return;
   }
   // Someone pressed Start, Update or Restart, so this is the explicit ask that
   // brings a controller back after it stood down for a connection something
   // else took. Update and Restart stop first so the new bundle is what starts.
   if (action !== 'start')
-    await configureSharedWatcher(agentId, { connected: false, spawning: false }, 'explicit');
-  await applyControllerState(agentId, 'explicit');
+    await configureAgentHost(agentId, { connected: false, spawning: false }, 'explicit');
+  await applyControllerState(agentId, 'explicit', 'host');
 }

@@ -23,6 +23,7 @@ both unaffected by telemetry being added.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -38,6 +39,7 @@ from switch_core.db.models import Client, CollaborationBridge
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.keys import Keyring
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import TelemetryRecord
 from tests.switch_core.bridges.collaboration.test_lifecycle_callback_endpoint import (
@@ -67,6 +69,7 @@ def _service_with_telemetry(
     *,
     callback_port: int = 0,
     client_store: Any = None,
+    installed_at: datetime | None = None,
 ) -> tuple[CollaborationBridgeLifecycleService, _RecordingSink]:
     sink = _RecordingSink()
     telemetry = TelemetryService(
@@ -77,12 +80,13 @@ def _service_with_telemetry(
         version=None,
         environment=None,
         session_factory=session_factory,
+        installed_at=installed_at,
     )
     config = MagicMock()
     config.gateway_public_url = "https://gw.example"
     config.collaboration_callback_host = "127.0.0.1"
     config.collaboration_callback_port = callback_port
-    config.jwt_secret_key = "server-secret-for-tests"
+    config.keyring = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
     service = CollaborationBridgeLifecycleService(
         bridge_store=CollaborationBridgeStore(),
         external_user_store=MagicMock(),
@@ -92,7 +96,7 @@ def _service_with_telemetry(
         client_store=client_store if client_store is not None else ClientStore(),
         client_lifecycle=MagicMock(),
         room_service=MagicMock(),
-        matrix_admin=MagicMock(),
+        provisioning=MagicMock(),
         session_factory=session_factory,
         config=config,
         client_factory=MagicMock(),
@@ -154,7 +158,7 @@ class _PortHoldingAdapter(_StubAdapter):
 
 
 class _FailingCore:
-    """A `bridge_core.start()` that never reaches the platform at all -- the
+    """A `collaboration_core.start()` that never reaches the platform at all -- the
     `_run_bridge` branch that still reports `bridge_connected{failure}`,
     as opposed to a `bridge_disconnected` for a bridge that connected and
     then dropped."""
@@ -175,7 +179,7 @@ async def _bridge_row(
     not cover."""
     client = Client(
         tenant_id=tenant_id,
-        matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+        transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
         display_name="bridge client",
         type="bridge",
     )
@@ -215,6 +219,7 @@ class TestEachStartFailurePointReportsAndReraises:
         events = await _bridge_connected_events(sink)
         assert events == [
             {
+                "bridge": "collaboration",
                 "bridge_platform": "unknown",
                 "outcome": "failure",
                 "failure_reason": "config_invalid",
@@ -242,6 +247,7 @@ class TestEachStartFailurePointReportsAndReraises:
         events = await _bridge_connected_events(sink)
         assert events == [
             {
+                "bridge": "collaboration",
                 "bridge_platform": "mattermost",
                 "outcome": "failure",
                 "failure_reason": "config_invalid",
@@ -273,6 +279,7 @@ class TestEachStartFailurePointReportsAndReraises:
         events = await _bridge_connected_events(sink)
         assert events == [
             {
+                "bridge": "collaboration",
                 "bridge_platform": "unknown",
                 "outcome": "failure",
                 "failure_reason": "config_invalid",
@@ -307,6 +314,7 @@ class TestEachStartFailurePointReportsAndReraises:
         events = await _bridge_connected_events(sink)
         assert events == [
             {
+                "bridge": "collaboration",
                 "bridge_platform": "teams",
                 "outcome": "failure",
                 "failure_reason": "config_invalid",
@@ -336,6 +344,7 @@ class TestEachStartFailurePointReportsAndReraises:
         events = await _bridge_connected_events(sink)
         assert events == [
             {
+                "bridge": "collaboration",
                 "bridge_platform": "mattermost",
                 "outcome": "failure",
                 "failure_reason": "config_invalid",
@@ -362,6 +371,7 @@ class TestEachStartFailurePointReportsAndReraises:
         events = await _bridge_connected_events(sink)
         assert events == [
             {
+                "bridge": "collaboration",
                 "bridge_platform": "mattermost",
                 "outcome": "failure",
                 # RuntimeError carries no reason any rule recognises -- an
@@ -399,6 +409,7 @@ class TestEachStartFailurePointReportsAndReraises:
         events = await _bridge_connected_events(sink)
         assert events == [
             {
+                "bridge": "collaboration",
                 "bridge_platform": "mattermost",
                 "outcome": "failure",
                 "failure_reason": "config_invalid",
@@ -437,6 +448,7 @@ class TestStartAllsBootPathIsCoveredToo:
         events = await _bridge_connected_events(sink)
         assert events == [
             {
+                "bridge": "collaboration",
                 "bridge_platform": "teams",
                 "outcome": "failure",
                 "failure_reason": "config_invalid",
@@ -496,10 +508,10 @@ class TestATaskFailureAfterStartSucceedsIsStillReportedExactlyOnce:
 
         # What the scheduled task would have done, awaited directly rather
         # than raced, the same way `test_lifecycle_callback_endpoint.py`'s
-        # crash test does -- except `bridge_core.start()` itself is what
+        # crash test does -- except `collaboration_core.start()` itself is what
         # fails here (`_FailingCore`), the branch that reports
         # `bridge_connected{failure}` from inside `_run_bridge`.
-        # `bridge_client` never gets far enough to have `.start()` called, so
+        # `workspace_consumer` never gets far enough to have `.start()` called, so
         # only its `client_id` attribute (read first, by
         # `_record_bridge_memberships`) matters.
         await type(service)._run_bridge(

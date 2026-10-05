@@ -19,9 +19,9 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from switch_core.bridges.agent.protocol.connections import (
-        Connection,
-        ConnectionRegistry,
+    from switch_core.bridges.agent.protocol.agent_connections import (
+        AgentConnection,
+        AgentConnectionRegistry,
     )
     from switch_core.db.models import HostedLaunch
 
@@ -550,14 +550,14 @@ class RelayViews:
         return unsubscribe
 
 
-def offer_key(boot: int, conn: Connection) -> str:
+def offer_key(boot: int, conn: AgentConnection) -> str:
     """Who holds a wake mailbox offer: this Core boot, the worker's connection and its generation."""
     return f"{boot}:{conn.id}:{conn.stream_generation}"
 
 
 def attached_worker_for(
-    registry: ConnectionRegistry, launch: HostedLaunch
-) -> Connection | None:
+    registry: AgentConnectionRegistry, launch: HostedLaunch
+) -> AgentConnection | None:
     """The launch's attached worker, if it is bound to the launch's current revision."""
     if launch.agent_id is None:
         return None

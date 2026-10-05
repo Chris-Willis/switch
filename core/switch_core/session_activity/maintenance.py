@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.tenant_lookup import all_tenant_ids
-from switch_core.session_activity.service import SessionActivityService
+from switch_core.session_activity.service import AgentSessionActivityService
 from switch_core.tenant_context import no_tenant, tenant_scope
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ async def maintain_once(
     session_factory: async_sessionmaker[AsyncSession], *, prune: bool
 ) -> None:
     """One pass over every tenant: expire overdue requests, and prune if asked."""
-    service = SessionActivityService(session_factory)
+    service = AgentSessionActivityService(session_factory)
     for tenant_id in await all_tenant_ids(session_factory):
         with tenant_scope(tenant_id):
             try:

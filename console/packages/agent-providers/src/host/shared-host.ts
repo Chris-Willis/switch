@@ -13,6 +13,7 @@ import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import {
   planAttachments,
   roomCommand,
+  roomFreshStartCommandId,
   roomMessageSchema,
   type RoomAttachmentSource,
 } from './room-prompt';
@@ -25,6 +26,7 @@ import {
 } from './session-channel';
 import { HostedSession } from './session-host';
 import { startSessionMcp } from './session-mcp';
+import { owedSessionStart, settleSessionStart, type OwedSessionStart } from './session-start';
 import { prepareSharedConfig, type SharedHostConfig } from './shared-config';
 import { SharedState } from './shared-state';
 
@@ -37,8 +39,9 @@ import { SharedState } from './shared-state';
  * agent's sidecar for a remote one) and takes everything over that IPC
  * channel: room messages the agent's controller routed to it, commands from
  * Console, room controls and approval wakes. What it reports goes to the
- * `/agent-sessions` routes: a row per turn step, the requests a person can
- * answer, and the acknowledgement of answers it has applied.
+ * `/agent-sessions` routes: that a new session started and how, a row per
+ * turn step, the requests a person can answer, and the acknowledgement of
+ * answers it has applied.
  *
  * A host with a parent parks itself after `parkAfterMs` with nothing to do:
  * it records `parked` and exits, and its parent starts it again when the
@@ -61,11 +64,11 @@ export type SharedHostOptions = {
 };
 
 /** How long a session sits idle before its host parks, unless the environment says otherwise. */
-const PARK_AFTER_MS = 30 * 60 * 1000;
+const PARK_AFTER_MS = 24 * 60 * 60 * 1000;
 
 /**
  * The park timeout for this process: `SWITCH_SESSION_PARK_AFTER_MS` in
- * milliseconds, `off` to never park, or 30 minutes when unset.
+ * milliseconds, `off` to never park, or one day when unset.
  */
 export function parkAfterMs(): number | null {
   const value = process.env.SWITCH_SESSION_PARK_AFTER_MS;
@@ -608,6 +611,40 @@ export async function runSharedHost(
       }
     };
 
+    /**
+     * A room message reached a conversation that cannot continue as it was —
+     * its provider lost it, or a reset was cut off. Nobody in the room can
+     * press "Start a fresh conversation" for it, so the session does: the
+     * message would otherwise wait unseen for someone at the Console. The
+     * transcript keeps everything said before.
+     */
+    const startFreshFor = async (event: { roomId: string; messageId: string }): Promise<void> => {
+      await host!.startingFreshForRoom();
+      const outcome = await run(
+        {
+          contractVersion: 1,
+          commandId: roomFreshStartCommandId(agentId, event.roomId, event.messageId),
+          sessionId: options.session.sessionId,
+          epoch: host!.snapshot().session.epoch,
+          origin: {
+            surface: 'switch-web',
+            actorId: agentId,
+            roomId: null,
+            threadId: null,
+            messageId: null,
+          },
+          body: { type: 'session.reset' },
+        },
+        null
+      );
+      if (typeof outcome === 'string')
+        throw new Error(`Could not start a fresh conversation for a room message: ${outcome}`);
+      if (outcome.status === 'rejected' || outcome.status === 'unknown')
+        throw new Error(
+          `Could not start a fresh conversation for a room message: ${outcome.message ?? outcome.code ?? outcome.status}`
+        );
+    };
+
     identify(host.snapshot().session);
     // A parent that started this host talks to it over IPC: commands and room
     // messages come down the pipe, and every recorded event goes up it.
@@ -648,9 +685,17 @@ export async function runSharedHost(
       announceBusy();
       parent.ready();
     }
-    /** Nothing running, nothing waiting on a person, nothing handed over, for long enough. */
+    /**
+     * Nothing running, nothing waiting on a person, nothing handed over, for
+     * long enough. Subagents still at work after their turn ended count as
+     * running, and the wait starts again from when the last of them stops.
+     */
     const idleEnough = (): boolean => {
       if (!parent || options.parkAfterMs === null) return false;
+      if (host!.backgroundWorkRunning) {
+        active();
+        return false;
+      }
       if (performance.now() - lastActive < options.parkAfterMs) return false;
       return host!.snapshot().session.status === 'ready' && !busyNow().busy;
     };
@@ -662,10 +707,53 @@ export async function runSharedHost(
         );
       if (applied) await sendFollowup(owed);
     }
+    /**
+     * Tells the server, once, that this session is new and how it started —
+     * what its launcher recorded when it created the state root. Owed until
+     * the server answers, so a host stopped before then reports it next time;
+     * the server counts a repeat once.
+     *
+     * Its own failures stay its own. A server that predates the route answers
+     * a bare 404, which says nothing about the activity routes, so it is not
+     * taken as the `unsupported` that switches all reporting off.
+     */
+    const reportStart = async (): Promise<void> => {
+      try {
+        let owed: OwedSessionStart | 'unreadable' | null;
+        try {
+          owed = await owedSessionStart(options.root);
+        } catch (error) {
+          console.warn(
+            `Could not read how this session started, so it is not reported: ${String(error)}`
+          );
+          owed = 'unreadable';
+        }
+        if (owed === null) return;
+        if (owed !== 'unreadable') {
+          try {
+            await agentSessions(`${sessionPath}/started`, 'POST', { start_source: owed });
+          } catch (error) {
+            if (!(error instanceof RequestError)) throw error;
+            if (error.status === 404 && !error.code)
+              console.warn(
+                'This Switch server does not accept session start reports, so how this session started is not reported.'
+              );
+            else console.warn(`Switch refused this session's start report: ${error.message}`);
+          }
+        }
+        await settleSessionStart(options.root);
+      } catch (error) {
+        // Stopping is the one reason to let go: whatever is still owed is
+        // reported the next time this session's host runs.
+        if (executionSignal.aborted) throw error;
+        console.warn(`Could not report how this session started: ${String(error)}`);
+      }
+    };
     // Reporting runs beside the session rather than in its way: while Switch
     // is unreachable the reports wait and retry, and the session keeps working.
     let reportingFailure: unknown = null;
     reporting = (async () => {
+      await reportStart();
       let force = true;
       while (!executionSignal.aborted) {
         await report();
@@ -685,8 +773,11 @@ export async function runSharedHost(
         throw new Error(
           'HOST_FAULTED: Provider execution failed. Inspect the transcript before recovery.'
         );
-      if (host.resetDecisionPending) heldForDecision = true;
-      else if (heldForDecision) {
+      if (host.resetDecisionPending) {
+        heldForDecision = true;
+        const first = rooms?.pending()[0];
+        if (first) await startFreshFor(first);
+      } else if (heldForDecision) {
         heldForDecision = false;
         const held = rooms?.pending().length ?? 0;
         if (held) await host.roomBacklogDelivered(held);

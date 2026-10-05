@@ -33,24 +33,24 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.app import create_agent_bridge_app
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
     TaskProtocolConfig,
 )
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.clients.agent_client import AgentClient
-from switch_core.clients.client_base import ClientBase
+from switch_core.clients.actor import Actor, AgentActor, HumanActor
+from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.engine import create_unpooled_engine
 from switch_core.db.models import (
     TENANT_ZERO_ID,
+    AgentSessionActivityItem,
     ApprovalRequest,
     Message,
-    SessionActivityItem,
     User,
 )
 from switch_core.db.session_scope import tenant_session
@@ -66,9 +66,9 @@ from switch_core.observability.runtime import EventLoopLag
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomCreateConfig, RoomService
-from switch_core.session_activity.listener import SessionActivityListener
+from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.outcomes import ApprovalOutcomes
-from switch_core.session_activity.service import SessionActivityService, SwitchUser
+from switch_core.session_activity.service import AgentSessionActivityService, SwitchUser
 from switch_core.sessions.contract import ApprovalResult
 from switch_core.tenant_context import bind_tenant_id, tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
@@ -126,17 +126,17 @@ class BenchServer:
         *,
         base_url: str,
         port: int,
-        protocol: ProtocolService,
+        protocol: AgentCore,
         room_service: RoomService,
         client_lifecycle: ClientLifecycleService,
         event_buffer: EventBuffer,
-        connections: ConnectionRegistry,
+        connections: AgentConnectionRegistry,
         collector: TraceCollector,
         requests: RequestCounter,
         statements: Counter[str],
         owner_id: str,
         session_factory: async_sessionmaker[AsyncSession],
-        activity: SessionActivityService,
+        activity: AgentSessionActivityService,
         agents: tuple[BenchAgent, ...],
     ) -> None:
         self.base_url = base_url
@@ -193,14 +193,14 @@ class BenchServer:
                 found.setdefault(correlation, []).append(room_id)
         return found
 
-    async def activity_rows(self, agent_id: str) -> list[SessionActivityItem]:
+    async def activity_rows(self, agent_id: str) -> list[AgentSessionActivityItem]:
         """The turn-step rows this agent's session hosts reported."""
         async with tenant_session(self._session_factory, TENANT_ZERO_ID) as db:
             return list(
                 (
                     await db.execute(
-                        select(SessionActivityItem).where(
-                            SessionActivityItem.agent_id == agent_id
+                        select(AgentSessionActivityItem).where(
+                            AgentSessionActivityItem.agent_id == agent_id
                         )
                     )
                 )
@@ -261,7 +261,7 @@ class BenchServer:
             client = await self._await_client(agent.agent_id, deadline)
             await client.wait_ready()
 
-    async def _await_client(self, agent_id: str, deadline: float) -> AgentClient:
+    async def _await_client(self, agent_id: str, deadline: float) -> AgentConsumer:
         while asyncio.get_event_loop().time() < deadline:
             client = self.client_lifecycle.get_by_agent_id(agent_id)
             if client is not None:
@@ -444,14 +444,16 @@ async def _serve(
     # raises instead of unbinding.
     bind_tenant_id(TENANT_ZERO_ID)
     event_buffer = EventBuffer(sequence_base=0)
-    connections = ConnectionRegistry()
+    connections = AgentConnectionRegistry()
     collab_lifecycle = _NoBridges()
 
     message_listener = MessageListener(lambda: create_unpooled_engine(config))
     await message_listener.start()
-    activity_listener = SessionActivityListener(lambda: create_unpooled_engine(config))
+    activity_listener = AgentSessionActivityListener(
+        lambda: create_unpooled_engine(config)
+    )
     await activity_listener.start()
-    activity = SessionActivityService(session_factory)
+    activity = AgentSessionActivityService(session_factory)
     invites = InviteBus()
     ephemeral = EphemeralBus()
 
@@ -485,7 +487,8 @@ async def _serve(
     )
     client_factory.register(
         "agent",
-        AgentClient,
+        AgentActor,
+        AgentConsumer,
         event_buffer=event_buffer,
         agent_store=session_env.agent_store,
         room_store=session_env.room_store,
@@ -499,20 +502,21 @@ async def _serve(
         connections=connections,
         frontend_base_url=config.frontend_base_url,
     )
-    client_factory.register("user", ClientBase)
-    client_factory.register("bridge", ClientBase)
+    client_factory.register("user", HumanActor)
+    client_factory.register("bridge", Actor)
 
     client_lifecycle = ClientLifecycleService(
-        matrix_admin=provisioning,
+        provisioning=provisioning,
         client_store=session_env.client_store,
         tenant_store=TenantStore(),
         client_factory=client_factory,
         session_factory=session_factory,
         config=config,
+        tenants_isolated=True,
     )
 
     room_service = RoomService(
-        matrix_admin=provisioning,
+        provisioning=provisioning,
         room_store=session_env.room_store,
         agent_store=session_env.agent_store,
         client_lifecycle=client_lifecycle,

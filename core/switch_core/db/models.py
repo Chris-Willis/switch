@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from enum import StrEnum
 
 from sqlalchemy import (
     DDL,
@@ -26,6 +27,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
 from switch_core.db.base import Base
+from switch_core.db.encrypted_json import EncryptedJSONB
 from switch_core.db.notify_ddl import (
     CREATE_NOTIFY_FUNCTION,
     CREATE_NOTIFY_TRIGGER,
@@ -263,6 +265,7 @@ class OidcIdentity(Base):
 class ApiKey(TenantScoped, Base):
     __tablename__ = "api_keys"
     __table_args__ = (
+        Index("ix_api_keys_tenant_id", "tenant_id"),
         UniqueConstraint("id", "tenant_id", name="uq_api_keys_id_tenant"),
     )
 
@@ -737,6 +740,7 @@ class Invitation(TenantScoped, Base):
 
     __tablename__ = "invitations"
     __table_args__ = (
+        Index("ix_invitations_tenant_id", "tenant_id"),
         CheckConstraint(
             "role IN ('owner', 'admin', 'member')", name="ck_invitations_role"
         ),
@@ -767,6 +771,86 @@ class Invitation(TenantScoped, Base):
     )
 
 
+class TenantJoinDomain(TenantScoped, Base):
+    """An e-mail domain whose people may join a tenant without an invitation.
+
+    Anyone signed in with an address at `domain` is offered the tenant and
+    joins it as a member. The natural key is `(tenant_id, domain)`, so
+    `tenant_id` joins the primary key directly, as on `reference_types`, and
+    two tenants may each open themselves to the same domain.
+
+    `domain` is stored lower-case, and the constraint is what makes that true
+    rather than a convention: the lookup that finds these rows
+    (`tenants_open_to_domain`, `db/tenant_lookup.py`) compares by equality,
+    and a mixed-case row would be one nobody could ever match.
+
+    Who may add a domain, and which, is the gateway's decision rather than this
+    row's — today an admin may open a tenant only to the domain of their own
+    address, and never to a public e-mail provider's.
+    """
+
+    __tablename__ = "tenant_join_domains"
+    __table_args__ = (
+        CheckConstraint(
+            "domain = lower(domain)", name="ck_tenant_join_domains_lower_case"
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("tenants.id", name="fk_tenant_join_domains_tenant"),
+        primary_key=True,
+        default=require_tenant_id,
+    )
+    domain: Mapped[str] = mapped_column(Text, primary_key=True)
+    created_by: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class AuditEvent(TenantScoped, Base):
+    """One security-relevant change in a tenant: who did what, to what, when.
+
+    Written in the same transaction as the change it records wherever that
+    change is made on the caller's session, so a change that rolls back
+    leaves no event. Where a service commits the change on sessions of its
+    own (registering or removing a bridge, disconnecting an install), the
+    event is written after it succeeds, so it never describes a change that
+    did not happen.
+
+    Append-only for the runtime role: `grant_runtime_role` takes `UPDATE` and
+    `DELETE` on this table back off it, so the process serving requests can
+    add to the history but not rewrite it.
+
+    `actor_user_id` carries no foreign key, so the history outlives the
+    account; it is null when no signed-in person acted. `details` holds
+    identifiers and field names, never secrets or the values of connection
+    settings.
+
+    `occurred_at` defaults to `clock_timestamp()`, not `now()`: two events in
+    one transaction would otherwise share a timestamp, and the read pages back
+    by it.
+    """
+
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        Index("ix_audit_events_tenant_occurred_at", "tenant_id", "occurred_at"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False
+    )
+    actor_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    target_type: Mapped[str] = mapped_column(Text, nullable=False)
+    target_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
 # ── Clients ────────────────────────────────────────────────────────────────────
 
 
@@ -780,7 +864,10 @@ class Client(TenantScoped, Base):
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    matrix_user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # The column keeps its Matrix-era name; the attribute says what it is.
+    transport_user_id: Mapped[str] = mapped_column(
+        "matrix_user_id", Text, nullable=False
+    )
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -792,6 +879,7 @@ class Client(TenantScoped, Base):
 class ClientRoom(TenantScoped, Base):
     __tablename__ = "client_rooms"
     __table_args__ = (
+        Index("ix_client_rooms_tenant_id", "tenant_id"),
         ForeignKeyConstraint(
             ["tenant_id", "client_id"],
             ["clients.tenant_id", "clients.id"],
@@ -818,6 +906,14 @@ class Agent(TenantScoped, Base):
     __tablename__ = "agents"
     __table_args__ = (
         Index("ix_agents_parent_agent_id", "parent_agent_id"),
+        # Deployment-wide, not per tenant: an OIDC sign-in resolves the agent
+        # from its client id before any tenant is known.
+        Index(
+            "uq_agents_oauth_client_id",
+            "oauth_client_id",
+            unique=True,
+            postgresql_where=text("oauth_client_id IS NOT NULL"),
+        ),
         UniqueConstraint("tenant_id", "name", name="uq_agents_tenant_name"),
         UniqueConstraint("id", "tenant_id", name="uq_agents_id_tenant"),
         ForeignKeyConstraint(
@@ -849,7 +945,7 @@ class Agent(TenantScoped, Base):
     icon_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Human-readable name shown to people ("Switch Dev") next to the machine
     # identifier `name` carries ("switchdev"). NULL means none was chosen and
-    # the display layer falls back to `name`. Never the Matrix client display
+    # the display layer falls back to `name`. Never the client display
     # name: that stays the identifier, because it is what bridges match on to
     # recognise an agent's own echo.
     display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -888,6 +984,7 @@ class Agent(TenantScoped, Base):
 class Tool(TenantScoped, Base):
     __tablename__ = "tools"
     __table_args__ = (
+        Index("ix_tools_tenant_id", "tenant_id"),
         ForeignKeyConstraint(
             ["tenant_id", "agent_id"],
             ["agents.tenant_id", "agents.id"],
@@ -912,6 +1009,7 @@ class Tool(TenantScoped, Base):
 class Model(TenantScoped, Base):
     __tablename__ = "models"
     __table_args__ = (
+        Index("ix_models_tenant_id", "tenant_id"),
         ForeignKeyConstraint(
             ["tenant_id", "agent_id"],
             ["agents.tenant_id", "agents.id"],
@@ -954,12 +1052,14 @@ agent_skills = Table(
         ["skills.tenant_id", "skills.id"],
         name="fk_agent_skills_skill",
     ),
+    Index("ix_agent_skills_tenant_id", "tenant_id"),
 )
 
 
 class Skill(TenantScoped, Base):
     __tablename__ = "skills"
     __table_args__ = (
+        Index("ix_skills_tenant_id", "tenant_id"),
         UniqueConstraint("id", "tenant_id", name="uq_skills_id_tenant"),
         ForeignKeyConstraint(
             ["tenant_id", "owner_agent_id"],
@@ -1019,6 +1119,7 @@ room_agents = Table(
         ["agents.tenant_id", "agents.id"],
         name="fk_room_agents_agent",
     ),
+    Index("ix_room_agents_tenant_id", "tenant_id"),
 )
 
 room_skills = Table(
@@ -1043,6 +1144,7 @@ room_skills = Table(
         ["skills.tenant_id", "skills.id"],
         name="fk_room_skills_skill",
     ),
+    Index("ix_room_skills_tenant_id", "tenant_id"),
 )
 
 
@@ -1062,6 +1164,9 @@ class Room(TenantScoped, Base):
         # and the ON DELETE SET NULL when a group is removed both scan the
         # table. Mirrors ix_agents_parent_agent_id.
         Index("ix_rooms_group_id", "group_id"),
+        # A run is listed, checked and stopped by its root on every agent
+        # create and every look at Recently used.
+        Index("ix_rooms_run_id", "run_id"),
         UniqueConstraint(
             "tenant_id", "matrix_room_id", name="uq_rooms_tenant_matrix_room_id"
         ),
@@ -1077,10 +1182,25 @@ class Room(TenantScoped, Base):
             name="fk_rooms_group",
             ondelete="SET NULL (group_id)",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "created_by_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_rooms_created_by_agent",
+            ondelete="SET NULL (created_by_agent_id)",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "parent_room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_rooms_parent_room",
+            ondelete="SET NULL (parent_room_id)",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    matrix_room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # The column keeps its Matrix-era name; the attribute says what it is.
+    transport_room_id: Mapped[str] = mapped_column(
+        "matrix_room_id", Text, nullable=False
+    )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     bridge_id: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -1095,6 +1215,23 @@ class Room(TenantScoped, Base):
     created_by: Mapped[str | None] = mapped_column(
         Text, ForeignKey("users.id"), nullable=True
     )
+    # The agent that created the room through an agent operation. NULL for a
+    # room a person created. `created_by` is the agent's owner in both cases.
+    created_by_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Where an agent-created room sits in its run (see `agent_runs`): the
+    # room the agent was working in when it asked, and the root of the chain,
+    # a room a person made. NULL for a person's room, which is its own root.
+    parent_room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The template the room came from, when it came from one: its registry
+    # name, or the name the creator gave a pasted document.
+    template_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A fingerprint of the kickoff an agent posted here. Never shown; it is
+    # how the same request made twice on one path is recognised.
+    kickoff_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # On a run's root only: whether agents may keep creating rooms in the
+    # run. NULL means running. See `agent_runs.RunControl`.
+    run_control: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     group_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     owner_id: Mapped[str | None] = mapped_column(
         Text, ForeignKey("users.id"), nullable=True
@@ -1111,7 +1248,7 @@ class Room(TenantScoped, Base):
     )
     # When set, the room is archived: hidden from the default active room lists
     # (gateway + agent MCP tools) but otherwise fully intact and retrievable —
-    # members, Matrix room, and bridge channel are untouched. NULL = active.
+    # members, room, and bridge channel are untouched. NULL = active.
     # Archiving is metadata-only and reversible (unarchive clears this).
     archived_at: Mapped[str | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -1137,6 +1274,7 @@ class RoomGroup(TenantScoped, Base):
 
     __tablename__ = "room_groups"
     __table_args__ = (
+        Index("ix_room_groups_tenant_id", "tenant_id"),
         CheckConstraint("parent_group_id <> id", name="room_groups_no_self_parent"),
         UniqueConstraint("id", "tenant_id", name="uq_room_groups_id_tenant"),
         ForeignKeyConstraint(
@@ -1170,6 +1308,7 @@ class RoomLink(TenantScoped, Base):
 
     __tablename__ = "room_links"
     __table_args__ = (
+        Index("ix_room_links_tenant_id", "tenant_id"),
         CheckConstraint("source_room_id <> target_room_id", name="room_links_no_self"),
         ForeignKeyConstraint(
             ["tenant_id", "source_room_id"],
@@ -1199,6 +1338,7 @@ class RoomLink(TenantScoped, Base):
 class Task(TenantScoped, Base):
     __tablename__ = "tasks"
     __table_args__ = (
+        Index("ix_tasks_tenant_id", "tenant_id"),
         ForeignKeyConstraint(
             ["tenant_id", "room_id"],
             ["rooms.tenant_id", "rooms.id"],
@@ -1263,6 +1403,7 @@ room_references = Table(
         ["references.tenant_id", "references.id"],
         name="fk_room_references_reference",
     ),
+    Index("ix_room_references_tenant_id", "tenant_id"),
 )
 
 room_documents = Table(
@@ -1287,12 +1428,14 @@ room_documents = Table(
         ["documents.tenant_id", "documents.id"],
         name="fk_room_documents_document",
     ),
+    Index("ix_room_documents_tenant_id", "tenant_id"),
 )
 
 
 class Reference(TenantScoped, Base):
     __tablename__ = "references"
     __table_args__ = (
+        Index("ix_references_tenant_id", "tenant_id"),
         UniqueConstraint("id", "tenant_id", name="uq_references_id_tenant"),
     )
 
@@ -1343,6 +1486,7 @@ class ReferenceType(TenantScoped, Base):
 class Document(TenantScoped, Base):
     __tablename__ = "documents"
     __table_args__ = (
+        Index("ix_documents_tenant_id", "tenant_id"),
         Index(
             "uq_documents_room_name",
             "room_id",
@@ -1400,10 +1544,17 @@ class Template(TenantScoped, Base):
 
     __tablename__ = "templates"
     __table_args__ = (
+        Index("ix_templates_tenant_id", "tenant_id"),
         # Not widened to include the tenant: an owner belongs to one, so
         # scoping the name to the owner already scopes it to the tenant.
         UniqueConstraint("owner_id", "name", name="uq_templates_owner_name"),
         UniqueConstraint("id", "tenant_id", name="uq_templates_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "created_by_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_templates_created_by_agent",
+            ondelete="SET NULL (created_by_agent_id)",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -1422,6 +1573,10 @@ class Template(TenantScoped, Base):
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    # The agent that saved it through an agent operation, NULL for a person.
+    # ``owner_id`` is the agent's owner either way; only this agent may change
+    # or delete what it saved (see ``agent_template_ops``).
+    created_by_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -1458,6 +1613,7 @@ room_packages = Table(
         ["packages.tenant_id", "packages.id"],
         name="fk_room_packages_package",
     ),
+    Index("ix_room_packages_tenant_id", "tenant_id"),
 )
 
 package_references = Table(
@@ -1482,6 +1638,7 @@ package_references = Table(
         ["references.tenant_id", "references.id"],
         name="fk_package_references_reference",
     ),
+    Index("ix_package_references_tenant_id", "tenant_id"),
 )
 
 package_documents = Table(
@@ -1506,12 +1663,14 @@ package_documents = Table(
         ["documents.tenant_id", "documents.id"],
         name="fk_package_documents_document",
     ),
+    Index("ix_package_documents_tenant_id", "tenant_id"),
 )
 
 
 class Package(TenantScoped, Base):
     __tablename__ = "packages"
     __table_args__ = (
+        Index("ix_packages_tenant_id", "tenant_id"),
         UniqueConstraint("id", "tenant_id", name="uq_packages_id_tenant"),
     )
 
@@ -1533,6 +1692,7 @@ class Package(TenantScoped, Base):
 class CollaborationBridge(TenantScoped, Base):
     __tablename__ = "collaboration_bridges"
     __table_args__ = (
+        Index("ix_collaboration_bridges_tenant_id", "tenant_id"),
         # The bridge new rooms land on when no bridge is named. At most one row
         # per tenant may be true; this partial unique index is what actually
         # enforces that, so concurrent writers cannot produce two defaults.
@@ -1553,7 +1713,9 @@ class CollaborationBridge(TenantScoped, Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
-    connection_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    connection_config: Mapped[dict | None] = mapped_column(
+        EncryptedJSONB, nullable=True
+    )
     client_id: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     agent_greetings_enabled: Mapped[bool] = mapped_column(
@@ -1570,6 +1732,13 @@ class CollaborationBridge(TenantScoped, Base):
         Boolean, server_default="true", nullable=False
     )
     is_default: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
+    # Registered by the deployment's own setup step — the bundled Mattermost —
+    # rather than by a person. Telemetry reads it so that "time to first
+    # connector" measures a person connecting their platform, not a
+    # deployment booting.
+    preconfigured: Mapped[bool] = mapped_column(
         Boolean, server_default="false", nullable=False
     )
     created_at: Mapped[str] = mapped_column(
@@ -1625,7 +1794,7 @@ class MessagingInstall(TenantScoped, Base):
     install is recorded and not yet serving.
 
     `encrypted_bot_token` uses the same key as every other credential this
-    schema stores (`crypto.encrypt_token` over the configured secret), so it
+    schema stores (`Keyring.encrypt`, the at-rest key), so it
     is protected against a stolen dump and not against a compromised process.
     A per-tenant key is a stronger boundary and a later decision. It is
     nullable so that an install which has ended can keep its record without
@@ -1640,6 +1809,7 @@ class MessagingInstall(TenantScoped, Base):
 
     __tablename__ = "messaging_installs"
     __table_args__ = (
+        Index("ix_messaging_installs_tenant_id", "tenant_id"),
         Index(
             "uq_messaging_installs_workspace",
             "platform",
@@ -1708,9 +1878,14 @@ class MessagingInstallState(TenantScoped, Base):
     is a bound on how long the platform's round trip may take; `consumed_at`
     is the fact of redemption, kept rather than deleted so an operator asking
     why a link stopped working can see it was used rather than lost.
+
+    `decided_at` is the second single use. Redeeming the state does not claim
+    the workspace: the callback asks whoever approved it to confirm which
+    organisation it joins, and their Connect or Cancel is recorded here, once.
     """
 
     __tablename__ = "messaging_install_states"
+    __table_args__ = (Index("ix_messaging_install_states_tenant_id", "tenant_id"),)
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     platform: Mapped[str] = mapped_column(Text, nullable=False)
@@ -1722,6 +1897,9 @@ class MessagingInstallState(TenantScoped, Base):
     )
     expires_at: Mapped[str] = mapped_column(DateTime(timezone=True), nullable=False)
     consumed_at: Mapped[str | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    decided_at: Mapped[str | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
@@ -1798,6 +1976,7 @@ class MessagingEventReceipt(TenantScoped, Base):
 class ServerConnector(TenantScoped, Base):
     __tablename__ = "server_connectors"
     __table_args__ = (
+        Index("ix_server_connectors_tenant_id", "tenant_id"),
         ForeignKeyConstraint(
             ["tenant_id", "api_key_id"],
             ["api_keys.tenant_id", "api_keys.id"],
@@ -1808,7 +1987,9 @@ class ServerConnector(TenantScoped, Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
-    connection_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    connection_config: Mapped[dict | None] = mapped_column(
+        EncryptedJSONB, nullable=True
+    )
     api_key_id: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(
@@ -1822,6 +2003,7 @@ class ServerConnector(TenantScoped, Base):
 class ExternalUser(TenantScoped, Base):
     __tablename__ = "external_users"
     __table_args__ = (
+        Index("ix_external_users_tenant_id", "tenant_id"),
         UniqueConstraint("bridge_id", "external_user_id"),
         UniqueConstraint("id", "tenant_id", name="uq_external_users_id_tenant"),
         ForeignKeyConstraint(
@@ -1861,6 +2043,7 @@ class ExternalUserClaim(TenantScoped, Base):
 
     __tablename__ = "external_user_claims"
     __table_args__ = (
+        Index("ix_external_user_claims_tenant_id", "tenant_id"),
         Index("ix_external_user_claims_user_id", "user_id"),
         ForeignKeyConstraint(
             ["tenant_id", "external_user_id"],
@@ -1904,6 +2087,7 @@ class AgentSession(TenantScoped, Base):
 
     __tablename__ = "agent_sessions"
     __table_args__ = (
+        Index("ix_agent_sessions_tenant_id", "tenant_id"),
         Index(
             "uq_agent_sessions_agent_room",
             text("agent_id"),
@@ -1953,6 +2137,7 @@ class AgentRuntimeState(TenantScoped, Base):
 
     __tablename__ = "agent_runtime_states"
     __table_args__ = (
+        Index("ix_agent_runtime_states_tenant_id", "tenant_id"),
         UniqueConstraint(
             "agent_id", "room_id", name="uq_agent_runtime_states_agent_room"
         ),
@@ -2014,6 +2199,7 @@ class RoomRole(TenantScoped, Base):
 
     __tablename__ = "room_roles"
     __table_args__ = (
+        Index("ix_room_roles_tenant_id", "tenant_id"),
         UniqueConstraint("room_id", "name", name="uq_room_roles_room_name"),
         UniqueConstraint("id", "tenant_id", name="uq_room_roles_id_tenant"),
         ForeignKeyConstraint(
@@ -2061,6 +2247,7 @@ class RoleLease(TenantScoped, Base):
 
     __tablename__ = "role_leases"
     __table_args__ = (
+        Index("ix_role_leases_tenant_id", "tenant_id"),
         UniqueConstraint("agent_id", name="uq_role_leases_agent"),
         Index("ix_role_leases_role_id", "role_id"),
         ForeignKeyConstraint(
@@ -2112,6 +2299,7 @@ class BridgeMessageMap(TenantScoped, Base):
 
     __tablename__ = "bridge_message_map"
     __table_args__ = (
+        Index("ix_bridge_message_map_tenant_id", "tenant_id"),
         UniqueConstraint("bridge_id", "transport_event_id"),
         UniqueConstraint("bridge_id", "external_post_id"),
         ForeignKeyConstraint(
@@ -2234,7 +2422,7 @@ class Message(TenantScoped, Base):
 
     Every participant in a room is a Switch-owned client, so recording each
     send captures the whole room exactly once — including messages a human
-    originates on a bridged platform, which enter through that user's puppet.
+    originates on a bridged platform, which enter through that user's human actor.
 
     `content` is the full event body as sent. The columns beside it are
     denormalised out of it for querying; for a custom `com.switch.*` event
@@ -2308,6 +2496,7 @@ class MessageAttachment(TenantScoped, Base):
 
     __tablename__ = "message_attachments"
     __table_args__ = (
+        Index("ix_message_attachments_tenant_id", "tenant_id"),
         Index("ix_message_attachments_message", "message_id"),
         ForeignKeyConstraint(
             ["tenant_id", "message_id"],
@@ -2347,6 +2536,7 @@ class DeliveryCursor(TenantScoped, Base):
 
     __tablename__ = "delivery_cursors"
     __table_args__ = (
+        Index("ix_delivery_cursors_tenant_id", "tenant_id"),
         UniqueConstraint("agent_id", "room_id", name="uq_delivery_cursors_agent_room"),
         ForeignKeyConstraint(
             ["tenant_id", "agent_id"],
@@ -2545,7 +2735,7 @@ class ApprovalRequest(TenantScoped, Base):
     )
 
 
-class SessionActivityItem(TenantScoped, Base):
+class AgentSessionActivityItem(TenantScoped, Base):
     """One step of a turn as a platform draws it: the turn itself, a message,
     a tool call, or a notice.
 
@@ -2722,10 +2912,136 @@ for _table, _triggers in (
         ApprovalRequest.__table__,
         (CREATE_APPROVAL_INSERT_TRIGGER, CREATE_APPROVAL_STATE_TRIGGER),
     ),
-    (SessionActivityItem.__table__, (CREATE_ACTIVITY_TRIGGER,)),
+    (AgentSessionActivityItem.__table__, (CREATE_ACTIVITY_TRIGGER,)),
 ):
     for _ddl in (CREATE_SESSION_ACTIVITY_NOTIFY_FUNCTION, *_triggers):
         event.listen(_table, "after_create", DDL(_ddl).execute_if(dialect="postgresql"))
+
+
+# ── Usage metering ───────────────────────────────────────────────────────────
+
+
+class UsageMetric(StrEnum):
+    """What is counted. Cache reads and writes are kept apart from input
+    tokens because providers price them apart."""
+
+    MESSAGES = "messages"
+    TURNS = "turns"
+    INPUT_TOKENS = "input_tokens"
+    OUTPUT_TOKENS = "output_tokens"
+    CACHE_READ_TOKENS = "cache_read_tokens"
+    CACHE_WRITE_TOKENS = "cache_write_tokens"
+
+
+class TenantUsage(TenantScoped, Base):
+    """What a tenant has consumed, counted as it happens, one row per hour.
+
+    The record that quotas are enforced against and that billing will read,
+    so it is kept apart from the rows it counts: deleting a room cascades to
+    its messages, and a count derived from `messages` would forget usage the
+    tenant has already spent. Written in the same transaction as the thing it
+    counts, so the two cannot disagree.
+
+    Hourly buckets because a budget period is configurable: any period of a
+    whole number of hours is a sum over these rows, while a coarser bucket
+    would fix the shortest period a budget can have.
+
+    `client_id` is who consumed it: the sender of a message, or the client of
+    the agent a turn ran for. No foreign key, so a count outlives the client it
+    names. `model` is empty where a metric has none.
+    """
+
+    __tablename__ = "tenant_usage"
+    __table_args__ = (
+        # Leads on the metric so "this tenant's turns since a moment" — the
+        # shape every budget check asks — is a range scan on the key itself.
+        PrimaryKeyConstraint(
+            "tenant_id", "metric", "bucket_start", "client_id", "model"
+        ),
+        CheckConstraint(
+            "metric IN ({})".format(", ".join(f"'{m}'" for m in UsageMetric)),
+            name="ck_tenant_usage_metric",
+        ),
+        CheckConstraint("amount > 0", name="ck_tenant_usage_amount"),
+    )
+
+    metric: Mapped[str] = mapped_column(Text, nullable=False)
+    bucket_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    client_id: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+# A budget's period is at most a leap year, and its limit at most the largest
+# integer a JavaScript client reads exactly. Both keep the period arithmetic
+# and the gateway's numbers from overflowing.
+MAX_BUDGET_PERIOD_HOURS = 8784
+MAX_BUDGET_AMOUNT = 2**53 - 1
+
+
+class UsageBudget(TenantScoped, Base):
+    """A ceiling on one metric over a repeating period.
+
+    `agent_id` null covers every agent in the tenant; otherwise the one agent.
+    `model` empty covers every model. An agent that has reached any budget
+    covering it is stopped until the period turns over; people are never
+    stopped. A tenant with no budgets is unlimited.
+
+    Periods are whole hours counted from the Unix epoch in UTC, so a daily
+    budget turns over at midnight UTC and every writer agrees when.
+    """
+
+    __tablename__ = "usage_budgets"
+    __table_args__ = (
+        Index("ix_usage_budgets_tenant_id", "tenant_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_usage_budgets_agent",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "metric IN ({})".format(", ".join(f"'{m}'" for m in UsageMetric)),
+            name="ck_usage_budgets_metric",
+        ),
+        CheckConstraint(
+            f"amount_limit > 0 AND amount_limit <= {MAX_BUDGET_AMOUNT}",
+            name="ck_usage_budgets_amount_limit",
+        ),
+        CheckConstraint(
+            f"period_hours > 0 AND period_hours <= {MAX_BUDGET_PERIOD_HOURS}",
+            name="ck_usage_budgets_period_hours",
+        ),
+        Index(
+            "uq_usage_budgets_tenant_wide",
+            "tenant_id",
+            "metric",
+            "model",
+            unique=True,
+            postgresql_where=text("agent_id IS NULL"),
+        ),
+        Index(
+            "uq_usage_budgets_agent",
+            "tenant_id",
+            "agent_id",
+            "metric",
+            "model",
+            unique=True,
+            postgresql_where=text("agent_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metric: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    amount_limit: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    period_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 # Same reasoning as the notify trigger above: `create_all` has to build the

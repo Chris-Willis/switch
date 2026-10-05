@@ -3,13 +3,13 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
+import { runAgentHost } from './agent-host';
 import type { Supervision } from './launch';
 import type * as OwnershipLock from './ownership-lock';
 import { withOwnershipLock } from './ownership-lock';
 import type { SharedHostConfig } from './shared-config';
 import type { SharedHostOptions } from './shared-host';
 import { SharedState } from './shared-state';
-import { runSharedWatcher } from './shared-watcher';
 import { superviseSharedHost } from './supervisor';
 import { WatcherControl } from './watcher-tools';
 
@@ -77,7 +77,7 @@ it('writes owner records in the shapes the supervisor quarantines after a reboot
   expect(tickets).toHaveLength(1);
 
   await expect(
-    runSharedWatcher(
+    runAgentHost(
       join(root, 'watcher'),
       {} as SharedHostConfig,
       new AbortController().signal,

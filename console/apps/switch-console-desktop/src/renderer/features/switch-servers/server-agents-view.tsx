@@ -29,6 +29,7 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationStore } from '@renderer/features/locations/stores/location-selectors';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { AgentConnectionIndicator } from '@renderer/features/switch-rooms/connection-health';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
@@ -36,7 +37,7 @@ import { toast, useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { useAgentIconUrl } from '@renderer/lib/stores/use-remote-agents';
+import { useAgentIconUrl } from '@renderer/lib/stores/use-workspace-agents';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import {
@@ -236,7 +237,7 @@ const CloudAgentCard = observer(function CloudAgentCard({
     }
   };
   const editAgent = useShowModal('editCloudAgentModal');
-  const iconUrl = useAgentIconUrl(serverId, launch.agent_id);
+  const iconUrl = useAgentIconUrl(workspacesStore.idOnServerInScope(serverId), launch.agent_id);
   const phase = launch.desired_state === 'deleted' ? null : cloudAgentPhase(launch, listed.machine);
   const stateLabel =
     phase === 'sleeping'
@@ -412,7 +413,7 @@ const AgentCard = observer(function AgentCard({
   const sshHost = location?.data?.sshHost ?? null;
   const label = agent.name || 'Unnamed agent';
   const provider = providerDisplayName(agent.providerId);
-  const iconUrl = useAgentIconUrl(serverId, agent.switchAgentId);
+  const iconUrl = useAgentIconUrl(agent.workspaceId, agent.switchAgentId);
 
   const gatewayUrl =
     agent.switchAgentId && switchRoomsStore.gatewayAgentUrl(serverId, agent.switchAgentId);

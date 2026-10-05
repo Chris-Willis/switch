@@ -19,19 +19,21 @@ import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     APPROVAL_OUTCOME_PROTOCOL_REVISION,
     HEARTBEAT_LAPSED,
     PROTOCOL_VERSION,
     TAKEN_OVER,
+    AgentConnection,
+    AgentConnectionRegistry,
     Closure,
-    Connection,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import (
     CursorExpiredError,
     EventBuffer,
 )
+from switch_core.observability.catalogue import BRIDGE_EVENTS_OUT
+from switch_core.observability.metrics import metrics
 from switch_core.tenant_context import current_tenant_id
 from switch_core.version import server_declaration
 
@@ -59,7 +61,7 @@ def _frame(event: str, data: dict[str, Any], *, seq: int | None = None) -> bytes
     return ("\n".join(lines) + "\n\n").encode()
 
 
-def _connection_state(conn: Connection) -> dict[str, Any]:
+def _connection_state(conn: AgentConnection) -> dict[str, Any]:
     """The first frame of every stream, and where the server declares itself.
 
     Version disclosure rides this frame rather than an endpoint of its own
@@ -104,8 +106,8 @@ def _eviction(closure: Closure) -> dict[str, Any]:
 
 def event_stream(
     *,
-    conn: Connection,
-    registry: ConnectionRegistry,
+    conn: AgentConnection,
+    registry: AgentConnectionRegistry,
     buffer: EventBuffer,
     approvals: ApprovalOutcomes | None,
 ) -> AsyncIterator[bytes]:
@@ -120,8 +122,8 @@ def event_stream(
 
 async def _event_stream(
     *,
-    conn: Connection,
-    registry: ConnectionRegistry,
+    conn: AgentConnection,
+    registry: AgentConnectionRegistry,
     buffer: EventBuffer,
     approvals: ApprovalOutcomes | None,
     generation: int,
@@ -427,6 +429,10 @@ async def _event_stream(
                 # on its heartbeat, which is the value that governs resume.
                 conn.cursor = item.seq
                 delivered = True
+                metrics().increment(
+                    BRIDGE_EVENTS_OUT,
+                    {"bridge": "agent", "platform": "switch", "kind": item.event.type},
+                )
                 yield _frame(item.event.type, payload, seq=item.seq)
 
             if delivered:
@@ -455,7 +461,7 @@ async def _event_stream(
         registry.detach_stream(conn, generation)
 
 
-async def _wait_for_wake(conn: Connection) -> bool:
+async def _wait_for_wake(conn: AgentConnection) -> bool:
     """Wait for the connection itself to change — a room claim, or a close.
 
     Deliberately not waiting on the event bell: a parked connection covers
@@ -469,7 +475,7 @@ async def _wait_for_wake(conn: Connection) -> bool:
         return False
 
 
-async def _wait_for_work(bell: asyncio.Event, conn: Connection) -> bool:
+async def _wait_for_work(bell: asyncio.Event, conn: AgentConnection) -> bool:
     """Wait for a new event or a change to the connection itself.
 
     Returns False when neither happened before the keepalive interval, so the

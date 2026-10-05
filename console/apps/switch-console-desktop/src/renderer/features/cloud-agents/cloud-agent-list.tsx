@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 import { restartsOnSend } from '@renderer/features/sessions/components/transcript/session-state';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
@@ -63,7 +64,12 @@ export const CloudAgentList = observer(function CloudAgentList() {
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, [queryClient]);
-  if (switchRoomsStore.serversNotSignedIn.some((server) => server.id === serverId)) return null;
+  if (
+    switchRoomsStore.workspacesNotSignedIn.some(
+      (workspace) => workspacesStore.serverIdFor(workspace.id) === serverId
+    )
+  )
+    return null;
   if (agents.error)
     return (
       <div role="alert" className="px-3 py-2 text-xs text-foreground-destructive">

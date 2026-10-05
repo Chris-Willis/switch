@@ -15,13 +15,14 @@ import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-
 import { ManagedGitHubStep } from '@renderer/features/switch-servers/managed-github-step';
 import { ManagedProviderConnectionStep } from '@renderer/features/switch-servers/managed-provider-connection-step';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useModalContext, useShowModal } from '@renderer/lib/modal/modal-provider';
-import { useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
+import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
@@ -48,7 +49,6 @@ import {
   isAbsoluteRemoteDir,
 } from '@shared/core/remote-hosts/remote-dir';
 import type { CloudRepositorySelection } from '@shared/core/switch-servers/cloud-launch';
-import { urlOrigin } from '@shared/core/switch-servers/switch-servers';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { AgentAdvancedConfig } from './agent-advanced-config';
 import { AgentTypePicker } from './agent-type-picker';
@@ -117,12 +117,8 @@ export const NewAgentForm = observer(function NewAgentForm({
   const selectedServer = switchServersStore.servers.find(
     (server) => server.id === selectedServerId
   );
-  const managedOrigin = import.meta.env.VITE_SWITCH_MANAGED_URL;
   const isManagedCloud =
-    !!managedOrigin &&
-    !!selectedServer &&
-    urlOrigin(selectedServer.gatewayUrl) === urlOrigin(managedOrigin) &&
-    urlOrigin(selectedServer.apiUrl) === urlOrigin(managedOrigin);
+    !!selectedServer && selectedServer.id === switchServersStore.switchCloudServerId;
   const isCloudRun = isManagedCloud || runHost === 'cloud';
   const isRemoteRun = runHost !== LOCAL_RUN_LOCATION && !isCloudRun;
   // The trigger has to say the host's name, not the value behind it: the value
@@ -155,7 +151,7 @@ export const NewAgentForm = observer(function NewAgentForm({
 
   // Names already taken on the server, so a clash is refused before anything
   // is created rather than reported by the server afterwards.
-  const remoteAgents = useRemoteAgents(pickState.serverId);
+  const remoteAgents = useWorkspaceAgents(workspacesStore.idOnServerInScope(pickState.serverId));
   const takenNames = useMemo(
     () => new Set((remoteAgents.data ?? []).map((a) => a.name)),
     [remoteAgents.data]
@@ -405,7 +401,7 @@ export const NewAgentForm = observer(function NewAgentForm({
           repository_id: cloudRepository.repositoryId,
           definition_attributes:
             pickState.providerId === 'claude' ? advancedAttributesRef.current : {},
-          auto_session: form.autoSession,
+          auto_session: true,
           auto_approve: form.autoApprove,
           addressing_policy: form.addressingPolicy,
         });
@@ -430,7 +426,6 @@ export const NewAgentForm = observer(function NewAgentForm({
         displayName: form.displayName.trim() || null,
         instructions: form.instructions,
         iconUrl: form.iconUrl,
-        autoSession: form.autoSession,
         autoApprove: form.autoApprove,
         definitionAttributes: advancedAttributesRef.current,
         providerConfig: launchProfileConfigRef.current,
@@ -443,9 +438,13 @@ export const NewAgentForm = observer(function NewAgentForm({
         return;
       }
       registered = true;
-      if (form.addressingPolicy !== null && result.agent.switchAgentId) {
-        await rpc.switchServers.updateAddressingPolicy({
-          serverId: pickState.serverId,
+      if (
+        form.addressingPolicy !== null &&
+        result.agent.switchAgentId &&
+        result.agent.workspaceId
+      ) {
+        await rpc.workspaces.updateAddressingPolicy({
+          workspaceId: result.agent.workspaceId,
           agentId: result.agent.switchAgentId,
           policy: form.addressingPolicy,
         });
@@ -752,7 +751,7 @@ export const NewAgentForm = observer(function NewAgentForm({
             {canConfigureAgent && (
               <AgentSettingsSection
                 form={form}
-                serverId={pickState.serverId}
+                workspaceId={workspacesStore.idOnServerInScope(pickState.serverId)}
                 onAddServer={() => showAddServerModal({})}
                 onOpenMessagingApps={() => {
                   onClose();

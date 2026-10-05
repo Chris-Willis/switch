@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.api.hosted_worker_routes import post_mailbox_notices
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.config import SwitchConfig
 from switch_core.db.models import HostedMachine, User, require_tenant_id
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
@@ -172,7 +172,7 @@ async def lifecycle(
     body: MachineLifecycleRequest,
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict:
     machines = HostedMachineStore()
     await _owned(session, machine_id, user.id)

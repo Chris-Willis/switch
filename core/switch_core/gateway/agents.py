@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.agent_display_name import InvalidDisplayName, normalise_display_name
 from switch_core.agent_icon import InvalidIconUrl, normalise_icon_url
 from switch_core.authz import Principal, require_manage
+from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
 from switch_core.bridges.agent.protocol.agent_detail import (
     AgentOptionsNotEditable,
     apply_agent_options,
@@ -18,7 +19,6 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     list_agent_summaries,
 )
 from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
-from switch_core.bridges.agent.protocol.service import AgentExistsError, ProtocolService
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
     TaskProtocolConfig,
@@ -85,7 +85,7 @@ async def delete_agent_by_name(
     agent_name: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> dict[str, bool]:
@@ -118,7 +118,7 @@ async def delete_agent(
     agent_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> dict[str, bool]:
@@ -163,7 +163,7 @@ async def list_known_agent_types() -> list[KnownAgentType]:
 async def register_known_agent(
     req: RegisterKnownAgentRequest,
     user: Annotated[User, Depends(get_current_user)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> RegisterAgentResponse:
     spec = KNOWN_AGENTS.get(req.agent_type)
     if spec is None:
@@ -215,7 +215,7 @@ async def register_known_agent(
 async def register_known_subagents(
     req: RegisterKnownSubagentsRequest,
     user: Annotated[User, Depends(get_current_user)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
@@ -495,7 +495,7 @@ async def update_agent_display_name(
 async def register_other_agent(
     req: RegisterOtherAgentRequest,
     user: Annotated[User, Depends(get_current_user)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> RegisterAgentResponse:
     # External agent registered without a known profile — give it a conservative
     # default profile (session_passive, no task capabilities).
@@ -541,7 +541,7 @@ async def update_addressing_policy(
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> AgentDetail:
@@ -598,7 +598,7 @@ async def get_agent_detail(
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     _user: Annotated[User, Depends(get_current_user)],
 ) -> AgentDetail:
     agent = await agent_store.get(session, agent_id)

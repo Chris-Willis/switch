@@ -1,14 +1,8 @@
 import { useCloudAgents } from '@renderer/features/cloud-agents/use-cloud-agents';
-import { urlOrigin } from '@shared/core/switch-servers/switch-servers';
 import { switchServersStore } from './switch-servers-store';
 
 export function managedCloudServerId(): string | null {
-  const origin = import.meta.env.VITE_SWITCH_MANAGED_URL;
-  return origin
-    ? (switchServersStore.servers.find(
-        (server) => urlOrigin(server.gatewayUrl) === urlOrigin(origin)
-      )?.id ?? null)
-    : null;
+  return switchServersStore.switchCloudServerId;
 }
 
 /**

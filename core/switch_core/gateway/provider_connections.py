@@ -7,10 +7,9 @@ from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.config import SwitchConfig
-from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     HostedLaunch,
     ProviderConnection,
@@ -73,7 +72,7 @@ async def connect_claude(
     store: Annotated[ProviderConnectionStore, Depends(get_connection_store)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     verifier: Annotated[ClaudeVerifier, Depends(get_verifier)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict:
     body = bytearray()
     async for chunk in request.stream():
@@ -109,9 +108,7 @@ async def connect_claude(
     except ClaudeVerificationError as error:
         raise HTTPException(422, str(error)) from None
     now = datetime.now(UTC)
-    await store.save(
-        session, user.id, kind, encrypt_token(credential, config.jwt_secret_key), now
-    )
+    await store.save(session, user.id, kind, config.keyring.encrypt(credential), now)
     await bump_machine_agents(session, user.id)
     await session.commit()
     await ring_credential_change(
@@ -122,7 +119,7 @@ async def connect_claude(
 
 async def ring_credential_change(
     session: AsyncSession,
-    registry: ConnectionRegistry,
+    registry: AgentConnectionRegistry,
     user_id: str,
     provider: str,
     revision: str | None,
@@ -164,7 +161,7 @@ async def disconnect_claude(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     store: Annotated[ProviderConnectionStore, Depends(get_connection_store)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> Response:
     try:
         await store.lock_user(session, user.id)
@@ -214,7 +211,7 @@ async def connect_other_provider(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     config: Annotated[SwitchConfig, Depends(get_config)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict:
     body = bytearray()
     async for chunk in request.stream():
@@ -249,7 +246,7 @@ async def connect_other_provider(
             provider,
             payload["kind"],
             credential,
-            config.jwt_secret_key,
+            config.keyring,
         )
     now = datetime.now(UTC)
     values = {
@@ -257,7 +254,7 @@ async def connect_other_provider(
         "user_id": user.id,
         "provider": provider,
         "kind": payload["kind"],
-        "encrypted_credential": encrypt_token(credential, config.jwt_secret_key),
+        "encrypted_credential": config.keyring.encrypt(credential),
         "verified_at": now,
         "verification_status": "configured",
     }
@@ -286,7 +283,7 @@ async def disconnect_other_provider(
     provider: OtherProvider,
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> Response:
     try:
         await ProviderConnectionStore().lock_user(session, user.id)

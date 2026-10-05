@@ -20,21 +20,30 @@ from switch_core.db.stores.hosted_machine_store import (
 )
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import decode_jwt, get_current_user, verify_password
-from switch_core.gateway.auth_routes import MACHINE_OWNER_STOPPED, _prewarm
+from switch_core.gateway.auth_routes import (
+    MACHINE_NEEDS_WORKSPACE,
+    MACHINE_OWNER_STOPPED,
+    _prewarm,
+)
 from switch_core.gateway.auth_routes import router as auth_router
 from switch_core.gateway.dependencies import (
     get_config,
     get_session,
+    get_session_factory,
     get_system_session,
     get_user_store,
 )
 from switch_core.gateway.hosted_launches import LAUNCH_DISABLED
 from switch_core.gateway.hosted_machines import router as machine_router
+from switch_core.keys import Keyring
 from switch_core.tenant_context import tenant_scope
 
 pytestmark = pytest.mark.no_ambient_tenant
 
-SECRET = "SYNTHETIC-SIGNING-KEY-FOR-SIGNUP-TESTS-ONLY"  # gitleaks:allow
+KEYRING = Keyring.parse(
+    "test:SYNTHETIC-SIGNING-KEY-FOR-SIGNUP-TESTS-ONLY",  # gitleaks:allow
+    legacy_secret=None,
+)
 PASSWORD = "correct horse battery"
 
 
@@ -53,7 +62,8 @@ async def signup_app(session_factory):
         gateway_oidc_enabled=False,
         gateway_oidc_provider_label=None,
         hosted_launch_capacity=2,
-        jwt_secret_key=SECRET,
+        keyring=KEYRING,
+        gateway_signup_mode="default_tenant",
         gateway_cookie_secure=False,
     )
     identity: dict[str, User] = {}
@@ -69,6 +79,7 @@ async def signup_app(session_factory):
 
     app.dependency_overrides[get_system_session] = sessions
     app.dependency_overrides[get_session] = scoped_sessions
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_user_store] = UserStore
     app.dependency_overrides[get_config] = lambda: config
     app.dependency_overrides[get_current_user] = lambda: identity["user"]
@@ -181,7 +192,7 @@ async def test_signup_signs_in_a_tenant_zero_member_with_a_warming_machine(
     user = await _user(app, "new.person@example.com")
     assert body["id"] == user.id
     assert verify_password(PASSWORD, user.password_hash)
-    token = decode_jwt(response.cookies["switch_auth"], SECRET)
+    token = decode_jwt(response.cookies["switch_auth"], KEYRING)
     assert token["sub"] == user.id
     async with app.factory() as session:
         member = await session.get(TenantMember, (TENANT_ZERO_ID, user.id))
@@ -198,6 +209,22 @@ async def test_signup_signs_in_a_tenant_zero_member_with_a_warming_machine(
         "/auth/login", json={"email": "new.person@example.com", "password": PASSWORD}
     )
     assert login.status_code == 200, login.text
+
+
+@pytest.mark.parametrize("mode", ["invite_only", "open"])
+async def test_signup_outside_default_tenant_mode_joins_no_workspace(signup_app, mode):
+    app = signup_app
+    app.config.gateway_signup_mode = mode
+    response = await _signup(app)
+    assert response.status_code == 201, response.text
+    assert response.json()["machine"] == {
+        "status": "unavailable",
+        "reason": MACHINE_NEEDS_WORKSPACE,
+    }
+    user = await _user(app, "new.person@example.com")
+    async with app.factory() as session:
+        assert await session.get(TenantMember, (TENANT_ZERO_ID, user.id)) is None
+    assert await _machines(app) == []
 
 
 async def test_signup_keeps_a_display_name(signup_app):

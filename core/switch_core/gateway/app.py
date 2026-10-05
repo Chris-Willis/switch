@@ -5,8 +5,8 @@ from pathlib import Path
 from fastapi import FastAPI
 from starlette.middleware.sessions import SessionMiddleware
 
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.server_connectors.lifecycle import (
     ServerSideConnectorLifecycleService,
 )
@@ -21,13 +21,16 @@ from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.invitation_store import InvitationStore
+from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.template_store import TemplateStore
+from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.agent_sessions import router as agent_sessions_router
 from switch_core.gateway.agents import router as agents_router
@@ -44,6 +47,7 @@ from switch_core.gateway.hosted_controller import router as hosted_controller_ro
 from switch_core.gateway.hosted_launches import router as hosted_launches_router
 from switch_core.gateway.hosted_machines import router as hosted_machines_router
 from switch_core.gateway.hosted_relay import router as hosted_relay_router
+from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.gateway.messaging_installs import (
     router as messaging_installs_router,
 )
@@ -60,8 +64,10 @@ from switch_core.gateway.references import router as references_router
 from switch_core.gateway.room_groups import router as room_groups_router
 from switch_core.gateway.room_links import router as room_links_router
 from switch_core.gateway.rooms import router as rooms_router
+from switch_core.gateway.template_runs import router as template_runs_router
 from switch_core.gateway.templates import router as templates_router
 from switch_core.gateway.tenants import router as tenants_router
+from switch_core.keys import Purpose
 from switch_core.providers.claude_verifier import ClaudeVerifier
 from switch_core.providers.github import GitHubConnections
 from switch_core.providers.hosted import HostedControllerSettings
@@ -87,10 +93,14 @@ def create_gateway_app(
     external_user_store: ExternalUserStore,
     api_key_store: ApiKeyStore,
     invitation_store: InvitationStore,
+    join_domain_store: JoinDomainStore,
     template_store: TemplateStore,
+    usage_store: UsageStore,
+    budget_store: BudgetStore,
     resource_service: ResourceService,
-    protocol: ProtocolService,
+    protocol: AgentCore,
     install_service: MessagingInstallService | None,
+    invite_mailer: InviteMailer | None,
     config: SwitchConfig,
 ) -> FastAPI:
     init_dependencies(
@@ -109,10 +119,14 @@ def create_gateway_app(
         external_user_store=external_user_store,
         api_key_store=api_key_store,
         invitation_store=invitation_store,
+        join_domain_store=join_domain_store,
         template_store=template_store,
+        usage_store=usage_store,
+        budget_store=budget_store,
         resource_service=resource_service,
         protocol=protocol,
         install_service=install_service,
+        invite_mailer=invite_mailer,
         config=config,
     )
 
@@ -169,9 +183,12 @@ def create_gateway_app(
     # (`session`) is separate from the `switch_auth` auth cookie.
     app.add_middleware(
         SessionMiddleware,
-        secret_key=config.jwt_secret_key,
+        # Current key only: this cookie lives for one login round trip, so a
+        # rotation costs at most a login started in the minutes before it.
+        secret_key=config.keyring.derive(Purpose.OIDC_LOGIN_COOKIE).hex(),
         same_site="lax",
         max_age=600,
+        https_only=config.gateway_cookie_secure,
     )
     if config.gateway_oidc_enabled:
         register_oidc_client(config)
@@ -196,6 +213,7 @@ def create_gateway_app(
     app.include_router(documents_router, tags=["documents"])
     app.include_router(packages_router, tags=["packages"])
     app.include_router(templates_router, tags=["templates"])
+    app.include_router(template_runs_router, tags=["templates"])
     app.include_router(ecosystem_router, prefix="/ecosystem", tags=["ecosystem"])
     app.include_router(
         messaging_installs_router,

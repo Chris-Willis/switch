@@ -10,11 +10,13 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { CloudLaunch } from '@shared/core/cloud-agents/cloud-agents';
 
 const switchServers = vi.hoisted(() => ({
-  listRemoteAgents: vi.fn(),
   getCloudLaunchConfiguration: vi.fn(),
+  updateCloudLaunchConfiguration: vi.fn(),
+}));
+const workspaces = vi.hoisted(() => ({
+  listAgents: vi.fn(),
   updateAgentDisplayName: vi.fn(),
   updateAgentIcon: vi.fn(),
-  updateCloudLaunchConfiguration: vi.fn(),
 }));
 const agents = vi.hoisted(() => ({
   definitionFields: vi.fn(),
@@ -22,7 +24,12 @@ const agents = vi.hoisted(() => ({
 }));
 const toast = vi.hoisted(() => vi.fn());
 
-vi.mock('@renderer/lib/ipc', () => ({ rpc: { switchServers, agents } }));
+vi.mock('@renderer/lib/ipc', () => ({ rpc: { switchServers, workspaces, agents } }));
+vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
+  workspacesStore: {
+    idOnServerInScope: (serverId: string) => (serverId === 'server' ? 'workspace' : null),
+  },
+}));
 vi.mock('@renderer/lib/hooks/use-toast', () => ({ toast }));
 vi.mock('@renderer/lib/ui/dialog', () => {
   const Plain = ({ children }: { children?: ReactNode }) => <div>{children}</div>;
@@ -79,11 +86,16 @@ const onSuccess = vi.fn();
 const onClose = vi.fn();
 
 beforeEach(() => {
-  for (const fn of [...Object.values(switchServers), ...Object.values(agents), toast])
+  for (const fn of [
+    ...Object.values(switchServers),
+    ...Object.values(workspaces),
+    ...Object.values(agents),
+    toast,
+  ])
     fn.mockReset();
   onSuccess.mockReset();
   onClose.mockReset();
-  switchServers.listRemoteAgents.mockResolvedValue([
+  workspaces.listAgents.mockResolvedValue([
     { id: 'agent', name: 'reviewer', displayName: 'Reviewer', iconUrl: null },
   ]);
   switchServers.getCloudLaunchConfiguration.mockResolvedValue({
@@ -162,12 +174,12 @@ it('sends a changed name and instructions, keeping the model, and says when they
   await type(container!.querySelector('textarea')!, 'Review carefully.');
   await click('Save');
 
-  expect(switchServers.updateAgentDisplayName).toHaveBeenCalledWith({
-    serverId: 'server',
+  expect(workspaces.updateAgentDisplayName).toHaveBeenCalledWith({
+    workspaceId: 'workspace',
     agentId: 'agent',
     displayName: 'Code Reviewer',
   });
-  expect(switchServers.updateAgentIcon).not.toHaveBeenCalled();
+  expect(workspaces.updateAgentIcon).not.toHaveBeenCalled();
   expect(switchServers.updateCloudLaunchConfiguration).toHaveBeenCalledWith(
     'server',
     '00000000-0000-4000-8000-000000000001',
@@ -189,12 +201,12 @@ it('sends only the icon when only the icon changed', async () => {
   await click('Pick icon');
   await click('Save');
 
-  expect(switchServers.updateAgentIcon).toHaveBeenCalledWith({
-    serverId: 'server',
+  expect(workspaces.updateAgentIcon).toHaveBeenCalledWith({
+    workspaceId: 'workspace',
     agentId: 'agent',
     iconUrl: 'https://icons.example.com/new.png',
   });
-  expect(switchServers.updateAgentDisplayName).not.toHaveBeenCalled();
+  expect(workspaces.updateAgentDisplayName).not.toHaveBeenCalled();
   expect(switchServers.updateCloudLaunchConfiguration).not.toHaveBeenCalled();
   expect(onSuccess).toHaveBeenCalled();
 });

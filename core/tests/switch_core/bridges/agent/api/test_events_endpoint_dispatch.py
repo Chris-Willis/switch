@@ -15,15 +15,19 @@ import pytest
 from fastapi import HTTPException
 from starlette.responses import StreamingResponse
 
+from switch_core.bridges.agent.api import session_reporter
 from switch_core.bridges.agent.api.handlers import _resolve_start_cursor, poll_events
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
+    HEARTBEAT_LAPSED,
     PROTOCOL_ACCEPTS,
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.telemetry.service import TelemetryService
+from switch_core.telemetry.sink import TelemetryRecord
 
 AGENT_ID = "agent-1"
 
@@ -31,7 +35,7 @@ AGENT_ID = "agent-1"
 class _Protocol:
     def __init__(self) -> None:
         self.event_buffer = EventBuffer(sequence_base=0)
-        self.connections = ConnectionRegistry()
+        self.connections = AgentConnectionRegistry()
         # No approval outcomes: these tests are about opening the stream.
         self.approval_outcomes = None
         # Opening and closing a stream reports a session; a reporter with no
@@ -110,6 +114,7 @@ async def test_with_the_sse_accept_header_it_opens_a_connection() -> None:
     assert resp.media_type == "text/event-stream"
     # Buffering proxies would defeat the point of a push channel.
     assert resp.headers["x-accel-buffering"] == "no"
+    assert resp.headers["connection"] == "keep-alive"
     assert not protocol.polled
 
     conn = protocol.connections.get("c1")
@@ -379,3 +384,122 @@ async def test_reconnect_during_bookkeeping_cannot_detach_the_new_stream(
         AGENT_ID, "c1", 0, conn.stream_generation
     ).stream_attached
     await newer.body_iterator.aclose()
+
+
+class _RecordingSink:
+    def __init__(self) -> None:
+        self.sent: list[TelemetryRecord] = []
+
+    async def send(self, record: TelemetryRecord) -> None:
+        self.sent.append(record)
+
+    async def aclose(self) -> None:
+        return None
+
+
+class TestOpeningAStreamReportsASession:
+    """Through the endpoint, not the reporter. Whether a connection is new is
+    decided here, so a gate that never opens silences both session events
+    while every test of the reporter alone stays green."""
+
+    def _reporting(self) -> tuple[_Protocol, TelemetryService, _RecordingSink]:
+        sink = _RecordingSink()
+        service = TelemetryService(
+            sink=sink,  # type: ignore[arg-type]
+            enabled=True,
+            client_id="11111111-1111-1111-1111-111111111111",
+            service_name="switch-core",
+            version="1.0.0",
+            environment=None,
+        )
+        protocol = _Protocol()
+        protocol.sessions = SessionReporter(service, protocol.connections)
+        protocol.connections.set_close_listener(protocol.sessions.on_close)
+        return protocol, service, sink
+
+    async def test_a_new_connection_reports_a_session_start(self) -> None:
+        protocol, service, sink = self._reporting()
+
+        await _call(protocol, accept="text/event-stream", connection_id="c1")
+        await service.aclose()
+
+        assert [r.name for r in sink.sent] == ["switch_core.agent_session_started"]
+
+    async def test_a_reattach_to_the_same_connection_is_not_another_start(
+        self,
+    ) -> None:
+        protocol, service, sink = self._reporting()
+
+        await _call(protocol, accept="text/event-stream", connection_id="c1")
+        await _call(protocol, accept="text/event-stream", connection_id="c1")
+        await service.aclose()
+
+        assert [r.name for r in sink.sent] == ["switch_core.agent_session_started"]
+
+    async def test_a_refused_open_then_a_retry_is_one_start(self) -> None:
+        """The room claim refuses the first attempt; nothing began, so only the
+        retry that gets a stream reports."""
+        protocol, service, sink = self._reporting()
+        refusals = [PermissionError("not a member yet")]
+
+        async def member(agent_id: str, room_id: str) -> None:
+            if refusals:
+                raise refusals.pop()
+
+        protocol.require_room_member = member  # type: ignore[method-assign]
+
+        with pytest.raises(HTTPException):
+            await _call(
+                protocol, accept="text/event-stream", connection_id="c1", rooms="r1"
+            )
+        await _call(
+            protocol, accept="text/event-stream", connection_id="c1", rooms="r1"
+        )
+        await service.aclose()
+
+        assert [r.name for r in sink.sent] == ["switch_core.agent_session_started"]
+
+    async def test_an_open_that_failed_after_registering_is_counted_on_retry(
+        self,
+    ) -> None:
+        """An unexpected failure leaves the connection registered, so the retry
+        on the same id reattaches to it. It is still the session's first
+        stream."""
+        protocol, service, sink = self._reporting()
+        failures = [RuntimeError("database went away")]
+
+        async def member(agent_id: str, room_id: str) -> None:
+            if failures:
+                raise failures.pop()
+
+        protocol.require_room_member = member  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError):
+            await _call(
+                protocol, accept="text/event-stream", connection_id="c1", rooms="r1"
+            )
+        assert protocol.connections.get("c1") is not None
+        await _call(
+            protocol, accept="text/event-stream", connection_id="c1", rooms="r1"
+        )
+        await service.aclose()
+
+        assert [r.name for r in sink.sent] == ["switch_core.agent_session_started"]
+
+    async def test_closing_the_only_connection_ends_the_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The end is reported only for a connection the start was reported
+        on, so a start that never fires takes the end down with it."""
+        monkeypatch.setattr(session_reporter, "_RECONNECT_GRACE_SECONDS", 0)
+        protocol, service, sink = self._reporting()
+
+        await _call(protocol, accept="text/event-stream", connection_id="c1")
+        protocol.connections.close("c1", HEARTBEAT_LAPSED)
+        await asyncio.sleep(0.01)
+        await service.aclose()
+
+        assert [r.name for r in sink.sent] == [
+            "switch_core.agent_session_started",
+            "switch_core.agent_session_ended",
+        ]

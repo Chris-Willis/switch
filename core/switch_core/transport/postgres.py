@@ -1,35 +1,31 @@
-"""Postgres implementation of `MessageTransport`.
+"""Postgres implementation of `MessageTransport`, and Switch's message bus.
 
-The homeserver's remaining job is to carry an event from the client that sent
-it to the clients that should see it, and to remember it in between. A table
-does all three, and Switch already writes that table: every send is recorded
-into `messages` today, beside the send, so the rows exist and have been
-verified against the bus.
-
-This turns that parallel record into the thing itself. **The write is the
-send.** There is no second store to agree with, which is why the reconciler
-this stack built has no work left once the flip happens — it exists to compare
-two records of the same event, and there is only one.
+A transport carries an event from the client that sent it to the clients that
+should see it, and remembers it in between. Here the `messages` table does all
+of that. **The write is the send.** A send is an INSERT, numbered per room
+under an advisory lock (`MessageStore.create`); the `messages_notify` trigger
+announces it on commit (`db/notify_ddl.py`); one `MessageListener` wakes the
+transports watching that room (`messages/notify.py`); and each transport reads
+the rows after its own cursor, `_DELIVERY_PAGE` at a time. There is no second
+store to agree with. Switch used to run on a Matrix homeserver; the
+`matrix_*` column names are what is left of it, kept as stable ids.
 
 Three consequences worth stating up front:
 
-- **A send now fails when the database does.** The recorder deliberately could
-  not fail a send, because a row was a nice-to-have next to a delivered
-  message. Here the row *is* the delivery, so there is nothing left to protect:
-  a write that fails is a message that was not sent, and the caller must hear
-  about it.
-- **Every durable event gets a row, not only the conversation.** The bus
-  carried commands and task events too, and they have to reach their handlers.
-  `recorded_types` therefore stops meaning "what is written" and starts meaning
-  "what a reader is shown" — a projection applied on the way out. The one
+- **A send fails when the database does.** The row *is* the delivery: a write
+  that fails is a message that was not sent, and the caller must hear about
+  it.
+- **Every durable event gets a row, not only the conversation.** Commands and
+  task events travel the same way, and they have to reach their handlers.
+  `recorded_types` therefore means "what a reader is shown", not "what is
+  written": a projection applied on the way out. The one
   category with no row is the genuinely ephemeral: presence-like state whose
   next value replaces it, which is announced and never stored.
 - **Ids are opaque, and these are not `$event` ids.** Nothing in Switch parses
   one; the columns holding them are already named `transport_event_id`.
 
 History is the one method left unimplemented, and deliberately: the read path
-already queries these rows directly, and the only callers left are the walkers
-that exist to compare a bus against them.
+queries these rows directly.
 """
 
 from __future__ import annotations
@@ -40,7 +36,13 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from switch_core.db.models import ClientRoom, MediaBlob, Message, MessageAttachment
+from switch_core.db.models import (
+    ClientRoom,
+    MediaBlob,
+    Message,
+    MessageAttachment,
+    UsageMetric,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.logging_context import log_context
 from switch_core.messages.recorded_types import EPHEMERAL
@@ -79,6 +81,7 @@ if TYPE_CHECKING:
     from switch_core.db.stores.media_store import MediaStore
     from switch_core.db.stores.message_store import MessageStore
     from switch_core.db.stores.room_store import RoomStore
+    from switch_core.db.stores.usage_store import UsageStore
     from switch_core.messages.notify import MessageListener
 
 logger = logging.getLogger(__name__)
@@ -90,6 +93,12 @@ _DELIVERY_PAGE = 200
 
 # What makes an `m.room.message` a file rather than text.
 _MEDIA_MSGTYPES = frozenset({"m.image", "m.file", "m.video", "m.audio"})
+
+
+# What a tenant is metered for: something a participant said. Custom events
+# are the platform's own bookkeeping — reports, state, receipts — and charging
+# a tenant for them would bill it for how Switch works.
+_METERED_KINDS = frozenset({"message", "media"})
 
 
 def _sent_kind(event_type: str, content: dict[str, object]) -> str:
@@ -146,8 +155,8 @@ def new_event_id() -> str:
 class PostgresTransport:
     """Carries a room's events in the `messages` table.
 
-    One instance per client, as with the Matrix transport: it sends as that
-    client and, once receiving lands, delivers to that client's handlers.
+    One instance per client: it sends as that client and, once it is
+    receiving, delivers to that client's handlers.
     """
 
     def __init__(
@@ -157,9 +166,11 @@ class PostgresTransport:
         client_id: str,
         tenant_id: str,
         display_name: str,
+        actor_role: str,
         session_factory: async_sessionmaker[AsyncSession],
         room_store: RoomStore,
         message_store: MessageStore,
+        usage_store: UsageStore,
         media_store: MediaStore,
         listener: MessageListener,
         invites: InviteBus,
@@ -167,6 +178,9 @@ class PostgresTransport:
     ) -> None:
         self.user_id = user_id
         self.client_id = client_id
+        # Who this client is in message metrics: the writer of what it sends
+        # and the reader of what it is handed. Bounded, never an id.
+        self._actor_role = actor_role
         # The tenant everything this transport reads and writes is scoped to,
         # handed in with the client id rather than looked up from it. Neither
         # this transport's context nor its caller's is the right answer — the
@@ -185,6 +199,7 @@ class PostgresTransport:
         self._session_factory = session_factory
         self._room_store = room_store
         self._message_store = message_store
+        self._usage_store = usage_store
         self._media_store = media_store
         self._listener = listener
         self._invites = invites
@@ -237,10 +252,9 @@ class PostgresTransport:
             if not rooms:
                 logger.error(
                     "Client %s is receiving but is a member of no room: it will "
-                    "hear nothing until something adds it to one. Under Matrix "
-                    "membership lived on the homeserver; here it is the "
-                    "client_rooms table, so a client whose rows were never "
-                    "written is silent rather than broken",
+                    "hear nothing until something adds it to one. Membership "
+                    "is the client_rooms table, so a client whose rows were "
+                    "never written is silent rather than broken",
                     self.user_id,
                 )
             delivery = asyncio.create_task(self._deliver_forever())
@@ -300,7 +314,9 @@ class PostgresTransport:
                             # problem, and this loop is the only delivery this
                             # client has. Counted as well as logged: swallowing
                             # it is what makes a stalled room invisible.
-                            metrics().increment(DELIVERY_FAILURES, {})
+                            metrics().increment(
+                                DELIVERY_FAILURES, {"actor": self._actor_role}
+                            )
                             logger.error(
                                 "Delivery failed for client %s in room %s",
                                 self.user_id,
@@ -555,10 +571,14 @@ class PostgresTransport:
         if handler is None:
             return
         kind = _delivered_kind(event)
-        metrics().increment(MESSAGES_DELIVERED, {"kind": kind})
+        metrics().increment(
+            MESSAGES_DELIVERED, {"kind": kind, "actor": self._actor_role}
+        )
         lag_ms = _age_ms(row.sent_at)
         if lag_ms is not None:
-            metrics().observe(DELIVERY_LAG, {"kind": kind}, lag_ms)
+            metrics().observe(
+                DELIVERY_LAG, {"kind": kind, "actor": self._actor_role}, lag_ms
+            )
         await handler(room, event)
 
     def _handler_for(self, event: InboundEvent) -> Handler | None:
@@ -578,6 +598,7 @@ class PostgresTransport:
         body: str,
         *,
         sender_name: str,
+        metered: bool,
         format: MessageFormat = "text",
         mentions: list[str] | None = None,
         thread_root_id: str | None = None,
@@ -591,7 +612,9 @@ class PostgresTransport:
             thread_root_id=thread_root_id,
             extra_content=extra_content,
         )
-        return await self._send(room_id, "m.room.message", content, sender_name)
+        return await self._send(
+            room_id, "m.room.message", content, sender_name, metered=metered
+        )
 
     async def send_event(
         self,
@@ -599,7 +622,9 @@ class PostgresTransport:
         event_type: str,
         content: dict[str, object],
     ) -> SendResult:
-        return await self._send(room_id, event_type, content, self.display_name)
+        return await self._send(
+            room_id, event_type, content, self.display_name, metered=False
+        )
 
     async def send_media(
         self,
@@ -610,6 +635,7 @@ class PostgresTransport:
         size: int,
         *,
         sender_name: str,
+        metered: bool,
         msgtype: str,
         caption: str | None = None,
         thread_root_id: str | None = None,
@@ -626,7 +652,9 @@ class PostgresTransport:
             thread_root_id=thread_root_id,
             group=group,
         )
-        return await self._send(room_id, "m.room.message", content, sender_name)
+        return await self._send(
+            room_id, "m.room.message", content, sender_name, metered=metered
+        )
 
     async def _send(
         self,
@@ -634,6 +662,8 @@ class PostgresTransport:
         event_type: str,
         content: dict[str, object],
         sender_name: str,
+        *,
+        metered: bool,
     ) -> SendResult:
         """Write the event, which is what sending it means here.
 
@@ -662,7 +692,9 @@ class PostgresTransport:
                     event_type=event_type,
                 ),
             )
-            metrics().increment(MESSAGES_SENT, {"kind": kind})
+            metrics().increment(
+                MESSAGES_SENT, {"kind": kind, "actor": self._actor_role}
+            )
             return result
 
         try:
@@ -684,14 +716,25 @@ class PostgresTransport:
                 await self._message_store.create(
                     session, message, attachments_in(content)
                 )
+                if metered and kind in _METERED_KINDS:
+                    await self._usage_store.record(
+                        session,
+                        tenant_id=tenant_id,
+                        metric=UsageMetric.MESSAGES,
+                        client_id=self.client_id,
+                        model="",
+                        amount=1,
+                    )
                 await session.commit()
         except Exception:
             # `MESSAGES_SENT` is recorded only after the commit, so without
             # this a database outage reads as silence — and so does a quiet
             # room.
-            metrics().increment(SEND_FAILURES, {"kind": kind})
+            metrics().increment(
+                SEND_FAILURES, {"kind": kind, "actor": self._actor_role}
+            )
             raise
-        metrics().increment(MESSAGES_SENT, {"kind": kind})
+        metrics().increment(MESSAGES_SENT, {"kind": kind, "actor": self._actor_role})
         return result
 
     async def set_typing(self, room_id: str, is_typing: bool) -> None:
@@ -847,7 +890,7 @@ class PostgresTransport:
         """
         async with tenant_session(self._session_factory, self.tenant_id) as session:
             rooms = await self._room_store.get_for_client(session, self.client_id)
-        return [room.matrix_room_id for room in rooms if room.matrix_room_id]
+        return [room.transport_room_id for room in rooms if room.transport_room_id]
 
     async def set_display_name(self, display_name: str) -> None:
         """Held on the client row, which is where every reader already looks."""
@@ -869,7 +912,9 @@ class PostgresTransport:
         cached = self._room_ids.get(transport_room_id)
         if cached is not None:
             return cached
-        room = await self._room_store.get_by_matrix_room_id(session, transport_room_id)
+        room = await self._room_store.get_by_transport_room_id(
+            session, transport_room_id
+        )
         if room is None:
             raise TransportError(f"{transport_room_id} is not a Switch room")
         self._room_ids[transport_room_id] = room.id

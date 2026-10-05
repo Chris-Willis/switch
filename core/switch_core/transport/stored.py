@@ -25,9 +25,8 @@ def to_inbound(
 ) -> InboundEvent:
     """One stored row as the event a handler expects.
 
-    Which of the four inbound shapes a row becomes is read off the row itself,
-    the same way the Matrix transport reads it off the event class: an
-    arrival, a file, a `com.switch.*` payload, or a message. The row keeps the
+    Which of the four inbound shapes a row becomes is read off the row itself:
+    an arrival, a file, a `com.switch.*` payload, or a message. The row keeps the
     whole content dict, so nothing is reconstructed here that was not sent.
     """
     content = dict(row.content)

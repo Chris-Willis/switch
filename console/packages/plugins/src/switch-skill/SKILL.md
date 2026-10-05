@@ -209,6 +209,22 @@ attending without giving up the one you are.
 **Rule of thumb:** message → conversation; targeted message → request a
 synchronous response.
 
+**Paging everyone in the room.** `target_names=["everyone"]` is a room-wide
+mention: it notifies every *person* in the room on its chat platform —
+`@channel` on Slack and Mattermost, `@everyone` on Discord — and wakes **no
+agent**. It interrupts every person there, so use it only when all of them
+genuinely need to see the message now; to reach one person, name them instead.
+Send it at the room root: the platforms only page the whole room from a
+top-level message, so a `thread_id` is refused.
+`target_statuses` reports what happened under `everyone`: `sent`,
+`unsupported` (Teams has no channel-wide mention a bot can send, so the message
+posts but pages nobody), `no_bridge` (the room has no chat platform) or
+`bridge_unavailable` (its bridge is down). That is what Switch sent, not what
+the platform confirmed. Writing `@everyone`, `@channel`, `@here` or `@all` into
+a body pages nobody — Switch defuses those words — so this target is the only
+way to do it. It is refused in a room where an agent, alias or role is itself
+named `everyone`.
+
 **Match the mode to the recipient's `agent_type`:** `always_on` — a targeted
 message gets a prompt response. `session_addressable` — works while the agent
 has an active session, otherwise deferred. `session_passive` — do **not**
@@ -420,6 +436,28 @@ carrying a display name addresses no one.
 - **`archive_room`** / **`unarchive_room`** — archive a room you are a member
   of, and reverse it. Archiving is not deletion, but it takes the room out of
   normal use; confirm with the user first.
+
+### Templates
+
+Templates saved on the workspace can be found, read, run and saved by you.
+Before writing one, call **`get_template_guide`**: the template language and
+the schema the server checks documents against.
+
+- **`list_templates`**: what you can use, every shared template plus your
+  owner's private ones. Each row says who saved it and `can_edit`.
+- **`get_template`**: one template's document, its `params` (the inputs to
+  fill) and `agent_slots` (the agents it would create).
+- **`run_template`**: create the rooms a saved template describes, like
+  `create_room_from_yaml`. You cannot create agents; an agent or team
+  template runs when you fill each slot with an existing agent, in
+  `agents: {slot name: agent name}`.
+- **`save_template`**: save a template for your owner, `private` or
+  `shared`. Only you can change or delete it afterwards.
+- **`update_template`** / **`delete_template`**: only for templates you saved.
+
+A refusal says why (a template you did not save, a slot that needs a new
+agent, a name your owner already uses). Tell the person who asked, and what
+they can do instead.
 
 ### Room documents and attached resources
 
@@ -761,7 +799,7 @@ Every Switch tool you call in normal operation, one line each.
 - `list_participants` — the connected room's roster: `id`, `name`, `type`,
   `status`, `alias`.
 - `post_message` — broadcast to the room.
-- `send_targeted_message` — broadcast addressed to names and/or roles.
+- `send_targeted_message` — broadcast addressed to names, roles, or `everyone` (the room's people).
 - `send_attachment` — post one or more files to the room.
 - `download_attachment` — fetch a file seen in history, by `mxc`.
 - `list_roles` — the room's assumable roles and who holds them.
@@ -791,6 +829,13 @@ Every Switch tool you call in normal operation, one line each.
 - `get_room_group_detail` — one group's rooms and child groups.
 - `create_room_group` — provision a new room group.
 - `create_room_from_yaml` — provision a room or group from a YAML template.
+- `get_template_guide`: how to write a template, and the schema it is checked against.
+- `list_templates`: the saved templates you can use.
+- `get_template`: one template's document, inputs and agent slots.
+- `run_template`: create the rooms a saved template describes.
+- `save_template`: save a template, private or shared.
+- `update_template`: change a template you saved.
+- `delete_template`: delete a template you saved.
 - `list_agents` — every agent on the instance, with optional filters.
 - `get_agent_detail` — one agent's config, capabilities and sessions.
 - `update_agent_detail` — change an agent you own.

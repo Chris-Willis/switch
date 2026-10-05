@@ -23,22 +23,17 @@
 import { spawn } from 'node:child_process';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { runAgentHost } from '../agent-host';
 import { AttachmentTransfers } from '../attachment-transfers';
-import { type ControlContext, type EnsureSession, serveControl } from '../control';
+import { type ControlContext, ensureSessions, serveControl } from '../control';
 import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from '../exit-codes';
 import { hostedWorker } from '../hosted-watcher';
-import {
-  detachedSupervision,
-  ensureSharedProcess,
-  inProcessSupervision,
-  sharedSessionRoot,
-} from '../launch';
+import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from '../launch';
 import { replaceOwner } from '../ownership-lock';
 import { ownProcessGroup } from '../process-fence';
 import { SessionLinks } from '../session-channel';
 import { sharedConfigSchema } from '../shared-config';
 import { hostSessionProcess } from '../shared-host';
-import { runSharedWatcher } from '../shared-watcher';
 import { superviseSharedHost } from '../supervisor';
 import { WatcherControl } from '../watcher-tools';
 import { createBenchAdapter } from './adapter';
@@ -59,6 +54,7 @@ async function main(): Promise<void> {
           watcher: mode === '--ensure-watch',
           restart: false,
           supervision: detachedSupervision(process.argv[1]!),
+          startSource: null,
         })
       )
     );
@@ -88,17 +84,7 @@ async function main(): Promise<void> {
     // As the shipped sidecar does: its sessions are its children, over IPC.
     const links = new SessionLinks();
     const supervision = inProcessSupervision(process.argv[1]!, links);
-    const ensure: EnsureSession = async (input) => {
-      const session = sharedConfigSchema.parse(input.config);
-      return ensureSharedProcess({
-        root: sharedSessionRoot(session.session.sessionId),
-        config: session,
-        resuming: input.resuming,
-        watcher: false,
-        restart: input.restart,
-        supervision,
-      });
-    };
+    const ensure = ensureSessions(supervision);
     // Console's "Reconnect to room" reaches the watcher through the control port.
     const control = new WatcherControl();
     const transfers = new AttachmentTransfers(resolve(root));
@@ -118,7 +104,7 @@ async function main(): Promise<void> {
     const hosted = await hostedWorker(config, resolve(root), context);
     try {
       await Promise.all([
-        runSharedWatcher(root, config, stop.signal, supervision, control, hosted).finally(() =>
+        runAgentHost(root, config, stop.signal, supervision, control, hosted).finally(() =>
           stop.abort()
         ),
         serveControl(resolve(root), context, stop.signal),

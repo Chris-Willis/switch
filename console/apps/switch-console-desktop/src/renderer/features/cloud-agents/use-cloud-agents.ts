@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
 import { type CloudAgent, parseCloudAgentKey } from '@shared/core/cloud-agents/cloud-agents';
 
@@ -12,7 +13,9 @@ import { type CloudAgent, parseCloudAgentKey } from '@shared/core/cloud-agents/c
  * session or declared version changes, which is when it may have gained them.
  */
 export function useCloudAgents(serverId: string | null) {
-  const signedOut = switchRoomsStore.serversNotSignedIn.some((server) => server.id === serverId);
+  const signedOut = switchRoomsStore.workspacesNotSignedIn.some(
+    (workspace) => workspacesStore.serverIdFor(workspace.id) === serverId
+  );
   const user = serverId === null ? null : (switchServersStore.statusFor(serverId)?.user ?? null);
   return useQuery({
     queryKey: ['cloud-agents', serverId, user?.id ?? null, user?.server?.version ?? null],
@@ -29,7 +32,9 @@ export function useCloudAgents(serverId: string | null) {
  * `['cloud-agents']`, so every refresh of the list refreshes this too.
  */
 export function useCloudMachines(serverId: string | null) {
-  const signedOut = switchRoomsStore.serversNotSignedIn.some((server) => server.id === serverId);
+  const signedOut = switchRoomsStore.workspacesNotSignedIn.some(
+    (workspace) => workspacesStore.serverIdFor(workspace.id) === serverId
+  );
   const user = serverId === null ? null : (switchServersStore.statusFor(serverId)?.user ?? null);
   return useQuery({
     queryKey: ['cloud-agents', serverId, 'machines', user?.id ?? null],

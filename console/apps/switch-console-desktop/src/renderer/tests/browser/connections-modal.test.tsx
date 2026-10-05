@@ -41,7 +41,7 @@ vi.mock('@renderer/features/sidebar/sidebar-tree-data', () => ({
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
-  switchRoomsStore: { serversNotSignedIn: [], roomNameById: () => null },
+  switchRoomsStore: { workspacesNotSignedIn: [], roomNameById: () => null },
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
@@ -58,7 +58,7 @@ vi.mock('@renderer/lib/modal/modal-provider', () => ({
   useModalContext: () => ({ setCloseGuard: () => {} }),
 }));
 
-vi.mock('@renderer/lib/stores/use-remote-agents', () => ({
+vi.mock('@renderer/lib/stores/use-workspace-agents', () => ({
   useAgentIconUrl: () => null,
 }));
 

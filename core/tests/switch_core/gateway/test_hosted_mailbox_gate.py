@@ -10,7 +10,7 @@ import pytest
 
 from switch_core.bridges.agent import hosted_mailbox
 from switch_core.bridges.agent.hosted_mailbox import mailbox_upkeep
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from tests.switch_core.bridges.agent.protocol.registration_harness import make_service
 from tests.switch_core.gateway.test_hosted_workers import worker_app  # noqa: F401
 
@@ -29,7 +29,7 @@ def _unconfigured(config) -> None:
 
 def _bare_service(session_factory):
     service = make_service(session_factory)
-    service.connections = ConnectionRegistry()
+    service.connections = AgentConnectionRegistry()
     service.event_buffer = SimpleNamespace(boot=1)
     _unconfigured(service.config)
     return service

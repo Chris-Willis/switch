@@ -16,7 +16,7 @@ from typing import Any, cast
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.addressing import AddressingPolicy
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.db.models import Agent, AgentSession
 from switch_core.db.stores.agent_session_store import AgentSessionStore
@@ -155,7 +155,7 @@ async def assemble_agent_detail(
     user_store: UserStore,
     agent_session_store: AgentSessionStore,
     room_role_store: RoomRoleStore,
-    connections: ConnectionRegistry,
+    connections: AgentConnectionRegistry,
 ) -> AgentDetail:
     owner_names: dict[str, str] = {}
 

@@ -24,9 +24,8 @@ from switch_core.bridges.agent.dependencies import get_protocol as get_worker_pr
 from switch_core.bridges.agent.dependencies import (
     get_session_factory as get_worker_session_factory,
 )
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -49,6 +48,7 @@ from switch_core.gateway.hosted_launches import router as launch_router
 from switch_core.gateway.hosted_machines import router as machine_router
 from switch_core.providers.hosted import HostedControllerSettings
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
+    KEYRING,
     make_owner,
     make_service,
 )
@@ -112,7 +112,7 @@ async def wire(session_factory, monkeypatch, tmp_path):
             session,
             owner,
             "setup-token",
-            encrypt_token("SYNTHETIC-CLAUDE", "test-secret"),
+            KEYRING.encrypt("SYNTHETIC-CLAUDE"),
             datetime.now(UTC),
         )
         await session.commit()
@@ -128,7 +128,7 @@ async def wire(session_factory, monkeypatch, tmp_path):
         json.dumps({**settings.model_dump(mode="json"), "token": TOKEN})
     )
     service = make_service(session_factory)
-    service.connections = ConnectionRegistry()
+    service.connections = AgentConnectionRegistry()
     service.event_buffer = EventBuffer(sequence_base=1 << 32)
     service.config.hosted_launch_capacity = 4
     service.config.hosted_agents_per_owner = 3

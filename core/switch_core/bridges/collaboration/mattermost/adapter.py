@@ -14,8 +14,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, ClassVar
+from urllib.parse import SplitResult, urlsplit
 
-import httpx
 import requests as sync_requests
 from mattermostdriver import Driver
 from mattermostdriver.exceptions import (
@@ -27,12 +27,13 @@ from mattermostdriver.exceptions import (
     NotEnoughPermissions,
     ResourceNotFound,
 )
+from pydantic import field_validator
 
 from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivitySnapshot,
-    CollaborationAdapter,
+    PlatformAdapter,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -53,6 +54,7 @@ from switch_core.bridges.collaboration.mattermost.callback import (
     interrupt_action,
     read_press,
 )
+from switch_core.bridges.collaboration.mattermost.http_client import NoRedirectClient
 from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
@@ -83,6 +85,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     render_request,
     turn_status,
 )
+from switch_core.outbound import guarded_async_client
 from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
@@ -212,6 +215,17 @@ class _Rendered:
     plain: str
 
 
+def _server_url(value: str) -> SplitResult:
+    """`url` as the driver reads it (`_create_driver`): no scheme means http."""
+    value = value.strip()
+    return urlsplit(value if "://" in value else f"http://{value}")
+
+
+# The port `_create_driver` connects to when the URL names none — not 80 for
+# http, but Mattermost's own.
+_DRIVER_DEFAULT_PORTS = {"http": 8065, "https": 443}
+
+
 class MattermostConnectionConfig(BridgeConnectionConfig):
     url: str
     admin_user: str
@@ -242,6 +256,20 @@ class MattermostConnectionConfig(BridgeConnectionConfig):
     # carry no buttons and stay answerable by typing.
     callback_base_url: str | None = None
 
+    @field_validator("url")
+    @classmethod
+    def _url_names_a_server(cls, value: str) -> str:
+        """`url` is what the bridge's claim on a team is worked out from, so
+        it is checked here rather than failing deep inside that."""
+        parts = _server_url(value)
+        if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
+            raise ValueError("url must be an http(s) URL naming the server")
+        try:
+            parts.port
+        except ValueError as exc:
+            raise ValueError(f"url has an invalid port: {exc}") from exc
+        return value
+
 
 # A refusal being collected for the person who pressed, if a press is what we
 # are in the middle of. Mattermost has one chance to say something privately —
@@ -266,7 +294,7 @@ def _ephemeral(text: str) -> dict[str, Any]:
     return {"ephemeral_text": text, "skip_slack_parsing": True}
 
 
-class MattermostAdapter(CollaborationAdapter):
+class MattermostAdapter(PlatformAdapter):
     draws_session_activity: ClassVar[bool] = True
 
     #: A problem somebody has to act on still gets its own reply, so it
@@ -279,6 +307,7 @@ class MattermostAdapter(CollaborationAdapter):
     #: post with nobody to name says as much. This is the legacy ping's policy,
     #: carried over: it is the one that reaches the person who can do something.
     notifies_only_by_mention: ClassVar[bool] = True
+    channel_mention: ClassVar[str | None] = "@channel"
 
     #: The status is the turn's one post, not a line beside it, so the clock
     #: advancing is not on its own worth rewriting what a reader is reading.
@@ -310,6 +339,30 @@ class MattermostAdapter(CollaborationAdapter):
     #: the channel open. A settled card reads better than that tombstone and
     #: keeps the channel a record of what was asked and what was decided.
     removes_answered_cards: ClassVar[bool] = False
+
+    @classmethod
+    def claimed_workspace(cls, connection_config: dict[str, object]) -> str | None:
+        """The team on its server, compared in canonical form so a trailing
+        slash, letter case, a missing scheme or an explicit default port does
+        not make the same team look like a different one. Defaults are the
+        driver's, so `http://mm` and `mm:8065` are one server and `mm:80`
+        another."""
+        url = _server_url(str(connection_config["url"]))
+        scheme = url.scheme.lower()
+        port = url.port
+        default_port = _DRIVER_DEFAULT_PORTS.get(scheme)
+        host = (url.hostname or "").lower()
+        if port is not None and port != default_port:
+            host = f"{host}:{port}"
+        path = url.path.rstrip("/")
+        team = str(connection_config["team_name"]).lower()
+        return f"Mattermost team {team} on {scheme}://{host}{path}"
+
+    @classmethod
+    def outbound_urls(cls, connection_config: dict[str, object]) -> list[str]:
+        # The driver connects without our pinning, so this check at
+        # registration, edit and start is the guard for the server URL.
+        return [_server_url(str(connection_config["url"])).geturl()]
 
     def __init__(self, *, config: MattermostConnectionConfig) -> None:
         super().__init__()
@@ -504,7 +557,7 @@ class MattermostAdapter(CollaborationAdapter):
         """
         if self._callback is None:
             raise CallbackRefused("This bridge takes no callbacks.", status=404)
-        press = read_press(self._callback.key, body)
+        press = read_press(self._callback.verification_keys, body)
         if press is None:
             raise CallbackRefused("Not a press this bridge will act on.", status=401)
         if isinstance(press, ActivityPress):
@@ -521,7 +574,7 @@ class MattermostAdapter(CollaborationAdapter):
         name = await self._username_for(press.user_id)
         if name is None:
             # Refused rather than attributed to the raw id: the id is what the
-            # answer is judged against, but the name is what a puppet is
+            # answer is judged against, but the name is what a human actor is
             # created under, and inventing one from an id makes a person who
             # cannot be looked up into a permanent participant named after a
             # lookup failure.
@@ -718,6 +771,8 @@ class MattermostAdapter(CollaborationAdapter):
         sender_name: str,
         content: str,
         thread_root_id: str | None = None,
+        *,
+        room_wide_mention: bool = False,
     ) -> str | None:
         bot_driver = self._bot_drivers.get(sender_name)
         if not bot_driver:
@@ -1956,8 +2011,8 @@ class MattermostAdapter(CollaborationAdapter):
 
     async def get_external_user_id(self, username: str) -> str | None:
         """Resolve a platform username to its current user id, or None if the
-        user does not exist. Used by the homeserver cutover to rebind a puppet's
-        ``external_user_id`` when Mattermost has been rebuilt and ids changed."""
+        user does not exist. Used to rebind a human actor's ``external_user_id`` when
+        Mattermost has been rebuilt and ids changed."""
         if not self._admin_driver or not self._main_loop:
             raise RuntimeError("Mattermost client not connected")
         try:
@@ -2292,6 +2347,22 @@ class MattermostAdapter(CollaborationAdapter):
         # the response has to be a PNG it can accept.
         return default_icon_url(agent_name, image_format="png")
 
+    async def _fetch_icon(self, url: str) -> bytes | None:
+        """The icon's bytes, or None if it is larger than the ceiling."""
+        async with guarded_async_client(
+            self.outbound_policy, follow_redirects=False, timeout=10.0
+        ) as client:
+            async with client.stream("GET", url) as resp:
+                resp.raise_for_status()
+                chunks: list[bytes] = []
+                size = 0
+                async for chunk in resp.aiter_bytes():
+                    size += len(chunk)
+                    if size > _MAX_BOT_ICON_BYTES:
+                        return None
+                    chunks.append(chunk)
+        return b"".join(chunks)
+
     async def _set_bot_icon(self, bot_id: str, agent_name: str) -> None:
         if not self._admin_driver or not self._main_loop:
             logger.error("[BOT-ICON] skipping %s: no driver or loop", agent_name)
@@ -2302,19 +2373,16 @@ class MattermostAdapter(CollaborationAdapter):
             logger.debug("[BOT-ICON] fetching avatar for %s", agent_name)
             # This is the one place Switch dereferences an agent's icon URL
             # rather than handing it to a platform, so the fetch is bounded:
-            # redirects off (a permitted host could otherwise bounce us to an
-            # internal one, which validation at write time cannot foresee) and
-            # a size ceiling so a hostile response cannot be read unbounded.
-            async with httpx.AsyncClient(follow_redirects=False) as client:
-                resp = await client.get(url, timeout=10.0)
-                resp.raise_for_status()
-                image_bytes = resp.content
-            if len(image_bytes) > _MAX_BOT_ICON_BYTES:
+            # only addresses the outbound policy allows, checked as the
+            # connection is made (validation at write time cannot see what a
+            # name resolves to later), no redirects, and a size ceiling
+            # enforced while reading rather than after.
+            image_bytes = await self._fetch_icon(url)
+            if image_bytes is None:
                 logger.error(
-                    "[BOT-ICON] icon for %s is %d bytes, over the %d limit — "
+                    "[BOT-ICON] icon for %s is over the %d byte limit — "
                     "leaving the current icon in place",
                     agent_name,
-                    len(image_bytes),
                     _MAX_BOT_ICON_BYTES,
                 )
                 return
@@ -2330,6 +2398,8 @@ class MattermostAdapter(CollaborationAdapter):
                     upload_url,
                     headers={"Authorization": f"Bearer {token}"},
                     files={"image": ("icon.png", data, "image/png")},
+                    allow_redirects=False,
+                    timeout=30,
                 )
                 if not r.ok:
                     logger.error(
@@ -2349,12 +2419,8 @@ class MattermostAdapter(CollaborationAdapter):
 
     # ── Translation ──────────────────────────────────────────────────────────
 
-    def translate_outbound(self, content: str) -> str:
-        return re.sub(
-            r"@(\w+):\S+",
-            r"@\1",
-            content,
-        )
+    def _render_outbound(self, content: str) -> str:
+        return re.sub(r"@(\w+):\S+", r"@\1", content)
 
     def translate_inbound(self, raw_message: str) -> str:
         return raw_message
@@ -2695,7 +2761,7 @@ class MattermostAdapter(CollaborationAdapter):
             opts["login_id"] = login_id
             opts["password"] = password
 
-        return Driver(opts)
+        return Driver(opts, client_cls=NoRedirectClient)
 
     def _mm_api(
         self, method: str, endpoint: str, data: dict[str, Any] | None = None

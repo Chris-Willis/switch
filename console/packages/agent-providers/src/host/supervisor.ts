@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
 import { pipeRedactedHostedLogs } from './hosted-log';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
-import { fenceDeadOwner } from './process-fence';
+import { fenceDeadOwner, killProcessTree } from './process-fence';
 import type { SessionLinks } from './session-channel';
 
 function alive(pid: number): boolean {
@@ -33,6 +33,13 @@ async function ownerPid(path: string): Promise<number | null> {
   }
 }
 
+/**
+ * How long a supervised host asked to stop is given before it and what it
+ * started are killed. Shorter than the launcher's `STOP_GRACE_MS`, so a chain
+ * — a watcher's supervisor, the watcher, its session hosts — comes down inside
+ * the time a replacement waits for it.
+ */
+export const CHILD_STOP_GRACE_MS = 10_000;
 export async function superviseSharedHost(input: {
   root: string;
   executable: string;
@@ -88,7 +95,24 @@ export async function superviseSharedHost(input: {
           )
         : log.close();
       logged.catch(() => {});
-      const stop = () => child.kill('SIGTERM');
+      // Asked first. A host that has not gone `CHILD_STOP_GRACE_MS` later is
+      // waiting on something that will not finish — a session host that hung
+      // up and stayed alive, say — and is killed with everything it started,
+      // so that stopping this supervisor cannot hang on it.
+      let escalation: ReturnType<typeof setTimeout> | null = null;
+      const stop = () => {
+        child.kill('SIGTERM');
+        escalation ??= setTimeout(() => {
+          if (child.exitCode !== null || child.signalCode !== null || !child.pid) return;
+          console.warn(
+            `The shared host at ${input.root} did not stop within ${CHILD_STOP_GRACE_MS / 1000} s of being asked; killing it and everything it started.`
+          );
+          killProcessTree(child.pid).catch((error: unknown) =>
+            console.error(`Could not kill the shared host at ${input.root}: ${String(error)}`)
+          );
+        }, CHILD_STOP_GRACE_MS);
+        escalation.unref?.();
+      };
       input.signal.addEventListener('abort', stop, { once: true });
       if (input.signal.aborted) stop();
       let code: number | null;
@@ -97,6 +121,7 @@ export async function superviseSharedHost(input: {
         [code, signal] = await exited;
       } finally {
         input.signal.removeEventListener('abort', stop);
+        if (escalation) clearTimeout(escalation);
       }
       if (child.pid) {
         await fenceDeadOwner(child.pid, child.pid);

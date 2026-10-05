@@ -18,9 +18,8 @@ from switch_core.bridges.agent.api.hosted_worker_routes import (
     post_mailbox_notices,
     post_room_notice,
 )
-from switch_core.bridges.agent.protocol.service import AgentExistsError, ProtocolService
+from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
 from switch_core.config import SwitchConfig
-from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -291,9 +290,7 @@ async def update_configuration(
     return configuration(spec)
 
 
-async def _register(
-    protocol: ProtocolService, launch: HostedLaunch, agent_id: str
-) -> None:
+async def _register(protocol: AgentCore, launch: HostedLaunch, agent_id: str) -> None:
     provider = launch.spec.get("provider", "claude")
     known_type = "claude-code" if provider == "claude" else provider
     known = KNOWN_AGENTS[known_type]
@@ -325,7 +322,7 @@ async def _register(
 
 async def _identity_failed(
     session: AsyncSession,
-    protocol: ProtocolService,
+    protocol: AgentCore,
     request_id: str,
     agent_id: str,
     error: str,
@@ -361,7 +358,7 @@ async def _identity_failed(
 
 
 async def register_identity(
-    session: AsyncSession, protocol: ProtocolService, request_id: str
+    session: AsyncSession, protocol: AgentCore, request_id: str
 ) -> HostedLaunch:
     """Register the launch's agent identity, unless it already has one.
 
@@ -431,7 +428,7 @@ class LifecycleRequest(BaseModel):
 
 
 def ring_mailbox_cancel(
-    protocol: ProtocolService, agent_id: str, entries: list[tuple[str, str]]
+    protocol: AgentCore, agent_id: str, entries: list[tuple[str, str]]
 ) -> None:
     protocol.connections.ring_worker(
         agent_id,
@@ -452,7 +449,7 @@ async def lifecycle(
     config: Annotated[SwitchConfig, Depends(get_config)],
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict | JSONResponse:
     launch, machine = await locked_owned(session, str(request_id), user.id)
     if launch.revision != body.revision:
@@ -516,7 +513,7 @@ async def lifecycle(
 
 
 async def post_removed_notices(
-    protocol: ProtocolService, agent: Agent, notices: list[MailboxNotice]
+    protocol: AgentCore, agent: Agent, notices: list[MailboxNotice]
 ) -> None:
     """Tell each room its queued messages will not run, while the agent can still post."""
     for notice in one_per_room(notices):
@@ -540,7 +537,7 @@ async def post_removed_notices(
 
 async def remove(
     session: AsyncSession,
-    protocol: ProtocolService,
+    protocol: AgentCore,
     config: SwitchConfig,
     launch: HostedLaunch,
     machine: HostedMachine,
@@ -608,7 +605,7 @@ async def remove(
 
 async def finish_removal(
     session: AsyncSession,
-    protocol: ProtocolService,
+    protocol: AgentCore,
     config: SwitchConfig,
     launch: HostedLaunch,
     machine: HostedMachine,
@@ -668,7 +665,7 @@ _doorbells: set[asyncio.Task[None]] = set()
 
 
 async def ring_operation(
-    protocol: ProtocolService, tenant_id: str, agent_id: str, operation_id: str
+    protocol: AgentCore, tenant_id: str, agent_id: str, operation_id: str
 ) -> None:
     """Ring the worker for a queued operation until it is claimed or the rings run out."""
     protocol.connections.ring_worker(agent_id, "operation", {"id": operation_id})
@@ -687,7 +684,7 @@ async def session_operation(
     body: SessionOperationRequest,
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict | JSONResponse:
     launch, machine = await locked_owned(session, str(request_id), user.id)
     existing = await session.get(HostedOperation, (require_tenant_id(), str(body.id)))
@@ -775,7 +772,7 @@ async def create(
     config: Annotated[SwitchConfig, Depends(get_config)],
     verifier: Annotated[ClaudeVerifier, Depends(get_verifier)],
     github: Annotated[GitHubConnections, Depends(get_github)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict:
     if not launch_enabled(config, settings):
         raise HTTPException(503, LAUNCH_DISABLED)
@@ -819,7 +816,7 @@ async def create(
         try:
             await verifier.verify(
                 connection.kind,
-                decrypt_token(connection.encrypted_credential, config.jwt_secret_key),
+                config.keyring.decrypt(connection.encrypted_credential),
             )
         except ClaudeVerificationError as error:
             raise HTTPException(422, str(error)) from None

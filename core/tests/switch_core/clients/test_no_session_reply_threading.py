@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.hosted_workers import NOTICE_MESSAGES
 from switch_core.clients.admin_messages import PLATFORM_MARKER
-from switch_core.clients.agent_client import (
+from switch_core.clients.agent_consumer import (
     _HOSTED_ERROR_MESSAGE,
     _HOSTED_MACHINE_STOPPED_MESSAGE,
     _HOSTED_REMOVED_MESSAGE,
@@ -17,7 +17,7 @@ from switch_core.clients.agent_client import (
     _STARTING_SESSION_MESSAGE,
     _WAKING_MESSAGE,
     AUTO_REPLY_FLAG,
-    AgentClient,
+    AgentConsumer,
     HostedNote,
     _GateOutcome,
     _hosted_unavailable,
@@ -55,9 +55,9 @@ def _fake_self(
     send_message: _Recorder,
     unavailable_reply: str = "I don't have a session connected to this room.",
 ) -> SimpleNamespace:
-    """A minimal AgentClient stand-in: addressed, offline, non-moderator."""
+    """A minimal AgentConsumer stand-in: addressed, offline, non-moderator."""
 
-    async def _resolve_room_meta(_matrix_room_id: str) -> SimpleNamespace:
+    async def _resolve_room_meta(_transport_room_id: str) -> SimpleNamespace:
         return _meta()
 
     def _addressed_without_lookup(_event: object, _meta: object) -> bool:
@@ -96,13 +96,13 @@ def _fake_self(
         _is_available=_is_available,
         _reply_when_unavailable_here=_reply_when_unavailable_here,
         _note_hosted_addressed=AsyncMock(return_value=None),
-        _triggered_by_auto_reply=AgentClient._triggered_by_auto_reply,
-        send_message=send_message,
+        _triggered_by_auto_reply=AgentConsumer._triggered_by_auto_reply,
+        actor=SimpleNamespace(send_message=send_message),
         _event_buffer=SimpleNamespace(enqueue=lambda *a, **k: None),
     )
     # Exercise the real sender-tagging and auto-reply helpers.
-    ns._sender_handle = AgentClient._sender_handle.__get__(ns)
-    ns._post_auto_reply = AgentClient._post_auto_reply.__get__(ns)
+    ns._sender_handle = AgentConsumer._sender_handle.__get__(ns)
+    ns._post_auto_reply = AgentConsumer._post_auto_reply.__get__(ns)
     return ns
 
 
@@ -126,7 +126,7 @@ def _event(thread_id: str | None, *, is_auto_reply: bool = False) -> InboundMess
 async def test_no_session_reply_threads_under_triggering_mention() -> None:
     send_message = _Recorder()
     room = RoomRef(room_id="!matrix:server")
-    await AgentClient.on_message(
+    await AgentConsumer.on_message(
         _fake_self(send_message), room, _event(thread_id="$thread-root")
     )
 
@@ -139,6 +139,20 @@ async def test_no_session_reply_threads_under_triggering_mention() -> None:
     ]
     # The reply is stamped as an auto-reply so it can't re-trigger another one.
     assert send_message.calls[0]["extra_content"] == {AUTO_REPLY_FLAG: True}
+    # Switch said it, not the agent, so the tenant is not charged for it.
+    assert send_message.calls[0]["metered"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_command_reply_is_not_metered() -> None:
+    send_message = _Recorder()
+    await AgentConsumer.reply_command(
+        SimpleNamespace(actor=SimpleNamespace(send_message=send_message)),  # type: ignore[arg-type]
+        "!matrix:server",
+        "the result",
+    )
+
+    assert send_message.calls[0]["metered"] is False
 
 
 @pytest.mark.asyncio
@@ -148,7 +162,7 @@ async def test_no_session_reply_not_triggered_by_another_auto_reply() -> None:
     # reply, so the loop can never form.
     send_message = _Recorder()
     room = RoomRef(room_id="!matrix:server")
-    await AgentClient.on_message(
+    await AgentConsumer.on_message(
         _fake_self(send_message),
         room,
         _event(thread_id="$thread-root", is_auto_reply=True),
@@ -164,7 +178,7 @@ async def test_no_session_reply_does_not_double_tag_the_asker() -> None:
     # tag them once, not "@louisa @louisa".
     send_message = _Recorder()
     room = RoomRef(room_id="!matrix:server")
-    await AgentClient.on_message(
+    await AgentConsumer.on_message(
         _fake_self(
             send_message, unavailable_reply="@louisa\n\nmy operator should run …"
         ),
@@ -184,7 +198,7 @@ async def test_no_session_reply_tags_distinct_asker_and_operator() -> None:
     # both the asker and that operator are tagged.
     send_message = _Recorder()
     room = RoomRef(room_id="!matrix:server")
-    await AgentClient.on_message(
+    await AgentConsumer.on_message(
         _fake_self(
             send_message, unavailable_reply="@operator\n\nmy operator should run …"
         ),
@@ -217,7 +231,7 @@ class TestStartingSessionNoticeGoesWhereItWasAsked:
         send_message = _Recorder()
         room = RoomRef(room_id="!matrix:server")
 
-        await AgentClient.on_message(
+        await AgentConsumer.on_message(
             _fake_self(send_message, unavailable_reply=_STARTING_SESSION_MESSAGE),
             room,
             _event(thread_id=None),
@@ -234,7 +248,7 @@ class TestStartingSessionNoticeGoesWhereItWasAsked:
         send_message = _Recorder()
         room = RoomRef(room_id="!matrix:server")
 
-        await AgentClient.on_message(
+        await AgentConsumer.on_message(
             _fake_self(send_message, unavailable_reply=_STARTING_SESSION_MESSAGE),
             room,
             _event(thread_id="$thread-root"),
@@ -258,7 +272,7 @@ class TestTerminalReplyThreadsOffTheTrigger:
         send_message = _Recorder()
         room = RoomRef(room_id="!matrix:server")
 
-        await AgentClient.on_message(
+        await AgentConsumer.on_message(
             _fake_self(send_message), room, _event(thread_id=None)
         )
 
@@ -272,7 +286,7 @@ class TestTerminalReplyThreadsOffTheTrigger:
         send_message = _Recorder()
         room = RoomRef(room_id="!matrix:server")
 
-        await AgentClient.on_message(
+        await AgentConsumer.on_message(
             _fake_self(send_message), room, _event(thread_id="$thread-root")
         )
 
@@ -291,7 +305,7 @@ async def test_a_kickoff_that_wants_the_channel_gets_its_reply_at_top_level() ->
         "on_behalf_of": {"user_id": "u9", "name": "dantas.abel"},
         "reply_in_channel": True,
     }
-    await AgentClient.on_message(_fake_self(send_message), room, event)
+    await AgentConsumer.on_message(_fake_self(send_message), room, event)
 
     assert len(send_message.calls) == 1
     assert send_message.calls[0]["thread_root_id"] is None
@@ -326,7 +340,7 @@ def _hosted(
     )
     fake._waking_notice_revisions = {}
     fake._unreachable_notice_revisions = {}
-    fake._connections = ConnectionRegistry()
+    fake._connections = AgentConnectionRegistry()
     return fake
 
 
@@ -376,7 +390,7 @@ async def test_an_unavailable_hosted_agent_says_what_its_worker_is_doing(
 ) -> None:
     # Not the local terminal command: the agent runs on a cloud worker.
     send_message = _Recorder()
-    await AgentClient.on_message(
+    await AgentConsumer.on_message(
         _hosted(send_message, machine, **launch),
         RoomRef(room_id="!matrix:server"),
         _event(None),
@@ -395,8 +409,8 @@ async def test_an_unconnected_hosted_worker_is_announced_once_per_room_and_revis
     )
     room = RoomRef(room_id="!matrix:server")
 
-    await AgentClient.on_message(fake, room, _event(None))
-    await AgentClient.on_message(fake, room, _event(None))
+    await AgentConsumer.on_message(fake, room, _event(None))
+    await AgentConsumer.on_message(fake, room, _event(None))
 
     assert [call["body"] for call in send_message.calls] == [
         f"@louisa {NOTICE_MESSAGES['unreachable']}"
@@ -416,7 +430,9 @@ async def test_a_connected_hosted_worker_is_not_called_unreachable() -> None:
         supersede=lambda *_: None,
     )
 
-    await AgentClient.on_message(fake, RoomRef(room_id="!matrix:server"), _event(None))
+    await AgentConsumer.on_message(
+        fake, RoomRef(room_id="!matrix:server"), _event(None)
+    )
 
     assert [call["body"] for call in send_message.calls] == [
         "@louisa cd /data/workspace && claude ..."

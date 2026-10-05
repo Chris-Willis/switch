@@ -15,6 +15,7 @@ import { isAbsolute, join, relative, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { type Command, serverEventSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
+import { assignmentRecordSchema } from './agent-host';
 import {
   type CutoverItem,
   type CutoverManifest,
@@ -31,7 +32,6 @@ import { hostInboxRecordSchema } from './session-host';
 import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
 import { deliveryRecordSchema } from './shared-delivery';
 import { sharedStateRecordSchema } from './shared-state';
-import { assignmentRecordSchema } from './shared-watcher';
 
 /**
  * Moves a retained hosted volume from the layout the session-table worker

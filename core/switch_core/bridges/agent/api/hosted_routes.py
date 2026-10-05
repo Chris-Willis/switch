@@ -11,9 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.bridges.agent.api.hosted_worker_routes import refusal, require_worker
 from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import get_config, get_protocol, get_session
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.config import SwitchConfig
-from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
     Agent,
     HostedLaunch,
@@ -65,9 +64,7 @@ async def provider_credential(
         "kind": connection.kind,
         "provider": connection.provider,
         "revision": str(connection.verified_at),
-        "credential": decrypt_token(
-            connection.encrypted_credential, config.jwt_secret_key
-        ),
+        "credential": config.keyring.decrypt(connection.encrypted_credential),
     }
 
 
@@ -177,7 +174,7 @@ async def claim_operation(
     body: WorkerFence,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict:
     conn = require_worker(
         protocol.connections, agent, body.connection_id, body.generation
@@ -219,7 +216,7 @@ async def operation_result(
     body: OperationResult,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict:
     conn = require_worker(
         protocol.connections, agent, body.connection_id, body.generation
