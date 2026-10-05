@@ -2,7 +2,13 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { executionEnvironment, prepareSharedConfig, sharedConfigSchema } from './shared-config';
+import { EXECUTION_INHERIT_ENV } from './agent-env';
+import {
+  executionEnvironment,
+  prepareSharedConfig,
+  sessionProviderEnvironment,
+  sharedConfigSchema,
+} from './shared-config';
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -20,6 +26,32 @@ it('preserves host and configured environment, including shell setup output', as
   expect(env.SDK_CUSTOM_HOST_VALUE).toBe('from-host');
   expect(env.SDK_CUSTOM_SETUP).toBe('configured-from-setup');
   expect(env.SWITCH_API_TOKEN).toBeUndefined();
+});
+
+it.each([
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'ANTHROPIC_API_KEY',
+  'CLAUDE_CODE_USE_VERTEX',
+  'ANTHROPIC_VERTEX_PROJECT_ID',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'AWS_BEARER_TOKEN_BEDROCK',
+  'OPENAI_API_KEY',
+  'CODEX_API_KEY',
+])('forwards the provider sign-in variable %s to sessions', (name) => {
+  expect(EXECUTION_INHERIT_ENV).toContain(name);
+});
+
+it('checks a provider in the environment its sessions get, not the checker’s own', async () => {
+  vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', 'oauth-token');
+  vi.stubEnv('SDK_UNLISTED_VALUE', 'must-not-inherit');
+  vi.stubEnv('SWITCH_API_TOKEN', 'discard-inherited-identity');
+  const probed = await sessionProviderEnvironment(process.cwd());
+  expect(probed).toEqual(
+    await executionEnvironment(process.cwd(), {}, undefined, [...EXECUTION_INHERIT_ENV])
+  );
+  expect(probed.CLAUDE_CODE_OAUTH_TOKEN).toBe('oauth-token');
+  expect(probed.SDK_UNLISTED_VALUE).toBeUndefined();
+  expect(probed.SWITCH_API_TOKEN).toBeUndefined();
 });
 
 it('fails before provider startup if shell setup fails', async () => {

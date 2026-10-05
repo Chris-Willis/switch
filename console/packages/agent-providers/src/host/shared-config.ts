@@ -8,6 +8,7 @@ import { sessionSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { HttpMcpServerSpec } from '../adapter';
 import { prepareCodexSessionHome } from '../codex/home';
+import { EXECUTION_INHERIT_ENV } from './agent-env';
 import { roomConnectionSchema } from './room-inbox';
 import { startSchema } from './server';
 
@@ -117,6 +118,15 @@ export async function readSharedCredentials(config: SharedHostConfig) {
   if (credentials.SWITCH_AGENT_ID !== config.session.agentId)
     throw new Error('The execution host credentials belong to a different agent.');
   return credentials;
+}
+
+/**
+ * The environment a session launched with `execution.inheritEnv` set to
+ * `EXECUTION_INHERIT_ENV` gives its provider, for checks (sign-in, models)
+ * that must answer for the session rather than for whoever runs the check.
+ */
+export function sessionProviderEnvironment(cwd: string): Promise<Record<string, string>> {
+  return executionEnvironment(cwd, {}, undefined, [...EXECUTION_INHERIT_ENV]);
 }
 
 export async function executionEnvironment(

@@ -13,7 +13,7 @@ import { ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
 import { adapterFor } from './server';
 import { HOST_EXIT_GRACE_MS, SessionLinks } from './session-channel';
-import { sharedConfigSchema } from './shared-config';
+import { sessionProviderEnvironment, sharedConfigSchema } from './shared-config';
 import { hostSessionProcess } from './shared-host';
 import { superviseSharedHost } from './supervisor';
 import { recordWatcherHealth } from './watcher-health-file';
@@ -36,11 +36,7 @@ async function main(): Promise<void> {
             cwd: mode,
             runtimeMode: 'approval-required',
             mcpServers: {},
-            env: Object.fromEntries(
-              Object.entries(process.env).filter(
-                (entry): entry is [string, string] => entry[1] !== undefined
-              )
-            ),
+            env: await sessionProviderEnvironment(mode),
           });
           return (await adapter.listModels?.(sessionId)) ?? [];
         })(),
@@ -70,11 +66,7 @@ async function main(): Promise<void> {
           provider: configPath,
           cwd: mode,
           binaryPath: process.argv[5],
-          env: Object.fromEntries(
-            Object.entries(process.env).filter(
-              (entry): entry is [string, string] => entry[1] !== undefined
-            )
-          ),
+          env: await sessionProviderEnvironment(mode),
         })
       )
     );
