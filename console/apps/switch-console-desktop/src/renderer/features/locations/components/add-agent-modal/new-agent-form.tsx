@@ -76,6 +76,7 @@ import {
   machineRunLocations,
   reconciledRunLocation,
   sshHostIsMachine,
+  switchCloudMachine,
   thisComputerIsMachine,
 } from './server-run-locations';
 
@@ -155,7 +156,12 @@ export const NewAgentForm = observer(function NewAgentForm({
   });
   const serverMachines = askForMachines ? (machinesQuery.data ?? null) : null;
   const management = serverMachines !== null;
-  const machineId = isCloudRun ? null : machineIdOf(runHost);
+  // With a Switch cloud machine (the owner's ec2 controller), "Switch cloud"
+  // places the agent on it as a managed agent; without one it is a hosted launch.
+  const cloudMachine = isCloudRun ? switchCloudMachine(serverMachines) : null;
+  const isCloudMachineRun = cloudMachine !== null;
+  const isLaunchRun = isCloudRun && !isCloudMachineRun;
+  const machineId = isCloudRun ? (cloudMachine?.id ?? null) : machineIdOf(runHost);
   const isMachineRun = machineId !== null;
   const serverMachine = machineId
     ? (serverMachines?.find((candidate) => candidate.id === machineId) ?? null)
@@ -209,7 +215,7 @@ export const NewAgentForm = observer(function NewAgentForm({
   // computer only. External servers are unconstrained — the user owns their
   // reachability.
   const targetServer = switchServersStore.servers.find((s) => s.id === targetServerId) ?? null;
-  const cloudAvailable = isManagedCloud;
+  const cloudAvailable = isManagedCloud || switchCloudMachine(serverMachines) !== null;
   const targetKind = targetServer?.managementKind ?? null;
   const targetHost = targetServer?.sshHost ?? null;
   const allowedHosts = useMemo(
@@ -257,8 +263,8 @@ export const NewAgentForm = observer(function NewAgentForm({
   useEffect(() => {
     setRemoteRepoDir('');
     setEditedMachineDir(null);
-    setProviderId(isCloudRun ? 'claude' : null);
-  }, [runHost, isCloudRun, setProviderId]);
+    setProviderId(isLaunchRun ? 'claude' : null);
+  }, [runHost, isLaunchRun, setProviderId]);
 
   const { suggestAutoApprove } = form;
   const runsElsewhere =
@@ -302,7 +308,7 @@ export const NewAgentForm = observer(function NewAgentForm({
   });
   const machine = isCloudRun || isMachineRun ? undefined : machineQuery.data;
   const managedRun = isMachineRun || machine?.management === true;
-  const machineReason = isCloudRun
+  const machineReason = isLaunchRun
     ? null
     : askForMachines && machinesQuery.isPending
       ? 'Checking whether this server runs managed agents…'
@@ -337,7 +343,7 @@ export const NewAgentForm = observer(function NewAgentForm({
   // An edit cleared back to empty runs the agent in the suggested place again.
   const suggestedMachineDir = useSuggestedManagedDirectory(
     pickState.serverId,
-    serverMachine,
+    isCloudMachineRun ? null : serverMachine,
     form.agentName
   );
   const machineDir = editedMachineDir?.trim() ? editedMachineDir : (suggestedMachineDir.path ?? '');
@@ -377,7 +383,7 @@ export const NewAgentForm = observer(function NewAgentForm({
     !policyHasDeadRule(form.addressingPolicy) &&
     !!pickState.serverId &&
     !!pickState.providerId &&
-    (isCloudRun ? cloudRepository !== null : isMachineRun || dir.trim().length > 0) &&
+    (isLaunchRun ? cloudRepository !== null : isMachineRun || dir.trim().length > 0) &&
     remoteDirIsAbsolute &&
     machineProviderReady &&
     runHostReachable &&
@@ -391,7 +397,7 @@ export const NewAgentForm = observer(function NewAgentForm({
   const disabledReason: string | null =
     submitState !== 'idle'
       ? null
-      : isCloudRun && !cloudRepository
+      : isLaunchRun && !cloudRepository
         ? 'Connect the provider and choose a GitHub repository.'
         : !pickState.serverId
           ? 'Add a Switch server to register this agent on.'
@@ -507,7 +513,7 @@ export const NewAgentForm = observer(function NewAgentForm({
     setCloseGuard(true);
     let registered = false;
     try {
-      if (isCloudRun && cloudRepository) {
+      if (isLaunchRun && cloudRepository) {
         await rpc.switchServers.createCloudLaunch(pickState.serverId, {
           provider: pickState.providerId ?? 'claude',
           request_id: cloudRequestId.current,
@@ -552,7 +558,8 @@ export const NewAgentForm = observer(function NewAgentForm({
         const created = await rpc.agentMigration.addManagedAgent({
           ...identity,
           machineId: serverMachine.id,
-          dir: trimmedRemoteDir || null,
+          // A Switch cloud machine makes the agent's workspace itself.
+          dir: isCloudMachineRun ? null : trimmedRemoteDir || null,
           model: managedSettingsRef.current.model,
           advancedConfig: managedSettingsRef.current.advancedConfig,
         });
@@ -619,7 +626,7 @@ export const NewAgentForm = observer(function NewAgentForm({
       log.error(error);
       setCloseGuard(false);
       setSubmitState('idle');
-      if (isCloudRun) {
+      if (isLaunchRun) {
         try {
           const agents = await rpc.sdkHost.cloudAgents(pickState.serverId);
           const existing = (agents ?? [])
@@ -651,7 +658,7 @@ export const NewAgentForm = observer(function NewAgentForm({
       }
       const { headline, detail } = describeFailure(
         error,
-        isCloudRun
+        isLaunchRun
           ? 'Could not confirm cloud agent creation. Retry with the same details to check the request.'
           : 'Could not add the agent. Nothing was created — check the directory is reachable and writable, then try again.'
       );
@@ -857,11 +864,17 @@ export const NewAgentForm = observer(function NewAgentForm({
               )}
               {isMachineRun && serverMachine && (
                 <p className="flex items-start gap-1.5 text-xs text-foreground-muted">
-                  <Server className="mt-0.5 size-3.5 shrink-0" />
+                  {isCloudMachineRun ? (
+                    <Cloud className="mt-0.5 size-3.5 shrink-0" />
+                  ) : (
+                    <Server className="mt-0.5 size-3.5 shrink-0" />
+                  )}
                   <span>
-                    {serverMachine.state === 'online'
-                      ? `Runs as a managed agent on ${serverMachine.name}.`
-                      : machineReason}
+                    {serverMachine.state !== 'online'
+                      ? machineReason
+                      : isCloudMachineRun
+                        ? 'Runs as a managed agent on your Switch cloud machine, in a fresh workspace there. A GitHub repository cannot be chosen for it here yet.'
+                        : `Runs as a managed agent on ${serverMachine.name}.`}
                   </span>
                 </p>
               )}
@@ -947,7 +960,7 @@ export const NewAgentForm = observer(function NewAgentForm({
               />
             )}
 
-            {isCloudRun && pickState.serverId && (
+            {isLaunchRun && pickState.serverId && (
               <CloudAgentRepository
                 serverId={pickState.serverId}
                 providerId={pickState.providerId ?? 'claude'}
@@ -1024,7 +1037,7 @@ export const NewAgentForm = observer(function NewAgentForm({
                   if (pickState.serverId) navigate('server', { serverId: pickState.serverId });
                 }}
               >
-                {isMachineRun && serverMachine && (
+                {isMachineRun && !isCloudMachineRun && serverMachine && (
                   <ManagedDirectoryField
                     machine={serverMachine}
                     machineLabel={runLocationLabel}

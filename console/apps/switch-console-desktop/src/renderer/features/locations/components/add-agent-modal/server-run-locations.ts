@@ -22,9 +22,29 @@ export type RunLocationOption = {
   disabled: boolean;
 };
 
-/** The server's machines as Run location entries. Offline machines are listed, but cannot be picked. */
+/** The controller kind of an owner's Switch cloud machine. */
+const CLOUD_MACHINE_KIND = 'ec2';
+
+/**
+ * The owner's Switch cloud machine: their `ec2` controller, which "Switch
+ * cloud" places a new agent on as a managed agent. Null when they have none,
+ * and "Switch cloud" then creates a hosted launch as it always has.
+ */
+export function switchCloudMachine(machines: OwnedMachine[] | null): OwnedMachine | null {
+  return (
+    machines?.find((machine) => machine.kind === CLOUD_MACHINE_KIND && machine.state !== 'revoked') ??
+    null
+  );
+}
+
+/**
+ * The server's machines as Run location entries. Offline machines are listed,
+ * but cannot be picked. A Switch cloud machine is not among them: it is the
+ * "Switch cloud" entry.
+ */
 export function machineRunLocations(machines: OwnedMachine[]): RunLocationOption[] {
-  return [...machines]
+  return machines
+    .filter((machine) => machine.kind !== CLOUD_MACHINE_KIND)
     .sort(
       (a, b) =>
         Number(b.local?.kind === 'this-computer') - Number(a.local?.kind === 'this-computer')
