@@ -110,7 +110,7 @@ def test_agents_are_counted_per_transport_and_client() -> None:
         ("websocket", "agent-runtime"): 1,
         ("websocket", "unknown"): 1,
         ("websocket", "other"): 1,
-        ("poll", "agent-runtime"): 1,
+        ("detached", "agent-runtime"): 1,
     }
 
 
