@@ -115,7 +115,7 @@ async def sse_stream(frames: AsyncGenerator[Frame]) -> AsyncIterator[bytes]:
         await frames.aclose()
 
 
-def _connection_state(conn: AgentConnection) -> dict[str, Any]:
+def _connection_state(conn: AgentConnection, epoch: str) -> dict[str, Any]:
     """The first frame of every stream, and where the server declares itself.
 
     Version disclosure rides this frame rather than an endpoint of its own
@@ -139,6 +139,10 @@ def _connection_state(conn: AgentConnection) -> dict[str, Any]:
         "spawn_capable": conn.spawn_capable,
         "rooms": sorted(conn.rooms),
         "cursor": conn.cursor,
+        # Which numbering `cursor` and every `id` on this stream belong to. The
+        # client sends it back on reopen, which is how a restart is known
+        # rather than guessed from the cursor (revision 8).
+        "epoch": epoch,
         "protocol": PROTOCOL_VERSION,
         "heartbeat_interval_seconds": 2.0,
         "server": server_declaration("agent-protocol"),
@@ -164,14 +168,20 @@ def event_frames(
     registry: AgentConnectionRegistry,
     buffer: EventBuffer,
     approvals: ApprovalOutcomes | None,
+    epoch: str | None = None,
 ) -> AsyncGenerator[Frame]:
-    """The connection's frames, for a transport to encode."""
+    """The connection's frames, for a transport to encode.
+
+    `epoch` is the one the client's cursor was numbered in, as it was told on
+    an earlier `connection_state`, or None from a client that has none to give.
+    """
     return _event_stream(
         conn=conn,
         registry=registry,
         buffer=buffer,
         approvals=approvals,
         generation=conn.stream_generation,
+        epoch=epoch,
     )
 
 
@@ -182,6 +192,7 @@ async def _event_stream(
     buffer: EventBuffer,
     approvals: ApprovalOutcomes | None,
     generation: int,
+    epoch: str | None,
 ) -> AsyncGenerator[Frame]:
     """Yield frames for a connection until its stream is superseded or it dies."""
     if conn.stream_generation != generation:
@@ -222,22 +233,28 @@ async def _event_stream(
         unsubscribe_outcomes = approvals.subscribe(tenant_id, agent_id, owe, recheck)
         resync[0] = True
     try:
-        yield _frame("connection_state", _connection_state(conn))
+        yield _frame("connection_state", _connection_state(conn, buffer.epoch))
         # A worker's `worker_attached` comes before any gap or buffered event.
         for event, data in conn.worker_frames.drain():
             yield _frame(event, data)
 
-        # A cursor ahead of everything we hold is a cursor from a previous
-        # life of this process: the buffer is in memory, so a restart resets
-        # the sequence. Say so. Staying quiet would leave the client believing
-        # it is caught up when its numbering no longer means anything.
+        # A cursor from a previous life of this process names nothing here:
+        # the buffer is in memory, so a restart loses what it held. Say so.
+        # Staying quiet would leave the client believing it is caught up when
+        # its numbering no longer means anything.
+        #
+        # Each boot numbers above the last, so a cursor below this boot's floor
+        # is known to be from an earlier one, and the client resumes at the
+        # floor with nothing of this boot missed. The epoch the client hands
+        # back says so for certain too, when the numbering cannot (a buffer
+        # with no boot base). Without either we can only guess from a cursor
+        # ahead of everything we hold.
         head = buffer.head(agent_id)
         floor = buffer.sequence_floor
+        restarted = False
         if 0 < conn.cursor < floor - 1:
-            # Every boot numbers above the previous one, so a cursor below this
-            # boot's floor is one a restart left behind. The client keeps its
-            # sequence-based dedupe (nothing is reused); what it has lost is
-            # every event the old buffer held.
+            # The client keeps its sequence-based dedupe (nothing is reused);
+            # what it has lost is every event the old buffer held.
             logger.warning(
                 "[STREAM] agent=%s connection=%s resumed from cursor %s of an "
                 "earlier server boot (this boot starts at %s)",
@@ -262,15 +279,32 @@ async def _event_stream(
                     "room context",
                 },
             )
+        elif epoch is not None and epoch != buffer.epoch:
+            logger.warning(
+                "[STREAM] agent=%s connection=%s resumed from cursor %s of epoch "
+                "%s but this process is epoch %s (head %s); treating as a restart",
+                agent_id,
+                conn.id,
+                conn.cursor,
+                epoch,
+                buffer.epoch,
+                head,
+            )
+            restarted = True
         elif conn.cursor > head:
+            # With a matching epoch this cannot happen honestly; it is kept so
+            # that a client that gets it wrong is reset rather than starved.
             logger.warning(
                 "[STREAM] agent=%s connection=%s resumed from cursor %s but the "
-                "buffer only reaches %s — treating as a restart",
+                "buffer only reaches %s (client epoch %s); treating as a restart",
                 agent_id,
                 conn.id,
                 conn.cursor,
                 head,
+                epoch or "not sent",
             )
+            restarted = True
+        if restarted:
             conn.cursor = head
             # Every room of this agent loses its baseline with the buffer that
             # held it, not only the rooms this connection has named — it may

@@ -904,6 +904,7 @@ async def _open_connection(
     worker_state_version: int | None = None,
     last_event_id: str | None = None,
     transport: Transport = "websocket",
+    epoch: str | None = None,
 ) -> tuple[AgentConnection, AsyncGenerator[Frame]]:
     """Open or reattach the connection and claim its declared rooms.
 
@@ -980,6 +981,7 @@ async def _open_connection(
         registry=protocol.connections,
         buffer=protocol.event_buffer,
         approvals=protocol.approval_outcomes,
+        epoch=epoch,
     )
 
     # After the connection is open, so a bookkeeping failure can never be the
@@ -1189,6 +1191,7 @@ async def connection_socket(
     client: Annotated[str | None, Query()] = None,
     client_version: Annotated[str | None, Query()] = None,
     rooms: Annotated[str | None, Query()] = None,
+    epoch: Annotated[str | None, Query()] = None,
     worker_capability: Annotated[
         str | None, Header(alias="x-switch-worker-capability")
     ] = None,
@@ -1221,6 +1224,10 @@ async def connection_socket(
     `X-Switch-Host-*` headers, and is admitted and refused by the same rules
     (agent-protocol 7). Its frames come down the socket; its up-calls stay
     HTTP requests.
+
+    `epoch` is the one `connection_state` named when `start_from` was reached.
+    Sent back, it lets the server know for certain whether that cursor counts
+    in this process's numbering; absent, the server falls back to guessing.
     """
     await websocket.accept()
     try:
@@ -1245,6 +1252,7 @@ async def connection_socket(
             host_boot_id=host_boot_id,
             host_instance_id=host_instance_id,
             worker_state_version=worker_state_version,
+            epoch=epoch or None,
         )
     except HTTPException as exc:
         metrics().increment(AGENT_CONNECTIONS_REFUSED, {"reason": _refusal_reason(exc)})

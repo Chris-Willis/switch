@@ -513,6 +513,184 @@ async def test_stream_reports_restart_below_floor() -> None:
     assert buffer.unread(AGENT, ROOM_A, first).count is None
 
 
+class TestTheEpochSaysWhetherTheServerRestarted:
+    """A restart is known from the epoch the client hands back, not guessed.
+
+    Without it the only sign of a restart is a cursor ahead of the new head,
+    and a process that has already numbered past the old cursor hides that
+    sign: the cursor looks valid and the old process's last events are skipped
+    without a word.
+    """
+
+    @staticmethod
+    def _buffer_at(head: int) -> EventBuffer:
+        buffer = EventBuffer(sequence_base=0)
+        for n in range(head):
+            buffer.enqueue(AGENT, ROOM_A, _message(f"new life {n}"))
+        return buffer
+
+    async def test_a_different_epoch_is_a_restart_even_below_the_new_head(
+        self, monkeypatch
+    ) -> None:
+        registry = AgentConnectionRegistry()
+        buffer = self._buffer_at(5)
+        marked: list[str] = []
+        monkeypatch.setattr(buffer, "mark_restarted", marked.append)
+        # Cursor 2 is inside this buffer, so the cursor alone looks valid.
+        conn = _open(registry, cursor=2)
+        registry.claim_room(conn, ROOM_A)
+
+        stream = event_frames(
+            conn=conn,
+            registry=registry,
+            buffer=buffer,
+            approvals=None,
+            epoch="an-earlier-process",
+        )
+        frames = await _take(stream, 2)
+
+        assert frames[1][0] == "gap"
+        assert "restarted" in frames[1][1]["reason"]
+        assert frames[1][1]["resumed_at"] == 5
+        assert frames[1][1]["all_rooms"] is True
+        assert conn.cursor == 5
+        assert marked == [AGENT]
+
+        buffer.enqueue(AGENT, ROOM_A, _message("after reconnecting"))
+        ((name, data),) = await _take(stream, 1)
+        await stream.aclose()
+        assert name == "message"
+        assert data["payload"]["body"] == "after reconnecting"
+
+    async def test_a_matching_epoch_trusts_the_cursor(self, monkeypatch) -> None:
+        registry = AgentConnectionRegistry()
+        buffer = self._buffer_at(5)
+        marked: list[str] = []
+        monkeypatch.setattr(buffer, "mark_restarted", marked.append)
+        conn = _open(registry, cursor=2)
+        registry.claim_room(conn, ROOM_A)
+
+        stream = event_frames(
+            conn=conn,
+            registry=registry,
+            buffer=buffer,
+            approvals=None,
+            epoch=buffer.epoch,
+        )
+        frames = await _take(stream, 4)
+        await stream.aclose()
+
+        assert [name for name, _ in frames] == ["connection_state"] + ["message"] * 3
+        assert [data["sequence"] for _, data in frames[1:]] == [3, 4, 5]
+        assert marked == []
+
+    async def test_a_matching_epoch_with_a_cursor_past_head_is_still_reset(
+        self,
+    ) -> None:
+        """Cannot happen from an honest client; a wrong one is reset, not starved."""
+        registry = AgentConnectionRegistry()
+        buffer = self._buffer_at(1)
+        conn = _open(registry, cursor=4812)
+        registry.claim_room(conn, ROOM_A)
+
+        stream = event_frames(
+            conn=conn,
+            registry=registry,
+            buffer=buffer,
+            approvals=None,
+            epoch=buffer.epoch,
+        )
+        frames = await _take(stream, 2)
+        await stream.aclose()
+
+        assert frames[1][0] == "gap"
+        assert conn.cursor == 1
+
+    async def test_without_an_epoch_a_cursor_past_head_is_still_a_restart(
+        self,
+    ) -> None:
+        registry = AgentConnectionRegistry()
+        buffer = self._buffer_at(1)
+        conn = _open(registry, cursor=4812)
+        registry.claim_room(conn, ROOM_A)
+
+        stream = event_frames(
+            conn=conn, registry=registry, buffer=buffer, approvals=None
+        )
+        frames = await _take(stream, 2)
+        await stream.aclose()
+
+        assert frames[1][0] == "gap"
+        assert "restarted" in frames[1][1]["reason"]
+        assert conn.cursor == 1
+
+    async def test_without_an_epoch_a_cursor_below_head_is_trusted(self) -> None:
+        registry = AgentConnectionRegistry()
+        buffer = self._buffer_at(5)
+        conn = _open(registry, cursor=2)
+        registry.claim_room(conn, ROOM_A)
+
+        stream = event_frames(
+            conn=conn, registry=registry, buffer=buffer, approvals=None
+        )
+        frames = await _take(stream, 2)
+        await stream.aclose()
+
+        assert frames[1][0] == "message"
+        assert frames[1][1]["sequence"] == 3
+
+    async def test_connection_state_names_the_epoch(self) -> None:
+        registry = AgentConnectionRegistry()
+        buffer = EventBuffer(sequence_base=0)
+        first = _open(registry, connection_id="c1")
+        second = _open(registry, connection_id="c2")
+
+        epochs = []
+        for conn in (first, second):
+            stream = event_frames(
+                conn=conn, registry=registry, buffer=buffer, approvals=None
+            )
+            ((_, data),) = await _take(stream, 1)
+            await stream.aclose()
+            epochs.append(data["epoch"])
+
+        # One per process: every connection of it is told the same one.
+        assert epochs == [buffer.epoch, buffer.epoch]
+        assert isinstance(buffer.epoch, str) and buffer.epoch
+
+    async def test_each_process_has_its_own_epoch(self) -> None:
+        # A process is one buffer; a later process builds another.
+        assert len({EventBuffer(sequence_base=0).epoch for _ in range(20)}) == 20
+
+    async def test_a_cursor_below_this_boots_floor_resumes_at_the_floor(
+        self,
+    ) -> None:
+        """Each boot numbering above the last already says the cursor is old,
+        and says more: nothing of this boot is reused, so the client resumes
+        at the floor and misses none of it. The epoch changes nothing there."""
+        registry = AgentConnectionRegistry()
+        buffer = EventBuffer(sequence_base=3 << 32)
+        first = buffer.enqueue(AGENT, ROOM_A, _message("after the restart"))
+        old_cursor = (2 << 32) + 7
+        conn = _open(registry, cursor=old_cursor)
+        registry.claim_room(conn, ROOM_A)
+
+        stream = event_frames(
+            conn=conn,
+            registry=registry,
+            buffer=buffer,
+            approvals=None,
+            epoch="an-earlier-process",
+        )
+        frames = await _take(stream, 3)
+        await stream.aclose()
+
+        kind, gap = frames[1]
+        assert kind == "gap"
+        assert gap["resumed_at"] == buffer.sequence_floor - 1
+        assert frames[2][1]["sequence"] == first
+
+
 class TestALapsedHeartbeatStopsDelivery:
     """A connection nothing considers alive must not keep receiving.
 

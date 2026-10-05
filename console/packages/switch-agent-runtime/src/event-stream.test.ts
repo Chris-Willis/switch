@@ -941,6 +941,100 @@ describe('the cursor', () => {
   });
 });
 
+describe('the epoch', () => {
+  /** The first frame of a server that names its epoch. */
+  const announce = (socket: FakeSocket, epoch: string): void =>
+    socket.frame('connection_state', { connection_id: 'conn-1', generation: 0, epoch });
+
+  const epochs = (): (string | null)[] =>
+    server.sockets.map((socket) => socket.params.get('epoch'));
+
+  it('sends none before the first connection_state, and the one it was told on reopen', async () => {
+    vi.useFakeTimers();
+    serve((socket, index) => {
+      socket.open();
+      announce(socket, 'epoch-a');
+      if (index === 0) socket.drop();
+    });
+    const { abort } = makeStream({ rooms: ['room'] });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(epochs()).toEqual([null, 'epoch-a']);
+    abort.abort();
+  });
+
+  it('sends none to a server that names none', async () => {
+    vi.useFakeTimers();
+    serve((socket, index) => {
+      attach(socket, index);
+      if (index === 0) socket.drop();
+    });
+    const { abort } = makeStream({ rooms: ['room'] });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(epochs()).toEqual([null, null]);
+    abort.abort();
+  });
+
+  it('reports a restart as a cursor reset even when the new numbering is past the cursor', async () => {
+    vi.useFakeTimers();
+    const onGap = vi.fn();
+    serve((socket, index) => {
+      socket.open();
+      if (index === 0) {
+        announce(socket, 'epoch-a');
+        socket.frame('message', { type: 'message', room_id: 'room', sequence: 12 }, 12);
+        socket.drop();
+      } else if (index === 1) {
+        announce(socket, 'epoch-b');
+        socket.frame('gap', {
+          from_sequence: 40,
+          resumed_at: 40,
+          reason: 'the server restarted since your last connection',
+        });
+        socket.drop();
+      } else announce(socket, 'epoch-b');
+    });
+    const { stream, abort } = makeStream({ rooms: ['room'], onGap });
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(onGap).toHaveBeenCalledWith(
+      expect.objectContaining({ resumedAt: 40, cursorReset: true })
+    );
+    expect(stream.position).toBe(40);
+    expect(epochs().slice(0, 3)).toEqual([null, 'epoch-a', 'epoch-b']);
+    abort.abort();
+  });
+
+  it('keeps the old epoch until the restart gap has reset the cursor', async () => {
+    vi.useFakeTimers();
+    serve((socket, index) => {
+      socket.open();
+      if (index === 0) {
+        announce(socket, 'epoch-a');
+        socket.frame('message', { type: 'message', room_id: 'room', sequence: 12 }, 12);
+        socket.drop();
+      } else if (index === 1) {
+        // Lost before the gap that follows this frame arrives.
+        announce(socket, 'epoch-b');
+        socket.drop();
+      } else announce(socket, 'epoch-b');
+    });
+    const { stream, abort } = makeStream({ rooms: ['room'] });
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    // Still the old cursor, so still the old epoch: the server must see the
+    // mismatch again and send the gap this client never received.
+    expect(stream.position).toBe(12);
+    expect(epochs().slice(0, 3)).toEqual([null, 'epoch-a', 'epoch-a']);
+    abort.abort();
+  });
+});
+
 describe('the permission to start a session', () => {
   it('is redeclared on the wire when it changes under a live connection', async () => {
     // Turning automatic sessions off while the controller is connected has to

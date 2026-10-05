@@ -141,6 +141,65 @@ def test_events_arrive_with_their_sequence_number(
         assert message["data"]["payload"]["body"] == "hello"
 
 
+def _fill(protocol: _Protocol, count: int) -> None:
+    for n in range(count):
+        protocol.event_buffer.enqueue(
+            AGENT_ID,
+            ROOM,
+            AgentEvent(
+                type="message",
+                room_id=ROOM,
+                payload=MessagePayload(
+                    addressed=True,
+                    sender="@u:s",
+                    sender_name="u",
+                    message_id=f"$evt-{n}",
+                    body=f"event {n}",
+                    timestamp=0,
+                ),
+            ),
+        )
+
+
+def test_connection_state_names_the_epoch(
+    client: TestClient, protocol: _Protocol
+) -> None:
+    with client.websocket_connect(_url()) as ws:
+        state = ws.receive_json()
+
+    assert state["data"]["epoch"] == protocol.event_buffer.epoch
+
+
+def test_an_epoch_from_another_process_is_answered_with_a_restart_gap(
+    client: TestClient, protocol: _Protocol
+) -> None:
+    _fill(protocol, 5)
+    with client.websocket_connect(
+        _url(rooms=ROOM, start_from=2, epoch="an-earlier-process")
+    ) as ws:
+        ws.receive_json()
+        gap = _next(ws, "gap")
+
+    assert "restarted" in gap["data"]["reason"]
+    assert gap["data"]["resumed_at"] == 5
+
+
+def test_the_servers_own_epoch_resumes_from_the_cursor(
+    client: TestClient, protocol: _Protocol
+) -> None:
+    _fill(protocol, 5)
+    with client.websocket_connect(
+        _url(rooms=ROOM, start_from=2, epoch=protocol.event_buffer.epoch)
+    ) as ws:
+        ws.receive_json()
+        first = ws.receive_json()
+        while first["event"] == "ping":
+            first = ws.receive_json()
+
+    assert first["event"] == "message"
+    assert first["id"] == 3
+
+
 def test_the_server_pings_and_a_pong_counts_as_a_beat(
     client: TestClient, protocol: _Protocol
 ) -> None:
