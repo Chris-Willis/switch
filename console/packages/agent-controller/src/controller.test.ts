@@ -84,6 +84,12 @@ function deps(server = core.url): ControllerDeps {
       streamInitialBackoffMs: 10,
       streamMaxBackoffMs: 50,
       relay: { heartbeatTtlMs: 6_000, heartbeatIntervalS: 2, sweepMs: 50, keepaliveMs: 15_000 },
+      control: {
+        pushBatchMs: 20,
+        pushBatchBytes: 64 * 1024,
+        reconnectMs: 50,
+        connectTimeoutMs: 1_000,
+      },
       eventBufferLimit: 100,
     },
   };

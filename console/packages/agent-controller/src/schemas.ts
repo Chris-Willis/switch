@@ -391,3 +391,57 @@ export const operationPendingSchema = z.object({
 export type OperationPending = z.infer<typeof operationPendingSchema>;
 
 export const credentialRevokedSchema = z.object({});
+
+// Console control relayed through Switch: one request answered by an agent's
+// host, and the live views it pushes.
+
+/**
+ * A control message for one agent's host, answered by
+ * `POST …/control/{relay_id}` before `deadline_ms` (Unix epoch ms). The
+ * message is kept unparsed here so a malformed one is answered as refused
+ * rather than dropped with the frame.
+ */
+export const agentControlFrameSchema = z.object({
+  relay_id: id,
+  agent_id: id,
+  message: z.unknown(),
+  deadline_ms: z.number().int().nonnegative(),
+});
+export type AgentControlFrame = z.infer<typeof agentControlFrameSchema>;
+
+/** Switch gave up on the relay; one not yet sent to the agent's host is abandoned. */
+export const agentControlCancelFrameSchema = z.object({ relay_id: id });
+export type AgentControlCancelFrame = z.infer<typeof agentControlCancelFrameSchema>;
+
+export const controlReplySchema = z.union([
+  z.object({ ok: z.literal(true), result: z.unknown() }),
+  z.object({
+    ok: z.literal(false),
+    error: z.object({ code: z.string().min(1), message: z.string() }),
+  }),
+]);
+export type ControlReply = z.infer<typeof controlReplySchema>;
+
+/**
+ * One live update of a subscription: a session's event, its host's failure
+ * (null once it is up again), or the watcher's health. `seq` counts per
+ * agent and subscription from 1 for the controller's lifetime; a skipped
+ * number means updates were lost.
+ */
+export const controlPushEventSchema = z.union([
+  z.object({ seq: z.number().int().positive(), event: z.unknown() }),
+  z.object({ seq: z.number().int().positive(), failure: z.string().nullable() }),
+  z.object({ seq: z.number().int().positive(), health: z.unknown() }),
+]);
+export type ControlPushEvent = z.infer<typeof controlPushEventSchema>;
+
+/** `subscription` is a session id, or `health` for the watcher's health. */
+export const controlPushSchema = z.object({
+  agent_id: id,
+  subscription: id,
+  events: z.array(controlPushEventSchema).min(1),
+});
+export type ControlPushBody = z.infer<typeof controlPushSchema>;
+
+/** `unsubscribe`: Switch holds no view of the subscription; the controller drops it. */
+export const controlPushAnswerSchema = z.object({ unsubscribe: z.boolean().default(false) });
