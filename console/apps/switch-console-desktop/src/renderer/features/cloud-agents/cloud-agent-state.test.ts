@@ -46,6 +46,7 @@ function agent(
       ...launch,
     },
     machine: onMachine,
+    controllerId: null,
     sessions: null,
     problem: null,
   };

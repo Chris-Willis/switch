@@ -89,6 +89,7 @@ function agent(key = agentKey, name = 'reviewer'): CloudAgent {
       oom_kills: 0,
     },
     machine: null,
+    controllerId: null,
     sessions: null,
     problem: null,
   };

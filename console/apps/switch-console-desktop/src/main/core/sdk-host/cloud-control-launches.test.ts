@@ -41,6 +41,9 @@ vi.mock('@main/core/workspaces/workspace-session', () => ({
 
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
   GatewayError: FakeGatewayError,
+  AgentManagementUnavailableError: class extends Error {},
+  fetchManagementControllers: async () => [],
+  fetchManagedAgents: async () => [],
   gatewayRequest: vi.fn(),
   gatewayFetch: vi.fn(async (_server: unknown, path: string) => {
     expect(path).toBe('/hosted-launches');
