@@ -13,7 +13,6 @@ import {
   type OpenAgentStream,
   type ProviderReadiness,
   providerReadinessSchema,
-  readTakenOver,
   readWatchFlags,
   recordWatcherHealth,
   runAgentHost,
@@ -30,11 +29,11 @@ import {
   watcherHealthFileSchema,
   watchFlagsSchema,
 } from '@switch-console/agent-providers';
+import { z } from 'zod';
 import { ConfigurationError, ReasonedError } from './errors';
 import { errorMessage, type Logger } from './log';
 import { agentWorkspace, type DataLayout } from './paths';
 import type { Isolation, Provider } from './schemas';
-import { z } from 'zod';
 
 const execute = promisify(execFile);
 
@@ -103,6 +102,8 @@ export interface AgentRunner {
  * fake.
  */
 export interface AgentRuntime extends AgentRunner {
+  /** The agent host's state root: where it keeps `config.json`, `health.json` and `control.json`. */
+  watcherRoot(agentId: string): string;
   credentialsPath(agentId: string): string;
   /** The credentials file as written, or null when there is none or it cannot be read. */
   readCredentials(agentId: string): Promise<RelayCredentials | null>;
@@ -275,6 +276,9 @@ export async function observeOnDisk(
   return { ...(await readRoot(root)), alive: running, health };
 }
 
+const TAKEN_OVER_FILE = 'taken-over.json';
+const takenOverSchema = z.object({ at: z.string(), reason: z.string(), connectionId: z.string() });
+
 const configuredSchema = z.object({
   start: z.object({ provider: z.string(), input: z.object({ cwd: z.string() }) }),
 });
@@ -287,23 +291,21 @@ export async function readRoot(root: string): Promise<Omit<AgentObservation, 'al
     const parsed = configuredSchema.parse(JSON.parse(config));
     configured = { provider: parsed.start.provider, cwd: parsed.start.input.cwd };
   }
-  let flags: WatchFlags | null = null;
-  try {
-    flags = await readWatchFlags(root);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-  }
+  const flagsText = await readOptional(join(root, WATCH_FLAGS_FILE));
+  const flags: WatchFlags | null =
+    flagsText === null ? null : watchFlagsSchema.parse(JSON.parse(flagsText));
   const failureText = await readOptional(join(root, 'supervisor', 'failure.json'));
   const failure =
     failureText === null
       ? null
       : String((JSON.parse(failureText) as { message?: unknown }).message ?? failureText);
+  const takenOverText = await readOptional(join(root, TAKEN_OVER_FILE));
   return {
     configured,
     flags,
     health: null,
     failure,
-    takenOver: await readTakenOver(root),
+    takenOver: takenOverText === null ? null : takenOverSchema.parse(JSON.parse(takenOverText)),
     activity: null,
     unit: null,
   };
@@ -373,6 +375,10 @@ export class InProcessRuntime implements AgentRuntime {
     }
   ) {
     assertSupportedPlatform(process.platform);
+  }
+
+  watcherRoot(agentId: string): string {
+    return this.deps.layout.watcherRoot(agentId);
   }
 
   credentialsPath(agentId: string): string {

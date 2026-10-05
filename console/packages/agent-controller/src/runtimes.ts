@@ -40,7 +40,8 @@ export class AgentRuntimes implements AgentRuntime {
       options.isolation === 'isolated'
         ? [this.isolated, this.shared]
         : [this.shared, this.isolated];
-    if (!this.single && (await other.observe(agentId)).alive) await other.stop(agentId, { wait: true });
+    if (!this.single && (await other.observe(agentId)).alive)
+      await other.stop(agentId, { wait: true });
     await chosen.launch(agentId, template, options);
   }
 
@@ -52,6 +53,10 @@ export class AgentRuntimes implements AgentRuntime {
   async close(): Promise<void> {
     await this.shared.close();
     if (!this.single) await this.isolated.close();
+  }
+
+  watcherRoot(agentId: string): string {
+    return this.shared.watcherRoot(agentId);
   }
 
   credentialsPath(agentId: string): string {

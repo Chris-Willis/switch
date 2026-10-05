@@ -56,6 +56,10 @@ export class FakeRuntime implements AgentRuntime {
     return structuredClone(this.observation(agentId));
   }
 
+  watcherRoot(agentId: string): string {
+    return `/data/watchers/${agentId}`;
+  }
+
   credentialsPath(agentId: string): string {
     return `/data/agents/${agentId}/credentials.json`;
   }
