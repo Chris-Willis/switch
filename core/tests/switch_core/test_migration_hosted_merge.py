@@ -977,8 +977,7 @@ def _migration_config(url: str, monkeypatch: pytest.MonkeyPatch) -> SwitchConfig
         "DB_NAME": parts.database,
         "MATRIX_SERVER_NAME": "example.invalid",
         "AGENT_REGISTRATION_TOKEN": "placeholder-registration-token",
-        "JWT_SECRET_KEY": "placeholder-jwt-secret-0123456789abcdef",
-        "SECRET_KEYS": "test:placeholder-secret-key-0123456789abcdef",
+        "SECRET_KEYS": "test:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "GATEWAY_ADMIN_EMAIL": "admin@example.invalid",
         "GATEWAY_ADMIN_PASSWORD": "placeholder-password",
     }

@@ -72,7 +72,6 @@ import {
 import { useConfigureAgentForm, usePickMode } from './modes';
 import {
   addSwitchCloudAgent,
-  isCloudRunLocation,
   machineIdOf,
   machineLabel,
   machineRunLocations,
@@ -143,8 +142,9 @@ export const NewAgentForm = observer(function NewAgentForm({
   const selectedServer = switchServersStore.servers.find(
     (server) => server.id === selectedServerId
   );
+  // Switch Cloud offers everything any server does, and running in the cloud besides.
   const isManagedCloud = !!selectedServer && isSwitchCloudServer(selectedServer);
-  const isCloudRun = isCloudRunLocation(runHost, isManagedCloud);
+  const isCloudRun = runHost === 'cloud';
 
   // On a server with agent management the server lists where agents can run:
   // every machine the user owns there. Null when it does not run management.
@@ -245,9 +245,9 @@ export const NewAgentForm = observer(function NewAgentForm({
   // This computer or an SSH host that is a machine on the server is picked as
   // that machine; a machine the server no longer lists falls back to this computer.
   useEffect(() => {
-    const next = reconciledRunLocation(runHost, serverMachines, isManagedCloud);
+    const next = reconciledRunLocation(runHost, serverMachines);
     if (next !== null) setRunHost(next);
-  }, [serverMachines, runHost, isManagedCloud]);
+  }, [serverMachines, runHost]);
 
   // Everything chosen below the run location belongs to the machine it was
   // chosen on, so changing machines clears it.
@@ -744,11 +744,7 @@ export const NewAgentForm = observer(function NewAgentForm({
               {/* Icons and the right-hand kind, because the list mixes two sorts of
               thing: this machine, and hosts reached over SSH. The names alone
               do not say which is which. */}
-              <Select
-                value={isCloudRun ? 'cloud' : runHost}
-                disabled={isManagedCloud && !serverMachines?.length}
-                onValueChange={(v) => setRunHost(v ?? LOCAL_RUN_LOCATION)}
-              >
+              <Select value={runHost} onValueChange={(v) => setRunHost(v ?? LOCAL_RUN_LOCATION)}>
                 <SelectTrigger className="w-full">
                   <SelectValue>
                     {isCloudRun ? (
@@ -784,14 +780,13 @@ export const NewAgentForm = observer(function NewAgentForm({
                         <span className="text-xs text-foreground-muted">{option.tag}</span>
                       </SelectItem>
                     ))}
-                  {!isManagedCloud &&
-                    !(serverMachines && thisComputerIsMachine(serverMachines)) && (
-                      <SelectItem value={LOCAL_RUN_LOCATION}>
-                        <Monitor className="size-4 text-foreground-muted" />
-                        <span className="flex-1">This computer</span>
-                        <span className="text-xs text-foreground-muted">local</span>
-                      </SelectItem>
-                    )}
+                  {!(serverMachines && thisComputerIsMachine(serverMachines)) && (
+                    <SelectItem value={LOCAL_RUN_LOCATION}>
+                      <Monitor className="size-4 text-foreground-muted" />
+                      <span className="flex-1">This computer</span>
+                      <span className="text-xs text-foreground-muted">local</span>
+                    </SelectItem>
+                  )}
                   {cloudAvailable && (
                     <SelectItem value="cloud">
                       <Cloud className="size-4 text-foreground-muted" />
@@ -799,19 +794,17 @@ export const NewAgentForm = observer(function NewAgentForm({
                       <span className="text-xs text-foreground-muted">preview</span>
                     </SelectItem>
                   )}
-                  {!isManagedCloud &&
-                    allowedHosts
-                      .filter(
-                        (host) =>
-                          !(serverMachines && sshHostIsMachine(serverMachines, host.sshHost))
-                      )
-                      .map((host) => (
-                        <SelectItem key={host.sshHost} value={host.sshHost}>
-                          <Server className="size-4 text-foreground-muted" />
-                          <span className="flex-1 truncate">{host.name}</span>
-                          <span className="text-xs text-foreground-muted">ssh</span>
-                        </SelectItem>
-                      ))}
+                  {allowedHosts
+                    .filter(
+                      (host) => !(serverMachines && sshHostIsMachine(serverMachines, host.sshHost))
+                    )
+                    .map((host) => (
+                      <SelectItem key={host.sshHost} value={host.sshHost}>
+                        <Server className="size-4 text-foreground-muted" />
+                        <span className="flex-1 truncate">{host.name}</span>
+                        <span className="text-xs text-foreground-muted">ssh</span>
+                      </SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
               {!isCloudRun && !management && runLocationConstrained && (

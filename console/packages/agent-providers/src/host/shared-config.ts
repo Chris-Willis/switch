@@ -41,6 +41,12 @@ export const sharedConfigSchema = z.strictObject({
       skill: z.string(),
       context: z.string(),
       /**
+       * The agent's own instructions, alone (they are also part of
+       * `context`). What a running conversation is told when they change.
+       * Absent from configurations written before it existed.
+       */
+      instructions: z.string().optional(),
+      /**
        * A definition on the host's disk to run as, named by an earlier Console.
        * Sessions saved then still relaunch from it; a current Console hands the
        * definition over in `start.input` instead.

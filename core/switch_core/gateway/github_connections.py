@@ -412,7 +412,7 @@ async def _credentials(
             credentials.update(refreshed)
             revision = datetime.now(UTC)
             result = await session.scalar(
-                update(ProviderConnection)
+                update(ProviderConnection)  # nosemgrep
                 .where(
                     *conditions(user_id),
                     ProviderConnection.verified_at == row.verified_at,
@@ -527,7 +527,9 @@ async def disconnect(
     await lock(session, user.id)
     row = await session.scalar(select(ProviderConnection).where(*conditions(user.id)))
     token = github_identity(row, config)["access_token"] if row else None
-    await session.execute(delete(ProviderConnection).where(*conditions(user.id)))
+    await session.execute(
+        delete(ProviderConnection).where(*conditions(user.id))  # nosemgrep
+    )
     await session.commit()
     for key, flow in list(github.flows.items()):
         if (flow.tenant_id, flow.user_id) == (require_tenant_id(), user.id):

@@ -19,7 +19,7 @@ import {
   sharedSessionsBase,
   type Supervision,
 } from './launch';
-import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
+import { releaseOwner, replaceOwner, withOwnershipLockOutlasting } from './ownership-lock';
 import { SessionPlacements } from './placements';
 import { roomInputId } from './room-inbox';
 import {
@@ -325,6 +325,8 @@ export function withDefinitionOf(
   if (next.execution && template.execution) {
     next.execution.credentialsPath = template.execution.credentialsPath;
     next.execution.context = template.execution.context;
+    if (template.execution.instructions === undefined) delete next.execution.instructions;
+    else next.execution.instructions = template.execution.instructions;
     next.execution.skill = template.execution.skill;
     next.execution.codexConfig = template.execution.codexConfig;
     next.execution.inheritEnv = [...template.execution.inheritEnv];
@@ -641,22 +643,29 @@ export async function runAgentHost(
 ): Promise<void> {
   const ownerPath = join(root, 'shared-owner.lock');
   const owner = { pid: process.pid, token: randomUUID() };
-  await withOwnershipLock(root, async () => {
-    try {
-      const { pid } = z
-        .object({ pid: z.number().int().positive() })
-        .parse(JSON.parse(await readFile(ownerPath, 'utf8')));
+  // Outlasting: a Console restarting starts this while the one it replaces
+  // may still be shutting down, holding the lock.
+  const owned = await withOwnershipLockOutlasting(
+    root,
+    async () => {
       try {
-        process.kill(pid, 0);
+        const { pid } = z
+          .object({ pid: z.number().int().positive() })
+          .parse(JSON.parse(await readFile(ownerPath, 'utf8')));
+        try {
+          process.kill(pid, 0);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EPERM') throw error;
+        }
+        throw new Error('The shared SDK watcher is already running.');
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EPERM') throw error;
+        if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
       }
-      throw new Error('The shared SDK watcher is already running.');
-    } catch (error) {
-      if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
-    }
-    await replaceOwner(ownerPath, owner);
-  });
+      await replaceOwner(ownerPath, owner);
+    },
+    signal
+  );
+  if (!owned) return;
   const stop = new AbortController();
   const abort = () => stop.abort(signal.reason);
   signal.addEventListener('abort', abort, { once: true });

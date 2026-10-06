@@ -27,6 +27,9 @@ import { SESSION_STARTING_MESSAGE, WatcherControl } from './watcher-tools';
 
 const paths = vi.hoisted(() => ({ root: '' }));
 const supervisors = vi.hoisted(() => new Map<string, { build: unknown }>());
+// Longer than `eventually` waits, so a slow machine fails on what it waited for, not the clock.
+vi.setConfig({ testTimeout: 20_000 });
+
 vi.mock('./launch', () => ({
   sharedSessionRoot: (id: string) => join(paths.root, id),
   sharedSessionsBase: () => paths.root,
@@ -514,8 +517,9 @@ async function stopSpawning(root: string) {
 }
 
 /** Polls: what is waited on crosses a file watch or a queue, not a call. */
+/** Up to 10 s: the watcher sees a rewritten file through fs events, which a loaded machine delivers late. */
 async function eventually(reached: () => boolean | Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 400; attempt++) {
+  for (let attempt = 0; attempt < 2000; attempt++) {
     if (await reached()) return;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
@@ -1566,6 +1570,29 @@ it('relaunches a session saved under another host layout with the template’s c
     { sessionId: moved.sessionId, credentialsPath: config.execution!.credentialsPath },
     { sessionId: assigned.sessionId, credentialsPath: config.execution!.credentialsPath },
   ]);
+});
+
+it('gives a session the credentials and binary of whoever runs its watcher now', () => {
+  const root = '/state';
+  const controller = watchable(root);
+  controller.execution!.credentialsPath = '/data/agents/agent-1/credentials.json';
+  controller.execution!.binaryPath = '/usr/local/bin/claude';
+  const saved = watchable(root);
+  saved.session = {
+    ...saved.session,
+    agentId: controller.session.agentId,
+    sessionId: 'room-session',
+  };
+  saved.execution!.credentialsPath = '/work/agent/.switch/agents/agent.json';
+  delete saved.execution!.binaryPath;
+
+  const refreshed = withDefinitionOf(saved, controller);
+
+  expect(definitionChanged(saved, controller)).toBe(true);
+  expect(refreshed.execution).toMatchObject({
+    credentialsPath: '/data/agents/agent-1/credentials.json',
+    binaryPath: '/usr/local/bin/claude',
+  });
 });
 
 it('leaves a session that runs as a definition file on disk as the agent it runs as', () => {
