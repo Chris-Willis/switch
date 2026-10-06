@@ -154,6 +154,9 @@ class ManagementService:
         self.api_keys = api_keys
         self.agents = agents
         self._clock = clock
+        # The latest revision of each (controller, provider) sealed login its
+        # controller has been told of, so a reload announces only newer ones.
+        self._announced_logins: dict[tuple[str, str], int] = {}
 
     def now(self) -> datetime:
         return self._clock()
@@ -479,7 +482,21 @@ class ManagementService:
     def provider_credential_changed(
         self, controller_id: str, provider: str, revision: int
     ) -> None:
+        key = (controller_id, provider)
+        self._announced_logins[key] = max(
+            revision, self._announced_logins.get(key, revision)
+        )
         self.notifier.provider_credential_changed(controller_id, provider, revision)
+
+    def announce_login_revisions(self, revisions: dict[tuple[str, str], int]) -> int:
+        """Tell each controller of every sealed login revision newer than the
+        one it was last told of. Returns how many."""
+        announced = 0
+        for (controller_id, provider), revision in sorted(revisions.items()):
+            if revision > self._announced_logins.get((controller_id, provider), -1):
+                self.provider_credential_changed(controller_id, provider, revision)
+                announced += 1
+        return announced
 
     def pending_control_relays(self, controller_id: str) -> int:
         return self.control_relays.pending_control_relays(controller_id)

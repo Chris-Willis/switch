@@ -34,8 +34,12 @@ blocks a rollback.
 
 `--dry-run` prints the plan, which names no secret, and changes nothing.
 
-Core keeps which controller runs each agent in memory, loaded at start:
-restart switch-core after migrating or rolling back.
+This runs outside switch-core, so nothing here reaches the running Core's
+in-memory bindings or its controllers' streams directly. Core reads the
+placements and sealed logins back every few seconds (`management/reload.py`):
+it binds or unbinds the agents, tells their controller its assignment
+changed, and announces each login sealed here to a controller that is
+already running, as `provider.credential_changed`.
 """
 
 from __future__ import annotations
@@ -81,10 +85,6 @@ from switch_core.providers.sealing import (
 from switch_core.version import switch_core_version
 
 Action = Literal["migrate", "rollback", "finalize"]
-
-RESTART_NOTE = (
-    "Restart switch-core: it loads which controller runs each agent at start."
-)
 
 
 class MigrationRefused(RuntimeError):
@@ -489,8 +489,6 @@ async def run(
                 lines += await finalize_machine(session, selected, dry_run=dry_run)
     if dry_run:
         lines.append("dry run: nothing was changed")
-    elif action != "finalize":
-        lines.append(RESTART_NOTE)
     return lines
 
 

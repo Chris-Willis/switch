@@ -852,6 +852,11 @@ async def run(config: SwitchConfig) -> None:
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol, observability.lag)
             )
+            management_reload_task = (
+                asyncio.create_task(management.reload_loop())
+                if management is not None
+                else None
+            )
             # Only when telemetry is on: the chart tells a customer that off
             # means nothing is collected, and the fan-out is not free.
             snapshot_task = (
@@ -867,6 +872,8 @@ async def run(config: SwitchConfig) -> None:
                 sweep_task.cancel()
                 session_activity_task.cancel()
                 connection_sweep_task.cancel()
+                if management_reload_task is not None:
+                    management_reload_task.cancel()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
                 await message_listener.stop()

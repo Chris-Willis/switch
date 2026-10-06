@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -29,12 +30,14 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
+from switch_core.management import reload
+from switch_core.management.bindings import Placements, read_placements
 from switch_core.management.migrate_hosted_to_controller import (
-    RESTART_NOTE,
     Action,
     MigrationRefused,
     run,
 )
+from switch_core.management.reload import reload_logins, reload_placements
 from tests.switch_core.hosted_machine_helpers import seed_launch
 from tests.switch_core.management.harness import KEYRING, add_member
 from tests.switch_core.management.test_cloud_controller import (  # noqa: F401
@@ -208,7 +211,7 @@ class TestMigrate:
         lines = await _run(cloud, hosted.machine_id, "migrate", dry_run=False)
 
         assert SECRET not in "\n".join(lines)
-        assert lines[-1] == RESTART_NOTE
+        assert lines[-1] == "  runtime: worker -> controller, revision bump"
         machine = await _machine(cloud, hosted.machine_id)
         assert (machine.runtime, machine.revision) == ("controller", 2)
         assert machine.controller_id is not None
@@ -302,7 +305,7 @@ class TestRollback:
 
         lines = await _run(cloud, hosted.machine_id, "rollback", dry_run=False)
 
-        assert lines[-1] == RESTART_NOTE
+        assert lines[-1] == "  sealed logins: kept"
         machine = await _machine(cloud, hosted.machine_id)
         assert (machine.runtime, machine.revision, machine.controller_id) == (
             "worker",
@@ -332,9 +335,8 @@ class TestFinalize:
         assert "  delete keyring copy: claude" in planned
         assert await _keyring_copy(cloud, hosted.owner) is not None
 
-        lines = await _run(cloud, hosted.machine_id, "finalize", dry_run=False)
+        await _run(cloud, hosted.machine_id, "finalize", dry_run=False)
 
-        assert RESTART_NOTE not in lines
         assert await _keyring_copy(cloud, hosted.owner) is None
         assert await _sealed(cloud, hosted.owner) == [("claude", "connected", 1)]
         with pytest.raises(MigrationRefused, match="only sealed for the controller"):
@@ -376,3 +378,117 @@ class TestFinalize:
 
         assert await _keyring_copy(cloud, hosted.owner) is None
         assert await _sealed(cloud, hosted.owner) == [("claude", "connected", 2)]
+
+
+class TestARunningCore:
+    """What a Core already running when the command runs makes of it."""
+
+    async def test_binds_the_migrated_agents_and_tells_their_controller(
+        self,
+        cloud: Cloud,  # noqa: F811
+        hosted: Hosted,
+    ) -> None:
+        service = cloud.harness.management.service
+        presence = cloud.harness.protocol.connections.controllers
+        await _run(cloud, hosted.machine_id, "migrate", dry_run=False)
+        controller_id = (await _machine(cloud, hosted.machine_id)).controller_id
+        assert controller_id is not None
+        assert presence.binding(hosted.agent_id) is None
+        stream = service.notifier.subscribe(controller_id)
+        try:
+            changed = await reload_placements(cloud.factory, service)
+            placed = stream.drain()
+            unchanged = await reload_placements(cloud.factory, service)
+
+            await _run(cloud, hosted.machine_id, "rollback", dry_run=False)
+            removed = await reload_placements(cloud.factory, service)
+            rolled_back = stream.drain()
+        finally:
+            stream.close()
+
+        assert (changed, unchanged, removed) == (1, 0, 1)
+        assert placed == [("assignment.changed", {"revision": 1})]
+        assert rolled_back == [("assignment.changed", {"revision": 2})]
+        assert presence.binding(hosted.agent_id) is None
+
+    async def test_binds_with_the_definitions_controller_and_state(
+        self,
+        cloud: Cloud,  # noqa: F811
+        hosted: Hosted,
+    ) -> None:
+        service = cloud.harness.management.service
+        await _run(cloud, hosted.machine_id, "migrate", dry_run=False)
+        controller_id = (await _machine(cloud, hosted.machine_id)).controller_id
+
+        await reload_placements(cloud.factory, service)
+
+        binding = cloud.harness.protocol.connections.controllers.binding(
+            hosted.agent_id
+        )
+        assert binding is not None
+        assert (binding.controller_id, binding.tenant_id, binding.running) == (
+            controller_id,
+            TENANT_ZERO_ID,
+            True,
+        )
+
+    async def test_a_reload_overlapping_an_in_process_change_is_dropped(
+        self,
+        cloud: Cloud,  # noqa: F811
+        hosted: Hosted,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        service = cloud.harness.management.service
+        presence = cloud.harness.protocol.connections.controllers
+        await _run(cloud, hosted.machine_id, "migrate", dry_run=False)
+
+        async def read_then_change(**kwargs: Any) -> Placements:
+            placements = await read_placements(**kwargs)
+            presence.unbind("some-other-agent", "unassigned")
+            return placements
+
+        monkeypatch.setattr(reload, "read_placements", read_then_change)
+        dropped = await reload_placements(cloud.factory, service)
+        monkeypatch.setattr(reload, "read_placements", read_placements)
+        applied = await reload_placements(cloud.factory, service)
+
+        assert (dropped, applied) == (0, 1)
+        assert presence.binding(hosted.agent_id) is not None
+
+    async def test_announces_each_login_it_sealed_to_the_controller(
+        self,
+        cloud: Cloud,  # noqa: F811
+        hosted: Hosted,
+    ) -> None:
+        service = cloud.harness.management.service
+        await _run(cloud, hosted.machine_id, "migrate", dry_run=False)
+        controller_id = (await _machine(cloud, hosted.machine_id)).controller_id
+        assert controller_id is not None
+        stream = service.notifier.subscribe(controller_id)
+        try:
+            first = await reload_logins(cloud.factory, service)
+            sealed = stream.drain()
+            again = await reload_logins(cloud.factory, service)
+            async with cloud.factory() as session:
+                await ProviderConnectionStore().save(
+                    session,
+                    hosted.owner.id,
+                    "setup-token",
+                    KEYRING.encrypt("PLACEHOLDER-CLAUDE-TOKEN-2"),
+                    datetime.now(UTC),
+                )
+                await session.commit()
+            lines = await _run(cloud, hosted.machine_id, "migrate", dry_run=False)
+            resealed = await reload_logins(cloud.factory, service)
+            changed = stream.drain()
+        finally:
+            stream.close()
+
+        assert "  seal login: claude (setup-token)" in lines
+        assert (first, again, resealed) == (1, 0, 1)
+        assert sealed == [
+            ("provider.credential_changed", {"provider": "claude", "revision": 1})
+        ]
+        assert changed == [
+            ("provider.credential_changed", {"provider": "claude", "revision": 2})
+        ]
