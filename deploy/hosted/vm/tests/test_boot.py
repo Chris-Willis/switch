@@ -533,7 +533,7 @@ class LayoutTests(TemporaryRoot):
                 self.data / "agents" / agent / "watcher",
                 self.data / "worktrees" / agent,
             ):
-                self.assertEqual(mode(directory), 0o2770, directory)
+                self.assertEqual(mode(directory), 0o3770, directory)
                 self.assertEqual(self.owner_of(directory), shared, directory)
             for untouched in ("home", "tmp", "provider-home", "watcher/supervisor"):
                 self.assertEqual(mode(self.data / "agents" / agent / untouched), 0o700)
@@ -570,7 +570,7 @@ class LayoutTests(TemporaryRoot):
         boot.prepare_controller_layout(self.paths, ACCOUNTS)
         self.paths.controller_marker.unlink()
         boot.prepare_controller_layout(self.paths, ACCOUNTS)
-        self.assertEqual(mode(self.data / "agents" / AGENT_1), 0o2770)
+        self.assertEqual(mode(self.data / "agents" / AGENT_1), 0o3770)
         self.assertEqual(mode(self.data / "agents" / AGENT_1 / "home"), 0o700)
 
     def test_a_blank_volume_gets_the_controller_layout(self) -> None:

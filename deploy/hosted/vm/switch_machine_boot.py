@@ -999,11 +999,13 @@ def _shared_agent_directory(
     """Hand one existing directory to the controller, shared with agents through the group.
 
     Only the directory itself changes; what agents wrote inside stays theirs.
+    Setgid keeps the group on what agents create; sticky stops an agent
+    replacing an entry the controller owns, such as watcher/, with a link.
     """
     descriptor = _open_directory(name, parent, label)
     try:
         os.fchown(descriptor, accounts.controller_uid, accounts.agent_gid)
-        os.fchmod(descriptor, 0o2770)
+        os.fchmod(descriptor, 0o3770)
     finally:
         os.close(descriptor)
 

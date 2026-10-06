@@ -146,7 +146,7 @@ describe('SystemdRuntime', () => {
     const root = layout.agentRoot('agent-1');
     const watcher = layout.watcherRoot('agent-1');
     for (const path of [root, watcher, layout.worktreeRoot('agent-1')])
-      expect(statSync(path).mode & 0o7777).toBe(0o2770);
+      expect(statSync(path).mode & 0o7777).toBe(0o3770);
     for (const name of ['config.json', 'template.json', 'watch.json'])
       expect(statSync(join(watcher, name)).mode & 0o777).toBe(0o640);
     const config = JSON.parse(readFileSync(join(watcher, 'config.json'), 'utf8'));

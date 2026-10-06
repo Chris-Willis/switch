@@ -67,7 +67,12 @@ const SHOW_PROPERTIES = [
 ];
 const LIVE_STATES = new Set(['active', 'activating', 'deactivating', 'reloading']);
 const RESTART_WINDOW_MS = 10 * 60 * 1000;
-const SHARED_DIR_MODE = 0o2770;
+/**
+ * Setgid, so what agents create keeps their group; sticky, so an agent can
+ * never rename or replace an entry the controller owns (its `watcher/`, the
+ * files the controller writes) with a link to somewhere else.
+ */
+const SHARED_DIR_MODE = 0o3770;
 const SHARED_FILE_MODE = 0o640;
 
 /** What an agent host may add to its health file: whether it has work in hand. */
