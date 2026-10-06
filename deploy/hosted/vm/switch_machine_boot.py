@@ -6,11 +6,6 @@ mounts and verifies the data volume, moves a worker-layout volume onto the
 controller layout, reads the controller bundle from Secrets Manager, writes
 the controller's configuration and credential to tmpfs, and loads the rules
 that keep agents away from the instance metadata service.
-
-The storage, marker, IMDS and Secrets Manager code is copied from
-deploy/hosted/worker/switch_hosted_worker.py rather than imported: each
-image ships one of the two, and the worker keeps reading this volume's
-per-user-v1 marker on rollback.
 """
 
 from __future__ import annotations

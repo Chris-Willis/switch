@@ -1,7 +1,7 @@
 """Creates the gate's AWS side in moto: the login KMS key, the machine role's
 grant on it (constrained to this controller's encryption context, as Core
-creates it), and the Secrets Manager secret holding the worker's v2 bundle
-(the rollback reads it). Prints what the rest of the setup needs as JSON."""
+creates it), and the Secrets Manager secret holding the worker's v2 bundle.
+Prints what the rest of the setup needs as JSON."""
 
 import json
 import sys

@@ -3,8 +3,7 @@
 # FAIL (or KNOWN, for a documented gap that does not fail the gate), and the
 # script exits non-zero when any check failed.
 #
-#   checks.sh            every assertion, rollback (5) last: it leaves the
-#                        machine on the worker runtime
+#   checks.sh            every assertion
 #   checks.sh 1 3 4      only those
 set -uo pipefail
 source /src/deploy/hosted/vm/gate/container/gate.env
@@ -391,77 +390,15 @@ fingerprint() {
 owner_mode() { stat -c '%U:%G %a' "$1"; }
 
 assert_5() {
-  section 5 "per-user-v1 -> controller -> worker rollback keeps the data"
+  section 5 "per-user-v1 -> controller keeps the data"
   check "the controller boot kept every file and branch" diff /var/lib/cc-gate/fixture-before.txt <(fingerprint)
   check "the controller layout marker is in place" test -e /data/.switch-hosted/controller-v1
   check "agents and worktrees are the controller's" \
     test "$(owner_mode /data/agents) $(owner_mode /data/worktrees)" = "switch-controller:switch-controller 750 switch-controller:switch-controller 750"
-
-  echo "rolling back: stopping the controller runtime"
-  systemctl disable --now switch-controller.service switch-machine-boot.service >>"$LOG" 2>&1
-  systemctl stop "$(unit "$A1")" "$(unit "$A2")"
-  local runtime=/var/lib/cc-gate/worker-runtime since
-  install -d -m 0755 "$runtime"
-  cp /opt/switch/agent-providers/hosted-bootstrap.mjs /opt/switch/agent-providers/shared-host-daemon.mjs "$runtime/"
-  jq -n --arg b "$(sha256sum "$runtime/hosted-bootstrap.mjs" | cut -d ' ' -f 1)" \
-    --arg s "$(sha256sum "$runtime/shared-host-daemon.mjs" | cut -d ' ' -f 1)" \
-    '{version: 1, nodeMajor: 24, files: {"hosted-bootstrap.mjs": $b, "shared-host-daemon.mjs": $s}}' >"$runtime/manifest.json"
-  check "worker install.sh succeeds" sh /src/deploy/hosted/worker/install.sh "$runtime" \
-    "$(sha256sum /opt/switch/node/bin/node | cut -d ' ' -f 1)" "$(sha256sum /opt/switch/claude/bin/claude | cut -d ' ' -f 1)"
-  install -d /etc/systemd/system/switch-hosted-worker.service.d /etc/systemd/system/switch-agent@.service.d
-  cat >/etc/systemd/system/switch-hosted-worker.service.d/cc-gate.conf <<'EOF'
-[Unit]
-After=cc-gate-imds.service cc-gate-moto.service cc-gate-core.service
-[Service]
-Environment=AWS_ENDPOINT_URL_SECRETS_MANAGER=http://127.0.0.1:5000
-EOF
-  cat >/etc/systemd/system/switch-agent@.service.d/cc-gate.conf <<'EOF'
-[Service]
-Environment=NODE_EXTRA_CA_CERTS=/etc/cc-gate/ca.pem
-EOF
-  systemctl daemon-reload
-
-  local agents='[]' agent name
-  for agent in "$A1" "$A2"; do
-    name=gate-${agent: -2}
-    agents=$(jq -c --arg a "$agent" --arg n "$name" --arg e "$API_ENDPOINT/agent-api" '. + [{
-      launch_id: ("00000000-0000-4000-8000-0000000000d" + ($a | .[-1:])), agent_id: $a, name: $n, revision: 1,
-      desired_state: "running", provider: "claude", provider_credential_kind: "api-key",
-      worker_capability: "wcap-gate-00000000000000000000000000000000",
-      switch_credentials: {env: {SWITCH_API_ENDPOINT: $e, SWITCH_API_TOKEN: "gate-placeholder-token", SWITCH_AGENT_ID: $a}},
-      repository: null,
-      spec: {name: $n, icon_url: null, provider: "claude", definition: ("---\nname: " + $n + "\n---\nThe gate agent."),
-        description: null, auto_approve: true, auto_session: true, display_name: null, instructions: "The gate agent.",
-        repository_id: 1, session_limit: 2, installation_id: 1, addressing_policy: null, definition_attributes: {}},
-      skills: []}]' <<<"$agents")
-  done
-  stub_post /worker "{\"agents\": $agents, \"agents_version\": 2}" >/dev/null
-  since=$(date +%s)
-  local beats; beats=$(stub_get /state | jq .worker_heartbeat_count)
-  systemctl start switch-hosted-worker.service
-  check "the worker heartbeats to Core" until_eval 90 '[ "$(stub_get /state | jq .worker_heartbeat_count)" -gt "$beats" ]'
-  check "the controller layout marker is gone" until_true 30 test ! -e /data/.switch-hosted/controller-v1
-  check "agents and worktrees are root's again (0755)" \
-    test "$(owner_mode /data/agents) $(owner_mode /data/worktrees)" = "root:root 755 root:root 755"
-  for agent in "$A1" "$A2"; do
-    check "agent ${agent: -2}'s root, watcher and worktree are switch-agent's, private" \
-      test "$(owner_mode "/data/agents/$agent") $(owner_mode "/data/agents/$agent/watcher") $(owner_mode "/data/worktrees/$agent")" = \
-      "switch-agent:switch-agent 700 switch-agent:switch-agent 700 switch-agent:switch-agent 700"
-  done
-  check "nothing under the agents is left the controller's" \
-    test -z "$(find /data/agents /data/worktrees -user switch-controller -print -quit)"
-  check "every file and branch survived the rollback" diff /var/lib/cc-gate/fixture-before.txt <(fingerprint)
-  for agent in "$A1" "$A2"; do
-    check "the worker started agent ${agent: -2} and it stays up" stays_active 120 15 "$agent"
-  done
-  check "the agent unit is the worker's (hosted-bootstrap)" \
-    sh -c "systemctl cat $(unit "$A1") | grep -q hosted-bootstrap.mjs"
-  journal_since switch-hosted-worker "$since" | tail -40 >>"$LOG"
-  journal_since "$(unit "$A1")" "$since" | tail -20 >>"$LOG"
 }
 
 preflight
-if [ "$#" -eq 0 ]; then set -- 1 2 3 4 6 7 5; fi
+if [ "$#" -eq 0 ]; then set -- 1 2 3 4 5 6 7; fi
 for n in "$@"; do "assert_$n"; done
 
 printf '\n== summary\n'

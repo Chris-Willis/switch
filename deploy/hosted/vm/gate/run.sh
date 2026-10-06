@@ -34,7 +34,7 @@ cleanup() {
     # The loop device belongs to the Docker VM's kernel, not the container:
     # detach it or it outlives the container.
     docker exec "$name" sh -c '
-      systemctl stop "switch-agent@*" switch-controller switch-hosted-worker switch-machine-boot 2>/dev/null
+      systemctl stop "switch-agent@*" switch-controller switch-machine-boot 2>/dev/null
       umount -l /data 2>/dev/null
       [ -e /etc/cc-gate/loop-device ] && losetup -d "$(cat /etc/cc-gate/loop-device)"
       true' || true

@@ -3,7 +3,7 @@
 A local, disposable check of the cloud machine's controller runtime on a real
 Linux userspace: Ubuntu 24.04 with systemd as PID 1, the real `install.sh`,
 the real `switch-machine-boot`, the real `switch-controller` and real
-`switch-agent@` units, and the real worker runtime for the rollback.
+`switch-agent@` units.
 
 ```bash
 deploy/hosted/vm/gate/run.sh            # every assertion
@@ -65,14 +65,11 @@ container.
    for another controller id, or relabelled to look like this one, is refused.
    A login revision change restarts an idle agent at once, and restarts a busy
    agent only after its turn ends.
-5. **Rollback keeps the data.** A per-user-v1 volume (files, a bare mirror,
-   one worktree branch with a commit per agent) survives the controller boot.
-   After that, the real worker `install.sh` and `switch-hosted-worker` take the
-   volume back: the controller marker is removed, ownership is
-   repaired (root 0755 tops, `switch-agent` 0700 agent dirs, nothing left
-   owned by the controller), every file and branch is intact, and the worker
-   starts the agents, which stay up. The worker's agents get no repository: a
-  repository makes them validate a token against api.github.com.
+5. **A per-user-v1 volume keeps its data.** A volume laid out the way the
+   worker runtime left it (files, a bare mirror, one worktree branch with a
+   commit per agent) survives the controller boot: every file and branch is
+   intact, the controller layout marker is in place, and the agents and
+   worktrees directories are the controller's.
 6. **Relay parity.** A control message sent through Core reaches each agent's
    control server, and the reply comes back. An unreadable message comes back
    `refused_message`.
@@ -80,8 +77,6 @@ container.
    agent 2, the kernel OOM-kills it. The controller keeps its process, agent 1
    keeps running, systemd restarts agent 2, and the controller reports the OOM
    kill.
-
-Assertion 5 runs last. It leaves the machine on the worker runtime.
 
 ## Container quirks the gate works around
 
@@ -104,12 +99,10 @@ Assertion 5 runs last. It leaves the machine on the worker runtime.
   moto does not enforce KMS grant constraints or encryption-context conditions
   in IAM policy. The wrong-context checks prove that the controller passes the
   context and refuses a mismatch. They do not prove what AWS would deny.
-- **Real Core.** The stub serves only the routes a machine calls. For the
-  worker's agents that is their provider login and provider status, not the
-  agent event stream. Core's own
+- **Real Core.** The stub serves only the routes a machine calls. Core's own
   validation of status reports, assignments and operations is covered by
   Core's tests, not here.
-- **GitHub.** Neither runtime's repository refresh is exercised. The
+- **GitHub.** The controller's repository refresh is not exercised. The
   fixture's mirror and worktrees are local.
 - **Real providers.** There is no real Claude or Codex login and no model
   traffic. The fake CLI covers the session lifecycle and busy/idle only.

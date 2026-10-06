@@ -19,10 +19,10 @@ workers never join that cluster.
 - `controller/`: Python CLI/service using boto3, SQLite durable desired/observed
   state and an exclusive reconciliation lock. Create/start/stop/delete requests
   are local operator actions, not an unauthenticated web API.
-- `worker/`: root-owned AMI launcher. It validates the exact attached EBS volume,
-  retrieves one scoped Secrets Manager document, prepares tmpfs credential files
-  and starts the runtime as an unprivileged account. Retained boot identity prevents
-  old process IDs from being treated as ownership evidence after a reboot.
+- `vm/`: the machine image's root boot step and units. It validates the exact
+  attached EBS volume, retrieves one scoped Secrets Manager document, writes the
+  controller's configuration and credential to tmpfs, and runs each agent as an
+  unprivileged account under the shared agent controller.
 - `terraform/`: a separate worker VPC, private worker subnet, NAT egress, no inbound
   worker access, restricted worker roles, and an IRSA role for the controller.
 - `chart/`: a digest-pinned controller image, one replica with Recreate rollout,
@@ -32,7 +32,6 @@ Stop/start preserves the disk and saved sessions. Automatic replacement requires
 confirmed termination of the old VM, a detached disk, and matching assignment
 identity. The new worker accepts only that exact predecessor. Recovery attempts
 are bounded. Cross-AZ migration and arbitrary disk adoption remain disabled.
-See [worker image upgrades](worker/README.md) for the explicit operator workflow.
 
 ## GitHub App credential preparation
 
@@ -305,8 +304,7 @@ fresh empty database must not be used to guess ownership of existing workers.
 
 ### GitHub authentication slice
 
-The optional worker secret fields described in [the worker contract](worker/README.md#optional-github-credential-delivery)
-provide a personal GitHub.com token to Git HTTPS and GitHub CLI without storing
+The optional GitHub credential delivery provides a personal GitHub.com token to Git HTTPS and GitHub CLI without storing
 it in a workspace/config or passing it as a command argument. Bootstrap checks
 the token before starting the provider. Repository permission checks and actual
 clone/build/push/PR operations remain the coding task's responsibility; managed onboarding uses the renewable installation-token flow described above.

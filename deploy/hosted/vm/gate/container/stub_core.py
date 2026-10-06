@@ -1,6 +1,6 @@
 """A STUB of Switch Core for the controller gate. It is not Core.
 
-It serves the routes a cloud machine's controller and worker call, in the wire
+It serves the routes a cloud machine's controller calls, in the wire
 shapes of Core's own fixtures (core/tests/switch_core/fixtures/agent_controllers
 and hosted_machines), and nothing else: no database, no Matrix, no rooms. What
 is real is the sealing: provider logins are sealed with Core's
@@ -17,8 +17,6 @@ HTTPS on :443 (the machine's apiEndpoint, https://switch-gate.test):
                           POST .../control/{relay_id}, .../control/push
   controller stream       POST /v1/controllers/{id}/connection, .../connection/beat
                           GET  /v1/controllers/{id}/events   (SSE)
-  worker (rollback)       GET  /hosted/machines/{id}/agents, POST .../heartbeat
-                          POST /agent-api/hosted/provider-credential, .../provider-status
   relayed agent calls     GET  /version, /health; anything else is logged and
                           answered with a 404 error envelope
 
@@ -30,7 +28,6 @@ Plain HTTP on 127.0.0.1:8090, for the gate's checks only:
   POST /seal              seal a login (optionally for another controller, or sealed for
                           one and labelled as another's)
   POST /assignment        replace the assignment and announce it
-  POST /worker            set the worker's agent list
 """
 
 from __future__ import annotations
@@ -84,10 +81,6 @@ class State:
         self.relays: dict[str, dict[str, Any] | None] = {}
         self.pushes: list[dict[str, Any]] = []
         self.relayed: list[dict[str, Any]] = []
-        self.worker_agents: list[dict[str, Any]] = []
-        self.worker_agents_version = 1
-        self.worker_heartbeats: list[dict[str, Any]] = []
-        self.worker_lists = 0
         self.unknown: list[str] = []
 
 
@@ -210,7 +203,6 @@ class Handler(BaseHTTPRequestHandler):
         path = url.path
         management = f"/v1/management/controllers/{CONTROLLER_ID}"
         stream = f"/v1/controllers/{CONTROLLER_ID}"
-        machine = f"/hosted/machines/{config['machine_id']}"
 
         if method == "POST" and path == f"{management}/token":
             return self.token()
@@ -246,10 +238,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self.beat()
             if method == "GET" and rest == "/events":
                 return self.events(parse_qs(url.query))
-        if path.startswith(machine + "/"):
-            return self.worker(method, path[len(machine) :])
-        if method == "POST" and path in ("/agent-api/hosted/provider-credential", "/agent-api/hosted/provider-status"):
-            return self.worker_agent_provider(path.rsplit("/", 1)[1])
         return self.relayed(method, path)
 
     def token(self) -> None:
@@ -394,46 +382,6 @@ class Handler(BaseHTTPRequestHandler):
                 if state.streams.get(generation) is frames:
                     del state.streams[generation]
 
-    def worker(self, method: str, rest: str) -> None:
-        if self.headers.get("Authorization") != "Bearer " + config["machine_capability"]:
-            return self.send_json(401, {"detail": "bad capability"})
-        if method == "GET" and rest == "/agents":
-            with lock:
-                state.worker_lists += 1
-                body = {
-                    "machine_id": config["machine_id"],
-                    "revision": 1,
-                    "desired_state": "running",
-                    "agents_version": state.worker_agents_version,
-                    "agents": state.worker_agents,
-                }
-            return self.send_json(200, body)
-        if method == "POST" and rest == "/heartbeat":
-            body = self.body()
-            with lock:
-                state.worker_heartbeats.append(body)
-                del state.worker_heartbeats[:-20]
-                version = state.worker_agents_version
-            return self.send_json(
-                200,
-                {"agents_version": version, "machine_desired_state": "running", "heartbeat_every_s": 5},
-            )
-        self.send_json(404, {"detail": "not found"})
-
-    def worker_agent_provider(self, route: str) -> None:
-        """A worker agent fetches its provider login over its own token (Core
-        answers it in the clear on that route) and reports whether the
-        provider accepted it. Only the worker's agents call these."""
-        body = self.body() if route == "provider-status" else None
-        if self.headers.get("Authorization") != "Bearer gate-placeholder-token":
-            return self.send_json(401, {"detail": "bad agent token"})
-        if route == "provider-status":
-            return self.send_json(200, {"verified": bool(body and body.get("authenticated"))})
-        self.send_json(
-            200,
-            {"status": "connected", "revision": "1", "provider": "claude", "kind": "api-key", "credential": "gate-placeholder-worker-key"},
-        )
-
     def relayed(self, method: str, path: str) -> None:
         length = int(self.headers.get("Content-Length") or 0)
         if length:
@@ -474,9 +422,6 @@ class Handler(BaseHTTPRequestHandler):
                     "beats": state.beats,
                     "pushes": len(state.pushes),
                     "relayed": state.relayed[-50:],
-                    "worker_lists": state.worker_lists,
-                    "worker_heartbeats": state.worker_heartbeats[-3:],
-                    "worker_heartbeat_count": len(state.worker_heartbeats),
                 }
             return self.send_json(200, body)
         body = self.body() or {}
@@ -522,11 +467,6 @@ class Handler(BaseHTTPRequestHandler):
                 revision = state.assignment["revision"]
             notified = broadcast("assignment.changed", {"revision": revision})
             return self.send_json(200, {"notified": notified})
-        if method == "POST" and path == "/worker":
-            with lock:
-                state.worker_agents = body["agents"]
-                state.worker_agents_version = int(body["agents_version"])
-            return self.send_json(200, {})
         self.send_json(404, {"error": "unknown admin route"})
 
 
