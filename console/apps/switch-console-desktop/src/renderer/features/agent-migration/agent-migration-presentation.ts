@@ -2,6 +2,7 @@ import type {
   AgentMigrationState,
   MigrationOperation,
   MigrationTarget,
+  MoveAllMachine,
   MoveAllProgress,
   MoveAllResult,
 } from '@shared/core/agent-migration/agent-migration';
@@ -114,31 +115,57 @@ export function moveAllSummary(result: MoveAllResult, verb: 'Moved' | 'Brought b
   return lines;
 }
 
-/** Whether "Move all" is complete: every agent in scope managed. */
+/** Whether "Move all" is complete across the machines: every agent managed. */
 export function moveAllState(progress: MoveAllProgress): {
   tone: MigrationTone;
   label: string;
-  detail: string;
+  managed: number;
+  total: number;
 } {
-  const total = progress.managed.length + progress.remaining.length;
-  if (total === 0)
+  const total = progress.machines.reduce((sum, machine) => sum + machine.total, 0);
+  const managed = progress.machines.reduce((sum, machine) => sum + machine.managed, 0);
+  const moving = progress.machines.some((machine) => machine.moving > 0);
+  if (total === 0) return { tone: 'neutral', label: 'Nothing to move', managed, total };
+  if (moving) return { tone: 'busy', label: 'Moving…', managed, total };
+  if (managed === total) return { tone: 'ok', label: 'Complete', managed, total };
+  return { tone: 'warn', label: 'Not complete', managed, total };
+}
+
+/** Where one machine stands, and the one line said under it, if any. */
+export function moveAllMachineState(machine: MoveAllMachine): {
+  tone: MigrationTone;
+  label: string;
+  note: string | null;
+} {
+  if (machine.moving > 0) return { tone: 'busy', label: `Moving ${machine.moving}…`, note: null };
+  if (machine.managed === machine.total) return { tone: 'ok', label: 'Done', note: null };
+  if (machine.setUpOnMove)
     return {
       tone: 'neutral',
-      label: 'Nothing to move',
-      detail: 'This Console runs no agents for this workspace.',
+      label: 'Not a machine yet',
+      note:
+        machine.kind === 'ssh-host'
+          ? `Move all sets ${machine.name} up as a machine, then moves its agents.`
+          : 'Move all turns this computer on as a machine, then moves its agents.',
     };
-  if (progress.remaining.length === 0)
+  if (machine.blocked > 0)
     return {
-      tone: 'ok',
-      label: 'Complete',
-      detail: total === 1 ? 'The agent is managed.' : `All ${total} agents are managed.`,
+      tone: 'warn',
+      label:
+        machine.blocked === machine.total - machine.managed
+          ? 'Blocked'
+          : `${machine.blocked} blocked`,
+      note: machine.reason,
     };
-  const blocked = progress.remaining.filter((agent) => agent.reason !== null).length;
-  return {
-    tone: 'warn',
-    label: 'Not complete',
-    detail:
-      `${progress.managed.length} of ${total} moved.` +
-      (blocked ? ` ${blocked === 1 ? 'One cannot' : `${blocked} cannot`} move yet:` : ''),
-  };
+  return { tone: 'neutral', label: 'Ready', note: null };
+}
+
+/** What a "Move all" or "Bring all back" did: a count, and each failure, the first few named. */
+export function moveAllOutcome(result: MoveAllResult, verb: 'Moved' | 'Brought back'): string[] {
+  const count = result.moved.length;
+  const lines = [count ? `${verb} ${count} agent${count === 1 ? '' : 's'}.` : `${verb} no agents.`];
+  const failures = [...result.failed.map((agent) => `${agent.name}: ${agent.message}`)];
+  for (const line of failures.slice(0, 3)) lines.push(line);
+  if (failures.length > 3) lines.push(`${failures.length - 3} more failed; see the agents' pages.`);
+  return lines;
 }
