@@ -33,6 +33,11 @@ describe("AddMachineDialog", () => {
         "switch-agent-controller enroll --server https://switch-api.example.test --code swce_example",
       ),
     ).toBeTruthy();
+    expect(
+      screen.getByText(
+        /^curl -fsSL https:\/\/raw\.githubusercontent\.com\/.+\/install\.sh \| sh -s -- --server https:\/\/switch-api\.example\.test --code swce_example$/,
+      ),
+    ).toBeTruthy();
     expect(screen.queryByText(new RegExp(window.location.origin))).toBeNull();
   });
 

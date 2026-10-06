@@ -258,7 +258,19 @@ export function createOperation(body: {
   return request<Operation>("/operations", { method: "POST", body: JSON.stringify(body) });
 }
 
-/** The command a user runs on the machine to enroll it with a fresh code. */
+/**
+ * The controller's installer, as published on the default branch: it finds the
+ * newest `switch-agent-controller` release and installs it with npm.
+ */
+export const CONTROLLER_INSTALL_SCRIPT_URL =
+  "https://raw.githubusercontent.com/sandbox-quantum/switch/main/console/packages/agent-controller/install.sh";
+
+/** The one command that installs the controller, enrolls the machine with a fresh code and starts it as a service. */
+export function installCommand(server: string, code: string): string {
+  return `curl -fsSL ${CONTROLLER_INSTALL_SCRIPT_URL} | sh -s -- --server ${server} --code ${code}`;
+}
+
+/** The command a user runs on a machine where the controller is installed already, to enroll it with a fresh code. */
 export function enrollCommand(server: string, code: string): string {
   return `switch-agent-controller enroll --server ${server} --code ${code}`;
 }
