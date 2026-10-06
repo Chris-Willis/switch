@@ -5,6 +5,7 @@ import {
   baseLocationSettingsSchema,
   DEFAULT_PRESERVE_PATTERNS,
   legacyBaseLocationSettingsSchema,
+  LOCATION_CONFIG_FILE,
   locationSettingsSchema,
   shareableLocationSettingsSchema,
   type BaseLocationSettings,
@@ -21,7 +22,6 @@ import { serializeShareableLocationSettings } from '../legacy-shareable-migratio
 import { compactUndefined, parseJsonObject, readJson } from '../location-settings-json';
 import { LocationSettingsRepository } from '../location-settings-storage';
 import type { LocationSettingsPatch, LocationSettingsProvider } from '../provider';
-import { CONFIG_FILE } from '../sharing/switch-console-config-file';
 
 export type DbLocationSettingsProviderOptions = {
   git?: LocationSettingsGitInspector;
@@ -55,8 +55,8 @@ export abstract class DbLocationSettingsProvider implements LocationSettingsProv
   private async hasSharedPreservePatterns(): Promise<boolean> {
     if (!this.configReader) return false;
     try {
-      if (!(await this.configReader.exists(CONFIG_FILE))) return false;
-      const { content } = await this.configReader.read(CONFIG_FILE);
+      if (!(await this.configReader.exists(LOCATION_CONFIG_FILE))) return false;
+      const { content } = await this.configReader.read(LOCATION_CONFIG_FILE);
       const parsed = shareableLocationSettingsSchema.safeParse(parseJsonObject(content));
       if (!parsed.success) {
         log.warn('Failed to inspect shared location settings during initialization', parsed.error);

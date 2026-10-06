@@ -4,28 +4,14 @@ import { events } from '@main/lib/events';
 import { HookCore, type Hookable } from '@main/lib/hookable';
 import { log } from '@main/lib/logger';
 import {
-  type MigrateLocationConfigRequest,
-  type MigrateLocationConfigResult,
   type LocationSettingsPatch,
   type LocationSettings,
   type LocationSettingsPage,
-  type WriteLocationConfigRequest,
 } from '@shared/core/location-settings/location-settings';
-import { hasConfiguredShareableLocationSettings } from '@shared/core/location-settings/location-settings-fields';
 import { locationSettingsChangedChannel } from '@shared/core/locations/locationEvents';
 import type { UpdateLocationSettingsError } from '@shared/core/locations/locations';
 import { locationManager } from '../location-manager';
 import type { LocationProvider } from '../location-provider';
-import {
-  inspectLocationConfigMigrations,
-  migrateLocationConfigFromProvider,
-} from './sharing/config-migration';
-import { computeLocationSettingsOverrideState } from './sharing/location-settings-override-state';
-import {
-  getLocationSettingsWriteTargets,
-  resolveAllLocationSettingsTargets,
-} from './sharing/location-settings-target-resolver';
-import { shareLocationSettingsToConfig as writeSharedLocationSettingsToConfig } from './sharing/share-location-settings-to-config';
 
 export type LocationSettingsHooks = {
   'location-settings:changed': (event: {
@@ -89,49 +75,6 @@ export class LocationSettingsService implements Hookable<LocationSettingsHooks>,
     return ok(updatedSettings);
   }
 
-  async shareLocationSettingsToConfig(
-    locationId: string,
-    request: WriteLocationConfigRequest
-  ): Promise<Result<LocationSettingsPage, UpdateLocationSettingsError>> {
-    const location = this.requireLocation(locationId);
-    if (!location.success) return location;
-
-    const resolvedTargets = await resolveAllLocationSettingsTargets(location.data);
-    const result = await writeSharedLocationSettingsToConfig(
-      location.data,
-      request,
-      resolvedTargets
-    );
-    if (!result.success) return result;
-
-    const page = await this.getLocationSettingsPageForLocation(location.data);
-    this.emitSettingsChanged(locationId, page.settings);
-    return ok(page);
-  }
-
-  async migrateLocationConfig(
-    locationId: string,
-    request: MigrateLocationConfigRequest
-  ): Promise<Result<MigrateLocationConfigResult, UpdateLocationSettingsError>> {
-    const location = this.requireLocation(locationId);
-    if (!location.success) return location;
-
-    const settings = await location.data.settings.get();
-    if (hasConfiguredShareableLocationSettings(settings)) {
-      return err({
-        type: 'write-config-failed',
-        message: 'Shareable location settings are already configured.',
-      });
-    }
-
-    const result = await migrateLocationConfigFromProvider(location.data, request);
-    if (!result.success) return result;
-
-    const page = await this.getLocationSettingsPageForLocation(location.data);
-    this.emitSettingsChanged(locationId, page.settings);
-    return ok({ page, migration: result.data });
-  }
-
   private requireLocation(
     locationId: string
   ): Result<LocationProvider, UpdateLocationSettingsError> {
@@ -146,20 +89,7 @@ export class LocationSettingsService implements Hookable<LocationSettingsHooks>,
     const defaults = {
       worktreeDirectory: await location.settings.getDefaultWorktreeDirectory(),
     };
-    const resolvedTargets = await resolveAllLocationSettingsTargets(location);
-    const writeTargets = getLocationSettingsWriteTargets(resolvedTargets);
-    const overrideState = await computeLocationSettingsOverrideState(resolvedTargets);
-    const configMigrations = hasConfiguredShareableLocationSettings(settings)
-      ? []
-      : await inspectLocationConfigMigrations(location.fs);
-    return {
-      settings,
-      defaults,
-      writeTargets,
-      overrideState,
-      configMigrations,
-      shouldPromptConfigMigration: configMigrations.length > 0,
-    };
+    return { settings, defaults };
   }
 
   private emitSettingsChanged(locationId: string, settings: LocationSettings): void {

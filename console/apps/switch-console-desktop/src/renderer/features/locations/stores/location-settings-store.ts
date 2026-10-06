@@ -4,14 +4,8 @@ import { Resource } from '@renderer/lib/stores/resource';
 import { fsWatchEventChannel } from '@shared/core/fs/fsEvents';
 import {
   LOCATION_CONFIG_FILE,
-  type MigrateLocationConfigRequest,
-  type MigrateLocationConfigResult,
-  type LocationConfigMigration,
   type LocationSettings,
-  type LocationSettingsOverrideState,
   type LocationSettingsPage,
-  type LocationSettingsWriteTargetOption,
-  type WriteLocationConfigRequest,
 } from '@shared/core/location-settings/location-settings';
 import { locationSettingsChangedChannel } from '@shared/core/locations/locationEvents';
 import type { UpdateLocationSettingsError } from '@shared/core/locations/locations';
@@ -60,22 +54,6 @@ export class LocationSettingsStore {
     return this.pageData.data?.defaults ?? null;
   }
 
-  get writeTargets(): LocationSettingsWriteTargetOption[] | null {
-    return this.pageData.data?.writeTargets ?? null;
-  }
-
-  get overrideState(): LocationSettingsOverrideState | null {
-    return this.pageData.data?.overrideState ?? null;
-  }
-
-  get configMigrations(): LocationConfigMigration[] | null {
-    return this.pageData.data?.configMigrations ?? null;
-  }
-
-  get shouldPromptConfigMigration(): boolean {
-    return this.pageData.data?.shouldPromptConfigMigration ?? false;
-  }
-
   async load(): Promise<LocationSettingsPage | null> {
     await this.pageData.load();
     return this.pageData.data;
@@ -89,26 +67,6 @@ export class LocationSettingsStore {
       const current = this.pageData.data;
       if (current) this.pageData.setValue({ ...current, settings: result.data });
       else this.pageData.invalidate();
-    }
-    return result;
-  }
-
-  async writeConfigToRepo(
-    request: WriteLocationConfigRequest
-  ): Promise<Result<LocationSettingsPage, UpdateLocationSettingsError>> {
-    const result = await rpc.locations.shareLocationSettingsToConfig(this.locationId, request);
-    if (result.success) {
-      this.pageData.setValue(result.data);
-    }
-    return result;
-  }
-
-  async migrateLocationConfig(
-    request: MigrateLocationConfigRequest
-  ): Promise<Result<MigrateLocationConfigResult, UpdateLocationSettingsError>> {
-    const result = await rpc.locations.migrateLocationConfig(this.locationId, request);
-    if (result.success) {
-      this.pageData.setValue(result.data.page);
     }
     return result;
   }

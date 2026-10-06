@@ -77,20 +77,6 @@ export type LocationSettingsPage = {
   defaults: {
     worktreeDirectory: string;
   };
-  writeTargets: LocationSettingsWriteTargetOption[];
-  overrideState: LocationSettingsOverrideState;
-  configMigrations: LocationConfigMigration[];
-  shouldPromptConfigMigration: boolean;
-};
-
-export type LocationSettingsWriteTarget =
-  | { type: 'location' }
-  | { type: 'session'; sessionId: string }
-  | { type: 'location-runtime'; locationId: string };
-
-export type LocationSettingsWriteTargetOption = LocationSettingsWriteTarget & {
-  label: string;
-  path: string;
 };
 
 export type ShareableLocationSettingsWriteField =
@@ -107,51 +93,3 @@ export const SHAREABLE_LOCATION_SETTINGS_WRITE_FIELDS = [
   'scripts.run',
   'scripts.teardown',
 ] as const satisfies ShareableLocationSettingsWriteField[];
-
-export type WriteLocationConfigRequest = {
-  target: LocationSettingsWriteTarget;
-  fields: ShareableLocationSettingsWriteField[];
-};
-
-export type LocationSettingsOverrideSource = {
-  label: string;
-  path: string;
-  value: string;
-};
-
-export type LocationSettingsOverrideState = Record<
-  ShareableLocationSettingsWriteField,
-  LocationSettingsOverrideSource[]
->;
-
-export type LocationConfigMigrationProvider = 'conductor' | 'superset' | 'paseo' | 'codex';
-
-export type LocationConfigMigration = {
-  provider: LocationConfigMigrationProvider;
-  label: string;
-  files: string[];
-  fields: ShareableLocationSettingsWriteField[];
-  unsupportedFields: string[];
-};
-
-export type LocationConfigMigrationDestination = 'local' | 'shared';
-
-export type MigrateLocationConfigRequest = {
-  provider: LocationConfigMigrationProvider;
-  destination: LocationConfigMigrationDestination;
-};
-
-export type MigrateLocationConfigResult = {
-  page: LocationSettingsPage;
-  migration: LocationConfigMigration;
-};
-
-export function emptyLocationSettingsOverrideState(): LocationSettingsOverrideState {
-  return {
-    preservePatterns: [],
-    shellSetup: [],
-    'scripts.setup': [],
-    'scripts.run': [],
-    'scripts.teardown': [],
-  };
-}
