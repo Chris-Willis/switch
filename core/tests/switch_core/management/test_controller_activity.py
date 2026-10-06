@@ -481,3 +481,82 @@ class TestWakeOnAddress:
 
         assert note is None
         assert await _mailbox(cloud, placed) == []
+
+
+class TestPlacementWhileAsleep:
+    async def _place(
+        self,
+        cloud: Cloud,  # noqa: F811
+        placed: Placed,
+    ) -> Any:
+        cloud.harness.clock.advance(hours=2)
+        return await create_managed_agent(
+            cloud.client,
+            placed.owner,
+            name="reviewer",
+            controller_id=placed.controller.controller_id,
+            definition_body=definition(isolation="isolated"),
+        )
+
+    async def test_an_agent_placed_on_a_sleeping_machine_is_accepted_and_wakes_it(
+        self,
+        cloud: Cloud,  # noqa: F811
+        placed: Placed,
+    ) -> None:
+        await cloud.update_machine(
+            placed.machine_id, desired_state="stopped", stop_reason="idle", revision=7
+        )
+
+        created = await self._place(cloud, placed)
+
+        assert created.status_code == 201, created.text
+        binding = cloud.harness.protocol.connections.controllers.binding(
+            created.json()["agent_id"]
+        )
+        assert binding is not None
+        assert binding.controller_id == placed.controller.controller_id
+        machine = await _machine(cloud, placed)
+        assert (machine.desired_state, machine.stop_reason, machine.revision) == (
+            "running",
+            None,
+            8,
+        )
+
+    async def test_a_machine_already_waking_takes_the_agent(
+        self,
+        cloud: Cloud,  # noqa: F811
+        placed: Placed,
+    ) -> None:
+        await cloud.update_machine(placed.machine_id, state="provisioning")
+
+        created = await self._place(cloud, placed)
+
+        assert created.status_code == 201, created.text
+
+    async def test_a_machine_its_owner_stopped_refuses_it(
+        self,
+        cloud: Cloud,  # noqa: F811
+        placed: Placed,
+    ) -> None:
+        await cloud.update_machine(
+            placed.machine_id, desired_state="stopped", stop_reason="owner", revision=7
+        )
+
+        created = await self._place(cloud, placed)
+
+        assert created.status_code == 409, created.text
+        assert created.json()["error"]["code"] == "controller_offline"
+        machine = await _machine(cloud, placed)
+        assert (machine.desired_state, machine.revision) == ("stopped", 7)
+
+    async def test_an_awake_machine_whose_controller_is_silent_refuses_it(
+        self,
+        cloud: Cloud,  # noqa: F811
+        placed: Placed,
+    ) -> None:
+        await cloud.update_machine(placed.machine_id, state="ready")
+
+        created = await self._place(cloud, placed)
+
+        assert created.status_code == 409, created.text
+        assert created.json()["error"]["code"] == "controller_offline"

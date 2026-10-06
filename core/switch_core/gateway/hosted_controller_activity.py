@@ -30,6 +30,7 @@ from switch_core.db.models import (
 from switch_core.db.stores.hosted_machine_store import (
     HostedMachineStore,
     idle_sleeping,
+    machine_starting,
     record_free_disk,
 )
 from switch_core.db.stores.hosted_mailbox_store import BUSY_STATES
@@ -231,3 +232,31 @@ async def wake_controller_machine(
     if idle_sleeping(machine) or machine.desired_state == "running":
         store.start(machine, now)
     return machine
+
+
+async def wake_for_placement(
+    session: AsyncSession, controller_id: str, now: datetime
+) -> bool:
+    """Start the machine that runs ec2 controller `controller_id` for an agent
+    being placed on it, and say whether the placement may wait for it.
+
+    It may while the machine is idle-sleeping or already starting: its
+    controller is not reporting because the machine is down, and it pulls
+    its assignment when it reconnects. A machine its owner stopped, one in
+    error, or one that is up while its controller is silent may not. Takes
+    the machine lock; the caller commits.
+    """
+    store = HostedMachineStore()
+    candidate = await store.linking_controller(session, controller_id)
+    if candidate is None:
+        return False
+    machine = await store.locked(session, candidate.id)
+    if (
+        machine is None
+        or machine.controller_id != controller_id
+        or machine.state == "error"
+        or not (idle_sleeping(machine) or machine_starting(machine))
+    ):
+        return False
+    store.start(machine, now)
+    return True

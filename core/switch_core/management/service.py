@@ -70,6 +70,7 @@ from switch_core.db.stores.hosted_machine_store import (
 from switch_core.gateway.hosted_controller_activity import (
     record_controller_heartbeat,
     wake_controller_machine,
+    wake_for_placement,
 )
 from switch_core.gateway.known_agents import KNOWN_AGENTS, KnownAgent
 from switch_core.management import reason_codes, tokens
@@ -78,7 +79,7 @@ from switch_core.management.notifier import ControllerNotifier
 from switch_core.management.placement import (
     ControllerState,
     controller_state,
-    require_placement,
+    placement_refusal,
 )
 from switch_core.management.schemas import (
     PROVIDER_KNOWN_AGENT_TYPES,
@@ -882,14 +883,31 @@ class ManagementService:
         controller = await self.owned_controller(
             session, tenant_id, owner_id, controller_id
         )
-        if check_placement:
-            require_placement(
-                controller,
-                provider,
-                now=self.now(),
-                interval_seconds=self.settings.status_interval_seconds,
+        if not check_placement:
+            return controller
+        refusal = placement_refusal(
+            controller,
+            provider,
+            now=self.now(),
+            interval_seconds=self.settings.status_interval_seconds,
+        )
+        if refusal is None:
+            return controller
+        code, message = refusal
+        # A cloud machine asleep reports nothing; its controller takes the
+        # agent once the machine this wakes is back.
+        if (
+            code == reason_codes.CONTROLLER_OFFLINE
+            and controller.kind == CLOUD_CONTROLLER_KIND
+            and await wake_for_placement(session, controller.id, self.now())
+        ):
+            logger.info(
+                "Placing an agent on controller %s while its cloud machine "
+                "sleeps; woke the machine",
+                controller.id,
             )
-        return controller
+            return controller
+        raise ManagementError(409, code, f"Cannot place the agent: {message}.")
 
     async def _bump_and_collect(
         self, session: AsyncSession, tenant_id: str, controller_ids: set[str | None]
