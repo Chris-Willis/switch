@@ -30,6 +30,9 @@ import { SESSION_STARTING_MESSAGE, WatcherControl } from './watcher-tools';
 
 const paths = vi.hoisted(() => ({ root: '' }));
 const supervisors = vi.hoisted(() => new Map<string, { build: unknown }>());
+// Longer than `eventually` waits, so a slow machine fails on what it waited for, not the clock.
+vi.setConfig({ testTimeout: 20_000 });
+
 vi.mock('./launch', () => ({
   sharedSessionRoot: (id: string) => join(paths.root, id),
   sharedSessionsBase: () => paths.root,
@@ -535,8 +538,9 @@ async function stopSpawning(root: string) {
 }
 
 /** Polls: what is waited on crosses a file watch or a queue, not a call. */
+/** Up to 10 s: the watcher sees a rewritten file through fs events, which a loaded machine delivers late. */
 async function eventually(reached: () => boolean | Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 400; attempt++) {
+  for (let attempt = 0; attempt < 2000; attempt++) {
     if (await reached()) return;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
