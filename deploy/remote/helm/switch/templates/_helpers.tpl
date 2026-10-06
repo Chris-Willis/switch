@@ -59,6 +59,13 @@ SECRET_KEYS: {{ required "secrets.secretKeys is required (\"<id>:<secret>\", see
 {{- with .Values.secrets.jwtSecretKey }}
 JWT_SECRET_KEY: {{ . | b64enc | quote }}
 {{- end }}
+{{- if .Values.switchCore.agentManagement.enabled }}
+{{- $controllerSecret := required "secrets.controllerTokenSecret is required when switchCore.agentManagement.enabled" .Values.secrets.controllerTokenSecret }}
+{{- if lt (len $controllerSecret) 32 }}
+{{- fail "secrets.controllerTokenSecret must be at least 32 characters; switch-core refuses to start with a shorter one." }}
+{{- end }}
+CONTROLLER_TOKEN_SECRET: {{ $controllerSecret | b64enc | quote }}
+{{- end }}
 GATEWAY_ADMIN_EMAIL: {{ required "secrets.gatewayAdminEmail is required" .Values.secrets.gatewayAdminEmail | b64enc | quote }}
 GATEWAY_ADMIN_PASSWORD: {{ required "secrets.gatewayAdminPassword is required" .Values.secrets.gatewayAdminPassword | b64enc | quote }}
 {{- if .Values.mattermost.enabled }}
@@ -636,6 +643,19 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
       name: {{ include "switch.secretName" . }}
       key: JWT_SECRET_KEY
       optional: true
+{{- with .Values.switchCore.agentManagement }}
+{{- if .enabled }}
+- name: AGENT_MANAGEMENT_ENABLED
+  value: "true"
+- name: CONTROLLER_TOKEN_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" $ }}
+      key: CONTROLLER_TOKEN_SECRET
+- name: CONTROLLER_STATUS_INTERVAL_SECONDS
+  value: {{ .statusIntervalSeconds | quote }}
+{{- end }}
+{{- end }}
 - name: GATEWAY_ADMIN_EMAIL
   valueFrom:
     secretKeyRef:

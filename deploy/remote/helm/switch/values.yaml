@@ -94,6 +94,7 @@ ingress:
 #      AGENT_REGISTRATION_TOKEN, SECRET_KEYS, GATEWAY_ADMIN_EMAIL,
 #      GATEWAY_ADMIN_PASSWORD,
 #      JWT_SECRET_KEY (optional, legacy — see secrets.jwtSecretKey),
+#      CONTROLLER_TOKEN_SECRET (if switchCore.agentManagement.enabled),
 #      MATTERMOST_ADMIN_PASSWORD + MATTERMOST_USER_PASSWORD (if mattermost.enabled),
 #      GATEWAY_OIDC_CLIENT_SECRET (if switchCore.oidc.enabled).
 secrets:
@@ -124,6 +125,11 @@ secrets:
   gatewayAdminPassword: ""
   mattermostAdminPassword: ""
   mattermostUserPassword: ""
+  # Signs agent controllers' access tokens (required when
+  # switchCore.agentManagement.enabled), at least 32 characters. Kept apart from
+  # secretKeys so rotating either never invalidates the other. Generate one
+  # with: openssl rand -hex 32
+  controllerTokenSecret: ""
   # Gateway OIDC client secret (required when switchCore.oidc.enabled).
   gatewayOidcClientSecret: ""
   # SMTP relay password for invitation e-mails (required when
@@ -283,6 +289,15 @@ switchCore:
   # lists them, rather than a 403. The gateway UI does not need it; turn it on
   # once every API client authenticating against this deployment handles it.
   tenantChoiceEnabled: false
+  # Agent management: managed agents, and the agent controllers (Switch Console,
+  # or switch-agent-controller on a user's own machine) that run them. Needs
+  # secrets.controllerTokenSecret, and `/v1` routed to switch-core
+  # (ingress.agentApiPaths does by default).
+  agentManagement:
+    enabled: false
+    # How often a controller must report; one silent for three of these is
+    # shown as unknown and gets no new placements.
+    statusIntervalSeconds: 60
   # Private hosts switch-core may reach at a URL a tenant or agent supplied —
   # a Mattermost server, an OpenCode server, an agent icon. Hostnames or CIDRs.
   # Anything else that is not a public address is refused, and link-local and
