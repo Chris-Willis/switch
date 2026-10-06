@@ -4,7 +4,6 @@ import { events } from '@main/lib/events';
 import { HookCore, type Hookable } from '@main/lib/hookable';
 import { log } from '@main/lib/logger';
 import {
-  type LocationSettingsPatch,
   type LocationSettings,
   type LocationSettingsPage,
 } from '@shared/core/location-settings/location-settings';
@@ -60,21 +59,6 @@ export class LocationSettingsService implements Hookable<LocationSettingsHooks>,
     return ok(updatedSettings);
   }
 
-  async patchLocationSettings(
-    locationId: string,
-    patch: LocationSettingsPatch
-  ): Promise<Result<LocationSettings, UpdateLocationSettingsError>> {
-    const location = this.requireLocation(locationId);
-    if (!location.success) return location;
-
-    const result = await location.data.settings.patch(patch);
-    if (!result.success) return result;
-
-    const updatedSettings = await location.data.settings.get();
-    this.emitSettingsChanged(locationId, updatedSettings);
-    return ok(updatedSettings);
-  }
-
   private requireLocation(
     locationId: string
   ): Result<LocationProvider, UpdateLocationSettingsError> {
@@ -85,11 +69,7 @@ export class LocationSettingsService implements Hookable<LocationSettingsHooks>,
   private async getLocationSettingsPageForLocation(
     location: LocationProvider
   ): Promise<LocationSettingsPage> {
-    const settings = await location.settings.get();
-    const defaults = {
-      worktreeDirectory: await location.settings.getDefaultWorktreeDirectory(),
-    };
-    return { settings, defaults };
+    return { settings: await location.settings.get() };
   }
 
   private emitSettingsChanged(locationId: string, settings: LocationSettings): void {

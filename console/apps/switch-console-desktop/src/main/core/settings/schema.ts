@@ -7,7 +7,6 @@ import { DEFAULT_AGENT_ID } from './settings-registry';
 
 export const localLocationSettingsSchema = z.object({
   defaultLocationsDirectory: z.string(),
-  defaultWorktreeDirectory: z.string(),
   writeAgentConfigToGitIgnore: z.boolean(),
 });
 

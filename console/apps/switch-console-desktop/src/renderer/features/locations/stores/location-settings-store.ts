@@ -36,10 +36,6 @@ export class LocationSettingsStore {
     return this.pageData.data?.settings ?? null;
   }
 
-  get defaults(): LocationSettingsPage['defaults'] | null {
-    return this.pageData.data?.defaults ?? null;
-  }
-
   async load(): Promise<LocationSettingsPage | null> {
     await this.pageData.load();
     return this.pageData.data;

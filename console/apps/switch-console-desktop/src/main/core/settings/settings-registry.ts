@@ -2,7 +2,6 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { DEFAULT_BROWSER_PROFILE_ID, DEFAULT_BROWSER_PROFILES } from '@shared/browser';
 import type { AppSettings, AppSettingsKey } from '@shared/core/app-settings';
-import { getDefaultLocalWorktreeDirectory } from './worktree-defaults';
 
 export const DEFAULT_AGENT_ID = 'claude';
 
@@ -13,7 +12,6 @@ type SettingsDefaultsMap = {
 export const SETTINGS_DEFAULTS = {
   localLocation: () => ({
     defaultLocationsDirectory: join(homedir(), '.switch', 'agents'),
-    defaultWorktreeDirectory: getDefaultLocalWorktreeDirectory(),
     writeAgentConfigToGitIgnore: true,
   }),
   sessions: {
