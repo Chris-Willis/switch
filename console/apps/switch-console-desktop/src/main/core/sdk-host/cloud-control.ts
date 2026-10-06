@@ -212,7 +212,7 @@ function launchProblem(
       message: 'The cloud agent is being removed.',
       wakeAvailable: false,
     };
-  const phase = cloudAgentPhase(launch, machine);
+  const phase = cloudAgentPhase(launch, machine, null);
   if (phase === 'machine_stopped')
     return {
       code: 'machine_stopped',
@@ -355,7 +355,14 @@ export async function listCloudAgents(serverId: string): Promise<CloudAgent[] | 
       key,
       launch,
       machine,
-      controllerId: agent?.controllerId ?? null,
+      controller: agent
+        ? {
+            controllerId: agent.controllerId,
+            desiredState: agent.desiredState,
+            process: agent.status?.process ?? null,
+            detail: agent.status?.detail ?? null,
+          }
+        : null,
       sessions: problem && KEEPS_LAST_SESSIONS.has(problem.code) ? (stored[key] ?? null) : null,
       problem,
     };

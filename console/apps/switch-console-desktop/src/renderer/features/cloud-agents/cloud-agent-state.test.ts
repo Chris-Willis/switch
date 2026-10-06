@@ -46,7 +46,7 @@ function agent(
       ...launch,
     },
     machine: onMachine,
-    controllerId: null,
+    controller: null,
     sessions: null,
     problem: null,
   };
@@ -140,5 +140,57 @@ describe('why a held message will not be delivered', () => {
     ],
   ])('says so when %s', (_name, onAgent, text) => {
     expect(cloudHoldBlocker(onAgent)).toContain(text);
+  });
+});
+
+describe('a cloud agent its machine’s controller runs', () => {
+  const controller: NonNullable<CloudAgent['controller']> = {
+    controllerId: 'cloud-controller',
+    desiredState: 'running',
+    process: 'running',
+    detail: null,
+  };
+  function controllerRun(
+    launch: Partial<CloudAgent['launch']>,
+    overrides: Partial<NonNullable<CloudAgent['controller']>> = {},
+    onMachine: CloudMachine = machine({})
+  ): CloudAgent {
+    return { ...agent(launch, onMachine), controller: { ...controller, ...overrides } };
+  }
+
+  it.each([
+    ['queued', { state: 'queued' }],
+    ['provisioning', { state: 'provisioning', process_state: 'starting' as const }],
+    [
+      'in error',
+      { state: 'error', error_code: 'agent_crashed', process_state: 'crashed' as const },
+    ],
+    ['stopped', { state: 'stopped', desired_state: 'stopped' as const }],
+  ])('reads as ready with its launch left %s', (_name, launch) => {
+    expect(cloudAgentState(controllerRun(launch))).toBeNull();
+    expect(cloudHoldBlocker(controllerRun(launch))).toBeNull();
+  });
+
+  it('reads as waking while its machine starts', () => {
+    expect(
+      cloudAgentState(controllerRun({ state: 'queued' }, {}, machine({ state: 'provisioning' })))
+    ).toEqual({ label: 'waking…', tone: 'busy' });
+  });
+
+  it('reads its managed agent stopped or crashed', () => {
+    expect(cloudAgentState(controllerRun({}, { desiredState: 'stopped' }))).toEqual({
+      label: 'stopped',
+      tone: 'idle',
+    });
+    expect(cloudHoldBlocker(controllerRun({}, { desiredState: 'stopped' }))).toContain(
+      'This agent is stopped.'
+    );
+    expect(cloudAgentState(controllerRun({}, { process: 'crashed' }))).toEqual({
+      label: 'crashed',
+      tone: 'bad',
+    });
+    expect(cloudHoldBlocker(controllerRun({}, { process: 'failed' }))).toContain(
+      'This agent crashed.'
+    );
   });
 });

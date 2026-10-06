@@ -65,7 +65,7 @@ function cloudAgent(): CloudAgent {
       oom_kills: 0,
     },
     machine: null,
-    controllerId: null,
+    controller: null,
     sessions: null,
     problem: null,
   };

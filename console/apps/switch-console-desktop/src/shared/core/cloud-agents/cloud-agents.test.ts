@@ -1,9 +1,10 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   cloudAgentPhase,
+  type CloudControllerAgent,
   type CloudLaunch,
   cloudLaunchSchema,
   type CloudMachine,
@@ -96,7 +97,7 @@ it.each([
   ['a retained machine being reused', machine({ state: 'retained' }), 'waking'],
   ['a ready machine', machine({}), null],
 ] as const)('reads %s', (_name, onMachine, phase) => {
-  expect(cloudAgentPhase(launch, onMachine)).toBe(phase);
+  expect(cloudAgentPhase(launch, onMachine, null)).toBe(phase);
 });
 
 const stopped: CloudLaunch = { ...launch, desired_state: 'stopped', state: 'stopped' };
@@ -112,35 +113,80 @@ it.each([
   ['stopped', stopped],
   ['crashed', crashed],
 ] as const)('does not sleep or wake with its machine a launch that is %s', (_name, onLaunch) => {
-  expect(cloudAgentPhase(onLaunch, cloudMachineSchema.parse(idleSleeping))).toBeNull();
-  expect(cloudAgentPhase({ ...onLaunch, sleeping: true, machine_id: null }, null)).toBeNull();
-  expect(cloudAgentPhase(onLaunch, machine({ state: 'provisioning' }))).toBeNull();
+  expect(cloudAgentPhase(onLaunch, cloudMachineSchema.parse(idleSleeping), null)).toBeNull();
+  expect(cloudAgentPhase({ ...onLaunch, sleeping: true, machine_id: null }, null, null)).toBeNull();
+  expect(cloudAgentPhase(onLaunch, machine({ state: 'provisioning' }), null)).toBeNull();
 });
 
 it('reads a machine its owner stopped whatever the launch', () => {
   expect(
     cloudAgentPhase(
       stopped,
-      machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'owner' })
+      machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'owner' }),
+      null
     )
   ).toBe('machine_stopped');
 });
 
 it('reads a machine in error whatever the launch', () => {
-  expect(cloudAgentPhase(stopped, machine({ state: 'error' }))).toBe('machine_error');
+  expect(cloudAgentPhase(stopped, machine({ state: 'error' }), null)).toBe('machine_error');
 });
 
 it('reads a machine in error before its owner stopping it', () => {
   expect(
     cloudAgentPhase(
       stopped,
-      machine({ state: 'error', desired_state: 'stopped', stop_reason: 'owner' })
+      machine({ state: 'error', desired_state: 'stopped', stop_reason: 'owner' }),
+      null
     )
   ).toBe('machine_error');
 });
 
 it('reads a launch without a machine from the launch', () => {
   expect(
-    cloudAgentPhase({ ...launch, machine_id: null, sleeping: true, state: 'stopped' }, null)
+    cloudAgentPhase({ ...launch, machine_id: null, sleeping: true, state: 'stopped' }, null, null)
   ).toBe('sleeping');
+});
+
+describe('an agent its cloud machine’s controller runs', () => {
+  const controller: CloudControllerAgent = {
+    controllerId: 'cloud-controller',
+    desiredState: 'running',
+    process: 'running',
+    detail: null,
+  };
+
+  it.each(['queued', 'provisioning', 'error', 'stopping'])(
+    'is not held up by a launch left %s',
+    (state) => {
+      expect(cloudAgentPhase({ ...launch, state }, machine({}), controller)).toBeNull();
+    }
+  );
+
+  it('sleeps and wakes with its machine whatever its launch', () => {
+    const left = { ...launch, state: 'error', desired_state: 'stopped' as const };
+    expect(cloudAgentPhase(left, cloudMachineSchema.parse(idleSleeping), controller)).toBe(
+      'sleeping'
+    );
+    expect(cloudAgentPhase(left, machine({ state: 'provisioning' }), controller)).toBe('waking');
+  });
+
+  it('does not sleep or wake with its machine once its managed agent is stopped', () => {
+    const stoppedAgent = { ...controller, desiredState: 'stopped' as const };
+    expect(
+      cloudAgentPhase(launch, cloudMachineSchema.parse(idleSleeping), stoppedAgent)
+    ).toBeNull();
+    expect(cloudAgentPhase(launch, machine({ state: 'provisioning' }), stoppedAgent)).toBeNull();
+  });
+
+  it('reads its machine stopped or in error first', () => {
+    expect(cloudAgentPhase(launch, machine({ state: 'error' }), controller)).toBe('machine_error');
+    expect(
+      cloudAgentPhase(
+        launch,
+        machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'owner' }),
+        controller
+      )
+    ).toBe('machine_stopped');
+  });
 });

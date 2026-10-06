@@ -560,7 +560,12 @@ describe('an agent its cloud machine’s controller runs', () => {
     const [listed] = (await listCloudAgents('server'))!;
     expect(listed).toMatchObject({
       key: controllerAgent,
-      controllerId: 'cloud-controller',
+      controller: {
+        controllerId: 'cloud-controller',
+        desiredState: 'running',
+        process: 'running',
+        detail: null,
+      },
       problem: null,
     });
   });
@@ -571,12 +576,12 @@ describe('an agent its cloud machine’s controller runs', () => {
     server.controllers = [{ id: 'laptop', kind: 'console' }];
     expect((await listCloudAgents('server'))?.[0]).toMatchObject({
       key: agent,
-      controllerId: null,
+      controller: null,
     });
     server.management = false;
     expect((await listCloudAgents('server'))?.[0]).toMatchObject({
       key: agent,
-      controllerId: null,
+      controller: null,
     });
   });
 

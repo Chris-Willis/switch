@@ -59,7 +59,9 @@ import type { Agent } from '@shared/core/agents/agents';
 import {
   type CloudAgent,
   cloudAgentPhase,
+  type CloudControllerAgent,
   cloudMachineReady,
+  controllerAgentCrashed,
 } from '@shared/core/cloud-agents/cloud-agents';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
@@ -197,6 +199,13 @@ function lifecycleFailureText(error: unknown): string {
   return failureText(error, 'Cloud operation failed.');
 }
 
+/** A controller-run cloud agent's state, from its managed agent rather than its launch. */
+function controllerAgentLabel(agent: CloudControllerAgent): string {
+  if (agent.desiredState === 'stopped') return 'Stopped';
+  if (controllerAgentCrashed(agent)) return 'Needs attention';
+  return agent.process === 'running' ? 'Ready' : 'Starting…';
+}
+
 const CloudAgentCard = observer(function CloudAgentCard({
   listed,
   serverId,
@@ -257,7 +266,9 @@ const CloudAgentCard = observer(function CloudAgentCard({
   };
   const editAgent = useShowModal('editCloudAgentModal');
   const iconUrl = useAgentIconUrl(workspacesStore.idOnServerInScope(serverId), launch.agent_id);
-  const phase = launch.desired_state === 'deleted' ? null : cloudAgentPhase(launch, listed.machine);
+  const controller = listed.controller;
+  const phase =
+    launch.desired_state === 'deleted' ? null : cloudAgentPhase(launch, listed.machine, controller);
   const stateLabel =
     phase === 'sleeping'
       ? 'Sleeping'
@@ -269,30 +280,40 @@ const CloudAgentCard = observer(function CloudAgentCard({
             ? cloudMachineReady(listed.machine)
               ? 'Starting…'
               : 'Waking…'
-            : launch.desired_state === 'stopped'
-              ? launch.state === 'stopping'
-                ? 'Stopping…'
-                : 'Stopped'
-              : {
-                  queued: 'Queued',
-                  provisioning: 'Starting…',
-                  ready: 'Ready',
-                  error: 'Needs attention',
-                  stopping: 'Stopping…',
-                  stopped: 'Stopped',
-                  deleting: 'Removing…',
-                  deleted: 'Removed',
-                }[launch.state];
-  const usable = launch.agent_id !== null && launch.state === 'ready' && phase === null;
+            : controller && launch.desired_state !== 'deleted'
+              ? controllerAgentLabel(controller)
+              : launch.desired_state === 'stopped'
+                ? launch.state === 'stopping'
+                  ? 'Stopping…'
+                  : 'Stopped'
+                : {
+                    queued: 'Queued',
+                    provisioning: 'Starting…',
+                    ready: 'Ready',
+                    error: 'Needs attention',
+                    stopping: 'Stopping…',
+                    stopped: 'Stopped',
+                    deleting: 'Removing…',
+                    deleted: 'Removed',
+                  }[launch.state];
+  const usable =
+    launch.agent_id !== null &&
+    phase === null &&
+    (controller
+      ? launch.desired_state !== 'deleted' && controller.desiredState === 'running'
+      : launch.state === 'ready');
   const machineDown = listed.machine
     ? listed.machine.sleeping || listed.machine.desired_state === 'stopped'
     : launch.sleeping;
   const stoppable =
+    !controller &&
     !machineDown &&
     launch.desired_state === 'running' &&
     launch.agent_id !== null &&
     ['ready', 'provisioning', 'queued', 'error'].includes(launch.state);
-  const crashed = launch.process_state === 'crashed' || launch.error_code === 'agent_crashed';
+  const crashed = controller
+    ? controllerAgentCrashed(controller)
+    : launch.process_state === 'crashed' || launch.error_code === 'agent_crashed';
   return (
     <div className="group relative flex min-h-[184px] flex-col rounded-[11px] bg-[var(--surface-2)] p-[14px]">
       <div className="absolute top-2 right-2 flex items-center opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
@@ -343,7 +364,7 @@ const CloudAgentCard = observer(function CloudAgentCard({
           {crashed && <Badge variant="destructive">Crashed</Badge>}
         </div>
       )}
-      {launch.error && (
+      {!controller && launch.error && (
         <p role="alert" className="mt-2 text-xs text-destructive">
           {launchErrorText(launch.error_code)}
         </p>
@@ -372,22 +393,24 @@ const CloudAgentCard = observer(function CloudAgentCard({
             >
               {attempt?.status === 'pending' ? 'Starting session…' : 'New session'}
             </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={pending}
-              onClick={() => void run('restart')}
-            >
-              Restart
-            </Button>
+            {!controller && (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={pending}
+                onClick={() => void run('restart')}
+              >
+                Restart
+              </Button>
+            )}
           </>
         )}
-        {launch.state === 'error' && !NOT_RETRYABLE.has(launch.error_code ?? '') && (
+        {!controller && launch.state === 'error' && !NOT_RETRYABLE.has(launch.error_code ?? '') && (
           <Button variant="outline" size="sm" disabled={pending} onClick={() => void run('retry')}>
             Retry
           </Button>
         )}
-        {launch.desired_state === 'stopped' && (
+        {!controller && launch.desired_state === 'stopped' && (
           <Button variant="outline" size="sm" disabled={pending} onClick={() => void run('start')}>
             Start agent
           </Button>

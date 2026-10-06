@@ -143,18 +143,36 @@ export type CloudSessions = {
 };
 
 /**
+ * The managed agent a cloud machine's controller runs for a launch, as the
+ * controller reports it. Once a controller runs the agent, this, not the
+ * launch, says whether it is asked to run and how its process is doing.
+ */
+export type CloudControllerAgent = {
+  controllerId: string;
+  desiredState: 'running' | 'stopped';
+  /** The process state the controller last reported, null before it has. */
+  process: string | null;
+  detail: string | null;
+};
+
+/**
  * A launch with its worker's sessions, or why they could not be read.
  * `sessions` is null until the worker has been asked. `machine` is the
  * machine the launch runs on, null when it has none or it is not listed.
- * `controllerId` is the cloud machine's controller that runs the launch's
- * agent as a managed agent, null for a launch its worker runs.
+ * `controller` is the managed agent the cloud machine's controller runs for
+ * the launch, null for a launch its worker runs.
  */
 export type CloudAgent = CloudSessions & {
   key: string;
   launch: CloudLaunch;
   machine: CloudMachine | null;
-  controllerId: string | null;
+  controller: CloudControllerAgent | null;
 };
+
+/** Whether a managed agent's process has crashed or failed on its controller. */
+export function controllerAgentCrashed(agent: CloudControllerAgent): boolean {
+  return agent.process === 'crashed' || agent.process === 'failed';
+}
 
 export type CloudAgentPhase = 'sleeping' | 'waking' | 'machine_stopped' | 'machine_error';
 
@@ -165,21 +183,28 @@ export type CloudAgentPhase = 'sleeping' | 'waking' | 'machine_stopped' | 'machi
  * Only a launch asked to run and not in error sleeps or wakes with its
  * machine: a message to a stopped or crashed one is refused rather than
  * waking it.
+ * An agent a controller runs is read from its machine and its managed agent
+ * alone: the launch's own state is no longer reported once a controller runs it.
  */
 export function cloudAgentPhase(
   launch: CloudLaunch,
-  machine: CloudMachine | null
+  machine: CloudMachine | null,
+  controller: CloudControllerAgent | null
 ): CloudAgentPhase | null {
   if (machine?.state === 'error') return 'machine_error';
   if (machine?.desired_state === 'stopped' && machine.stop_reason === 'owner')
     return 'machine_stopped';
+  const machineWaking =
+    machine?.desired_state === 'running' &&
+    ['queued', 'provisioning', 'stopping', 'stopped', 'retained'].includes(machine.state);
+  if (controller !== null) {
+    if (controller.desiredState !== 'running') return null;
+    if (machine?.sleeping) return 'sleeping';
+    return machineWaking ? 'waking' : null;
+  }
   if (launch.desired_state !== 'running' || launch.state === 'error') return null;
   if (machine ? machine.sleeping : launch.sleeping) return 'sleeping';
-  if (
-    machine?.desired_state === 'running' &&
-    ['queued', 'provisioning', 'stopping', 'stopped', 'retained'].includes(machine.state)
-  )
-    return 'waking';
+  if (machineWaking) return 'waking';
   if (['queued', 'provisioning'].includes(launch.state)) return 'waking';
   return null;
 }

@@ -89,7 +89,7 @@ function agent(): CloudAgent {
       oom_kills: 0,
     },
     machine: null,
-    controllerId: null,
+    controller: null,
     sessions: null,
     problem: null,
   };
@@ -534,5 +534,74 @@ it('stops a ready machine once confirmed', async () => {
     machine.machine_id,
     'stop',
     5
+  );
+});
+
+function controllerRun(launch: Partial<CloudAgent['launch']>): CloudAgent {
+  const base = agent();
+  return {
+    ...base,
+    key: 'cloud:server:agent=agent',
+    launch: { ...base.launch, ...launch },
+    controller: {
+      controllerId: 'cloud-controller',
+      desiredState: 'running',
+      process: 'running',
+      detail: null,
+    },
+  };
+}
+
+it.each([
+  ['queued', { state: 'queued' }],
+  ['provisioning', { state: 'provisioning' }],
+  ['in error', { state: 'error', error: 'crashed', error_code: 'agent_crashed' }],
+])(
+  'reads a controller-run agent from its controller, not its launch left %s',
+  async (_name, launch) => {
+    sdkHost.cloudAgents.mockResolvedValue([controllerRun(launch)]);
+    const el = await render();
+
+    expect(el.textContent).toMatch(/Cloud · Ready/);
+    expect(el.querySelector('[role="alert"]')).toBeNull();
+    expect(actions(el)).toEqual(['New session', 'Remove']);
+    await openMenu(el);
+    expect(menuItem('Stop agent')).toBeUndefined();
+  }
+);
+
+it('offers a controller-run agent stopped on its controller no Start agent', async () => {
+  const listed = controllerRun({ desired_state: 'stopped', state: 'stopped' });
+  sdkHost.cloudAgents.mockResolvedValue([
+    { ...listed, controller: { ...listed.controller!, desiredState: 'stopped' } },
+  ]);
+  const el = await render();
+
+  expect(el.textContent).toMatch(/Cloud · Stopped/);
+  expect(actions(el)).toEqual(['Remove']);
+});
+
+it('shows the server’s refusal of a launch its machine’s controller now runs', async () => {
+  switchServers.cloudLifecycle.mockRejectedValue(
+    new RpcError(
+      serializeRpcError(
+        Object.assign(new Error('Switch gateway returned 409'), {
+          name: 'GatewayError',
+          kind: 'http',
+          status: 409,
+          detail:
+            "This agent now runs on its cloud machine's controller. Manage it from its agent page.",
+          code: 'controller_managed',
+        })
+      )
+    )
+  );
+  sdkHost.cloudAgents.mockResolvedValue([agent()]);
+  const el = await render();
+
+  await act(async () => button(el, /^restart$/i)!.click());
+  await settle();
+  expect(el.querySelector('[role="alert"]')?.textContent).toMatch(
+    /This agent now runs on its cloud machine's controller\. Manage it from its agent page\./
   );
 });
