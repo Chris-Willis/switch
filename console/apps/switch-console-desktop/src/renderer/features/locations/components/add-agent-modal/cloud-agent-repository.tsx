@@ -102,7 +102,9 @@ export function CloudAgentRepository({
                     ? 'Checking connection…'
                     : provider.data.status === 'failed'
                       ? 'Connection failed'
-                      : 'Not connected'
+                      : provider.data.status === 'reconnect_required'
+                        ? 'Reconnect required'
+                        : 'Not connected'
               : 'Checking connection'}
           </span>
           {provider.error && (
@@ -111,7 +113,9 @@ export function CloudAgentRepository({
             </Button>
           )}
           {provider.data &&
-            ['not_connected', 'failed', 'verifying'].includes(provider.data.status) && (
+            ['not_connected', 'failed', 'verifying', 'reconnect_required'].includes(
+              provider.data.status
+            ) && (
               <Button
                 variant="outline"
                 size="sm"
@@ -122,7 +126,9 @@ export function CloudAgentRepository({
                   ? 'View'
                   : provider.data.status === 'failed'
                     ? 'Retry'
-                    : 'Connect'}
+                    : provider.data.status === 'reconnect_required'
+                      ? 'Reconnect'
+                      : 'Connect'}
               </Button>
             )}
         </div>

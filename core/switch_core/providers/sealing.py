@@ -255,6 +255,32 @@ async def sealing_controllers(
     )
 
 
+async def reusable_cloud_controller(
+    session: AsyncSession, owner_id: str
+) -> AgentController | None:
+    """The oldest live ec2 controller any of the owner's machines ever ran as,
+    which a machine whose own controller is revoked is linked to next."""
+    return cast(
+        AgentController | None,
+        await session.scalar(
+            select(AgentController)
+            .join(
+                HostedMachine,
+                (HostedMachine.tenant_id == AgentController.tenant_id)
+                & (HostedMachine.controller_id == AgentController.id),
+            )
+            .where(
+                AgentController.tenant_id == require_tenant_id(),
+                AgentController.owner_id == owner_id,
+                AgentController.kind == "ec2",
+                AgentController.revoked_at.is_(None),
+            )
+            .order_by(AgentController.created_at)
+            .limit(1)
+        ),
+    )
+
+
 async def _locked_row(
     session: AsyncSession, controller_id: str, provider: str
 ) -> SealedProviderCredential | None:
@@ -409,7 +435,10 @@ async def seal_stored_logins(
     now: datetime,
 ) -> int:
     """Seal, for a controller just linked to its owner's machine, every login
-    the owner holds a keyring copy of. Returns how many it sealed."""
+    the owner holds a keyring copy of. Returns how many it sealed.
+
+    A login held only sealed, for other controllers, cannot be sealed for this
+    one; the owner has to connect it again (`reconnect_required`)."""
     connections = list(
         await session.scalars(
             select(ProviderConnection).where(
@@ -435,6 +464,40 @@ async def seal_stored_logins(
             now=now,
         )
     return len(connections)
+
+
+async def reconnect_required(
+    session: AsyncSession, connection: ProviderConnection
+) -> bool:
+    """Whether a login held only sealed cannot reach the controller the
+    owner's cloud machine runs as, or will run as: one that holds no
+    connected envelope of it, which Core cannot seal again without the login.
+
+    The controllers are those the owner's live machine runs as; with none, the
+    one preparing a machine would reuse (`Management.cloud_controller`); with
+    none of those either, preparing creates a new controller.
+    """
+    if connection.encrypted_credential is not None:
+        return False
+    controllers = await sealing_controllers(session, connection.user_id)
+    if not controllers:
+        reused = await reusable_cloud_controller(session, connection.user_id)
+        if reused is None:
+            return True
+        controllers = [reused]
+    sealed = set(
+        await session.scalars(
+            select(SealedProviderCredential.controller_id).where(
+                SealedProviderCredential.tenant_id == require_tenant_id(),
+                SealedProviderCredential.controller_id.in_(
+                    [controller.id for controller in controllers]
+                ),
+                SealedProviderCredential.provider == connection.provider,
+                SealedProviderCredential.status == "connected",
+            )
+        )
+    )
+    return any(controller.id not in sealed for controller in controllers)
 
 
 async def stored_envelope(

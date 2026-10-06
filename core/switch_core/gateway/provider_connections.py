@@ -30,7 +30,12 @@ from switch_core.providers.claude_verifier import (
     ClaudeVerifier,
 )
 from switch_core.providers.credentials import validate_provider_credential
-from switch_core.providers.sealing import SealedChange, revoke_logins, seal_login
+from switch_core.providers.sealing import (
+    SealedChange,
+    reconnect_required,
+    revoke_logins,
+    seal_login,
+)
 from switch_core.providers.verification import ACTIVE, latest, queue, summary
 
 OtherProvider = Literal["codex", "cursor", "opencode", "antigravity"]
@@ -60,7 +65,9 @@ async def get_connection(
     if connection is None:
         return {"status": "not_connected"}
     return {
-        "status": "connected",
+        "status": "reconnect_required"
+        if await reconnect_required(session, connection)
+        else "connected",
         "kind": connection.kind,
         "verified_at": str(connection.verified_at),
     }
@@ -221,10 +228,14 @@ async def get_other_connection(
     )
     if row is None:
         return {"status": "not_connected"}
+    if await reconnect_required(session, row):
+        status = "reconnect_required"
+    elif row.verification_status == "verified":
+        status = "connected"
+    else:
+        status = "configured"
     return {
-        "status": "connected"
-        if row.verification_status == "verified"
-        else "configured",
+        "status": status,
         "kind": row.kind,
         "verified_at": str(row.verified_at),
     }

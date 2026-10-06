@@ -2255,14 +2255,14 @@ async function readClaudeConnection(response: Response): Promise<ClaudeConnectio
   if (typeof value === 'object' && value !== null && 'status' in value) {
     if (value.status === 'not_connected') return { status: 'not_connected' };
     if (
-      value.status === 'connected' &&
+      (value.status === 'connected' || value.status === 'reconnect_required') &&
       'kind' in value &&
       (value.kind === 'api-key' || value.kind === 'setup-token') &&
       'verified_at' in value &&
       typeof value.verified_at === 'string' &&
       Number.isFinite(Date.parse(value.verified_at))
     ) {
-      return { status: 'connected', kind: value.kind, verified_at: value.verified_at };
+      return { status: value.status, kind: value.kind, verified_at: value.verified_at };
     }
   }
   throw new GatewayError('http', 'The server returned an invalid Claude connection status.');

@@ -55,6 +55,7 @@ const {
   completeGitHubConnection,
   confirmGitHubConnection,
   getClaudeConnection,
+  getCloudProviderConnection,
   connectClaude,
   disconnectClaude,
   acceptInvitation,
@@ -1028,6 +1029,22 @@ describe('Claude cloud connection transport', () => {
     const [, options] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
     expect(options.method).toBe('DELETE');
     expect(options.body).toBeUndefined();
+  });
+  it('reads a login the cloud controller can no longer use as needing reconnecting', async () => {
+    const reconnect = {
+      status: 'reconnect_required',
+      kind: 'setup-token',
+      verified_at: '2026-01-01 00:00:00+00:00',
+    };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(reconnect)));
+    expect(await getClaudeConnection(SERVER)).toEqual(reconnect);
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...reconnect, kind: 'api-key' }))
+    );
+    expect(await getCloudProviderConnection(SERVER, 'cursor')).toEqual({
+      ...reconnect,
+      kind: 'api-key',
+    });
   });
   it('rejects malformed connection status', async () => {
     fetchMock.mockResolvedValueOnce(

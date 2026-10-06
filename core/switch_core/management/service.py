@@ -27,7 +27,6 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_icon import (
@@ -54,7 +53,6 @@ from switch_core.db.models import (
     AgentControllerOperation,
     ApiKey,
     HostedMachine,
-    require_tenant_id,
 )
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.db.stores.agent_controller_operation_store import (
@@ -96,6 +94,7 @@ from switch_core.management.schemas import (
     operation_wire,
     workspaces_dir_of,
 )
+from switch_core.providers.sealing import reusable_cloud_controller
 
 logger = logging.getLogger(__name__)
 
@@ -434,22 +433,7 @@ class ManagementService:
             )
             if linked is not None and linked.revoked_at is None:
                 return linked, False
-        reused = await session.scalar(
-            select(AgentController)
-            .join(
-                HostedMachine,
-                (HostedMachine.tenant_id == AgentController.tenant_id)
-                & (HostedMachine.controller_id == AgentController.id),
-            )
-            .where(
-                AgentController.tenant_id == require_tenant_id(),
-                AgentController.owner_id == machine.owner_id,
-                AgentController.kind == CLOUD_CONTROLLER_KIND,
-                AgentController.revoked_at.is_(None),
-            )
-            .order_by(AgentController.created_at)
-            .limit(1)
-        )
+        reused = await reusable_cloud_controller(session, machine.owner_id)
         if reused is None:
             key, _ = await self._new_hash_only_key(
                 session,

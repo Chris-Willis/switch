@@ -574,6 +574,108 @@ class TestSealedLogins:
             )
 
 
+async def _status(cloud: Cloud, owner: User, provider_name: str) -> str:
+    response = await cloud.client.get(
+        f"/gateway/provider-connections/{provider_name}", cookies=cookies_for(owner)
+    )
+    assert response.status_code == 200, response.text
+    return str(response.json()["status"])
+
+
+async def _machine_of(cloud: Cloud, controller: EnrolledController) -> str:
+    async with cloud.factory() as session:
+        machine_id = await session.scalar(
+            select(HostedMachine.id).where(
+                HostedMachine.controller_id == controller.controller_id
+            )
+        )
+    assert machine_id is not None
+    return str(machine_id)
+
+
+async def _revoke(cloud: Cloud, controller: EnrolledController) -> None:
+    async with cloud.factory() as session:
+        await cloud.harness.management.service.revoke_controller(
+            session, TENANT_ZERO_ID, controller.owner.id, controller.controller_id
+        )
+
+
+class TestReconnectRequired:
+    async def test_a_login_held_only_sealed_for_a_revoked_controller_needs_reconnecting(
+        self, cloud: Cloud
+    ) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        controller = await cloud.cloud_controller(owner)
+        machine_id = await _machine_of(cloud, controller)
+        await _connect(cloud, owner, "cursor", "api-key", "PLACEHOLDER-1")
+        assert await _status(cloud, owner, "cursor") == "configured"
+
+        await _revoke(cloud, controller)
+        assert await _status(cloud, owner, "cursor") == "reconnect_required"
+
+        await cloud.update_machine(machine_id, revision=2)
+        prepared = await cloud.prepare(machine_id)
+        assert prepared.status_code == 200, prepared.text
+        replacement = prepared.json()["controller"]["id"]
+        assert replacement != controller.controller_id
+        assert await _status(cloud, owner, "cursor") == "reconnect_required"
+
+        await _connect(cloud, owner, "cursor", "api-key", "PLACEHOLDER-2")
+        assert await _status(cloud, owner, "cursor") == "configured"
+        async with cloud.factory() as session:
+            row = await session.get(
+                SealedProviderCredential, (TENANT_ZERO_ID, replacement, "cursor")
+            )
+        assert row is not None and row.status == "connected"
+
+    async def test_a_controller_kept_across_machines_keeps_the_login_connected(
+        self, cloud: Cloud
+    ) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        controller = await cloud.cloud_controller(owner)
+        await _connect(cloud, owner, "cursor", "api-key", "PLACEHOLDER-1")
+
+        await cloud.update_machine(
+            await _machine_of(cloud, controller), state="deleted"
+        )
+        assert await _status(cloud, owner, "cursor") == "configured"
+
+        prepared = await cloud.prepare(await cloud.machine(owner))
+        assert prepared.json()["controller"]["id"] == controller.controller_id
+        assert await _status(cloud, owner, "cursor") == "configured"
+
+    async def test_a_claude_login_with_no_envelope_for_the_controller_needs_reconnecting(
+        self, cloud: Cloud
+    ) -> None:
+        _gateway_app(cloud.harness).state.claude_verifier = object()
+        owner = await add_member(cloud.factory, "ada")
+        await cloud.cloud_controller(owner)
+        async with cloud.factory() as session:
+            await ProviderConnectionStore().save(
+                session, owner.id, "setup-token", None, datetime.now(UTC)
+            )
+            await session.commit()
+
+        assert await _status(cloud, owner, "claude") == "reconnect_required"
+
+    async def test_a_keyring_copy_never_needs_reconnecting(self, cloud: Cloud) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        async with cloud.factory() as session:
+            await ProviderConnectionStore().save(
+                session,
+                owner.id,
+                "setup-token",
+                KEYRING.encrypt("PLACEHOLDER-CLAUDE-TOKEN"),
+                datetime.now(UTC),
+            )
+            await session.commit()
+        _gateway_app(cloud.harness).state.claude_verifier = object()
+        controller = await cloud.cloud_controller(owner)
+        await _revoke(cloud, controller)
+
+        assert await _status(cloud, owner, "claude") == "connected"
+
+
 class TestTheEnvelopeEndpoint:
     async def test_answers_only_the_owners_own_cloud_controller(
         self, cloud: Cloud
