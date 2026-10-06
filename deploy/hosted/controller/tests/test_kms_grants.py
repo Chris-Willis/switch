@@ -7,13 +7,12 @@ import boto3
 import pytest
 from botocore.exceptions import ClientError
 from botocore.stub import Stubber
-from test_controller import config
+from test_controller import KEY_ARN, config
 
 from switch_hosted_controller.config import ConfigError
 from switch_hosted_controller.kms_grants import KmsGrants, grant_name
 from switch_hosted_controller.store import MachineStore
 
-KEY_ARN = "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-4000-8000-0000000000aa"
 ROLE_ARN = "arn:aws:iam::123456789012:role/worker-1"
 CONTEXT = {
     "switch:tenant": "tenant-test",

@@ -7,8 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .model import Runtime
-
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SLOT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{2,39}$")
 _INSTANCE_TYPE = re.compile(r"^[a-z0-9][a-z0-9.]{1,30}$")
@@ -30,7 +28,7 @@ class ConfigError(ValueError):
 class MachineSlot:
     instance_profile_arn: str
     assignment_secret_arn: str
-    role_arn: str | None
+    role_arn: str
 
 
 @dataclass(frozen=True)
@@ -50,8 +48,7 @@ class ControllerConfig:
     state_db_path: Path
     lock_path: Path
     poll_interval_seconds: float
-    controller_image_id: str | None
-    login_kms_key_arn: str | None
+    login_kms_key_arn: str
 
     @classmethod
     def load(cls, path: Path) -> ControllerConfig:
@@ -81,11 +78,9 @@ class ControllerConfig:
             "state_db_path",
             "lock_path",
             "poll_interval_seconds",
+            "login_kms_key_arn",
         }
-        # The controller runtime is configured as a whole or not at all; an
-        # installation without it serves worker machines only.
-        controller_runtime = {"controller_image_id", "login_kms_key_arn"}
-        unknown = set(raw) - required - controller_runtime
+        unknown = set(raw) - required
         missing = required - set(raw)
         if missing or unknown:
             raise ConfigError(
@@ -101,19 +96,10 @@ class ControllerConfig:
             raise ConfigError("availability_zone must belong to configured region")
         subnet_id = _validated_string(raw, "subnet_id", re.compile(r"^subnet-[0-9a-f]+$"))
         image_id = _validated_string(raw, "image_id", _IMAGE_ID)
-        present = controller_runtime & set(raw)
-        if present and present != controller_runtime:
-            raise ConfigError(
-                "controller_image_id and login_kms_key_arn must be configured together"
-            )
-        controller_image_id: str | None = None
-        login_kms_key_arn: str | None = None
-        if present:
-            controller_image_id = _validated_string(raw, "controller_image_id", _IMAGE_ID)
-            login_kms_key_arn = _validated_string(raw, "login_kms_key_arn", _KMS_KEY_ARN)
-            key_match = _KMS_KEY_ARN.fullmatch(login_kms_key_arn)
-            if key_match is None or key_match.group(2) != region:
-                raise ConfigError("login_kms_key_arn must be a key in the configured region")
+        login_kms_key_arn = _validated_string(raw, "login_kms_key_arn", _KMS_KEY_ARN)
+        key_match = _KMS_KEY_ARN.fullmatch(login_kms_key_arn)
+        if key_match is None or key_match.group(2) != region:
+            raise ConfigError("login_kms_key_arn must be a key in the configured region")
         root_device_name = _validated_string(
             raw, "root_device_name", re.compile(r"^/dev/[A-Za-z0-9._-]+$")
         )
@@ -151,10 +137,10 @@ class ControllerConfig:
         slots: dict[str, MachineSlot] = {}
         for slot_id, slot_raw in slots_raw.items():
             _validated_value(slot_id, "machine_slots key", _SLOT_ID)
-            slot_keys = {"instance_profile_arn", "assignment_secret_arn"}
-            if not isinstance(slot_raw, dict) or set(slot_raw) - {"role_arn"} != slot_keys:
+            slot_keys = {"instance_profile_arn", "assignment_secret_arn", "role_arn"}
+            if not isinstance(slot_raw, dict) or set(slot_raw) != slot_keys:
                 raise ConfigError(
-                    f"machine slot {slot_id!r} must contain instance_profile_arn, assignment_secret_arn and optionally role_arn"
+                    f"machine slot {slot_id!r} must contain instance_profile_arn, assignment_secret_arn and role_arn"
                 )
             profile = _validated_value(
                 slot_raw["instance_profile_arn"], "instance_profile_arn", _ARN
@@ -166,13 +152,7 @@ class ControllerConfig:
                 raise ConfigError(f"machine slot {slot_id!r} has an invalid instance profile ARN")
             if ":secretsmanager:" not in secret or ":secret:" not in secret:
                 raise ConfigError(f"machine slot {slot_id!r} has an invalid secret ARN")
-            role: str | None = None
-            if "role_arn" in slot_raw:
-                role = _validated_value(slot_raw["role_arn"], "role_arn", _ROLE_ARN)
-            elif present:
-                raise ConfigError(
-                    f"machine slot {slot_id!r} needs role_arn when the controller runtime is configured"
-                )
+            role = _validated_value(slot_raw["role_arn"], "role_arn", _ROLE_ARN)
             slots[slot_id] = MachineSlot(profile, secret, role)
         if len(slots) < max_machines:
             raise ConfigError("max_machines exceeds configured machine slots")
@@ -182,7 +162,7 @@ class ControllerConfig:
             raise ConfigError("machine slot instance profiles must be unique")
         if len(set(secrets)) != len(secrets):
             raise ConfigError("machine slot secrets must be unique")
-        roles = [slot.role_arn for slot in slots.values() if slot.role_arn is not None]
+        roles = [slot.role_arn for slot in slots.values()]
         if len(set(roles)) != len(roles):
             raise ConfigError("machine slot roles must be unique")
 
@@ -207,7 +187,6 @@ class ControllerConfig:
             state_db_path=state_db_path,
             lock_path=lock_path,
             poll_interval_seconds=float(poll_interval),
-            controller_image_id=controller_image_id,
             login_kms_key_arn=login_kms_key_arn,
         )
 
@@ -225,13 +204,6 @@ class ControllerConfig:
         }
         payload = json.dumps(immutable, separators=(",", ":"), sort_keys=True)
         return hashlib.sha256(payload.encode()).hexdigest()
-
-    def image_for(self, runtime: Runtime) -> str:
-        if runtime is Runtime.WORKER:
-            return self.image_id
-        if self.controller_image_id is None:
-            raise ConfigError("the controller runtime is not configured for this installation")
-        return self.controller_image_id
 
     def slot(self, slot_id: str) -> MachineSlot:
         try:

@@ -12,11 +12,6 @@ class DesiredState(StrEnum):
     DELETED = "deleted"
 
 
-class Runtime(StrEnum):
-    WORKER = "worker"
-    CONTROLLER = "controller"
-
-
 class ObservedState(StrEnum):
     PENDING = "pending"
     PROVISIONING = "provisioning"
@@ -65,6 +60,4 @@ class Machine:
     required_bundle_revision: int | None
     required_bundle_token: str | None
     bundle_token: str | None
-    runtime: Runtime
-    target_runtime: Runtime
     target_image_id: str | None

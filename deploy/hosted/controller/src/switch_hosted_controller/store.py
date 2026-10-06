@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .model import DesiredState, Machine, ObservedState, Runtime
+from .model import DesiredState, Machine, ObservedState
 
 LEGACY_ROWS_MESSAGE = (
     "legacy per-agent rows present; see 'Moving to one machine per user' in deploy/hosted/README.md"
@@ -339,10 +339,7 @@ class MachineStore:
     def upgrade_terminated(
         self, claim: Machine, image_id: str, previous_runtime_fingerprint: str
     ) -> Machine:
-        """Move a stopped machine onto `image_id` for its current runtime.
-
-        This supersedes a pending image change, but not a pending runtime change.
-        """
+        """Move a stopped machine onto `image_id`, superseding a pending image change."""
         if (
             claim.desired_state is not DesiredState.STOPPED
             or not claim.instance_id
@@ -356,7 +353,7 @@ class MachineStore:
         cursor = self._connection.execute(
             """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
             image_id = ?,
-            target_image_id = CASE WHEN target_runtime = runtime THEN NULL ELSE target_image_id END,
+            target_image_id = NULL,
             previous_runtime_fingerprint = ?, instance_seq = instance_seq + 1,
             desired_revision = desired_revision + 1, operation_id = ?,
             instance_launch_intent = 0, instance_launch_issued = 0, instance_launch_issued_at = NULL,
@@ -408,41 +405,37 @@ class MachineStore:
         )
         return self.get(claim.machine_id)
 
-    def request_runtime(self, machine_id: str, runtime: Runtime, image_id: str) -> Machine:
-        """Record the runtime Core prepared the machine for.
+    def request_image(self, machine_id: str, image_id: str) -> Machine:
+        """Record the image the machine should run.
 
-        A runtime other than the current one, or a controller machine on an image
-        other than the configured one, is applied by `switch_runtime` once the
-        current instance is gone.
+        An image other than the current one is applied by `switch_image` once
+        the current instance is gone.
         """
         self._connection.execute(
             """
-            UPDATE machines SET target_runtime = ?,
-                target_image_id = CASE
-                    WHEN runtime != ? THEN ?
-                    WHEN runtime = 'controller' AND image_id != ? THEN ?
-                    ELSE NULL END,
+            UPDATE machines SET
+                target_image_id = CASE WHEN image_id != ? THEN ? ELSE NULL END,
                 updated_at = CURRENT_TIMESTAMP
             WHERE machine_id = ?
             """,
-            (runtime.value, runtime.value, image_id, image_id, image_id, machine_id),
+            (image_id, image_id, machine_id),
         )
         return self.get(machine_id)
 
-    def switch_runtime(self, claim: Machine) -> Machine:
-        """Adopt the requested runtime and image for the next instance.
+    def switch_image(self, claim: Machine) -> Machine:
+        """Adopt the requested image for the next instance.
 
         The machine must have no instance, or a confirmed terminated one, which
         becomes the predecessor whose data volume the next instance reattaches.
         """
         if claim.target_image_id is None:
-            raise StoreError("no runtime or image change is pending")
+            raise StoreError("no image change is pending")
         if claim.instance_id is not None and not claim.instance_terminal_observed:
-            raise StoreError("a runtime change requires a confirmed terminated predecessor")
+            raise StoreError("an image change requires a confirmed terminated predecessor")
         if claim.instance_id is None and claim.instance_launch_issued:
-            raise StoreError("a runtime change cannot overtake an issued launch")
+            raise StoreError("an image change cannot overtake an issued launch")
         cursor = self._connection.execute(
-            """UPDATE machines SET runtime = target_runtime, image_id = target_image_id,
+            """UPDATE machines SET image_id = target_image_id,
             target_image_id = NULL,
             previous_instance_id = COALESCE(instance_id, previous_instance_id), instance_id = NULL,
             previous_runtime_fingerprint = NULL, instance_seq = instance_seq + 1,
@@ -450,19 +443,18 @@ class MachineStore:
             instance_terminate_issued = 0, instance_terminal_observed = 0,
             observed_state = 'provisioning', error = NULL, updated_at = CURRENT_TIMESTAMP
             WHERE machine_id = ? AND desired_revision = ? AND operation_id = ?
-            AND desired_state = 'running' AND target_runtime = ? AND target_image_id = ?
+            AND desired_state = 'running' AND target_image_id = ?
             AND instance_id IS ?""",
             (
                 claim.machine_id,
                 claim.desired_revision,
                 claim.operation_id,
-                claim.target_runtime.value,
                 claim.target_image_id,
                 claim.instance_id,
             ),
         )
         if cursor.rowcount != 1:
-            raise StoreError("machine state changed during runtime change; refresh before retrying")
+            raise StoreError("machine state changed during image change; refresh before retrying")
         return self.get(claim.machine_id)
 
     def release_terminated(self, claim: Machine) -> Machine:
@@ -765,7 +757,7 @@ class MachineStore:
 
 def require_recovery_allowed(machine: Machine) -> None:
     if machine.recovery_count >= RECOVERY_LIMIT:
-        raise StoreError("automatic worker recovery limit reached; operator review is required")
+        raise StoreError("automatic machine recovery limit reached; operator review is required")
 
 
 def _later(stored: datetime | None, requested: datetime | None) -> datetime | None:
@@ -824,8 +816,6 @@ def _machine(row: sqlite3.Row) -> Machine:
         required_bundle_revision=row["required_bundle_revision"],
         required_bundle_token=row["required_bundle_token"],
         bundle_token=row["bundle_token"],
-        runtime=Runtime(row["runtime"]),
-        target_runtime=Runtime(row["target_runtime"]),
         target_image_id=row["target_image_id"],
     )
 

@@ -9,17 +9,12 @@ from typing import Any
 from botocore.exceptions import ClientError
 
 from .config import ControllerConfig
-from .model import Machine, Runtime
+from .model import Machine
 
 MANAGED_BY = "switch-hosted-controller"
 DATA_DEVICE = "/dev/sdf"
 CAPABILITIES_TAG = "switch:capabilities"
 CONTROLLER_CAPABILITY = "controller-v1"
-
-
-def required_capabilities(runtime: Runtime) -> tuple[str, ...]:
-    """The image capabilities a machine of `runtime` must be launched from."""
-    return (CONTROLLER_CAPABILITY,) if runtime is Runtime.CONTROLLER else ()
 
 
 class CloudResourceError(RuntimeError):
@@ -39,8 +34,8 @@ class Ec2Cloud:
     def availability_zone(self) -> str:
         return self._config.availability_zone
 
-    def validate_image(self, image_id: str, require: tuple[str, ...]) -> None:
-        """Check the AMI can host a machine and carries every `require`d capability."""
+    def validate_image(self, image_id: str) -> None:
+        """Check the AMI can host a machine and carries the controller capability."""
         images = self._ec2.describe_images(ImageIds=[image_id]).get("Images", [])
         if len(images) != 1:
             raise CloudResourceError("configured AMI lookup did not return exactly one image")
@@ -58,15 +53,13 @@ class Ec2Cloud:
             raise CloudResourceError("configured AMI must define exactly one root block device")
         if not mappings[0].get("Ebs") or mappings[0].get("NoDevice"):
             raise CloudResourceError("configured AMI root mapping is not an EBS device")
-        if require:
-            tags = {tag.get("Key"): tag.get("Value") for tag in image.get("Tags", [])}
-            raw = tags.get(CAPABILITIES_TAG)
-            capabilities = set(re.split(r"[\s,]+", raw.strip())) if isinstance(raw, str) else set()
-            missing = sorted(set(require) - capabilities)
-            if missing:
-                raise CloudResourceError(
-                    f"configured AMI lacks the {CAPABILITIES_TAG} capabilities {missing}"
-                )
+        tags = {tag.get("Key"): tag.get("Value") for tag in image.get("Tags", [])}
+        raw = tags.get(CAPABILITIES_TAG)
+        capabilities = set(re.split(r"[\s,]+", raw.strip())) if isinstance(raw, str) else set()
+        if CONTROLLER_CAPABILITY not in capabilities:
+            raise CloudResourceError(
+                f"configured AMI lacks the {CAPABILITIES_TAG} capabilities ['{CONTROLLER_CAPABILITY}']"
+            )
 
     def discover_volume(self, machine: Machine) -> dict[str, Any] | None:
         volumes = self._describe_volumes(Filters=self._resource_filters(machine, "data"))

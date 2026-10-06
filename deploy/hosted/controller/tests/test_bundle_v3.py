@@ -18,7 +18,7 @@ from switch_hosted_controller.cloud import CloudResourceError, Ec2Cloud
 from switch_hosted_controller.config import ConfigError, ControllerConfig
 from switch_hosted_controller.gateway import CoreMachine, Gateway, GatewayConfig
 from switch_hosted_controller.kms_grants import KmsGrants
-from switch_hosted_controller.model import DesiredState, ObservedState, Runtime
+from switch_hosted_controller.model import DesiredState, ObservedState
 from switch_hosted_controller.reconciler import Reconciler
 from switch_hosted_controller.store import MachineStore
 
@@ -33,10 +33,7 @@ CORE_PREPARE = json.loads((CORE_FIXTURES / "prepare_controller_response.json").r
 
 def controller_dict(tmp_path: Path, *, max_machines: int = 1) -> dict:
     raw = config_dict(tmp_path, max_machines=max_machines)
-    raw["controller_image_id"] = CONTROLLER_IMAGE
-    raw["login_kms_key_arn"] = KEY_ARN
-    for number, slot in enumerate(raw["machine_slots"].values(), start=1):
-        slot["role_arn"] = f"arn:aws:iam::123456789012:role/worker-{number}"
+    raw["image_id"] = CONTROLLER_IMAGE
     return raw
 
 
@@ -52,24 +49,22 @@ class ImageGate:
             CONTROLLER_IMAGE: {"controller-v1"},
             NEW_CONTROLLER_IMAGE: {"controller-v1"},
         }
-        self.calls: list[tuple[str, tuple[str, ...]]] = []
+        self.calls: list[str] = []
         self.events = events
 
-    def validate_image(self, image_id: str, require: tuple[str, ...]) -> None:
-        self.calls.append((image_id, require))
+    def validate_image(self, image_id: str) -> None:
+        self.calls.append(image_id)
         self.events.append("validate_image")
-        missing = set(require) - self.capabilities.get(image_id, set())
-        if missing:
+        if "controller-v1" not in self.capabilities.get(image_id, set()):
             raise CloudResourceError("configured AMI lacks capabilities")
 
 
 class ControllerCore:
-    """Core's prepare for one machine, in the runtime it is set to."""
+    """Core's prepare for one machine."""
 
     def __init__(self):
         self.revision = 1
         self.desired_state = "running"
-        self.runtime = "controller"
         self.prepared: dict = {}
 
     def machine(self) -> dict:
@@ -92,13 +87,10 @@ class ControllerCore:
             "revision": self.revision,
             "bundle_revision": self.revision,
             "api_endpoint": "https://switch.example.test/agent-api",
-            "runtime": self.runtime,
+            "runtime": "controller",
+            "controller": {"id": CONTROLLER_ID, "credential": CREDENTIAL},
+            "kms": {"key_arn": KEY_ARN, "region": "us-east-1", "context": dict(CONTEXT)},
         }
-        if self.runtime == "controller":
-            prepared["controller"] = {"id": CONTROLLER_ID, "credential": CREDENTIAL}
-            prepared["kms"] = {"key_arn": KEY_ARN, "region": "us-east-1", "context": dict(CONTEXT)}
-        else:
-            prepared["machine_capability"] = f"SYNTHETIC-CAPABILITY-REVISION-{self.revision:04d}"
         prepared.update(self.prepared)
         return prepared
 
@@ -112,8 +104,8 @@ class ControllerCore:
 
 
 class Harness:
-    def __init__(self, tmp_path: Path, cfg: ControllerConfig | None = None):
-        self.cfg = cfg or controller_config(tmp_path)
+    def __init__(self, tmp_path: Path):
+        self.cfg = controller_config(tmp_path)
         self.store = MachineStore(self.cfg.state_db_path, self.cfg.fingerprint())
         self.events: list[str] = []
         self.secrets = FakeSecrets()
@@ -134,7 +126,7 @@ class Harness:
         self.kms.create_grant = recorded_create
         self.images = ImageGate(self.events)
         self.core = ControllerCore()
-        grants = KmsGrants(self.kms, KEY_ARN, self.store) if self.cfg.login_kms_key_arn else None
+        grants = KmsGrants(self.kms, KEY_ARN, self.store)
         self.gateway = Gateway(
             GatewayConfig("https://switch.example.test", "SYNTHETIC-CONTROLLER", "m6i.large"),
             self.cfg,
@@ -187,7 +179,7 @@ def expected_bundle(grant_token: str) -> dict:
     }
 
 
-def test_controller_runtime_writes_bundle_v3_after_the_grant(harness):
+def test_prepare_writes_bundle_v3_after_the_grant(harness):
     harness.sync()
 
     [grant] = harness.kms.grants
@@ -195,7 +187,7 @@ def test_controller_runtime_writes_bundle_v3_after_the_grant(harness):
     assert harness.bundle() == expected_bundle(record.grant_token)
     assert "machineCapability" not in harness.bundle()
     assert harness.events == ["validate_image", "create_grant", "put_secret_value"]
-    assert harness.images.calls == [(CONTROLLER_IMAGE, ("controller-v1",))]
+    assert harness.images.calls == [CONTROLLER_IMAGE]
     assert grant["GranteePrincipal"] == ROLE_ARN
     assert grant["Operations"] == ["Decrypt"]
     assert grant["Constraints"] == {"EncryptionContextSubset": CONTEXT}
@@ -203,11 +195,7 @@ def test_controller_runtime_writes_bundle_v3_after_the_grant(harness):
     assert record.grant_id == grant["GrantId"]
     machine = harness.store.get(MACHINE_ID)
     assert machine.bundle_token == token(MACHINE_ID, 1)
-    assert (machine.runtime, machine.target_runtime, machine.target_image_id) == (
-        Runtime.WORKER,
-        Runtime.CONTROLLER,
-        CONTROLLER_IMAGE,
-    )
+    assert (machine.image_id, machine.target_image_id) == (CONTROLLER_IMAGE, None)
 
 
 def _shape(value):
@@ -262,7 +250,6 @@ def test_v3_is_refused_unless_the_image_passes_the_capability_gate(harness):
     assert harness.secrets.puts == []
     machine = harness.store.get(MACHINE_ID)
     assert machine.bundle_token is None
-    assert machine.target_runtime is Runtime.WORKER
 
 
 @pytest.mark.parametrize(
@@ -305,6 +292,8 @@ def test_v3_is_refused_unless_the_image_passes_the_capability_gate(harness):
         ({"controller": {"id": CONTROLLER_ID}}, "controller"),
         ({"api_endpoint": "http://switch.example.test"}, "API endpoint"),
         ({"runtime": "lambda"}, "runtime"),
+        ({"runtime": "worker"}, "runtime"),
+        ({"runtime": None}, "runtime"),
     ],
 )
 def test_invalid_controller_preparation_writes_nothing(harness, prepared, message):
@@ -313,41 +302,6 @@ def test_invalid_controller_preparation_writes_nothing(harness, prepared, messag
         harness.sync()
     assert "create_grant" not in harness.events
     assert harness.secrets.puts == []
-    assert harness.store.get(MACHINE_ID).target_runtime is Runtime.WORKER
-
-
-def test_controller_runtime_needs_it_configured(tmp_path):
-    harness = Harness(tmp_path, ControllerConfig.from_dict(config_dict(tmp_path, max_machines=1)))
-    with pytest.raises(ConfigError, match="not configured"):
-        harness.sync()
-    assert harness.events == []
-    assert harness.secrets.puts == []
-    harness.close()
-
-
-def test_worker_runtime_keeps_the_v2_bundle(harness):
-    harness.core.runtime = "worker"
-    harness.sync()
-    assert harness.bundle() == {
-        "version": 2,
-        "machineId": MACHINE_ID,
-        "assignment": {
-            "installationId": "test-installation",
-            "slotId": "slot-1",
-            "generation": 1,
-            "dataVolumeId": VOLUME_ID,
-        },
-        "machineCapability": "SYNTHETIC-CAPABILITY-REVISION-0001",
-        "apiEndpoint": "https://switch.example.test/agent-api",
-    }
-    assert harness.events == ["put_secret_value"]
-    assert harness.kms.calls == []
-    machine = harness.store.get(MACHINE_ID)
-    assert (machine.runtime, machine.target_runtime, machine.target_image_id) == (
-        Runtime.WORKER,
-        Runtime.WORKER,
-        None,
-    )
 
 
 def test_lost_put_response_rewrites_the_identical_bundle(harness):
@@ -416,7 +370,7 @@ class Ec2:
         self.cfg = cfg
         self.instances: dict[str, dict] = {}
         self.launched_images: list[str] = []
-        self.validated: list[tuple[str, tuple[str, ...]]] = []
+        self.validated: list[str] = []
         self.volume = {
             "VolumeId": VOLUME_ID,
             "AvailabilityZone": cfg.availability_zone,
@@ -437,9 +391,9 @@ class Ec2:
     def find_launched_instance(self, machine):
         return None
 
-    def validate_image(self, image_id, require):
-        self.validated.append((image_id, require))
-        if require and image_id not in {CONTROLLER_IMAGE, NEW_CONTROLLER_IMAGE}:
+    def validate_image(self, image_id):
+        self.validated.append(image_id)
+        if image_id not in {CONTROLLER_IMAGE, NEW_CONTROLLER_IMAGE}:
             raise CloudResourceError("configured AMI lacks capabilities")
 
     def validate_capacity(self):
@@ -490,78 +444,14 @@ def poll_until_running(harness: Harness, reconciler: Reconciler) -> None:
     raise AssertionError(f"machine never ran: {harness.store.get(MACHINE_ID)}")
 
 
-def test_runtime_change_replaces_the_instance_and_reattaches_the_volume(harness):
+def test_start_records_a_new_image(harness):
     ec2 = Ec2(harness.store, harness.cfg)
-    reconciler = Reconciler(harness.store, ec2)
-    harness.core.runtime = "worker"
-    poll_until_running(harness, reconciler)
-    worker = harness.store.get(MACHINE_ID)
-    assert worker.runtime is Runtime.WORKER
-    assert ec2.launched_images == [harness.cfg.image_id]
-    assert ec2.validated == [(harness.cfg.image_id, ())]
-
-    harness.core.revision = 2
-    harness.core.runtime = "controller"
-    poll_until_running(harness, reconciler)
-
-    controller = harness.store.get(MACHINE_ID)
-    assert (controller.runtime, controller.target_runtime, controller.target_image_id) == (
-        Runtime.CONTROLLER,
-        Runtime.CONTROLLER,
-        None,
-    )
-    assert controller.image_id == CONTROLLER_IMAGE
-    assert controller.previous_instance_id == worker.instance_id
-    assert controller.instance_id != worker.instance_id
-    assert controller.instance_seq == worker.instance_seq + 1
-    assert controller.recovery_count == 0
-    assert ec2.instances[worker.instance_id]["State"]["Name"] == "terminated"
-    assert ec2.launched_images == [harness.cfg.image_id, CONTROLLER_IMAGE]
-    assert ec2.validated[-1] == (CONTROLLER_IMAGE, ("controller-v1",))
-    assert ec2.volume["Attachments"] == [
-        {"InstanceId": controller.instance_id, "Device": "/dev/sdf", "State": "attached"}
-    ]
-    assert harness.bundle()["version"] == 3
-
-    harness.core.revision = 3
-    harness.core.runtime = "worker"
-    poll_until_running(harness, reconciler)
-    rolled_back = harness.store.get(MACHINE_ID)
-    assert rolled_back.runtime is Runtime.WORKER
-    assert rolled_back.image_id == harness.cfg.image_id
-    assert rolled_back.previous_instance_id == controller.instance_id
-    assert ec2.launched_images == [harness.cfg.image_id, CONTROLLER_IMAGE, harness.cfg.image_id]
-    assert harness.bundle()["version"] == 2
-
-
-def test_start_records_a_new_controller_image_but_not_a_new_worker_image(harness):
-    ec2 = Ec2(harness.store, harness.cfg)
-    reconciler = Reconciler(harness.store, ec2)
-    harness.core.runtime = "worker"
-    poll_until_running(harness, reconciler)
-    harness.configure(image_id="ami-0e0e0e0e0e0e0e0e0")
+    poll_until_running(harness, Reconciler(harness.store, ec2))
+    harness.configure(image_id=NEW_CONTROLLER_IMAGE)
     harness.core.revision = 2
     harness.sync()
-    worker = harness.store.get(MACHINE_ID)
-    assert (worker.runtime, worker.target_runtime, worker.target_image_id) == (
-        Runtime.WORKER,
-        Runtime.WORKER,
-        None,
-    )
-
-    harness.core.revision = 3
-    harness.core.runtime = "controller"
-    poll_until_running(harness, reconciler)
-    harness.configure(controller_image_id=NEW_CONTROLLER_IMAGE)
-    harness.core.revision = 4
-    harness.sync()
-    controller = harness.store.get(MACHINE_ID)
-    assert (
-        controller.runtime,
-        controller.image_id,
-        controller.target_runtime,
-        controller.target_image_id,
-    ) == (Runtime.CONTROLLER, CONTROLLER_IMAGE, Runtime.CONTROLLER, NEW_CONTROLLER_IMAGE)
+    machine = harness.store.get(MACHINE_ID)
+    assert (machine.image_id, machine.target_image_id) == (CONTROLLER_IMAGE, NEW_CONTROLLER_IMAGE)
 
 
 def test_new_controller_image_replaces_the_instance_and_reattaches_the_volume(harness):
@@ -571,24 +461,19 @@ def test_new_controller_image_replaces_the_instance_and_reattaches_the_volume(ha
     old = harness.store.get(MACHINE_ID)
     assert old.image_id == CONTROLLER_IMAGE
 
-    harness.configure(controller_image_id=NEW_CONTROLLER_IMAGE)
+    harness.configure(image_id=NEW_CONTROLLER_IMAGE)
     harness.core.revision = 2
     poll_until_running(harness, reconciler)
 
     new = harness.store.get(MACHINE_ID)
-    assert (new.runtime, new.image_id, new.target_runtime, new.target_image_id) == (
-        Runtime.CONTROLLER,
-        NEW_CONTROLLER_IMAGE,
-        Runtime.CONTROLLER,
-        None,
-    )
+    assert (new.image_id, new.target_image_id) == (NEW_CONTROLLER_IMAGE, None)
     assert new.previous_instance_id == old.instance_id
     assert new.instance_id != old.instance_id
     assert new.instance_seq == old.instance_seq + 1
     assert new.recovery_count == 0
     assert ec2.instances[old.instance_id]["State"]["Name"] == "terminated"
     assert ec2.launched_images == [CONTROLLER_IMAGE, NEW_CONTROLLER_IMAGE]
-    assert ec2.validated[-1] == (NEW_CONTROLLER_IMAGE, ("controller-v1",))
+    assert ec2.validated[-1] == NEW_CONTROLLER_IMAGE
     assert ec2.volume["Attachments"] == [
         {"InstanceId": new.instance_id, "Device": "/dev/sdf", "State": "attached"}
     ]
@@ -600,44 +485,22 @@ def stopped_and_terminated(harness: Harness, ec2: Ec2):
     return harness.store.mark_instance_terminal_observed(MACHINE_ID, machine.instance_id)
 
 
-def test_operator_upgrade_supersedes_a_pending_controller_image(harness):
+def test_operator_upgrade_supersedes_a_pending_image(harness):
     ec2 = Ec2(harness.store, harness.cfg)
     poll_until_running(harness, Reconciler(harness.store, ec2))
-    harness.store.request_runtime(MACHINE_ID, Runtime.CONTROLLER, NEW_CONTROLLER_IMAGE)
+    harness.store.request_image(MACHINE_ID, NEW_CONTROLLER_IMAGE)
     claim = stopped_and_terminated(harness, ec2)
     assert claim.target_image_id == NEW_CONTROLLER_IMAGE
 
     upgraded = harness.store.upgrade_terminated(claim, NEW_CONTROLLER_IMAGE, "sha256:" + "a" * 64)
 
-    assert (
-        upgraded.runtime,
-        upgraded.image_id,
-        upgraded.target_runtime,
-        upgraded.target_image_id,
-    ) == (Runtime.CONTROLLER, NEW_CONTROLLER_IMAGE, Runtime.CONTROLLER, None)
+    assert (upgraded.image_id, upgraded.target_image_id) == (NEW_CONTROLLER_IMAGE, None)
 
 
-def test_operator_upgrade_keeps_a_pending_runtime_change(harness):
-    ec2 = Ec2(harness.store, harness.cfg)
-    poll_until_running(harness, Reconciler(harness.store, ec2))
-    harness.store.request_runtime(MACHINE_ID, Runtime.WORKER, harness.cfg.image_id)
-    claim = stopped_and_terminated(harness, ec2)
-
-    upgraded = harness.store.upgrade_terminated(claim, NEW_CONTROLLER_IMAGE, "sha256:" + "a" * 64)
-
-    assert (
-        upgraded.runtime,
-        upgraded.image_id,
-        upgraded.target_runtime,
-        upgraded.target_image_id,
-    ) == (Runtime.CONTROLLER, NEW_CONTROLLER_IMAGE, Runtime.WORKER, harness.cfg.image_id)
-
-
-def test_new_controller_machine_launches_from_the_controller_image(harness):
+def test_new_machine_launches_from_the_configured_image(harness):
     ec2 = Ec2(harness.store, harness.cfg)
     poll_until_running(harness, Reconciler(harness.store, ec2))
     machine = harness.store.get(MACHINE_ID)
-    assert machine.runtime is Runtime.CONTROLLER
     assert machine.previous_instance_id is None
     assert ec2.launched_images == [CONTROLLER_IMAGE]
 
@@ -658,22 +521,17 @@ def image(tags: list[dict] | None) -> dict:
 
 
 @pytest.mark.parametrize(
-    ("tags", "require", "accepted"),
+    ("tags", "accepted"),
     [
-        ([{"Key": "switch:capabilities", "Value": "controller-v1"}], ("controller-v1",), True),
-        (
-            [{"Key": "switch:capabilities", "Value": "worker-v2, controller-v1"}],
-            ("controller-v1",),
-            True,
-        ),
-        ([{"Key": "switch:capabilities", "Value": "controller-v10"}], ("controller-v1",), False),
-        ([{"Key": "switch:capability", "Value": "controller-v1"}], ("controller-v1",), False),
-        ([{"Key": "Name", "Value": "controller-v1"}], ("controller-v1",), False),
-        (None, ("controller-v1",), False),
-        (None, (), True),
+        ([{"Key": "switch:capabilities", "Value": "controller-v1"}], True),
+        ([{"Key": "switch:capabilities", "Value": "worker-v2, controller-v1"}], True),
+        ([{"Key": "switch:capabilities", "Value": "controller-v10"}], False),
+        ([{"Key": "switch:capability", "Value": "controller-v1"}], False),
+        ([{"Key": "Name", "Value": "controller-v1"}], False),
+        (None, False),
     ],
 )
-def test_validate_image_requires_the_capability_tag(tmp_path, tags, require, accepted):
+def test_validate_image_requires_the_capability_tag(tmp_path, tags, accepted):
     cfg = controller_config(tmp_path)
     client = ec2_client()
     with Stubber(client) as stubber:
@@ -682,35 +540,30 @@ def test_validate_image_requires_the_capability_tag(tmp_path, tags, require, acc
         )
         cloud = Ec2Cloud(client, cfg)
         if accepted:
-            cloud.validate_image(CONTROLLER_IMAGE, require)
+            cloud.validate_image(CONTROLLER_IMAGE)
         else:
             with pytest.raises(CloudResourceError, match="switch:capabilities"):
-                cloud.validate_image(CONTROLLER_IMAGE, require)
+                cloud.validate_image(CONTROLLER_IMAGE)
         stubber.assert_no_pending_responses()
 
 
-def test_config_carries_the_controller_runtime(tmp_path):
+def test_config_carries_the_image_login_key_and_slot_roles(tmp_path):
     cfg = controller_config(tmp_path)
-    assert cfg.controller_image_id == CONTROLLER_IMAGE
+    assert cfg.image_id == CONTROLLER_IMAGE
     assert cfg.login_kms_key_arn == KEY_ARN
     assert cfg.slot("slot-1").role_arn == ROLE_ARN
-    assert cfg.image_for(Runtime.CONTROLLER) == CONTROLLER_IMAGE
-    assert cfg.image_for(Runtime.WORKER) == cfg.image_id
-    plain = ControllerConfig.from_dict(config_dict(tmp_path, max_machines=1))
-    assert plain.controller_image_id is None and plain.login_kms_key_arn is None
-    assert plain.slot("slot-1").role_arn is None
-    with pytest.raises(ConfigError, match="not configured"):
-        plain.image_for(Runtime.CONTROLLER)
-    assert cfg.fingerprint() == plain.fingerprint()
+    other = ControllerConfig.from_dict(config_dict(tmp_path, max_machines=1))
+    assert other.image_id != cfg.image_id
+    assert cfg.fingerprint() == other.fingerprint()
 
 
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        (lambda raw: raw.pop("login_kms_key_arn"), "configured together"),
-        (lambda raw: raw.pop("controller_image_id"), "configured together"),
-        (lambda raw: raw["machine_slots"]["slot-1"].pop("role_arn"), "needs role_arn"),
-        (lambda raw: raw.update(controller_image_id="ami-XYZ"), "controller_image_id"),
+        (lambda raw: raw.pop("login_kms_key_arn"), "login_kms_key_arn"),
+        (lambda raw: raw["machine_slots"]["slot-1"].pop("role_arn"), "role_arn"),
+        (lambda raw: raw.update(controller_image_id=CONTROLLER_IMAGE), "controller_image_id"),
+        (lambda raw: raw.update(image_id="ami-XYZ"), "image_id"),
         (
             lambda raw: raw.update(login_kms_key_arn=KEY_ARN.replace("us-east-1", "eu-west-1")),
             "configured region",
@@ -727,11 +580,11 @@ def test_config_carries_the_controller_runtime(tmp_path):
         ),
         (
             lambda raw: raw["machine_slots"]["slot-1"].update(unexpected="x"),
-            "optionally role_arn",
+            "and role_arn",
         ),
     ],
 )
-def test_config_rejects_an_incomplete_controller_runtime(tmp_path, change, message):
+def test_config_rejects_an_incomplete_controller_config(tmp_path, change, message):
     raw = controller_dict(tmp_path)
     change(raw)
     with pytest.raises(ConfigError, match=message):
@@ -745,19 +598,17 @@ def test_config_rejects_duplicate_slot_roles(tmp_path):
         ControllerConfig.from_dict(raw)
 
 
-def test_gateway_requires_grants_exactly_when_the_login_key_is_configured(tmp_path):
+def test_gateway_requires_grants_on_the_configured_login_key(tmp_path):
     cfg = controller_config(tmp_path)
     store = MachineStore(cfg.state_db_path, cfg.fingerprint())
     settings = GatewayConfig("https://switch.example.test", "SYNTHETIC-CONTROLLER", "m6i.large")
-    with pytest.raises(ConfigError, match="login key"):
-        Gateway(settings, cfg, store, FakeSecrets(), ImageGate([]), None)
     other = KmsGrants(FakeKms(), KEY_ARN.replace("aa", "bb"), store)
     with pytest.raises(ConfigError, match="login key"):
         Gateway(settings, cfg, store, FakeSecrets(), ImageGate([]), other)
     store.close()
 
 
-def test_store_adds_runtime_columns_to_an_existing_database(tmp_path):
+def test_store_adds_missing_columns_to_an_existing_database(tmp_path):
     cfg = controller_config(tmp_path)
     store = MachineStore(cfg.state_db_path, cfg.fingerprint())
     store.close()
@@ -775,10 +626,9 @@ def test_store_adds_runtime_columns_to_an_existing_database(tmp_path):
     connection.close()
 
     reopened = MachineStore(cfg.state_db_path, cfg.fingerprint())
-    machine = reopened.get(MACHINE_ID)
-    assert (machine.runtime, machine.target_runtime, machine.target_image_id) == (
-        Runtime.WORKER,
-        Runtime.WORKER,
-        None,
-    )
+    assert reopened.get(MACHINE_ID).target_image_id is None
     reopened.close()
+    connection = sqlite3.connect(cfg.state_db_path)
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(machines)")}
+    connection.close()
+    assert {"runtime", "target_runtime", "target_image_id"} <= columns

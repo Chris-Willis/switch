@@ -110,10 +110,11 @@ public repository.
 3. Create one assignment secret per machine slot outside Terraform. Keep the
    secret ARN stable. Do not put a value in it. The controller writes the bundle
    itself:
-   `{"version":2,"machineId","assignment":{…},"machineCapability","apiEndpoint"}`.
-   The bundle holds the machine and slot identity, the data volume ID, an opaque
-   machine credential and the Switch API endpoint, and nothing else. The worker
-   refuses to start until the bundle matches its attached data volume.
+   `{"version":3,"machineId","assignment":{…},"apiEndpoint","controller":{"id","credential"},"kms":{…}}`.
+   The bundle holds the machine and slot identity, the data volume ID, the Switch
+   API endpoint, the agent controller's ID and credential, and the login-key
+   grant the machine uses to open sealed provider logins. The machine refuses to
+   start until the bundle matches its attached data volume.
 4. Configure Terraform in the **private deployment overlay**, selecting the worker
    AMI/AZ, CIDRs, allowed instance types, controller namespace/service account and
    the per-slot secret/KMS references in `machine_slots`. Review its plan before
@@ -149,18 +150,23 @@ supported-environment change.
 The chart accepts a non-secret `controllerConfig` map with:
 
 - `installation_id`, `region`, `availability_zone`, `subnet_id`, `security_group_ids`
-- `image_id`, `root_device_name`, `allowed_instance_types`
+- `image_id`: the controller AMI. It must carry the tag
+  `switch:capabilities=controller-v1`; the controller refuses to launch from an
+  image without it. Changing `image_id` moves each running machine onto the new
+  image at its next start, on the same data disk.
+- `root_device_name`, `allowed_instance_types`
 - `max_machines`: 1–100, and no more than the number of machine slots. It caps
   both the machines that are not deleted and the active EC2 instances.
 - `root_volume_gib`, `data_volume_gib`, `poll_interval_seconds`
 - `machine_slots`: slot ID to `{instance_profile_arn, assignment_secret_arn,
   role_arn}`. Copy it from the Terraform output `machine_slots`. `role_arn` is the
   role behind the slot's instance profile; the controller grants it Decrypt on
-  the provider-login key.
-- `controller_image_id` and `login_kms_key_arn`, set both or neither: the
-  controller-runtime AMI and the full ARN of the provider-login KMS key, in the
-  controller's region. Terraform's `ec2:RunInstances` grant must allow
-  `controller_image_id` beside `image_id`.
+  the provider-login key. Every slot needs one.
+- `login_kms_key_arn`: the full ARN of the provider-login KMS key, in the
+  controller's region.
+
+Every key is required and no other key is accepted. Terraform's
+`ec2:RunInstances` grant must allow `image_id`.
 
 The instance type of a new machine comes from `instance_type` in the controller's
 `gateway.json` (see [Enable Console launches](#enable-console-launches)). It must
@@ -349,26 +355,11 @@ API. Revocation denies further credential and control requests and stops the
 affected workers. Reconnect the provider, then use Retry to start them again.
 
 Codex, Cursor, OpenCode and Antigravity use the same owner-scoped connection API
-under their provider IDs. Enable `HOSTED_PROVIDER_VERIFICATION_ENABLED` (Helm:
-`switchCore.hostedProviderVerificationEnabled`) after deploying the verification
-API, controller IAM policy, and a worker image with `--verify-credential` support.
-This requires a hosted controller. With the setting off, credentials keep the
-existing configured-until-worker-check behavior.
-
-With verification enabled, saving a credential queues a durable connection check.
-Console polls its status and shows **Checking connection**. A temporary worker
-uses the native provider adapter to send one fixed model request in an empty
-workspace. It has no repository, agent assignment, instance profile, or retained
-data volume. Its encrypted root volume is deleted on termination. The controller
-allows at most two checks at a time. Each worker schedules its own shutdown after
-eight minutes; the controller also terminates checks past their ten-minute deadline.
-Checks and cleanup continue when Console closes.
-
-The connection becomes verified only after the model replies and the controller
-observes instance termination. Refreshed subscription credentials are saved with
-the result. Failed checks preserve an existing verified credential and show a retry
-action. Job credentials and bootstrap tokens are cleared when the job finishes.
-Test each provider with its intended account before deployment acceptance.
+under their provider IDs. The hosted controller runs no provider verification
+instances, so leave `HOSTED_PROVIDER_VERIFICATION_ENABLED` (Helm:
+`switchCore.hostedProviderVerificationEnabled`) off: a check queued with it on is
+never run. Test each provider with its intended account before deployment
+acceptance.
 
 ### GitHub App connections
 

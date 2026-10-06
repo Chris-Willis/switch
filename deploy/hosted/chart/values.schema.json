@@ -58,10 +58,11 @@
         "root_volume_gib",
         "data_volume_gib",
         "machine_slots",
-        "poll_interval_seconds"
+        "poll_interval_seconds",
+        "login_kms_key_arn"
       ],
       "properties": {
-        "controller_image_id": {
+        "image_id": {
           "type": "string",
           "pattern": "^ami-[0-9a-f]{8,17}$"
         },
@@ -76,7 +77,8 @@
             "type": "object",
             "required": [
               "instance_profile_arn",
-              "assignment_secret_arn"
+              "assignment_secret_arn",
+              "role_arn"
             ],
             "properties": {
               "instance_profile_arn": {
@@ -94,14 +96,6 @@
             }
           }
         }
-      },
-      "dependencies": {
-        "controller_image_id": [
-          "login_kms_key_arn"
-        ],
-        "login_kms_key_arn": [
-          "controller_image_id"
-        ]
       }
     },
     "persistence": {
