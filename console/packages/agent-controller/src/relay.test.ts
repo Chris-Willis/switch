@@ -212,8 +212,13 @@ async function post(path: string, body: unknown, bearer = token): Promise<Respon
 }
 
 describe('the relay as the agent protocol, read by the real SwitchEventStream', () => {
-  it('serves the relay’s protocol range as switch-core declares its own', () => {
-    expect(RELAY_AGENT_PROTOCOL).toEqual(CONTRACTS['agent-protocol']['switch-core']);
+  it('serves switch-core’s revisions up to the socket, which the runtime still accepts', () => {
+    const core = CONTRACTS['agent-protocol']['switch-core'];
+    const runtime = CONTRACTS['agent-protocol']['agent-runtime'];
+    // The relay serves the event stream, not the socket of agent-protocol 8.
+    expect(RELAY_AGENT_PROTOCOL).toEqual({ speaks: 7, accepts: core.accepts });
+    expect(runtime.accepts).toBeLessThanOrEqual(RELAY_AGENT_PROTOCOL.speaks);
+    expect(RELAY_AGENT_PROTOCOL.accepts).toBeLessThanOrEqual(runtime.speaks);
   });
 
   it('connects, then delivers addressed events in order, with their ids and missed counts', async () => {
