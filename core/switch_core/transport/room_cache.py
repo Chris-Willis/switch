@@ -13,8 +13,8 @@ in `(floor, ceiling]`, exactly, and nothing else. A fill reads `seq >
 ceiling` and appends, so the range only ever grows at the top and stays
 contiguous. Trimming raises `floor`. A reader whose cursor is in
 `[floor, ceiling)` is served from memory; one below `floor` reads the
-database, which is today's path, and comes back once its cursor reaches the
-range. No read is ever served across a hole, because the entry never has one.
+database itself, and comes back once its cursor reaches the range. No read is
+ever served across a hole, because the entry never has one.
 
 **When an entry is current enough.** A row is visible to a read only if it
 committed before the read's snapshot, and a reader woken for a row must not

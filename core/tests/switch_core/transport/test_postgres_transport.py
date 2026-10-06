@@ -9,9 +9,8 @@ What is deliberately not implemented is tested too: a transport that quietly
 returns nothing would look like a working deployment with a silent room, which
 is the one failure this codebase refuses to ship.
 
-Every test runs twice: once with each transport reading its own rows, and once
-with the room delivery cache sharing those reads. The cache must not change
-anything a test here can observe.
+Every transport here shares the room delivery cache, as in production. The
+cache must not change anything a test here can observe.
 """
 
 from __future__ import annotations
@@ -58,28 +57,22 @@ from switch_core.transport.postgres import DELIVERY_PAGE, PostgresTransport
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from tests.conftest import RLSHarness
 
-# Whether `_transport` hands out the shared room cache, set per test by
-# `_delivery_read`. One cache per session factory, because that is what the
-# process has: one, shared by every transport built on the same pool.
-_SHARED_READ = False
+# The room cache `_transport` hands out. One per session factory, because that
+# is what the process has: one, shared by every transport built on the same
+# pool. Emptied per test by `_fresh_caches`.
 _CACHES: dict[int, RoomDeliveryCache] = {}
 
 
-@pytest.fixture(autouse=True, params=["own-read", "shared-read"])
-def _delivery_read(request: pytest.FixtureRequest) -> Iterator[None]:
-    global _SHARED_READ
-    _SHARED_READ = request.param == "shared-read"
+@pytest.fixture(autouse=True)
+def _fresh_caches() -> Iterator[None]:
     _CACHES.clear()
     yield
-    _SHARED_READ = False
     _CACHES.clear()
 
 
 def _room_cache(
     session_factory: async_sessionmaker[AsyncSession],
-) -> RoomDeliveryCache | None:
-    if not _SHARED_READ:
-        return None
+) -> RoomDeliveryCache:
     cache = _CACHES.get(id(session_factory))
     if cache is None:
         cache = RoomDeliveryCache(
@@ -636,6 +629,7 @@ class TestMedia:
                 listener=_FakeListener(),
                 invites=InviteBus(),
                 ephemeral=EphemeralBus(),
+                room_cache=_room_cache(session_factory),
             )
 
 

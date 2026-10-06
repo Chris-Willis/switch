@@ -243,9 +243,8 @@ DELIVERY_LAG = _spec(
 )
 
 # ── Shared room reads ────────────────────────────────────────────────────────
-# The per-room cache of recent rows (`transport/room_cache.py`), off unless
-# `room_delivery_cache_enabled`. Every value below comes from a fixed set in
-# that module.
+# The per-room cache of recent rows (`transport/room_cache.py`). Every value
+# below comes from a fixed set in that module.
 DELIVERY_CACHE_READS = _spec(
     "switch.delivery_cache.reads",
     "sum",

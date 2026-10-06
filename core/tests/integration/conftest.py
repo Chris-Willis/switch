@@ -555,21 +555,15 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             invites=invites,
         )
 
-        # Off unless ROOM_DELIVERY_CACHE_ENABLED is set, as in production, so
-        # the whole suite can be run once with each delivery path.
-        room_cache = (
-            RoomDeliveryCache(
-                session_factory=session_factory,
-                message_store=session_env.message_store,
-                limits=RoomCacheLimits(
-                    max_bytes=config.room_delivery_cache_max_bytes,
-                    max_rooms=config.room_delivery_cache_max_rooms,
-                    max_rows_per_room=config.room_delivery_cache_max_rows_per_room,
-                    max_age_seconds=config.room_delivery_cache_max_age_seconds,
-                ),
-            )
-            if config.room_delivery_cache_enabled
-            else None
+        room_cache = RoomDeliveryCache(
+            session_factory=session_factory,
+            message_store=session_env.message_store,
+            limits=RoomCacheLimits(
+                max_bytes=config.room_delivery_cache_max_bytes,
+                max_rooms=config.room_delivery_cache_max_rooms,
+                max_rows_per_room=config.room_delivery_cache_max_rows_per_room,
+                max_age_seconds=config.room_delivery_cache_max_age_seconds,
+            ),
         )
 
         client_factory = ClientFactory(

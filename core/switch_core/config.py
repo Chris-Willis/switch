@@ -509,9 +509,8 @@ class SwitchConfig(BaseSettings):
     # Share one read of a room's new messages between every client in it
     # (`transport/room_cache.py`). Without it, a room of N agents reads each
     # new page N times, which is what exhausted the pool in a restart burst.
-    # Off by default while it is proved on dev. The limits bound memory, not
-    # correctness: anything outside them is read from the database as before.
-    room_delivery_cache_enabled: bool = False
+    # The limits bound memory, not correctness: anything outside them is read
+    # from the database, as every client did before the cache.
     room_delivery_cache_max_bytes: int = 64 * 1024 * 1024
     room_delivery_cache_max_rooms: int = 5000
     # At least one delivery page (200), or a fill could not be held.

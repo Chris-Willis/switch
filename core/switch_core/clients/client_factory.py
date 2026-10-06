@@ -38,7 +38,7 @@ class ClientFactory:
         listener: MessageListener,
         invites: InviteBus,
         ephemeral: EphemeralBus,
-        room_cache: RoomDeliveryCache | None = None,
+        room_cache: RoomDeliveryCache,
     ) -> None:
         self._client_store = client_store
         self._session_factory = session_factory
