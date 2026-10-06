@@ -121,6 +121,8 @@ export class SystemdRuntime implements AgentRuntime {
       idleCheckMs: number;
       /** How long an agent waiting on a new login is let finish before it is restarted anyway. */
       forceRestartAfterMs: number;
+      /** The `owner/name` of the repository an agent works in; see `ControllerClient.repositoryName`. */
+      repositoryName: (agentId: string) => Promise<string>;
     }
   ) {
     this.unsubscribe = deps.logins.onRevision((change) => this.queue(change));
@@ -248,6 +250,12 @@ export class SystemdRuntime implements AgentRuntime {
       throw new Error(
         `The launch configuration for agent ${agentId} names no provider executable.`
       );
+    if (options.repository !== null && !within(layout.worktreeRoot(agentId), cwd))
+      throw new ReasonedError(
+        'definition_invalid',
+        `Agent ${agentId} works in a repository, so its directory must be its worktree under ${layout.worktreeRoot(agentId)}, not ${cwd}.`
+      );
+    const repository = options.repository === null ? null : await this.repositoryName(agentId);
 
     await mkdir(layout.agentsRoot, { recursive: true, mode: 0o750 });
     await mkdir(layout.worktreesRoot, { recursive: true, mode: 0o750 });
@@ -266,8 +274,8 @@ export class SystemdRuntime implements AgentRuntime {
       ...controlledEnvironment(agentRoot, provider),
     };
     const workspace = hostedWorkspaceSchema.parse({
-      repository: null,
-      mirrorPath: null,
+      repository,
+      mirrorPath: repository === null ? null : this.mirrorPath(repository),
       workspacePath: cwd,
       skills: options.skills,
       instructions: '',
@@ -278,6 +286,23 @@ export class SystemdRuntime implements AgentRuntime {
     await this.writeShared(join(watcherRoot, 'config.json'), JSON.stringify(config));
     this.pending.delete(agentId);
     await this.deps.systemctl(['start', unit]);
+  }
+
+  private async repositoryName(agentId: string): Promise<string> {
+    try {
+      return await this.deps.repositoryName(agentId);
+    } catch (error) {
+      throw new ReasonedError(
+        'repo_clone_failed',
+        `Could not look up the repository agent ${agentId} works in: ${errorMessage(error)}`
+      );
+    }
+  }
+
+  /** Where the worker kept the repository's mirror: `<repos>/<owner>/<name>.git`, lowercased. */
+  private mirrorPath(repository: string): string {
+    const [owner, name] = repository.toLowerCase().split('/');
+    return join(this.deps.layout.reposRoot, owner!, `${name}.git`);
   }
 
   async stop(agentId: string, options: { wait: boolean }): Promise<void> {

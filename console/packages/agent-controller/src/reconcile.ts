@@ -266,17 +266,23 @@ export async function startAgent(
     const skills = launchSkills(definition.skills);
     if (!skills.success)
       throw new ReasonedError('definition_invalid', `Invalid skills: ${skills.error.message}`);
-    if (isolation === 'shared' && skills.data.length > 0)
-      deps.log.warn('A shared agent host installs no skills; only an isolated one does', {
-        agentId,
-        skills: skills.data.map((skill) => skill.slug),
-      });
+    const repository = definition.repository ?? null;
+    if (isolation === 'shared' && (skills.data.length > 0 || repository !== null))
+      deps.log.warn(
+        'A shared agent host installs no skills and clones no repository; only an isolated one does',
+        {
+          agentId,
+          skills: skills.data.map((skill) => skill.slug),
+          repository: repository !== null,
+        }
+      );
     await deps.runtime.launch(agentId, template, {
       isolation,
       restart,
       replaceIdentity,
       clearTakenOver: action.clearTakenOver,
       skills: skills.data,
+      repository,
     });
     deps.store.recordApplied(agentId, entry.revision, now);
     if (action.relaunch && (restart || !observation.alive))

@@ -357,6 +357,7 @@ describe('runController', () => {
       replaceIdentity: false,
       clearTakenOver: false,
       skills: [],
+      repository: null,
     });
     await runtime.writeCredentials('agent-1', {
       endpoint: `http://127.0.0.1:${port}`,
@@ -449,6 +450,7 @@ describe('runController', () => {
       restart: true,
       clearTakenOver: true,
       skills: [],
+      repository: null,
     });
     expect(runtime.probes).toBeGreaterThan(probesBefore);
     stop.abort();

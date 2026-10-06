@@ -112,6 +112,14 @@ export const credentialRotateResponseSchema = z.object({ credential: id });
 
 // §2 Assignment (v1 definition)
 
+export const repositoryRefSchema = z.object({
+  installation_id: z.number().int().positive(),
+  repository_id: z.number().int().positive(),
+});
+export type RepositoryRef = z.infer<typeof repositoryRefSchema>;
+
+export const repositoryCredentialSchema = z.object({ repository: z.string().min(1) });
+
 export const agentDefinitionSchema = z.object({
   name: z.string().min(1),
   display_name: z.string().nullish(),
@@ -143,6 +151,12 @@ export const agentDefinitionSchema = z.object({
   skills: z
     .array(z.object({ slug: z.string(), files: z.record(z.string(), z.string()) }))
     .default([]),
+  /**
+   * The GitHub repository the agent works in, by id; present only for a
+   * definition that names one. An isolated agent's unit clones it, by the
+   * name Core answers for it (`ControllerClient.repositoryName`).
+   */
+  repository: repositoryRefSchema.optional(),
 });
 export type Isolation = 'shared' | 'isolated';
 export type AgentDefinition = z.infer<typeof agentDefinitionSchema>;

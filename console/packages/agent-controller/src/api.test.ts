@@ -247,6 +247,38 @@ describe('assignment', () => {
   });
 });
 
+describe('repositoryName', () => {
+  it('asks Core acting for the agent, and answers the name Core gives', async () => {
+    const { client: api } = client();
+    core.scripted.push({
+      method: 'POST',
+      path: '/hosted/github-credential',
+      status: 200,
+      body: {
+        token: 'SYNTHETIC',
+        expires_at: '2026-01-01T13:00:00Z',
+        repository: 'example/project',
+      },
+    });
+    expect(await api.repositoryName('agent-1')).toBe('example/project');
+    const request = core.requests.at(-1)!;
+    expect(request.headers['x-switch-agent-id']).toBe('agent-1');
+    expect(request.headers['switch-controller-protocol']).toBe('1');
+    expect(request.headers.authorization).toMatch(/^Bearer /);
+  });
+
+  it('throws when Core refuses', async () => {
+    const { client: api } = client();
+    core.scripted.push({
+      method: 'POST',
+      path: '/hosted/github-credential',
+      status: 403,
+      body: { detail: 'This agent is not on a Switch cloud controller with a repository.' },
+    });
+    await expect(api.repositoryName('agent-1')).rejects.toMatchObject({ status: 403 });
+  });
+});
+
 describe('errors', () => {
   it('reads code, retryable and retry_after_s from the envelope', async () => {
     const { client: api } = client();

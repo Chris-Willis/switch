@@ -214,6 +214,15 @@ It also carries `skills`, the connection skills the agent's provider is given, a
 Core derives them as it serves the assignment; nothing stores them. An isolated agent's unit
 installs them; a shared agent host does not, and its controller logs that.
 
+A definition with a `repository` (`{installation_id, repository_id}`) on a Switch cloud
+controller is cloned for the agent, as a cloud worker did. Before starting the agent's unit,
+the controller asks `POST /hosted/github-credential` acting for the agent (its access token
+and `X-Switch-Agent-Id`) for the repository's `owner/name`, and writes it into the unit's
+`workspace.json` with the mirror every agent on the repository shares,
+`/data/repos/<owner>/<name>.git` (lowercased). The unit's prepare step makes the agent's
+`directory`, which must be under `/data/worktrees/<agent_id>/`, a worktree of it. A lookup
+that fails leaves the agent stopped with `repo_clone_failed`.
+
 ### Reason codes
 These are the codes from the contract, plus `forbidden`, `invalid_credential`, `enrollment_code_invalid`,
 `operation_unsupported`, `not_found` and `validation_error`.

@@ -80,8 +80,13 @@ let clock: number;
 let systemctl: FakeSystemctl;
 let logins: FakeLogins;
 let runtime: SystemdRuntime;
+/** What the repository lookup answers, or throws; and who it was asked for. */
+let repositoryAnswer: () => string;
+let repositoryLookups: string[];
 
 beforeEach(() => {
+  repositoryAnswer = () => 'Example-Org/Example.Repo';
+  repositoryLookups = [];
   dir = mkdtempSync(join(tmpdir(), 'controller-systemd-'));
   layout = ec2Layout({ dataRoot: join(dir, 'data'), runRoot: join(dir, 'run') });
   clock = Date.parse('2026-01-01T12:00:00Z');
@@ -96,6 +101,10 @@ beforeEach(() => {
     now: () => clock,
     idleCheckMs: 60_000,
     forceRestartAfterMs: 30 * 60_000,
+    repositoryName: async (agentId) => {
+      repositoryLookups.push(agentId);
+      return repositoryAnswer();
+    },
   });
 });
 
@@ -110,6 +119,7 @@ const START: LaunchOptions = {
   replaceIdentity: false,
   clearTakenOver: false,
   skills: [],
+  repository: null,
 };
 
 function template(agentId = 'agent-1', cwd = join(dir, 'data', 'worktrees', agentId, 'scout')) {
@@ -130,6 +140,7 @@ function template(agentId = 'agent-1', cwd = join(dir, 'data', 'worktrees', agen
 }
 
 const UNIT = 'switch-agent@agent-1.service';
+const REPOSITORY = { installation_id: 123, repository_id: 456 };
 
 describe('SystemdRuntime', () => {
   it('names the unit credentials, and refuses an id a unit cannot carry', () => {
@@ -178,6 +189,48 @@ describe('SystemdRuntime', () => {
       readFileSync(join(layout.agentRoot('agent-1'), 'workspace.json'), 'utf8')
     );
     expect(workspace.skills).toEqual(skills);
+  });
+
+  it('names the repository and its shared mirror for the unit to make the workspace a worktree of', async () => {
+    const cwd = join(layout.worktreeRoot('agent-1'), 'example-org', 'example.repo');
+    await runtime.launch('agent-1', template('agent-1', cwd), { ...START, repository: REPOSITORY });
+    expect(repositoryLookups).toEqual(['agent-1']);
+    const workspace = JSON.parse(
+      readFileSync(join(layout.agentRoot('agent-1'), 'workspace.json'), 'utf8')
+    );
+    expect(workspace).toMatchObject({
+      repository: 'Example-Org/Example.Repo',
+      mirrorPath: join(dir, 'data', 'repos', 'example-org', 'example.repo.git'),
+      workspacePath: cwd,
+    });
+    const config = JSON.parse(
+      readFileSync(join(layout.watcherRoot('agent-1'), 'config.json'), 'utf8')
+    );
+    expect(config.start.input.cwd).toBe(cwd);
+    expect(systemctl.verbs()).toEqual([`start ${UNIT}`]);
+  });
+
+  it('does not start an agent whose repository it cannot name', async () => {
+    repositoryAnswer = () => {
+      throw new Error('The owner must reconnect GitHub.');
+    };
+    await expect(
+      runtime.launch('agent-1', template(), { ...START, repository: REPOSITORY })
+    ).rejects.toMatchObject({
+      reason: 'repo_clone_failed',
+      message: expect.stringContaining('reconnect GitHub'),
+    });
+    expect(systemctl.verbs()).toEqual([]);
+  });
+
+  it('refuses a repository agent whose directory is not under its worktrees', async () => {
+    await expect(
+      runtime.launch('agent-1', template('agent-1', join(layout.agentRoot('agent-1'), 'work')), {
+        ...START,
+        repository: REPOSITORY,
+      })
+    ).rejects.toMatchObject({ reason: 'definition_invalid' });
+    expect(repositoryLookups).toEqual([]);
   });
 
   it('refuses a working directory outside the agent’s own, and a linked agent root', async () => {

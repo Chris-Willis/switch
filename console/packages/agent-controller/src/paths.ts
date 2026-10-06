@@ -117,6 +117,8 @@ export type Ec2Layout = {
   dataRoot: string;
   agentsRoot: string;
   worktreesRoot: string;
+  /** The bare repository mirrors every agent on a repository shares, `<owner>/<name>.git`. */
+  reposRoot: string;
   runDir: string;
   agentRoot: (agentId: string) => string;
   watcherRoot: (agentId: string) => string;
@@ -142,6 +144,7 @@ export function ec2Layout(input: { dataRoot: string; runRoot: string }): Ec2Layo
     dataRoot: input.dataRoot,
     agentsRoot,
     worktreesRoot,
+    reposRoot: join(input.dataRoot, 'repos'),
     runDir,
     agentRoot: (agentId) => join(agentsRoot, requireAgentId(agentId)),
     watcherRoot: (agentId) => join(agentsRoot, requireAgentId(agentId), 'watcher'),

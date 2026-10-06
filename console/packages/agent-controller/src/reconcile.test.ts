@@ -94,6 +94,7 @@ describe('reconcile', () => {
       replaceIdentity: false,
       clearTakenOver: true,
       skills: [],
+      repository: null,
     });
     expect(launch!.template.start.input.cwd).toBe('/data/workspaces/scout');
     expect(launch!.template.execution!.credentialsPath).toBe(
@@ -275,6 +276,15 @@ describe('reconcile', () => {
     const skills = [{ slug: 'github', files: { 'SKILL.md': '# GitHub' } }];
     await reconcile(assignment(agent({}, { isolation: 'isolated', skills })), deps());
     expect(runtime.launches()[0]!.options).toMatchObject({ isolation: 'isolated', skills });
+  });
+
+  it('hands an isolated agent the repository its definition names, and none otherwise', async () => {
+    const repository = { installation_id: 123, repository_id: 456 };
+    await reconcile(assignment(agent({}, { isolation: 'isolated', repository })), deps());
+    await reconcile(assignment(agent({ agent_id: 'agent-2' }, { name: 'other' })), deps());
+    const [first, second] = runtime.launches();
+    expect(first!.options.repository).toEqual(repository);
+    expect(second!.options.repository).toBeNull();
   });
 
   it('records skills it cannot install as invalid', async () => {
