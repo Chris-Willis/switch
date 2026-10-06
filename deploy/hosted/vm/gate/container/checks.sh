@@ -64,7 +64,20 @@ unit() { echo "switch-agent@$1.service"; }
 invocation() { systemctl show -p InvocationID --value "$(unit "$1")"; }
 active() { [ "$(systemctl is-active "$(unit "$1")")" = active ]; }
 health() { jq -r "$2" "/data/agents/$1/watcher/health.json" 2>/dev/null; }
-connected() { active "$1" && [ "$(health "$1" .state)" = connected ] && [ "$(health "$1" .pid)" = "$(systemctl show -p MainPID --value "$(unit "$1")")" ]; }
+connected() { active "$1" && [ "$(health "$1" .state)" = connected ] && [ "$(health "$1" .invocation)" = "$(invocation "$1")" ]; }
+# The unit's main process is the root unshare wrapper; its child is the
+# agent's init (PID 1 of the agent's PID namespace), and the init's child is
+# the agent host.
+agent_init_pid() { pgrep -P "$(systemctl show -p MainPID --value "$(unit "$1")")" | head -1; }
+agent_host_pid() { pgrep -P "$(agent_init_pid "$1")" | head -1; }
+# a1_sees_process REGEX [PID]: agent 1's /proc lists a process (PID, or any)
+# whose command line matches REGEX. Exits 125 if the gate cannot look.
+a1_sees_process() {
+  local listing
+  listing=$(in_a1 sh -c 'for d in /proc/${1:-[0-9]*}; do [ -r "$d/cmdline" ] && printf "%s %s\n" "${d#/proc/}" "$(tr "\0" " " <"$d/cmdline")"; done; exit 0' _ "${2:-}") || return 125
+  [ -n "$listing" ] || return 125
+  printf '%s\n' "$listing" | cut -d' ' -f2- | grep -Eq -- "$1"
+}
 # stays_active TRIES SECONDS AGENT: within TRIES seconds the unit is active for
 # SECONDS in a row without restarting.
 stays_active() {
@@ -167,13 +180,19 @@ EOF
   denied "agent unit cannot list another agent's worktree" in_a1 ls "/data/worktrees/$A2"
   denied "switch-agent outside a unit cannot read another agent's notes" as_agent cat "/data/agents/$A2/home/notes.txt"
   # Both agents run as the one switch-agent uid, so ProtectProc=invisible
-  # (which hides other users' processes) leaves agent 2's process visible to
-  # agent 1, and /proc/<pid>/root is a door into agent 2's mount namespace.
-  p2=$(systemctl show -p MainPID --value "$(unit "$A2")")
+  # (which hides other users' processes) does not separate them; each agent's
+  # PID namespace does, and with it /proc/<pid>/root into the other's mounts.
+  p2=$(agent_host_pid "$A2")
+  check "agent 1's PID 1 is its own init" a1_sees_process '^/usr/bin/python3 -I -S /usr/local/libexec/switch-agent-init ' 1
+  check "agent 1 sees its own agent host" a1_sees_process "shared-host-daemon.mjs --unit /data/agents/$A1/watcher"
+  denied "agent 1 sees no process of agent 2" a1_sees_process "$A2"
+  denied "agent 1 sees no process outside its unit" a1_sees_process 'switch-controller|systemd|unshare'
   denied "agent unit cannot read another agent's notes through /proc/<pid>/root" \
     in_a1 sh -c 'cat "$1" >/dev/null' _ "/proc/$p2/root/data/agents/$A2/home/notes.txt"
   denied "agent unit cannot read another agent's relay credential through /proc/<pid>/root" \
     in_a1 sh -c 'cat "$1" >/dev/null' _ "/proc/$p2/root/run/credentials/$(unit "$A2")/agent"
+  check "the agent host runs as switch-agent with no capabilities" \
+    sh -c "grep -qx 'CapEff:	0000000000000000' /proc/$p2/status && test \"\$(stat -c %U /proc/$p2)\" = switch-agent"
 }
 
 # ── 2 ──────────────────────────────────────────────────────────────────────
@@ -254,21 +273,21 @@ assert_3() {
   check "controller is still running" systemctl is-active switch-controller.service
   rm -f "$watcher/health.json"
 
-  # watcher/supervisor/ is the agent's directory; the controller reads
-  # supervisor/failure.json through it with O_NOFOLLOW on the last component
-  # only. Link the directory at one outside the agent's root and stop the
-  # agent: its status then shows the outside failure.json.
+  # watcher/supervisor/ is the agent's directory too. Link it at one outside
+  # the agent's root and stop the agent: the controller must refuse the link
+  # rather than report the outside failure.json as the agent's.
   install -d -o switch-controller -g switch-controller -m 0700 /data/.switch-controller/cc-gate-outside
   echo '{"message": "CC-GATE-OUTSIDE-FAILURE"}' >/data/.switch-controller/cc-gate-outside/failure.json
   chown switch-controller: /data/.switch-controller/cc-gate-outside/failure.json
   in_a1 sh -c "rm -rf $watcher/supervisor && ln -s /data/.switch-controller/cc-gate-outside $watcher/supervisor"
+  since=$(date +%s)
   systemctl stop "$(unit "$A1")"
+  check "systemctl stop leaves agent 1 inactive, not failed" test "$(systemctl is-active "$(unit "$A1")")" = inactive
+  denied "  ... with no process of it left" pgrep -f "/data/agents/$A1/watcher"
   wait_reports 3
-  if stub_get /state | grep -q CC-GATE-OUTSIDE-FAILURE; then
-    known "controller follows a linked watcher/supervisor/ directory" "an agent can make its own status show a controller-readable failure.json from elsewhere"
-  else
-    pass "controller does not follow a linked watcher/supervisor/ directory"
-  fi
+  denied "controller does not follow a linked watcher/supervisor/ directory" sh -c "curl -fsS $STUB_ADMIN/state | grep -q CC-GATE-OUTSIDE-FAILURE"
+  check "  ... and says why" \
+    sh -c "journalctl -u switch-controller --since @$since -o cat | grep -q 'supervisor is a symbolic link; it is not followed'"
   rm -f "$watcher/supervisor"
   rm -rf /data/.switch-controller/cc-gate-outside
   systemctl start "$(unit "$A1")"
@@ -282,7 +301,7 @@ assert_4() {
   revision=$(stub_get /state | jq '.envelopes.claude')
   check "agent 1's unit loads the provider login (revision $revision)" test "$(provider_revision "$A1")" = "$revision"
   check "agent 2's unit loads the provider login (revision $revision)" test "$(provider_revision "$A2")" = "$revision"
-  env=$(tr '\0' '\n' <"/proc/$(systemctl show -p MainPID --value "$(unit "$A1")")/environ")
+  env=$(tr '\0' '\n' <"/proc/$(agent_host_pid "$A1")/environ")
   check "agent 1's host has the login in its environment" grep -qx "ANTHROPIC_API_KEY=gate-placeholder-key-rev$revision" <<<"$env"
 
   since=$(date +%s)

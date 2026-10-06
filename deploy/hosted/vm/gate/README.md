@@ -43,15 +43,23 @@ container.
    agent cannot list or read the controller's directories, its database, its
    credential or the provider files. It cannot see the controller's process,
    reach IMDS (root can), or `systemctl start` anything. It cannot read another
-   agent's directories.
+   agent's directories. Every agent runs as the one `switch-agent` uid, so
+   `ProtectProc=invisible` does not separate two agents. Instead, each agent
+   has its own PID namespace, and the gate checks the result. In agent 1's
+   `/proc`, PID 1 is its init and its own agent host is listed. Agent 2,
+   the controller and systemd are not listed. Agent 2's
+   `/proc/<pid>/root` cannot be reached. The agent host runs as
+   `switch-agent` with no capabilities.
 2. **The controller may manage agent units only.** Over polkit it can start,
    restart and stop `switch-agent@<id>`. It cannot start `ssh`, an arbitrary
    unit, `switch-agent@../x` or `switch-agent@foo.bar`. It cannot kill, set
    properties on or mask a unit.
 3. **A hostile symlink is not followed.** The shared agent directories are
    sticky. An agent cannot swap a controller-owned file for a link. Links that
-   root plants, or that the agent plants in its own files (`health.json`), are
-   refused, and a canary file stays untouched.
+   root plants, or that the agent plants in its own files (`health.json`) or
+   directories (`watcher/supervisor/`), are refused, and a canary file stays
+   untouched. `systemctl stop` leaves an agent unit `inactive`, with none of
+   its processes left.
 4. **Sealed login round trip.** A login sealed by the stub reaches the agent
    unit's `provider` credential and the provider's environment. A login sealed
    for another controller id, or relabelled to look like this one, is refused.
@@ -105,15 +113,5 @@ Assertion 5 runs last. It leaves the machine on the worker runtime.
   fixture's mirror and worktrees are local.
 - **Real providers.** There is no real Claude or Codex login and no model
   traffic. The fake CLI covers the session lifecycle and busy/idle only.
-- **Another agent through `/proc` (FAIL).** Every agent runs as the one
-  `switch-agent` uid. `ProtectProc=invisible` hides only other users'
-  processes, so agent A can open `/proc/<B's pid>/root/...` and read and write
-  B's files and B's relay credential. systemd 255 (Ubuntu 24.04) has no
-  `PrivatePIDs=`. Closing this needs a uid per agent or a PID namespace per
-  unit. Assertion 1 reports it as FAIL on purpose.
-- **A linked `supervisor/` directory (KNOWN).** An agent can replace its
-  `watcher/supervisor` directory with a link. The controller then reads a
-  `failure.json` of the agent's choosing and shows it in status while the
-  agent is stopped. The agent can only lie about itself, so the impact is low.
 - **Scale and timing.** Two agents and short timeouts. There is no soak and no
   real network failure.
