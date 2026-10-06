@@ -2,11 +2,10 @@
 
 `test_room_cache.py` pins the cache's rules with a store a test can stop
 half-way. These prove the same guarantees where they matter: real transports,
-real rows, real row-level security, and in one case the real LISTEN. Most run
-with the cache off as well as on, so "the same as before" is a comparison
-made here rather than an assumption.
+real rows, real row-level security, and in one case the real LISTEN.
 
-`test_postgres_transport.py` runs every existing transport test both ways too.
+`test_postgres_transport.py` runs every existing transport test on the cache
+too.
 """
 
 from __future__ import annotations
@@ -64,13 +63,11 @@ def _cache(
     )
 
 
-def _with(
-    transport: PostgresTransport, cache: RoomDeliveryCache | None
-) -> PostgresTransport:
+def _with(transport: PostgresTransport, cache: RoomDeliveryCache) -> PostgresTransport:
     """The transport `_transport` built, on the cache this test chose.
 
-    `_transport` follows that module's own off/on parameter, which these tests
-    do not use: each decides for itself which cache, if any, and its limits.
+    `_transport` hands out that module's shared cache; these tests each decide
+    for themselves which cache, and its limits.
     """
     transport._room_cache = cache
     return transport
@@ -92,7 +89,7 @@ class _Room:
         session_factory: async_sessionmaker[AsyncSession],
         size: int,
         *,
-        cache: RoomDeliveryCache | None,
+        cache: RoomDeliveryCache,
         listener: Any,
         invites: InviteBus | None = None,
     ) -> _Room:
@@ -175,21 +172,19 @@ def rooms() -> Iterator[list[_Room]]:
 
 
 class TestEveryMemberGetsEveryRowOnce:
-    @pytest.mark.parametrize("shared", [False, True], ids=["own-read", "shared-read"])
     async def test_a_room_of_six_reads_each_new_message_once(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         monkeypatch: pytest.MonkeyPatch,
         rooms: list[_Room],
-        shared: bool,
     ) -> None:
         """The case the cache exists for, and the numbers for the PR.
 
         Six members, twenty messages, each announced as it is sent. Every
-        member must get every message once and in order; with the cache on,
-        the room is read once per message instead of once per member.
+        member must get every message once and in order, and the room is read
+        once per message instead of once per member.
         """
-        cache = _cache(session_factory) if shared else None
+        cache = _cache(session_factory)
         listener = _FakeListener()
         room = await _Room.open(session_factory, 6, cache=cache, listener=listener)
         rooms.append(room)
@@ -208,23 +203,17 @@ class TestEveryMemberGetsEveryRowOnce:
             assert _ids(received) == expected
         per_message = reads.calls / messages
         print(  # noqa: T201 - the figure the PR quotes, read with -s
-            f"\nroom of 6, {messages} messages, "
-            f"{'shared' if shared else 'own'} read: {reads.calls} list_for_room "
+            f"\nroom of 6, {messages} messages: {reads.calls} list_for_room "
             f"calls, {per_message:.2f} per message"
         )
-        if shared:
-            assert reads.calls == messages
-        else:
-            assert reads.calls == messages * 6
+        assert reads.calls == messages
 
-    @pytest.mark.parametrize("shared", [False, True], ids=["own-read", "shared-read"])
     async def test_a_burst_over_the_real_listener_arrives_once_in_order(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         postgres_schema: str,
         monkeypatch: pytest.MonkeyPatch,
         rooms: list[_Room],
-        shared: bool,
     ) -> None:
         """The real LISTEN, the real fan-out, three writers at once.
 
@@ -237,7 +226,7 @@ class TestEveryMemberGetsEveryRowOnce:
         await listener.start()
         try:
             await asyncio.wait_for(listener.connected.wait(), DELIVERY_TIMEOUT)
-            cache = _cache(session_factory) if shared else None
+            cache = _cache(session_factory)
             room = await _Room.open(session_factory, 6, cache=cache, listener=listener)
             rooms.append(room)
             await room.settled()
@@ -265,9 +254,8 @@ class TestEveryMemberGetsEveryRowOnce:
             for received in room.received:
                 assert _ids(received) == expected
             print(  # noqa: T201 - the figure the PR quotes, read with -s
-                f"\nburst over LISTEN, room of 6, 75 messages from 3 writers, "
-                f"{'shared' if shared else 'own'} read: {reads.calls} "
-                f"list_for_room calls"
+                f"\nburst over LISTEN, room of 6, 75 messages from 3 writers: "
+                f"{reads.calls} list_for_room calls"
             )
         finally:
             await listener.stop()

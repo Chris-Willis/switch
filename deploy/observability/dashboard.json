@@ -927,7 +927,7 @@
     {
       "definition": {
         "type": "note",
-        "content": "**Shared room reads.** Only reports while `room_delivery_cache_enabled` is on. Each fill is one database read standing in for one per member of the room, so fills against deliveries is the saving. A fallback (behind, evicted, unwatched, gave_up) is a transport reading the database itself, as it does with the cache off: it costs a read, never a message.",
+        "content": "**Shared room reads.** Each fill is one database read standing in for one per member of the room, so fills against deliveries is the saving. A fallback (behind, evicted, unwatched, gave_up) is a transport reading the database itself: it costs a read, never a message.",
         "background_color": "gray",
         "font_size": "14",
         "text_align": "left",

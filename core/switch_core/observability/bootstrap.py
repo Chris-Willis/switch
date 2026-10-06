@@ -94,9 +94,7 @@ class RuntimeProbes:
     # None when the engine's pool does not keep these — see
     # :mod:`switch_core.observability.pool`.
     pool_stats: Callable[[], PoolStats | None]
-    # None when the room delivery cache is off, which reports nothing rather
-    # than a zero that reads as an empty cache.
-    room_cache_stats: Callable[[], RoomCacheStats | None] = lambda: None
+    room_cache_stats: Callable[[], RoomCacheStats]
 
 
 @dataclass
@@ -158,9 +156,8 @@ def _state_readings(probes: RuntimeProbes) -> Callable[[], Iterator[GaugeReading
             yield GaugeReading(DB_POOL_OVERFLOW, float(stats.overflow), {})
 
         cache = probes.room_cache_stats()
-        if cache is not None:
-            yield GaugeReading(DELIVERY_CACHE_BYTES, float(cache.bytes), {})
-            yield GaugeReading(DELIVERY_CACHE_ROOMS, float(cache.rooms), {})
+        yield GaugeReading(DELIVERY_CACHE_BYTES, float(cache.bytes), {})
+        yield GaugeReading(DELIVERY_CACHE_ROOMS, float(cache.rooms), {})
 
     return readings
 

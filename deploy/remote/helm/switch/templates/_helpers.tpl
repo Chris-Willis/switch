@@ -621,8 +621,6 @@ the owner's password.
   value: {{ .Values.postgresql.migrationLockTimeout | quote }}
 - name: AGENT_AUTH_CACHE_TTL_SECONDS
   value: {{ .Values.switchCore.authCache.ttlSeconds | quote }}
-- name: ROOM_DELIVERY_CACHE_ENABLED
-  value: {{ .Values.switchCore.roomDeliveryCache.enabled | quote }}
 - name: ID_SERVER_NAME
   value: {{ .Values.clientIdentity.serverName | quote }}
 {{- /* The old name, for an image released before the rename, which reads only

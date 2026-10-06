@@ -538,24 +538,17 @@ async def run(config: SwitchConfig) -> None:
     # fresh heartbeat row (CHOO-1857 stage B).
     connections = AgentConnectionRegistry()
 
-    # One shared read per room for every client in this process, when enabled.
-    # Off, every transport reads its own rows, as it always has.
-    room_cache = (
-        RoomDeliveryCache(
-            session_factory=session_factory,
-            message_store=message_store,
-            limits=RoomCacheLimits(
-                max_bytes=config.room_delivery_cache_max_bytes,
-                max_rooms=config.room_delivery_cache_max_rooms,
-                max_rows_per_room=config.room_delivery_cache_max_rows_per_room,
-                max_age_seconds=config.room_delivery_cache_max_age_seconds,
-            ),
-        )
-        if config.room_delivery_cache_enabled
-        else None
+    # One shared read per room for every client in this process.
+    room_cache = RoomDeliveryCache(
+        session_factory=session_factory,
+        message_store=message_store,
+        limits=RoomCacheLimits(
+            max_bytes=config.room_delivery_cache_max_bytes,
+            max_rooms=config.room_delivery_cache_max_rooms,
+            max_rows_per_room=config.room_delivery_cache_max_rows_per_room,
+            max_age_seconds=config.room_delivery_cache_max_age_seconds,
+        ),
     )
-    if room_cache is not None:
-        logger.info("Room delivery cache is on: members of a room share its reads")
 
     # ── Client factory ───────────────────────────────────────────────────────
     client_factory = ClientFactory(
@@ -847,7 +840,7 @@ async def run(config: SwitchConfig) -> None:
         connectors_configured=connector_lifecycle.expected_count,
         agents_connected=connections.live_agents_by_transport,
         pool_stats=lambda: pool_stats(engine, pool_watermark),
-        room_cache_stats=room_cache.stats if room_cache is not None else lambda: None,
+        room_cache_stats=room_cache.stats,
     )
 
     # ── Lifespan: start server-side connectors once HTTP is serving ────────

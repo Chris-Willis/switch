@@ -70,6 +70,14 @@ class _FakeProvisioning:
         self._events.append(("delete_room", transport_room_id))
 
 
+class _FakeRoomCache:
+    def __init__(self) -> None:
+        self.invalidated: list[tuple[str, str]] = []
+
+    def invalidate(self, tenant_id: str, room_id: str) -> None:
+        self.invalidated.append((tenant_id, room_id))
+
+
 def _build_service(
     *,
     room: Any,
@@ -85,7 +93,7 @@ def _build_service(
     svc._collab_lifecycle = _FakeLifecycle(bridges)  # type: ignore[assignment]
     svc._client_lifecycle = _FakeClientLifecycle(clients)  # type: ignore[assignment]
     svc._provisioning = _FakeProvisioning(events)  # type: ignore[assignment]
-    svc._room_cache = None
+    svc._room_cache = _FakeRoomCache()  # type: ignore[assignment]
     return svc, room_store
 
 
@@ -214,14 +222,8 @@ class TestDeleteRoom:
         svc, room_store = _build_service(
             room=room, client_ids=[], clients={}, bridges={}, events=events
         )
-        invalidated: list[tuple[str, str]] = []
-        svc._room_cache = SimpleNamespace(  # type: ignore[assignment]
-            invalidate=lambda tenant_id, room_id: invalidated.append(
-                (tenant_id, room_id)
-            )
-        )
 
         await svc.delete_room("room-1")
 
         assert room_store.deleted == ["room-1"]
-        assert invalidated == [("room-tenant", "room-1")]
+        assert svc._room_cache.invalidated == [("room-tenant", "room-1")]  # type: ignore[attr-defined]

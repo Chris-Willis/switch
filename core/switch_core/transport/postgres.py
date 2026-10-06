@@ -174,7 +174,7 @@ class PostgresTransport:
         listener: MessageListener,
         invites: InviteBus,
         ephemeral: EphemeralBus,
-        room_cache: RoomDeliveryCache | None = None,
+        room_cache: RoomDeliveryCache,
     ) -> None:
         self.user_id = user_id
         self.client_id = client_id
@@ -204,8 +204,7 @@ class PostgresTransport:
         self._listener = listener
         self._invites = invites
         self._ephemeral = ephemeral
-        # Shared with every other transport in the process, when enabled.
-        # None is today's path: this client reads its own rows.
+        # Shared with every other transport in the process.
         self._room_cache = room_cache
         # When this client was last woken for each room, on the cache's clock.
         # A shared read only counts for this client if it started after this.
@@ -441,8 +440,7 @@ class PostgresTransport:
             # already undone the claim and there is nothing subscribed to undo.
             return
         self._cursors[room_id] = seq
-        if self._room_cache is not None:
-            self._room_cache.attach(self.tenant_id, room_id, self)
+        self._room_cache.attach(self.tenant_id, room_id, self)
         self._listener.subscribe(room_id, self._on_room_advanced)
         self._ephemeral.subscribe(transport_room_id, self._on_ephemeral)
         if from_seq is not None:
@@ -477,9 +475,8 @@ class PostgresTransport:
         # after the subscription was dropped.
         self._pending.discard(room_id)
         self._woken.pop(room_id, None)
-        if self._room_cache is not None:
-            # The last member out takes the room's cached rows with it.
-            self._room_cache.detach(self.tenant_id, room_id, self)
+        # The last member out takes the room's cached rows with it.
+        self._room_cache.detach(self.tenant_id, room_id, self)
 
     def _unwatch_all(self) -> None:
         """Drop every room, through the same path a single removal takes."""
@@ -515,8 +512,7 @@ class PostgresTransport:
         The tick is taken here, after the commit that caused the wake, so a
         shared read that started later is known to have seen it.
         """
-        if self._room_cache is not None:
-            self._woken[room_id] = self._room_cache.tick()
+        self._woken[room_id] = self._room_cache.tick()
         self._pending.add(room_id)
         self._wake.set()
 
@@ -538,10 +534,10 @@ class PostgresTransport:
         per row. A removal landing mid-page has to stop the rows it has not
         reached, and must not be undone by a cursor write after it.
 
-        With the room cache on, a page comes from the room's one shared read
-        when the cache can vouch for it from this cursor, and from this
-        client's own read when it cannot. Only the read is shared: the rows
-        are still handed over here, one at a time, under the same checks.
+        A page comes from the room's one shared read when the cache can vouch
+        for it from this cursor, and from this client's own read when it
+        cannot. Only the read is shared: the rows are still handed over here,
+        one at a time, under the same checks.
         """
         transport_room_id = self._watching.get(room_id)
         if transport_room_id is None:
@@ -556,9 +552,7 @@ class PostgresTransport:
         # Taken once per pass: a wake landing during it queues another pass,
         # which takes the newer one. A room queued without a wake time (no
         # path does that today) gets "now", which only ever costs a read.
-        woken_at = 0
-        if self._room_cache is not None:
-            woken_at = self._woken.get(room_id) or self._room_cache.tick()
+        woken_at = self._woken.get(room_id) or self._room_cache.tick()
         # Bound for the read *and* the delivery below: a handler (posting to a
         # bridge, gating a command) opens its own sessions rather than reusing
         # this one, and those still need the room's tenant. The contextvar
@@ -569,17 +563,14 @@ class PostgresTransport:
                 cursor = self._cursors.get(room_id)
                 if cursor is None or room_id not in self._watching:
                     return
-                if self._room_cache is None:
-                    rows, done = await self._read_page(room_id, tenant_id, cursor)
-                else:
-                    rows, done = await self._read_shared_page(
-                        room_id, tenant_id, cursor, woken_at
-                    )
-                    if self._cursors.get(room_id) != cursor:
-                        # Removed and put back while waiting on the room's
-                        # shared read: these rows are from the old
-                        # subscription's position, not the new one's.
-                        continue
+                rows, done = await self._read_shared_page(
+                    room_id, tenant_id, cursor, woken_at
+                )
+                if self._cursors.get(room_id) != cursor:
+                    # Removed and put back while waiting on the room's
+                    # shared read: these rows are from the old
+                    # subscription's position, not the new one's.
+                    continue
                 if not rows:
                     return
                 for row, attachments in rows:
@@ -593,8 +584,8 @@ class PostgresTransport:
     async def _read_page(
         self, room_id: str, tenant_id: str, cursor: int
     ) -> DeliveryPage:
-        """This client's own read of the next page, as every client did
-        before the room cache. `done` when the page came back short."""
+        """This client's own read of the next page, for when the room's
+        shared read cannot serve it. `done` when the page came back short."""
         async with tenant_session(self._session_factory, tenant_id) as session:
             rows = await self._message_store.list_for_room(
                 session,
@@ -620,7 +611,6 @@ class PostgresTransport:
         The key is this client's tenant and a room it resolved under that
         tenant, which is what makes a hit as good as the read it replaces.
         """
-        assert self._room_cache is not None
         page = await self._room_cache.read(
             tenant_id,
             room_id,
