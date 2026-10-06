@@ -50,7 +50,7 @@ from switch_core.bridges.agent.protocol.hosted_workers import (
     hosted_launch_of,
 )
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
-from switch_core.db.models import CollaborationBridge, User
+from switch_core.db.models import User
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.rooms_yaml import GroupSpec, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
@@ -247,13 +247,7 @@ async def connect_to_room(
         if caller_connection is None or caller_connection.worker is None:
             raise CodedPermissionError("hosted_worker_only", HOSTED_WORKER_ONLY_MESSAGE)
 
-    instructions = build_room_instructions(
-        agent,
-        room_model,
-        participants,
-        bridge,
-        include_general=include_general_instructions,
-    )
+    instructions = build_room_instructions(room_model)
     resources = await protocol.list_room_resources(room.id)
     linked_rooms = await _decorate_linked_rooms(
         protocol, agent_id, resources["linked_rooms"]

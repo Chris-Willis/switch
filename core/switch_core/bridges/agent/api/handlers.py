@@ -29,21 +29,11 @@ from switch_core.bridges.agent.api.schemas import (
     ConnectionPlacementsRequest,
     ConnectionRenewRequest,
     ConnectionSubscribeRequest,
-    PostLlmResponseRequest,
-    PostLlmResponseResponse,
-    PostToolResultRequest,
-    PostToolResultResponse,
-    PreLlmRequestRequest,
-    PreLlmRequestResponse,
-    PreToolCallRequest,
-    PreToolCallResponse,
     RegisterAgentRequest,
     RegisterAgentResponse,
     RegisterKnownAgentBulkRequest,
     RegisterKnownAgentBulkResponse,
     RegisterKnownAgentRequest,
-    ReportEventsRequest,
-    RuntimeStateRequest,
     SendMessageRequest,
     TypingRequest,
 )
@@ -565,38 +555,6 @@ async def watch_heartbeat(
     reply while the connector spins one up. Room-agnostic.
     """
     await protocol.touch_watch_heartbeat(agent.id)
-    return {"ok": True}
-
-
-@router.post("/{agent_id}/runtime-state")
-async def set_runtime_state(
-    agent_id: str,
-    req: RuntimeStateRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> dict[str, bool]:
-    """Report the agent's session runtime state (working/awaiting-input/idle).
-
-    Persists the state and emits a room event the collaboration bridge surfaces
-    on the bridged channel. Reported by the Switch Console connector for sessions
-    it manages.
-    """
-    try:
-        await protocol.set_runtime_state(
-            agent.id,
-            req.room_id,
-            req.state,
-            thread_id=req.thread_id,
-            deeplink_url=req.deeplink_url,
-            detail=req.detail,
-            control_capabilities=req.control_capabilities,
-            anchor_event_id=req.anchor_event_id,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
     return {"ok": True}
 
 
@@ -1146,109 +1104,3 @@ async def connection_placements(
             for lost in released
         ],
     }
-
-
-# Reporting endpoint
-
-
-# Mediation endpoints
-
-
-@router.post("/{agent_id}/mediation/pre-tool-call")
-async def pre_tool_call(
-    agent_id: str,
-    req: PreToolCallRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> PreToolCallResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        result = await protocol.pre_tool_call(
-            agent.id,
-            req.room_id,
-            req.tool_name,
-            req.arguments,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return PreToolCallResponse(verdict=result["verdict"], reason=result["reason"])  # type: ignore[arg-type]
-
-
-@router.post("/{agent_id}/mediation/pre-llm-request")
-async def pre_llm_request(
-    agent_id: str,
-    req: PreLlmRequestRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> PreLlmRequestResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        result = await protocol.pre_llm_request(
-            agent.id,
-            req.room_id,
-            req.model,
-            req.messages,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return PreLlmRequestResponse(verdict=result["verdict"], reason=result["reason"])  # type: ignore[arg-type]
-
-
-@router.post("/{agent_id}/mediation/post-tool-result")
-async def post_tool_result(
-    agent_id: str,
-    req: PostToolResultRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> PostToolResultResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        result = await protocol.post_tool_result(
-            agent.id,
-            req.room_id,
-            req.tool_name,
-            req.result,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return PostToolResultResponse(verdict=result["verdict"])  # type: ignore[arg-type]
-
-
-@router.post("/{agent_id}/mediation/post-llm-response")
-async def post_llm_response(
-    agent_id: str,
-    req: PostLlmResponseRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> PostLlmResponseResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        result = await protocol.post_llm_response(
-            agent.id,
-            req.room_id,
-            req.model,
-            req.response,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return PostLlmResponseResponse(verdict=result["verdict"])  # type: ignore[arg-type]

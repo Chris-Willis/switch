@@ -27,7 +27,7 @@ the four profile keys back with message exchange on and nothing mediated or
 reported, because the code before this revision requires them.
 
 Revision ID: 871623ec1ebf
-Revises: 7c26ad1a2d81
+Revises: 4dcf1747443d
 Create Date: 2026-10-06 00:00:00.000000
 
 """
@@ -39,7 +39,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "871623ec1ebf"
-down_revision: str | None = "7c26ad1a2d81"
+down_revision: str | None = "4dcf1747443d"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
