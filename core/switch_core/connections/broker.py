@@ -35,6 +35,7 @@ from typing import Any, Literal
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.requests import Request
 
 from switch_core.connections.adapters import (
     ConnectionSecret,
@@ -46,6 +47,7 @@ from switch_core.connections.adapters import (
     ServiceUnavailableError,
 )
 from switch_core.connections.loader import AccessLevel, Connection
+from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
     ServiceConnection,
@@ -74,6 +76,7 @@ CONNECTOR_REVOKED = "connector_revoked"
 FORBIDDEN = "forbidden"
 NOT_FOUND = "not_found"
 INTERNAL = "internal"
+VALIDATION_ERROR = "validation_error"
 REASON_CODES = frozenset(
     {
         GRANT_MISSING,
@@ -83,6 +86,7 @@ REASON_CODES = frozenset(
         FORBIDDEN,
         NOT_FOUND,
         INTERNAL,
+        VALIDATION_ERROR,
     }
 )
 
@@ -165,6 +169,36 @@ def effective_tools(
     if tool_mode == "allow":
         return [tool for tool in level if tool in tools]
     return [tool for tool in level if tool not in tools]
+
+
+def _narrows(
+    before: tuple[str, dict[str, Any], str], after: tuple[str, dict[str, Any], str]
+) -> bool:
+    """Whether a replaced grant reaches less than it did, or another account.
+
+    Tool lists do not count: they narrow what the agent is offered, not what
+    an issued token can do.
+    """
+    old_access, old_resources, old_account = before
+    new_access, new_resources, new_account = after
+    if old_account != new_account or (old_access, new_access) == ("write", "read"):
+        return True
+    for key, old in old_resources.items():
+        new = new_resources.get(key)
+        if isinstance(old, list) and isinstance(new, list):
+            if not set(old) <= set(new):
+                return True
+        elif old != new:
+            return True
+    return False
+
+
+def get_service_broker(request: Request) -> ServiceBroker:
+    """The broker `main` installs on the agent bridge and the gateway."""
+    broker = getattr(request.app.state, "service_broker", None)
+    if not isinstance(broker, ServiceBroker):
+        raise RuntimeError("No service broker is installed on this app.")
+    return broker
 
 
 class ServiceBroker:
@@ -636,8 +670,206 @@ class ServiceBroker:
 
     # ── Access changes ───────────────────────────────────────────────────────
 
+    async def grants_for(
+        self, session: AsyncSession, agent_id: str
+    ) -> list[dict[str, Any]]:
+        """The agent's grants as its host reads them when a session starts."""
+        grants = []
+        for grant in await self._store.list_grants(session, agent_id):
+            entry = self._catalog.get(grant.service)
+            skill = None if entry is None else entry.skill_files.get("SKILL.md")
+            grants.append(
+                {
+                    "service": grant.service,
+                    "access": grant.access,
+                    "tool_mode": grant.tool_mode,
+                    "tools": list(grant.tools),
+                    "resources": dict(grant.resources),
+                    "skill": (
+                        None
+                        if skill is None
+                        else {"name": grant.service, "content": skill}
+                    ),
+                }
+            )
+        return grants
+
+    def availability(self, service: str) -> str | None:
+        """Why `service` cannot be granted on this server, or None if it can."""
+        entry = self._catalog.get(service)
+        if entry is None or not entry.definition.enabled:
+            return "Not available yet."
+        if service not in self._adapters:
+            return f"{entry.definition.name} is not set up on this server."
+        return None
+
+    def summary(self, agent_name: str, grant: ServiceGrant) -> str:
+        """A grant's reach in a sentence, as the vendor's adapter words it."""
+        access: AccessLevel = "write" if grant.access == "write" else "read"
+        adapter = self._adapters.get(grant.service)
+        if adapter is not None:
+            return adapter.summary(agent_name, access, dict(grant.resources))
+        verb = "read and write" if access == "write" else "read"
+        return f"{agent_name} can {verb} {self._entry(grant.service).definition.name}."
+
+    async def set_grant(
+        self,
+        session: AsyncSession,
+        *,
+        agent: Agent,
+        actor_id: str,
+        service: str,
+        access: AccessLevel | None,
+        tool_mode: Literal["allow", "deny"] | None,
+        tools: list[str] | None,
+        resources: dict[str, Any],
+    ) -> tuple[ServiceGrant, str | None]:
+        """Create or replace the agent's grant on its owner's own connection.
+
+        A new grant with no `access` reads, with the level's tools. Commits
+        `session`. Replacing a grant with one that reaches less, or on a
+        different account, revokes what was issued under the old one, and the
+        warning says when some of it could not be revoked yet.
+        """
+        if agent.owner_id != actor_id:
+            raise ServiceError(404, NOT_FOUND, "Agent not found.", retryable=False)
+        if service not in self._catalog:
+            raise ServiceError(
+                404, NOT_FOUND, f"No service named {service!r}.", retryable=False
+            )
+        unavailable = self.availability(service)
+        if unavailable is not None:
+            raise ServiceError(422, VALIDATION_ERROR, unavailable, retryable=False)
+        entry = self._entry(service)
+        name = entry.definition.name
+        adapter = self._adapter(service)
+        connection = await self._store.get_connection(session, actor_id, service)
+        if connection is None:
+            raise ServiceError(
+                409,
+                CONNECTOR_NOT_CONNECTED,
+                f"Connect {name} under Settings, Connections first.",
+                retryable=False,
+            )
+        if connection.status != "active":
+            raise ServiceError(
+                409,
+                CONNECTOR_REVOKED,
+                f"Reconnect {name} under Settings, Connections first.",
+                retryable=False,
+            )
+        level_name: AccessLevel = access or "read"
+        if level_name == "write" and connection.consent != "write":
+            raise ServiceError(
+                422,
+                VALIDATION_ERROR,
+                f"Your {name} connection allows only reading. Reconnect with "
+                "write access to grant writing.",
+                retryable=False,
+            )
+        levels = entry.definition.access
+        level = None if levels is None else getattr(levels, level_name)
+        if level is None:
+            raise ServiceError(
+                422,
+                VALIDATION_ERROR,
+                f"{name} has no {level_name} access level.",
+                retryable=False,
+            )
+        mode: Literal["allow", "deny"] = tool_mode or (
+            "allow" if level_name == "read" else "deny"
+        )
+        level_tools = entry.definition.level_tools(level_name)
+        chosen = (
+            tools if tools is not None else (level_tools if mode == "allow" else [])
+        )
+        unknown = sorted(set(chosen) - set(level_tools))
+        if unknown:
+            raise ServiceError(
+                422,
+                VALIDATION_ERROR,
+                f"Not {level_name} tools of {name}: {', '.join(unknown)}.",
+                retryable=False,
+            )
+        reach = level.model_dump(exclude_none=True)
+        await session.commit()
+
+        access_token = await self._access_token(actor_id, service, adapter)
+        request = IssueRequest(
+            service=service, access=level_name, reach=reach, resources=resources
+        )
+        try:
+            checked = await adapter.check_grant(access_token, request)
+        except ServiceUnavailableError as error:
+            raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
+        except ServiceAdapterError as error:
+            raise ServiceError(
+                422, VALIDATION_ERROR, str(error), retryable=False
+            ) from None
+
+        try:
+            await self._store.lock_connection(session, actor_id, service)
+        except ServiceConnectionBusy as error:
+            raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
+        connection = await self._store.get_connection(session, actor_id, service)
+        if connection is None or connection.status != "active":
+            raise ServiceError(
+                409,
+                CONNECTOR_REVOKED,
+                f"Your {name} connection changed. Please retry.",
+                retryable=True,
+            )
+        previous = await self._store.get_grant(session, agent.id, service)
+        before = (
+            None
+            if previous is None
+            else (previous.access, dict(previous.resources), previous.account_id)
+        )
+        grant = await self._store.save_grant(
+            session,
+            agent_id=agent.id,
+            owner_id=actor_id,
+            service=service,
+            access=level_name,
+            tool_mode=mode,
+            tools=chosen,
+            resources=checked,
+            account_id=connection.account_id,
+            created_by=actor_id,
+        )
+        narrowed = before is not None and _narrows(
+            before, (level_name, checked, connection.account_id)
+        )
+        if narrowed:
+            await self._store.queue_revocation(
+                session, ServiceTokenIssuance.grant_id == grant.id
+            )
+        await record_audit_event(
+            session,
+            tenant_id=require_tenant_id(),
+            actor_user_id=actor_id,
+            action=AuditAction.SERVICE_GRANT_SET,
+            target_type="agent",
+            target_id=agent.id,
+            details={
+                "service": service,
+                "access": level_name,
+                "tool_mode": mode,
+                "tools": chosen,
+                "resources": checked,
+            },
+        )
+        grant_id = grant.id
+        await session.commit()
+        if not narrowed:
+            return grant, None
+        pending = await self.revoke_pending(
+            session, (ServiceTokenIssuance.grant_id == grant_id,)
+        )
+        return grant, ACCESS_WARNING if pending else None
+
     async def revoke_grant(
-        self, session: AsyncSession, grant: ServiceGrant
+        self, session: AsyncSession, grant: ServiceGrant, actor_id: str
     ) -> str | None:
         """Remove a grant and revoke the tokens issued under it.
 
@@ -645,14 +877,25 @@ class ServiceBroker:
         not be revoked yet; the periodic tick keeps trying.
         """
         grant_id = grant.id
+        agent_id = grant.agent_id
+        service = grant.service
         try:
-            await self._store.lock_connection(session, grant.owner_id, grant.service)
+            await self._store.lock_connection(session, grant.owner_id, service)
         except ServiceConnectionBusy as error:
             raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
         await self._store.queue_revocation(
             session, ServiceTokenIssuance.grant_id == grant_id
         )
         await self._store.delete_grant(session, grant_id)
+        await record_audit_event(
+            session,
+            tenant_id=require_tenant_id(),
+            actor_user_id=actor_id,
+            action=AuditAction.SERVICE_GRANT_REMOVED,
+            target_type="agent",
+            target_id=agent_id,
+            details={"service": service},
+        )
         await session.commit()
         pending = await self.revoke_pending(
             session, (ServiceTokenIssuance.grant_id == grant_id,)
@@ -669,47 +912,94 @@ class ServiceBroker:
         revoked.
         """
         name = self._entry(service).definition.name
-        try:
-            await self._store.lock_connection(session, user_id, service)
-        except ServiceConnectionBusy as error:
-            raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
-        connection = await self._store.get_connection(session, user_id, service)
-        if connection is None:
+        removed = await self._remove_connection(session, user_id, service)
+        if removed is None:
             raise ServiceError(
                 404,
                 CONNECTOR_NOT_CONNECTED,
                 f"{name} is not connected.",
                 retryable=False,
             )
+        await record_audit_event(
+            session,
+            tenant_id=require_tenant_id(),
+            actor_user_id=user_id,
+            action=AuditAction.SERVICE_DISCONNECTED,
+            target_type="user",
+            target_id=user_id,
+            details={"service": service},
+        )
+        await session.commit()
+        return await self.finish_disconnect(session, user_id, [(service, removed)])
+
+    async def remove_connections(
+        self, session: AsyncSession, user_id: str
+    ) -> list[tuple[str, ConnectionSecret]]:
+        """Delete every connection `user_id` holds here, in the caller's
+        transaction, and queue what was issued on them.
+
+        For removing a member: the caller commits with the membership, then
+        hands the result to `finish_disconnect`.
+        """
+        removed = []
+        for connection in await self._store.list_connections(session, user_id):
+            secret = await self._remove_connection(session, user_id, connection.service)
+            if secret is not None:
+                removed.append((connection.service, secret))
+        return removed
+
+    async def _remove_connection(
+        self, session: AsyncSession, user_id: str, service: str
+    ) -> ConnectionSecret | None:
+        try:
+            await self._store.lock_connection(session, user_id, service)
+        except ServiceConnectionBusy as error:
+            raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
+        connection = await self._store.get_connection(session, user_id, service)
+        if connection is None:
+            return None
         secret = self._secret(connection)
-        issued_on_it = (
+        await self._store.queue_revocation(
+            session,
             ServiceTokenIssuance.owner_id == user_id,
             ServiceTokenIssuance.service == service,
         )
-        await self._store.queue_revocation(session, *issued_on_it)
         await self._store.delete_connection(session, user_id, service)
-        await session.commit()
+        return secret
 
+    async def finish_disconnect(
+        self,
+        session: AsyncSession,
+        user_id: str,
+        removed: list[tuple[str, ConnectionSecret]],
+    ) -> str | None:
+        """After the removal has committed: revoke each sign-in at its vendor,
+        and the tokens issued on it. A warning names what could not be."""
         warnings = []
-        adapter = self._adapters.get(service)
-        try:
-            if adapter is None:
-                raise ServiceUnavailableError(
-                    f"{name} is not available on this server."
+        for service, secret in removed:
+            entry = self._catalog.get(service)
+            name = service if entry is None else entry.definition.name
+            adapter = self._adapters.get(service)
+            try:
+                if adapter is None:
+                    raise ServiceUnavailableError(
+                        f"{name} is not available on this server."
+                    )
+                async with asyncio.timeout(VENDOR_CALL_SECONDS):
+                    await adapter.revoke_connection(secret)
+            except Exception as error:
+                logger.error(
+                    "%s sign-in revocation failed: error_type=%s",
+                    service,
+                    type(error).__name__,
                 )
-            async with asyncio.timeout(VENDOR_CALL_SECONDS):
-                await adapter.revoke_connection(secret)
-        except Exception as error:
-            logger.error(
-                "%s sign-in revocation failed: error_type=%s",
-                service,
-                type(error).__name__,
-            )
-            warnings.append(
-                f"{name} could not revoke the sign-in. Revoke it in your {name} "
-                "settings."
-            )
-        if await self.revoke_pending(session, issued_on_it):
+                warnings.append(
+                    f"{name} could not revoke the sign-in. Revoke it in your "
+                    f"{name} settings."
+                )
+        if removed and await self.revoke_pending(
+            session, (ServiceTokenIssuance.owner_id == user_id,)
+        ):
             warnings.append(ACCESS_WARNING)
         return " ".join(warnings) or None
 

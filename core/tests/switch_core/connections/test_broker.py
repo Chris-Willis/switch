@@ -13,7 +13,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -21,9 +21,6 @@ from sqlalchemy import delete, event, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import (
-    ConnectionSecret,
-    IssuedToken,
-    IssueRequest,
     ReauthorizationRequiredError,
     ServiceAdapterError,
 )
@@ -46,60 +43,11 @@ from switch_core.db.models import (
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from tests.conftest import TEST_KEYRING
+from tests.switch_core.connections.fake_vendor import FakeVendor
 from tests.switch_core.gateway.agent_route_harness import add_agent
 
 STORE = ServiceConnectionStore()
 RESOURCES = {"installation_id": 7, "repository_ids": [70, 71]}
-
-
-class FakeVendor:
-    """GitHub as the broker sees it: refresh, issue, revoke, counted."""
-
-    def __init__(self) -> None:
-        self.refreshes = 0
-        self.refresh_error: Exception | None = None
-        self.issue_error: Exception | None = None
-        self.lifetime = timedelta(hours=1)
-        self.revocable = True
-        self.during_issue: Callable[[], Awaitable[None]] | None = None
-        self.issued: list[tuple[str, str]] = []
-        self.revoked: list[str] = []
-        self.connections_revoked: list[ConnectionSecret] = []
-
-    async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:
-        self.refreshes += 1
-        # Wide enough that a second, unserialised refresh would start here.
-        await asyncio.sleep(0.2)
-        if self.refresh_error is not None:
-            raise self.refresh_error
-        return ConnectionSecret(
-            {
-                **secret.values,
-                "access_token": f"gho_access_{self.refreshes}",
-                "expires_at": time.time() + 8 * 3600,
-                "refresh_token": f"ghr_refresh_{self.refreshes}",
-            }
-        )
-
-    async def issue(self, access_token: str, request: IssueRequest) -> IssuedToken:
-        if self.during_issue is not None:
-            await self.during_issue()
-        if self.issue_error is not None:
-            raise self.issue_error
-        token = f"ghs_{uuid.uuid4().hex}"
-        self.issued.append((access_token, token))
-        return IssuedToken(
-            token=token,
-            expires_at=datetime.now(UTC) + self.lifetime,
-            resources=dict(request.resources),
-            revocable=self.revocable,
-        )
-
-    async def revoke_issued(self, token: str) -> None:
-        self.revoked.append(token)
-
-    async def revoke_connection(self, secret: ConnectionSecret) -> None:
-        self.connections_revoked.append(secret)
 
 
 @pytest.fixture
@@ -405,7 +353,7 @@ class TestIssue:
         async with session_factory() as session:
             grant = await STORE.get_grant(session, world.agent.id, "github")
             assert grant is not None
-            await broker.revoke_grant(session, grant)
+            await broker.revoke_grant(session, grant, world.owner.id)
 
         secrets = [
             token.token,
@@ -555,7 +503,7 @@ class TestRevocation:
         async with session_factory() as session:
             grant = await STORE.get_grant(session, world.agent.id, "github")
             assert grant is not None
-            assert await broker.revoke_grant(session, grant) is None
+            assert await broker.revoke_grant(session, grant, world.owner.id) is None
 
         assert vendor.revoked == [token.token]
         [record] = await _issuances(session_factory)
@@ -592,7 +540,7 @@ class TestRevocation:
         async with session_factory() as session:
             grant = await STORE.get_grant(session, world.agent.id, "github")
             assert grant is not None
-            warning = await broker.revoke_grant(session, grant)
+            warning = await broker.revoke_grant(session, grant, world.owner.id)
         assert warning is not None and "1 hour" in warning
         [record] = await _issuances(session_factory)
         assert record.revoke_requested and record.encrypted_token is not None

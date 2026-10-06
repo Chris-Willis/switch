@@ -19,6 +19,11 @@ from switch_core.clients.client_lifecycle_service import (
     TenantIsolationNotInForce,
 )
 from switch_core.config import SwitchConfig
+from switch_core.connections.broker import (
+    ServiceBroker,
+    ServiceError,
+    get_service_broker,
+)
 from switch_core.db.audit import AuditAction, list_audit_events, record_audit_event
 from switch_core.db.models import (
     GitHubIssuedToken,
@@ -1390,6 +1395,7 @@ async def remove_member(
     admin: Annotated[User, Depends(require_tenant_admin)],
     is_owner: Annotated[bool, Depends(get_tenant_is_owner)],
     config: Annotated[SwitchConfig, Depends(get_config)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
 ) -> dict:
     """Remove a member from the bound tenant. `owner`/`admin` only.
 
@@ -1402,7 +1408,8 @@ async def remove_member(
     consults membership, so leaving it behind would leave the person with
     working, invisible access (`docs/old/multi-tenancy-phase2-tenants.md`,
     §3). Concretely, this deletes every personal API key the member holds
-    here.
+    here, and every service connection they hold here (their grants go with
+    them), revoking what was issued on those once the removal has committed.
 
     It does **not** touch any agent the member owns — it refuses instead, 409,
     naming them. An agent is not that member's private property to lose along
@@ -1463,6 +1470,13 @@ async def remove_member(
         )
     )
 
+    try:
+        removed_services = await broker.remove_connections(session, user_id)
+    except ServiceError as error:
+        raise HTTPException(
+            status_code=error.status_code, detail=error.message
+        ) from None
+
     keys = await api_key_store.get_by_user(session, user_id)
     revoked_key_hashes = [key.key_hash for key in keys]
     for key in keys:
@@ -1475,7 +1489,11 @@ async def remove_member(
         action=AuditAction.MEMBER_REMOVED,
         target_type="user",
         target_id=user_id,
-        details={"role": membership.role, "api_keys_deleted": len(keys)},
+        details={
+            "role": membership.role,
+            "api_keys_deleted": len(keys),
+            "service_connections_deleted": len(removed_services),
+        },
     )
     await session.delete(membership)
     await session.commit()
@@ -1502,9 +1520,10 @@ async def remove_member(
     remaining = await revoke_pending(
         session, config, (GitHubIssuedToken.owner_id == user_id,)
     )
+    service_warning = await broker.finish_disconnect(session, user_id, removed_services)
     messages = [
         message
-        for message in (warning, ACCESS_WARNING if remaining else None)
+        for message in (warning, ACCESS_WARNING if remaining else None, service_warning)
         if message
     ]
     return {"ok": True, "warning": " ".join(messages) or None}

@@ -64,6 +64,9 @@ from switch_core.gateway.references import router as references_router
 from switch_core.gateway.room_groups import router as room_groups_router
 from switch_core.gateway.room_links import router as room_links_router
 from switch_core.gateway.rooms import router as rooms_router
+from switch_core.gateway.service_connections import (
+    router as service_connections_router,
+)
 from switch_core.gateway.template_runs import router as template_runs_router
 from switch_core.gateway.templates import router as templates_router
 from switch_core.gateway.tenants import router as tenants_router
@@ -166,6 +169,7 @@ def create_gateway_app(
         tags=["provider-connections"],
     )
     app.include_router(connection_catalog_router, tags=["provider-connections"])
+    app.include_router(service_connections_router, tags=["service-connections"])
     app.state.claude_verifier = (
         ClaudeVerifier(config.hosted_claude_verifier_path)
         if config.hosted_claude_verifier_path

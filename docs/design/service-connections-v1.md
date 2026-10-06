@@ -220,9 +220,10 @@ fake adapter; GitHub's is registered when a GitHub App is configured.
 token that is still live and whose grant, connection or owner's membership is
 gone are queued, then revoked through the adapter, with `attempts` and
 `claim_until` as today. It runs after every access change the broker makes, and
-on a periodic tick that catches changes made elsewhere: deleting an agent
-removes its grants by cascade, and the next tick revokes its GitHub tokens. The
-same tick prunes issuances past retention.
+every five minutes for changes made elsewhere: deleting an agent removes its
+grants by cascade, and the next tick revokes its GitHub tokens. A workspace
+that holds no token's ciphertext costs the tick one read. Issuances past
+retention are pruned hourly.
 
 ### Checks at every issuance
 
@@ -292,6 +293,9 @@ Both are mounted with the other agent routes in
   who must own the connection. Body `{access?, tool_mode?, tools?, resources}`.
   Creates or replaces the grant; with no `access` it is `read`, with the read
   tool list. The grant's `account_id` is the connection's at that moment.
+  Replacing a grant with one that reaches less (write to read, fewer
+  resources) or on another account revokes what was issued under the old one;
+  a changed tool list does not, since a token is not narrowed by tools.
 - `DELETE /gateway/agents/{agent_id}/service-grants/{service}`: the agent's
   owner. Removes the grant and revokes its issued tokens.
 

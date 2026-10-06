@@ -31,6 +31,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
+from switch_core.connections.broker import ServiceBroker
+from switch_core.connections.loader import CATALOG
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -50,6 +52,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.join_domain_store import JoinDomainStore
+from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
@@ -147,6 +150,14 @@ def _app(
     app.dependency_overrides[gw_deps.get_invite_mailer] = lambda: mailer
     app.dependency_overrides[gw_deps.get_client_lifecycle] = lambda: (
         client_lifecycle or _FakeClientLifecycle(session_factory)
+    )
+    app.state.service_broker = ServiceBroker(
+        session_factory=session_factory,
+        keyring=_KEYRING,
+        catalog=CATALOG,
+        adapters={},
+        store=ServiceConnectionStore(),
+        token_retention=timedelta(days=30),
     )
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         keyring=_KEYRING,

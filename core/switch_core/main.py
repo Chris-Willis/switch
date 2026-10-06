@@ -841,6 +841,8 @@ async def run(config: SwitchConfig) -> None:
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=config.service_token_retention_days),
     )
+    agent_bridge_app.state.service_broker = service_broker
+    gateway_app.state.service_broker = service_broker
 
     snapshot_reporter = SnapshotReporter(
         telemetry=telemetry,

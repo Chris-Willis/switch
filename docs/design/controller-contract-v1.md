@@ -207,9 +207,10 @@ GET /agents/{agent_id}/service-grants                auth: controller token acti
 POST /agents/{agent_id}/service-tokens/{service}     auth: as above. No body
   → 200 { token: string, expires_at: Time, resources: ServiceResources }   // ≤ 1h, Cache-Control: no-store. Every issuance is recorded
   → 403 grant_missing | not_assigned | forbidden
-  → 404 connector_not_connected
+  → 404 connector_not_connected | not_found          // not_found: no such service
   → 409 connector_revoked | grant_account_changed | managed_by_controller
-  → 503 internal
+  → 500 internal                                     // the vendor's token outlived an hour; not retryable
+  → 503 internal                                     // the vendor or the connection is unavailable
 ```
 
 ```ts

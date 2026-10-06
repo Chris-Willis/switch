@@ -79,6 +79,13 @@ class ServiceAdapter(Protocol):
         the vendor rotates them."""
         ...
 
+    async def check_grant(
+        self, access_token: str, request: IssueRequest
+    ) -> dict[str, Any]:
+        """The request's resources as the vendor will honour them, checked
+        against what the owner can reach; ServiceAdapterError says what not."""
+        ...
+
     async def issue(self, access_token: str, request: IssueRequest) -> IssuedToken:
         """A token for the request, valid for at most an hour."""
         ...
@@ -86,3 +93,9 @@ class ServiceAdapter(Protocol):
     async def revoke_issued(self, token: str) -> None: ...
 
     async def revoke_connection(self, secret: ConnectionSecret) -> None: ...
+
+    def summary(
+        self, agent_name: str, access: AccessLevel, resources: dict[str, Any]
+    ) -> str:
+        """What a grant reaches, in one sentence for its owner."""
+        ...
