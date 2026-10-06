@@ -167,6 +167,7 @@ async def worker_app(session_factory, monkeypatch, tmp_path):
     service.config.hosted_sessions_per_agent = 8
     service.config.hosted_idle_stop_minutes = 0
     service.config.hosted_disk_retention_days = 7
+    service.config.controller_status_interval_seconds = 60
     service.client_lifecycle.stop = AsyncMock()
     service.client_lifecycle.delete_record = AsyncMock(side_effect=ClientStore().delete)
     async with session_factory() as session:

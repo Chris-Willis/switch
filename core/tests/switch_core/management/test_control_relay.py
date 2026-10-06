@@ -27,8 +27,9 @@ from switch_core.bridges.agent.protocol.control_relay import (
     ControlRelays,
     RelayError,
 )
-from switch_core.db.models import TENANT_ZERO_ID, AgentController
+from switch_core.db.models import TENANT_ZERO_ID, AgentController, HostedMachine
 from switch_core.gateway.controller_relay import control_events
+from tests.switch_core.hosted_machine_helpers import seed_machine
 from tests.switch_core.management.harness import (
     EnrolledController,
     Harness,
@@ -332,24 +333,71 @@ class TestOffline:
         assert response.json()["worker"]["generation"] is None
         assert relays_of(harness).pending_control_relays(controller.controller_id) == 0
 
-    async def test_a_sleeping_cloud_machine_is_machine_asleep(
+    async def _asleep(
+        self, harness: Harness, client: httpx.AsyncClient, stop_reason: str
+    ) -> tuple[EnrolledController, str, str]:
+        """A placed agent whose controller is ec2, on a machine stopped for
+        `stop_reason`."""
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner)
+        agent_id = await place_agent(client, controller, name="reviewer")
+        async with harness.session_factory() as session:
+            await session.execute(
+                update(AgentController)
+                .where(AgentController.id == controller.controller_id)
+                .values(kind="ec2")
+            )
+            machine = await seed_machine(
+                session,
+                owner_id=owner.id,
+                slot_id="slot-a",
+                state="stopped",
+                desired_state="stopped",
+                stop_reason=stop_reason,
+                revision=4,
+                generation=1,
+            )
+            machine.runtime = "controller"
+            machine.controller_id = controller.controller_id
+            await session.commit()
+            return controller, agent_id, machine.id
+
+    async def test_a_sleeping_cloud_machine_is_woken_and_machine_asleep(
         self, harness: Harness
     ) -> None:
-        owner = await add_member(harness.session_factory, "ada")
         async with harness.client() as client:
-            controller = await enroll_console(harness, client, owner)
-            agent_id = await place_agent(client, controller, name="reviewer")
-            async with harness.session_factory() as session:
-                await session.execute(
-                    update(AgentController)
-                    .where(AgentController.id == controller.controller_id)
-                    .values(kind="ec2")
-                )
-                await session.commit()
+            controller, agent_id, machine_id = await self._asleep(
+                harness, client, "idle"
+            )
             response = await ask(client, controller, agent_id, {"list": True})
 
         assert response.status_code == 503
         assert response.json()["error"]["code"] == "machine_asleep"
+        assert response.json()["retryable"] is True
+        async with harness.session_factory() as session:
+            machine = await session.get(HostedMachine, (TENANT_ZERO_ID, machine_id))
+        assert machine is not None
+        assert (machine.desired_state, machine.stop_reason, machine.revision) == (
+            "running",
+            None,
+            5,
+        )
+
+    async def test_a_machine_its_owner_stopped_is_not_woken(
+        self, harness: Harness
+    ) -> None:
+        async with harness.client() as client:
+            controller, agent_id, machine_id = await self._asleep(
+                harness, client, "owner"
+            )
+            response = await ask(client, controller, agent_id, {"list": True})
+
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "machine_stopped"
+        async with harness.session_factory() as session:
+            machine = await session.get(HostedMachine, (TENANT_ZERO_ID, machine_id))
+        assert machine is not None
+        assert (machine.desired_state, machine.revision) == ("stopped", 4)
 
     async def test_an_unplaced_agent_has_no_controller(self, harness: Harness) -> None:
         owner = await add_member(harness.session_factory, "ada")

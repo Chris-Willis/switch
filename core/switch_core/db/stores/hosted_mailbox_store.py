@@ -204,14 +204,15 @@ class HostedMailboxStore:
         session: AsyncSession,
         *,
         agent_id: str,
-        launch_id: str,
+        launch_id: str | None,
         entry: MailboxEntry,
         offered_to: str | None,
     ) -> bool:
         """Insert the row, already offered when a worker is there to take it.
 
         False when the row exists (a redelivered event). Raises `MailboxFull`
-        at the limit. Serialised per launch by the launch lock the caller holds.
+        at the limit. Serialised per launch by the launch lock the caller holds,
+        or, for an agent on a cloud machine's controller, by the machine lock.
         """
         tenant_id = require_tenant_id()
         exists = await session.scalar(
@@ -349,6 +350,25 @@ class HostedMailboxStore:
             .execution_options(synchronize_session=False)
         )
         return int(getattr(result, "rowcount", 0) or 0)
+
+    async def admit_pending(
+        self, session: AsyncSession, agent_id: str
+    ) -> list[HostedWakeMailbox]:
+        """Admit the agent's `pending` rows, oldest first: for an agent whose
+        controller takes them from the live event stream, not a `wake` frame."""
+        now = datetime.now(UTC)
+        rows = await session.scalars(
+            update(HostedWakeMailbox)
+            .where(
+                HostedWakeMailbox.tenant_id == require_tenant_id(),
+                HostedWakeMailbox.agent_id == agent_id,
+                HostedWakeMailbox.state == "pending",
+            )
+            .values(state="admitted", updated_at=now)
+            .returning(HostedWakeMailbox)
+            .execution_options(synchronize_session=False)
+        )
+        return sorted(rows, key=lambda row: (row.addressed_at, row.room_id))
 
     async def agents_with_pending(self, session: AsyncSession) -> list[str]:
         return list(

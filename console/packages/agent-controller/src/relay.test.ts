@@ -46,6 +46,7 @@ function assigned(agentId: string): AgentAssignment {
       auto_approve: false,
       directory: null,
       isolation: 'shared',
+      skills: [],
     },
   };
 }

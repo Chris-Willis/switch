@@ -37,6 +37,7 @@ from switch_core.agent_icon import (
 )
 from switch_core.bridges.agent.auth import ControllerPrincipal
 from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
+from switch_core.bridges.agent.protocol.control_relay import ControlRelays
 from switch_core.bridges.agent.protocol.controller_presence import (
     DETACH_DELETED,
     DETACH_UNASSIGNED,
@@ -66,6 +67,11 @@ from switch_core.db.stores.hosted_machine_store import (
     HostedMachineStore,
     accepts_controller_exchange,
 )
+from switch_core.gateway.hosted_controller_activity import (
+    record_controller_heartbeat,
+    wake_controller_machine,
+    wake_for_placement,
+)
 from switch_core.gateway.known_agents import KNOWN_AGENTS, KnownAgent
 from switch_core.management import reason_codes, tokens
 from switch_core.management.errors import ManagementError, not_found
@@ -73,7 +79,7 @@ from switch_core.management.notifier import ControllerNotifier
 from switch_core.management.placement import (
     ControllerState,
     controller_state,
-    require_placement,
+    placement_refusal,
 )
 from switch_core.management.schemas import (
     PROVIDER_KNOWN_AGENT_TYPES,
@@ -135,9 +141,11 @@ class ManagementService:
         api_keys: ApiKeyStore,
         agents: AgentStore,
         presence: ControllerPresence,
+        control_relays: ControlRelays,
         clock: Callable[[], datetime],
     ) -> None:
         self.settings = settings
+        self.control_relays = control_relays
         self.notifier = notifier
         self.presence = presence
         self.controllers = controllers
@@ -146,6 +154,9 @@ class ManagementService:
         self.api_keys = api_keys
         self.agents = agents
         self._clock = clock
+        # The latest revision of each (controller, provider) sealed login its
+        # controller has been told of, so a reload announces only newer ones.
+        self._announced_logins: dict[tuple[str, str], int] = {}
 
     def now(self) -> datetime:
         return self._clock()
@@ -471,7 +482,24 @@ class ManagementService:
     def provider_credential_changed(
         self, controller_id: str, provider: str, revision: int
     ) -> None:
+        key = (controller_id, provider)
+        self._announced_logins[key] = max(
+            revision, self._announced_logins.get(key, revision)
+        )
         self.notifier.provider_credential_changed(controller_id, provider, revision)
+
+    def announce_login_revisions(self, revisions: dict[tuple[str, str], int]) -> int:
+        """Tell each controller of every sealed login revision newer than the
+        one it was last told of. Returns how many."""
+        announced = 0
+        for (controller_id, provider), revision in sorted(revisions.items()):
+            if revision > self._announced_logins.get((controller_id, provider), -1):
+                self.provider_credential_changed(controller_id, provider, revision)
+                announced += 1
+        return announced
+
+    def pending_control_relays(self, controller_id: str) -> int:
+        return self.control_relays.pending_control_relays(controller_id)
 
     async def cloud_credential(
         self,
@@ -566,6 +594,11 @@ class ManagementService:
         controller = await self._principal_controller(session, principal)
         revision = controller.assignment_revision
         await session.commit()
+        if stored and controller.kind == CLOUD_CONTROLLER_KIND:
+            await record_controller_heartbeat(
+                session, controller.id, report.model_dump(mode="json"), self.now()
+            )
+            await session.commit()
         return {
             "assignment_revision": revision,
             "report_within_s": self.settings.status_interval_seconds,
@@ -867,14 +900,31 @@ class ManagementService:
         controller = await self.owned_controller(
             session, tenant_id, owner_id, controller_id
         )
-        if check_placement:
-            require_placement(
-                controller,
-                provider,
-                now=self.now(),
-                interval_seconds=self.settings.status_interval_seconds,
+        if not check_placement:
+            return controller
+        refusal = placement_refusal(
+            controller,
+            provider,
+            now=self.now(),
+            interval_seconds=self.settings.status_interval_seconds,
+        )
+        if refusal is None:
+            return controller
+        code, message = refusal
+        # A cloud machine asleep reports nothing; its controller takes the
+        # agent once the machine this wakes is back.
+        if (
+            code == reason_codes.CONTROLLER_OFFLINE
+            and controller.kind == CLOUD_CONTROLLER_KIND
+            and await wake_for_placement(session, controller.id, self.now())
+        ):
+            logger.info(
+                "Placing an agent on controller %s while its cloud machine "
+                "sleeps; woke the machine",
+                controller.id,
             )
-        return controller
+            return controller
+        raise ManagementError(409, code, f"Cannot place the agent: {message}.")
 
     async def _bump_and_collect(
         self, session: AsyncSession, tenant_id: str, controller_ids: set[str | None]
@@ -1245,6 +1295,8 @@ class ManagementService:
                     "provider.recheck takes no agent_id and params.provider naming "
                     f"one of {', '.join(sorted(PROVIDER_KNOWN_AGENT_TYPES))}.",
                 )
+        if controller.kind == CLOUD_CONTROLLER_KIND:
+            await wake_controller_machine(session, controller_id, self.now())
         operation = await self.operations.create(
             session,
             controller_id=controller_id,

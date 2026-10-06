@@ -33,7 +33,11 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
-from switch_core.db.stores.hosted_machine_store import HostedMachineStore, lock_launch
+from switch_core.db.stores.hosted_machine_store import (
+    HostedMachineStore,
+    lock_launch,
+    record_free_disk,
+)
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
 
@@ -42,7 +46,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/hosted/machines")
 
 HEARTBEAT_EVERY_S = 15
-DISK_FULL_BELOW_BYTES = 1 << 30
 RETIRED_STATES = {"retained", "deleting", "deleted"}
 WORKER_ATTACH_TIMEOUT = timedelta(minutes=10)
 IDENTITY_REGISTRATION_GRACE = timedelta(minutes=1)
@@ -396,11 +399,7 @@ async def heartbeat(
         machine.error = None
         machine.error_code = None
         machine.updated_at = now
-    if body.disk.available_bytes < DISK_FULL_BELOW_BYTES:
-        if machine.error_code is None:
-            machine.error_code = "disk_full"
-    elif machine.error_code == "disk_full":
-        machine.error_code = None
+    record_free_disk(machine, body.disk.available_bytes)
     for report in body.agents:
         launch = await _machine_launch(session, machine, report.launch_id)
         if (

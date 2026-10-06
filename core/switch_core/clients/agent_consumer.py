@@ -5,7 +5,8 @@ import logging
 import random
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from switch_core.attachments import parse_attachment_group
@@ -16,6 +17,7 @@ from switch_core.bridges.agent.commands import (
     dispatch_command,
 )
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.controller_presence import Binding
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.hosted_workers import (
     NOTICE_MESSAGES,
@@ -71,7 +73,7 @@ from switch_core.db.stores.hosted_launch_store import (
     ProviderDisconnected,
     is_waking,
 )
-from switch_core.db.stores.hosted_machine_store import owner_stopped
+from switch_core.db.stores.hosted_machine_store import machine_starting, owner_stopped
 from switch_core.db.stores.hosted_mailbox_store import (
     MAILBOX_LIMIT,
     HostedMailboxStore,
@@ -96,6 +98,7 @@ from switch_core.events import (
     TaskFinalise,
     TaskUpdate,
 )
+from switch_core.gateway.hosted_controller_activity import wake_controller_machine
 from switch_core.gateway.known_agents import known_agent_for
 from switch_core.transport import (
     InboundMedia,
@@ -226,6 +229,15 @@ def _hosted_unavailable(
     if launch.desired_state == "stopped":
         return _HOSTED_STOPPED_MESSAGE
     return None
+
+
+def _waking(hosted: HostedNote | None) -> bool:
+    """Whether addressing the agent woke its cloud machine, or found it waking."""
+    if hosted is None or hosted.machine is None:
+        return False
+    if hosted.launch is not None:
+        return is_waking(hosted.launch, hosted.machine)
+    return hosted.machine.state != "error" and machine_starting(hosted.machine)
 
 
 def _takes_mail(launch: HostedLaunch, machine: HostedMachine | None) -> bool:
@@ -656,12 +668,7 @@ class AgentConsumer(Consumer[AgentActor]):
                 unavailable = (
                     None if self._triggered_by_auto_reply(event) else hosted.refusal
                 )
-            elif (
-                unavailable is not None
-                and launch is not None
-                and machine is not None
-                and is_waking(launch, machine)
-            ):
+            elif unavailable is not None and machine is not None and _waking(hosted):
                 unavailable = None
                 if self._waking_notice_revisions.get(meta.room_id) != machine.revision:
                     self._waking_notice_revisions[meta.room_id] = machine.revision
@@ -1107,7 +1114,13 @@ class AgentConsumer(Consumer[AgentActor]):
         queued. A wake starts the launch's idle-stopped machine; an
         owner-stopped machine is left stopped. None when the agent is not
         hosted or its launch could not be updated.
+
+        An agent bound to a controller is the controller's, launch or not
+        (`_note_controller_addressed`).
         """
+        binding = self._connections.controllers.binding(agent.id)
+        if binding is not None:
+            return await self._note_controller_addressed(agent, binding, event)
         launch_id = hosted_launch_of(agent.metadata_)
         if launch_id is None:
             return None
@@ -1182,6 +1195,84 @@ class AgentConsumer(Consumer[AgentActor]):
             machine=machine,
             refusal=refusal,
             deliver=refusal is None and written,
+        )
+
+    async def _note_controller_addressed(
+        self, agent: Agent, binding: Binding, event: AgentEvent | None
+    ) -> HostedNote | None:
+        """Wake the cloud machine of a controller-backed agent addressed while
+        its controller is away, and keep the event in the wake mailbox until
+        the controller is back.
+
+        None, and the event goes to the live stream as for any agent, while
+        the controller is connected, when the agent is stopped, or when no
+        cloud machine runs the controller. A machine its owner stopped or in
+        error is not woken and takes no mail: the room is told the machine is
+        offline instead.
+        """
+        controllers = self._connections.controllers
+        if not binding.running or controllers.is_live(agent.id):
+            return None
+        entry = None if event is None else MailboxEntry.of(event)
+        if entry is not None and event is not None:
+            entry = replace(
+                entry,
+                event={
+                    **entry.event,
+                    "bridge_id": event.bridge_id,
+                    "channel_type": event.channel_type,
+                },
+            )
+        refusal: str | None = None
+        queued = False
+        try:
+            async with (
+                asyncio.timeout(5),
+                tenant_session(self.session_factory, self.tenant_id) as session,
+            ):
+                machine = await wake_controller_machine(
+                    session, binding.controller_id, datetime.now(UTC)
+                )
+                if (
+                    machine is not None
+                    and entry is not None
+                    and machine.state != "error"
+                    and not owner_stopped(machine)
+                ):
+                    try:
+                        await HostedMailboxStore().write(
+                            session,
+                            agent_id=agent.id,
+                            launch_id=None,
+                            entry=entry,
+                            offered_to=None,
+                        )
+                        queued = True
+                    except MailboxFull:
+                        logger.warning(
+                            "Wake mailbox of agent %s is full; refused message %s in room %s",
+                            agent.id,
+                            entry.message_id,
+                            entry.room_id,
+                        )
+                        refusal = _MAILBOX_FULL_MESSAGE
+                await session.commit()
+        except Exception:
+            logger.error(
+                "Could not wake the cloud machine of controller %s for agent %s "
+                "or write its wake mailbox; the event is only in the live buffer",
+                binding.controller_id,
+                agent.id,
+                exc_info=True,
+            )
+            return None
+        if machine is None:
+            return None
+        return HostedNote(
+            launch=None,
+            machine=machine,
+            refusal=refusal,
+            deliver=refusal is None and not queued,
         )
 
     async def _reply_when_unavailable_here(
@@ -1481,11 +1572,9 @@ class AgentConsumer(Consumer[AgentActor]):
             )
         )
         hosted = await self._note_hosted_addressed(agent, agent_event)
-        launch = None if hosted is None else hosted.launch
-        machine = None if hosted is None else hosted.machine
         if hosted is not None and hosted.refusal is not None:
             reply = hosted.refusal
-        elif launch is not None and is_waking(launch, machine):
+        elif _waking(hosted):
             reply = _WAKING_MESSAGE
         else:
             reply = "Working on it."

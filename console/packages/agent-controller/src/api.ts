@@ -21,6 +21,7 @@ import {
   operationSchema,
   PROTOCOL_VERSION,
   type Provider,
+  repositoryCredentialSchema,
   type StatusReport,
   type StatusResponse,
   statusResponseSchema,
@@ -281,7 +282,8 @@ export class AccessTokens {
       } catch (error) {
         if (!isInstanceMismatch(error)) throw error;
         const retryAfter = (error as ControllerApiError).retryAfterS;
-        const waitMs = retryAfter === null ? wait : Math.min(retryAfter * 1000, MISMATCH_MAX_WAIT_MS);
+        const waitMs =
+          retryAfter === null ? wait : Math.min(retryAfter * 1000, MISMATCH_MAX_WAIT_MS);
         this.deps.log.warn(
           'The server does not recognise this instance as the machine’s yet; retrying the token exchange.',
           { waitMs, message: (error as ControllerApiError).message }
@@ -393,6 +395,19 @@ export class ControllerClient {
       etag: response.headers.get('ETag'),
       assignment: await parsed(response, assignmentSchema),
     };
+  }
+
+  /**
+   * The `owner/name` of the repository an agent on this controller works in,
+   * as Core answers it while issuing the agent's repository token (the token
+   * is not kept: the agent's unit asks for its own).
+   */
+  async repositoryName(agentId: string): Promise<string> {
+    const response = await this.request(`${this.deps.server}/hosted/github-credential`, {
+      method: 'POST',
+      headers: { 'X-Switch-Agent-Id': agentId, [PROTOCOL_HEADER]: String(PROTOCOL_VERSION) },
+    });
+    return (await parsed(response, repositoryCredentialSchema)).repository;
   }
 
   /** The sealed login envelope for a provider, or null when the owner has none. */

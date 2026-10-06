@@ -88,6 +88,7 @@ export {
   UNIT_PROVIDER_CREDENTIAL,
 } from './host/hosted-bootstrap';
 export { githubLaunchEnvironment } from './host/hosted-github';
+export { type HostedSkills, hostedSkillsSchema } from './host/hosted-skills';
 export {
   applyHostedProvider,
   type HostedCredential,

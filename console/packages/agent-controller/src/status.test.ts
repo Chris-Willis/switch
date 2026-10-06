@@ -36,6 +36,7 @@ function entry(overrides: Partial<AgentAssignment> = {}): AgentAssignment {
       auto_approve: false,
       directory: null,
       isolation: 'shared',
+      skills: [],
     },
     ...overrides,
   };
@@ -208,11 +209,15 @@ describe('providerStatusFrom', () => {
     expect(
       providerStatusFrom('claude', located, readiness('authenticated'), at, 'sealed')
     ).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
-    expect(providerStatusFrom('claude', located, readiness('unauthenticated'), at, 'local')).toMatchObject({
+    expect(
+      providerStatusFrom('claude', located, readiness('unauthenticated'), at, 'local')
+    ).toMatchObject({
       auth: 'missing',
       reason: 'provider_login_missing',
     });
-    expect(providerStatusFrom('claude', located, readiness('unconfigured'), at, 'local')).toMatchObject({
+    expect(
+      providerStatusFrom('claude', located, readiness('unconfigured'), at, 'local')
+    ).toMatchObject({
       auth: 'missing',
     });
     expect(providerStatusFrom('claude', located, readiness('unknown'), at, 'local')).toMatchObject({

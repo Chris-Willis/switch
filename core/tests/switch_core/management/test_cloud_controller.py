@@ -28,6 +28,7 @@ from starlette.routing import Mount
 
 from switch_core.bridges.agent import dependencies as bridge_deps
 from switch_core.bridges.agent.api.hosted_routes import router as hosted_router
+from switch_core.connections.loader import CATALOG, deployment_skills
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     AgentController,
@@ -659,6 +660,40 @@ class TestRepositoryCredential:
 
         assert (await self._fetch(cloud, controller, agent_id)).status_code == 403
         cloud.issue.assert_not_awaited()
+
+    async def test_an_agent_in_a_repository_is_given_the_github_skill(
+        self, cloud: Cloud
+    ) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        controller = await cloud.cloud_controller(owner)
+        in_repository = await self._agent(cloud, controller, repository=REPOSITORY)
+
+        assigned = await cloud.client.get(
+            f"/v1/management/controllers/{controller.controller_id}/assignment",
+            headers=controller.headers,
+        )
+
+        assert assigned.status_code == 200, assigned.text
+        (entry,) = assigned.json()["agents"]
+        assert entry["agent_id"] == in_repository
+        assert entry["definition"]["skills"] == deployment_skills(CATALOG, ["github"])
+        assert [skill["slug"] for skill in entry["definition"]["skills"]] == ["github"]
+
+    async def test_an_agent_without_a_repository_is_given_no_skill(
+        self, cloud: Cloud
+    ) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        controller = await cloud.cloud_controller(owner)
+        await self._agent(cloud, controller)
+
+        assigned = await cloud.client.get(
+            f"/v1/management/controllers/{controller.controller_id}/assignment",
+            headers=controller.headers,
+        )
+
+        assert assigned.status_code == 200, assigned.text
+        (entry,) = assigned.json()["agents"]
+        assert entry["definition"]["skills"] == []
 
     async def test_a_console_controller_gets_none(self, cloud: Cloud) -> None:
         owner = await add_member(cloud.factory, "ada")

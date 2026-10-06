@@ -18,6 +18,7 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -42,8 +43,11 @@ from switch_core.bridges.agent.protocol.stream import KEEPALIVE_INTERVAL_SECONDS
 from switch_core.db.models import AgentDefinition, User, require_tenant_id
 from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
+from switch_core.db.stores.hosted_machine_store import owner_stopped
 from switch_core.gateway.auth import get_current_user, get_current_user_in_transaction
 from switch_core.gateway.dependencies import get_protocol, get_session
+from switch_core.gateway.hosted_controller_activity import wake_controller_machine
+from switch_core.gateway.hosted_launches import machine_error_detail
 from switch_core.gateway.hosted_relay import (
     MAX_STREAM_SUBSCRIPTIONS,
     SUBSCRIPTION_RELAY_TIMEOUT_MS,
@@ -61,16 +65,29 @@ EC2_CONTROLLER = "ec2"
 async def request_wake_for_agent(
     session: AsyncSession, *, tenant_id: str, agent_id: str, controller_id: str
 ) -> None:
-    """Ask the sleeping cloud machine that runs the agent's controller to start.
+    """Start the sleeping cloud machine that runs the agent's controller, and
+    commit it, so the caller can tell the Console to retry while it wakes.
 
-    The one place a Console control request wakes a machine. Waking a
-    controller machine is not implemented yet, so the caller is told the
-    machine is asleep and nothing starts it.
+    Raises `RelayError` when the machine will not start for this: its owner
+    stopped it, it is in error, or no machine runs the controller any more.
     """
-    logger.warning(
-        "Console control for agent %s found controller %s asleep; waking a "
-        "controller machine is not implemented",
+    machine = await wake_controller_machine(session, controller_id, datetime.now(UTC))
+    if machine is None:
+        await session.rollback()
+        raise RelayError(
+            "controller_offline", "No cloud machine runs this agent any more.", 409
+        )
+    if machine.state == "error":
+        await session.rollback()
+        raise RelayError("machine_error", machine_error_detail(machine), 409)
+    if owner_stopped(machine):
+        await session.rollback()
+        raise RelayError("machine_stopped", "The owner stopped the cloud machine.", 409)
+    await session.commit()
+    logger.info(
+        "Console control for agent %s: cloud machine %s of controller %s is waking",
         agent_id,
+        machine.id,
         controller_id,
     )
 

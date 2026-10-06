@@ -22,6 +22,7 @@ MACHINE_NEEDS_ADMIN = (
 MACHINE_BEING_REMOVED = (
     "Your previous cloud machine is being removed. Try again in a minute."
 )
+DISK_FULL_BELOW_BYTES = 1 << 30
 
 
 class HostedMachineConflict(Exception):
@@ -56,6 +57,16 @@ async def lock_launch(session: AsyncSession, launch_id: str) -> None:
 
 def idle_sleeping(machine: HostedMachine) -> bool:
     return machine.desired_state == "stopped" and machine.stop_reason == "idle"
+
+
+def record_free_disk(machine: HostedMachine, available_bytes: int) -> None:
+    """Raise `disk_full` while the machine's disk is nearly full, unless it
+    already shows another error, and clear it once there is room again."""
+    if available_bytes < DISK_FULL_BELOW_BYTES:
+        if machine.error_code is None:
+            machine.error_code = "disk_full"
+    elif machine.error_code == "disk_full":
+        machine.error_code = None
 
 
 def owner_stopped(machine: HostedMachine) -> bool:

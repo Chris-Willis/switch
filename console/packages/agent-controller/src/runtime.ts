@@ -11,6 +11,7 @@ import {
   clearTakenOver,
   ensureSharedProcess,
   ensureThroughWatcher,
+  type HostedWorkspace,
   inProcessSupervision,
   type OpenAgentStream,
   type ProviderReadiness,
@@ -36,7 +37,7 @@ import type { ControlRegistry } from './agent-hub';
 import { ConfigurationError, ReasonedError } from './errors';
 import { errorMessage, type Logger } from './log';
 import { agentWorkspace, type DataLayout } from './paths';
-import type { Isolation, Provider } from './schemas';
+import type { Isolation, Provider, RepositoryRef } from './schemas';
 
 const execute = promisify(execFile);
 
@@ -84,6 +85,10 @@ export type LaunchOptions = {
   replaceIdentity: boolean;
   /** Someone asked for this agent host on purpose: a standing-down marker is cleared. */
   clearTakenOver: boolean;
+  /** The connection skills an isolated agent's unit installs for its provider. */
+  skills: HostedWorkspace['skills'];
+  /** The repository an isolated agent's unit makes its working directory a worktree of. */
+  repository: RepositoryRef | null;
 };
 
 /** What an agent host reads to reach Switch: the controller's relay, and a token for it. */

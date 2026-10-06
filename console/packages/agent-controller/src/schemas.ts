@@ -112,6 +112,14 @@ export const credentialRotateResponseSchema = z.object({ credential: id });
 
 // §2 Assignment (v1 definition)
 
+export const repositoryRefSchema = z.object({
+  installation_id: z.number().int().positive(),
+  repository_id: z.number().int().positive(),
+});
+export type RepositoryRef = z.infer<typeof repositoryRefSchema>;
+
+export const repositoryCredentialSchema = z.object({ repository: z.string().min(1) });
+
 export const agentDefinitionSchema = z.object({
   name: z.string().min(1),
   display_name: z.string().nullish(),
@@ -134,6 +142,21 @@ export const agentDefinitionSchema = z.object({
   directory: z.string().nullable(),
   /** `shared`: the agent host runs in this controller's process; `isolated`: in a process of its own. */
   isolation: receivedEnum(['shared', 'isolated']),
+  /**
+   * The connection skills the provider is given (GitHub's for an agent that
+   * works in a repository), installed by an isolated agent's unit. Checked
+   * only as loosely here, so a bad set fails its own agent
+   * (`definitionProblem`); absent from a Core that sends none.
+   */
+  skills: z
+    .array(z.object({ slug: z.string(), files: z.record(z.string(), z.string()) }))
+    .default([]),
+  /**
+   * The GitHub repository the agent works in, by id; present only for a
+   * definition that names one. An isolated agent's unit clones it, by the
+   * name Core answers for it (`ControllerClient.repositoryName`).
+   */
+  repository: repositoryRefSchema.optional(),
 });
 export type Isolation = 'shared' | 'isolated';
 export type AgentDefinition = z.infer<typeof agentDefinitionSchema>;

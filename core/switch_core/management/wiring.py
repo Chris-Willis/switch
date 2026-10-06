@@ -5,13 +5,16 @@ with None nothing is mounted and the bearer middleware has no controller
 branch. When it is on, the authenticator goes to the middleware as the agent
 bridge app is built, `install` adds the routes once both apps exist, and
 `load_bindings` tells Core which controller runs each agent before the bridge
-serves. `install` also hands Core the agent-facing side
+serves, and `reload_loop` keeps that in step with changes made outside this
+process. `install` also hands Core the agent-facing side
 (`ManagementAgentOperations`), which is what makes the agent operations on
 machines and managed agents exist.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -47,7 +50,15 @@ from switch_core.management.control_relay_routes import (
 from switch_core.management.controller_routes import router as controller_router
 from switch_core.management.dependencies import init_management_dependencies
 from switch_core.management.gateway_routes import router as gateway_router
+from switch_core.management.reload import (
+    RELOAD_SECONDS,
+    reload_logins,
+    reload_placements,
+)
 from switch_core.management.service import ManagementService, ManagementSettings
+from switch_core.tenant_context import no_tenant
+
+logger = logging.getLogger(__name__)
 
 GATEWAY_PREFIX = "/management"
 
@@ -98,6 +109,21 @@ class Management:
             presence=self.service.presence,
         )
 
+    async def reload(self) -> None:
+        await reload_placements(self.session_factory, self.service)
+        await reload_logins(self.session_factory, self.service)
+
+    async def reload_loop(self) -> None:
+        """Follow placements and sealed logins changed outside this process,
+        every `RELOAD_SECONDS`, for as long as Core runs."""
+        with no_tenant():
+            while True:
+                await asyncio.sleep(RELOAD_SECONDS)
+                try:
+                    await self.reload()
+                except Exception:
+                    logger.exception("Reloading controller placements failed")
+
 
 def build_management(
     *,
@@ -125,6 +151,7 @@ def build_management(
         api_keys=ApiKeyStore(),
         agents=AgentStore(),
         presence=presence,
+        control_relays=control_relays,
         clock=clock,
     )
     authenticator = ManagementAuthenticator(

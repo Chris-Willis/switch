@@ -559,7 +559,8 @@ class HostedOperation(TenantScoped, Base):
 
 
 class HostedWakeMailbox(TenantScoped, Base):
-    """An addressed event for a hosted agent, kept until its worker has admitted it."""
+    """An addressed event for a hosted agent, kept until its worker has admitted it,
+    or until its controller is connected again for an agent on one."""
 
     __tablename__ = "hosted_wake_mailbox"
     __table_args__ = (
@@ -605,7 +606,8 @@ class HostedWakeMailbox(TenantScoped, Base):
     agent_id: Mapped[str] = mapped_column(Text, nullable=False)
     room_id: Mapped[str] = mapped_column(Text, nullable=False)
     message_id: Mapped[str] = mapped_column(Text, nullable=False)
-    launch_id: Mapped[str] = mapped_column(Text, nullable=False)
+    #: None for an agent on the shared agent controller, which has no launch.
+    launch_id: Mapped[str | None] = mapped_column(Text)
     thread_id: Mapped[str | None] = mapped_column(Text)
     event: Mapped[dict] = mapped_column(JSONB, nullable=False)
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
