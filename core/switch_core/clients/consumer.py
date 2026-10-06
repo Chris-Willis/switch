@@ -14,7 +14,6 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from switch_core.events import (
-    AgentRuntimeStateEvent,
     CommandEvent,
     LlmCallReport,
     SwitchEvent,
@@ -250,10 +249,6 @@ class Consumer[ActorT: Actor[Any]]:
         "com.switch.command": (CommandEvent, "on_command"),
         "com.switch.report.tool_call": (ToolCallReport, "on_tool_call_report"),
         "com.switch.report.llm_call": (LlmCallReport, "on_llm_call_report"),
-        "com.switch.agent.runtime_state": (
-            AgentRuntimeStateEvent,
-            "on_agent_runtime_state",
-        ),
     }
 
     async def _handle_custom_event(
@@ -353,9 +348,4 @@ class Consumer[ActorT: Actor[Any]]:
         pass
 
     async def on_llm_call_report(self, room: RoomRef, event: LlmCallReport) -> None:
-        pass
-
-    async def on_agent_runtime_state(
-        self, room: RoomRef, event: AgentRuntimeStateEvent
-    ) -> None:
         pass

@@ -60,11 +60,10 @@ _ALLOWED_MODULES = {
     "switch_core.room_service",
     # Session-activity upkeep expires overdue approval requests and prunes
     # old activity lines in every tenant: enumerate, then bind each tenant and
-    # work under its own policy, the same shape as the runtime-state sweep.
+    # work under its own policy, the same shape as the boot fan-outs.
     "switch_core.session_activity.maintenance",
-    # The runtime-state sweep reads every tenant's stale rows, one tenant at a
-    # time; `register_agent_with_token` resolves a registration credential by
-    # its globally unique hash, which is the read that produces a tenant.
+    # `register_agent_with_token` resolves a registration credential by its
+    # globally unique hash, which is the read that produces a tenant.
     "switch_core.bridges.agent.protocol.agent_core",
     # Bearer and OIDC authentication: the credential's tenant, before its row.
     "switch_core.bridges.agent.auth",

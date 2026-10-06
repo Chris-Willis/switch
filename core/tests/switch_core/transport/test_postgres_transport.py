@@ -48,10 +48,20 @@ from switch_core.transport import (
     TransportError,
     TransportHandlers,
 )
+from switch_core.transport import postgres as postgres_transport
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.postgres import _DELIVERY_PAGE, PostgresTransport
 from tests.conftest import RLSHarness
+
+# No event type is ephemeral today, so the live-delivery path is exercised with
+# one these tests declare.
+PRESENCE_TYPE = "com.example.presence"
+
+
+@pytest.fixture
+def presence_is_ephemeral(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(postgres_transport, "EPHEMERAL", frozenset({PRESENCE_TYPE}))
 
 
 async def _make_room(session: AsyncSession) -> tuple[str, str, str, str]:
@@ -462,6 +472,7 @@ class TestSending:
         assert message.content == {"tool_id": "t-1"}
         assert message.body is None
 
+    @pytest.mark.usefixtures("presence_is_ephemeral")
     async def test_ephemeral_state_is_announced_and_not_stored(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -473,7 +484,7 @@ class TestSending:
 
         transport = _transport(session_factory, client_id=client_id, user_id=user_id)
         result = await transport.send_event(
-            transport_room_id, "com.switch.agent.runtime_state", {"state": "working"}
+            transport_room_id, PRESENCE_TYPE, {"state": "working"}
         )
 
         async with session_factory() as session:
@@ -766,6 +777,7 @@ class TestReceiving:
         assert event.display_name == "the newcomer"
 
 
+@pytest.mark.usefixtures("presence_is_ephemeral")
 class TestPresence:
     """Events that are announced and never stored still have to arrive.
 
@@ -802,14 +814,12 @@ class TestPresence:
         sender = _transport(
             session_factory, client_id=client_id, user_id=user_id, ephemeral=ephemeral
         )
-        await sender.send_event(
-            room, "com.switch.agent.runtime_state", {"state": "working"}
-        )
+        await sender.send_event(room, PRESENCE_TYPE, {"state": "working"})
 
         assert len(received.events) == 1
         event = received.events[0]
         assert isinstance(event, InboundCustomEvent)
-        assert event.event_type == "com.switch.agent.runtime_state"
+        assert event.event_type == PRESENCE_TYPE
         assert event.content == {"state": "working"}
         # The room a handler is given is the transport-side id, as for a row.
         assert event.room_id == room
@@ -838,9 +848,7 @@ class TestPresence:
             user_id=other_user_id,
             ephemeral=ephemeral,
         )
-        await sender.send_event(
-            elsewhere, "com.switch.agent.runtime_state", {"state": "idle"}
-        )
+        await sender.send_event(elsewhere, PRESENCE_TYPE, {"state": "idle"})
 
         assert received.events == []
 
@@ -866,9 +874,7 @@ class TestPresence:
         await watcher.close()
         await task
 
-        await watcher.send_event(
-            room, "com.switch.agent.runtime_state", {"state": "idle"}
-        )
+        await watcher.send_event(room, PRESENCE_TYPE, {"state": "idle"})
 
         assert received.events == []
 

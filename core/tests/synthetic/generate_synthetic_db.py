@@ -81,7 +81,6 @@ ROOM_GROUPS = 20
 CLIENT_ROOMS = 5000  # ~7 memberships per room, rounded
 ROOM_AGENTS = 2000  # ~3 agents per room, rounded
 AGENT_SESSIONS = 700
-AGENT_RUNTIME_STATES = 900
 MESSAGES = 63000
 # event_type mix measured across all messages, rounded to the nearest
 # percentage point
@@ -301,7 +300,6 @@ async def generate(dsn: str, scale: float) -> None:
         client_rooms_n = _scaled(CLIENT_ROOMS, scale)
         room_agents_n = _scaled(ROOM_AGENTS, scale)
         agent_sessions_n = _scaled(AGENT_SESSIONS, scale)
-        agent_runtime_states_n = _scaled(AGENT_RUNTIME_STATES, scale)
         messages_n = _scaled(MESSAGES, scale)
         bridge_message_map_n = _scaled(BRIDGE_MESSAGE_MAP, scale)
         media_blobs_n = _scaled(MEDIA_BLOBS, scale)
@@ -578,22 +576,6 @@ async def generate(dsn: str, scale: float) -> None:
             "agent_sessions",
             ["id", "agent_id", "room_id", "lifecycle"],
             session_rows,
-        )
-
-        # ── agent_runtime_states ─────────────────────────────────────────
-        seen_ars: set[tuple[str, str]] = set()
-        ars_rows: list[tuple[str, str, str, str]] = []
-        while len(ars_rows) < agent_runtime_states_n:
-            pair = (random.choice(agent_ids), random.choice(room_ids))
-            if pair in seen_ars:
-                continue
-            seen_ars.add(pair)
-            ars_rows.append((_rand_id("ars", len(ars_rows)), *pair, "connected"))
-        await _copy(
-            conn,
-            "agent_runtime_states",
-            ["id", "agent_id", "room_id", "state"],
-            ars_rows,
         )
 
         # ── messages ─────────────────────────────────────────────────────

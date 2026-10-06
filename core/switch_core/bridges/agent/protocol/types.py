@@ -14,8 +14,9 @@ from pydantic import BaseModel, model_validator
 #   - "always": the agent-type can always act on it, regardless of session.
 #   - "session_dependent": support depends on the specific live session — e.g.
 #     a Claude Code session launched from Switch Console can be controlled, but a
-#     standalone `claude` session started in a plain terminal cannot. The live
-#     session declares its own capabilities via AgentRuntimeState.
+#     standalone `claude` session started in a plain terminal cannot. Switch
+#     relays the command only to a session placed in the room or an agent with
+#     a bound controller.
 CommandLevel = Literal["unsupported", "always", "session_dependent"]
 
 

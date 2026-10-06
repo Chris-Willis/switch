@@ -164,11 +164,6 @@ from switch_core.version import switch_core_version
 
 logger = logging.getLogger(__name__)
 
-# How often to reset runtime states whose session heartbeat has lapsed. A few
-# seconds keeps a stuck "working"/"awaiting-input" surface from lingering long
-# after a session crashes, while staying well above the per-pass DB cost.
-_RUNTIME_STATE_SWEEP_INTERVAL = 5.0
-
 # How often to close connections whose heartbeat has lapsed. Kept well under
 # the heartbeat TTL so a dead connection's room slot and role lease are freed
 # promptly rather than at the next unrelated request.
@@ -178,20 +173,6 @@ _CONNECTION_SWEEP_INTERVAL = 2.0
 # regardless. Anything with a deadline of its own must fit inside it — see
 # `observability.logs.SHUTDOWN_FLUSH_SECONDS`.
 _FORCED_EXIT_GRACE_SECONDS = 3.0
-
-
-async def _runtime_state_sweep_loop(protocol: AgentCore) -> None:
-    # `no_tenant` for the reason every other long-lived task does it: a task
-    # keeps the context of whoever created it, and nothing in here may depend
-    # on that. Boot binds nothing today, so this changes no behaviour — it
-    # removes the dependency on boot continuing not to.
-    with no_tenant():
-        while True:
-            await asyncio.sleep(_RUNTIME_STATE_SWEEP_INTERVAL)
-            try:
-                await protocol.sweep_runtime_states()
-            except Exception:
-                logger.exception("Runtime-state sweep failed")
 
 
 async def _connection_sweep_loop(protocol: AgentCore, lag: EventLoopLag) -> None:
@@ -812,7 +793,6 @@ async def run(config: SwitchConfig) -> None:
                 session_factory=session_factory,
                 probes=probes,
             )
-            sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
             session_activity_task = asyncio.create_task(
                 session_activity_maintenance_loop(
                     session_factory, partial(mailbox_upkeep, protocol)
@@ -833,7 +813,6 @@ async def run(config: SwitchConfig) -> None:
             try:
                 yield
             finally:
-                sweep_task.cancel()
                 session_activity_task.cancel()
                 connection_sweep_task.cancel()
                 if snapshot_task is not None:

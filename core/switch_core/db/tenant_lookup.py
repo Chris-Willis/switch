@@ -47,8 +47,7 @@ them about *metadata* rather than rows:
 1. `all_tenant_ids()` takes no identifier. It enumerates the deployment: how
    many tenants there are and what their ids are. Nothing about it is narrowed
    to what the caller already holds, and nothing can be — the boot fan-outs
-   and the runtime-state sweep exist precisely to visit tenants the caller has
-   never heard of.
+   exist precisely to visit tenants the caller has never heard of.
 2. `EXECUTE` used to be left at the `PUBLIC` default a new function gets, so
    any role with `CONNECT` on this database could call every one of them. That
    is closed: `grant_runtime_role` revokes `EXECUTE` on the schema's functions
@@ -78,8 +77,7 @@ not are now one of three shapes, and the shape is the interesting part:
    then read the row itself through the ordinary scoped store. The row never
    arrives from an exempt path.
 2. **Cross-tenant enumeration** — the boot passes over every client, bridge
-   and room, and the runtime-state sweep. `all_tenant_ids()` and
-   then one scoped pass per tenant. These sites already fanned out per row
+   and room. `all_tenant_ids()` and then one scoped pass per tenant. These sites already fanned out per row
    and bound that row's tenant; the loop simply moved one level up, and the
    read inside it is now subject to the policies like any other.
 3. **Per-item work that can derive its tenant** — a bridge being started by
@@ -178,8 +176,7 @@ is written out rather than inferred from the connection.
 paths where that would be per request or per message it is already behind a
 cache that predates this change (`ApiKeyCache`, the transport's room map, the
 bridge's room→tenant map), so the steady-state cost is one extra round trip
-per *new* credential, room or bridge rather than per use. `all_tenant_ids()`
-on the runtime-state sweep is one extra round trip every five seconds.
+per *new* credential, room or bridge rather than per use.
 """
 
 from __future__ import annotations
@@ -256,7 +253,7 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
         purpose=(
             "Every tenant in the deployment, oldest first. The one question a "
             "scoped session cannot answer about itself, and the whole of what "
-            "the boot enumerations and the runtime-state sweep need."
+            "the boot enumerations need."
         ),
     ),
     TenantLookup(

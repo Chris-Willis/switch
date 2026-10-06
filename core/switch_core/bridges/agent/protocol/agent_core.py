@@ -36,7 +36,6 @@ from switch_core.bridges.agent.protocol.agent_detail import (
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
-from switch_core.bridges.agent.protocol.presence import rooms_occupied
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
     AgentStatus,
@@ -65,7 +64,6 @@ from switch_core.clients.admin_messages import (
 )
 from switch_core.db.models import (
     Agent,
-    AgentRuntimeState,
     ApiKey,
     HostedLaunch,
     Message,
@@ -81,20 +79,13 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.session_scope import tenant_session
-from switch_core.db.stores.agent_runtime_state_store import (
-    IDLE as RUNTIME_STATE_IDLE,
-)
-from switch_core.db.stores.agent_runtime_state_store import (
-    AgentRuntimeStateStore,
-)
 from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_api_key
-from switch_core.deeplinks import deeplink_for_platform
+from switch_core.db.tenant_lookup import tenant_of_api_key
 from switch_core.events import (
     LlmCallReport as RoomLlmCallReport,
 )
@@ -295,7 +286,6 @@ class AgentCore:
         self.sessions = SessionReporter(telemetry, connections)
         self.agent_store = agent_store
         self.agent_session_store = agent_session_store
-        self.agent_runtime_state_store = AgentRuntimeStateStore()
         self.room_role_store = RoomRoleStore()
         self.room_group_store = RoomGroupStore()
         self.message_store = MessageStore()

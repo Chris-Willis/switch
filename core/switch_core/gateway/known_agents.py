@@ -223,7 +223,7 @@ class ClaudeCodeKnownAgent(KnownAgent):
             # Claude Code can reset / compact / interrupt only when a session is
             # driving it from Switch Console (which can inject keystrokes and
             # relaunch it). A standalone `claude` session can't be controlled,
-            # so all three resolve per live session via AgentRuntimeState.
+            # so all three depend on the session.
             command_capabilities=CommandCapabilities(
                 reset="session_dependent",
                 compact="session_dependent",
@@ -406,7 +406,7 @@ class CodexKnownAgent(KnownAgent):
             # Same story as Claude Code: Codex is a TUI, so reset / compact /
             # interrupt only work when Switch Console is driving the session and can
             # inject keystrokes. A standalone `codex` can't be controlled, so all
-            # three resolve per live session via AgentRuntimeState.
+            # three depend on the session.
             command_capabilities=CommandCapabilities(
                 reset="session_dependent",
                 compact="session_dependent",
@@ -535,8 +535,7 @@ class OpenCodeKnownAgent(KnownAgent):
             event_reporting=[],
             # A TUI, so reset / compact / interrupt only work while Switch Console
             # is driving the session and can write to it. A standalone `opencode`
-            # cannot be controlled, so all three resolve per live session via
-            # AgentRuntimeState.
+            # cannot be controlled, so all three depend on the session.
             command_capabilities=CommandCapabilities(
                 reset="session_dependent",
                 compact="session_dependent",

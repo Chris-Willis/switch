@@ -57,7 +57,6 @@ from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.main import (
     _connection_sweep_loop,
-    _runtime_state_sweep_loop,
     _seed_agent_registration_bootstrap_key,
 )
 from switch_core.messages.notify import MessageListener
@@ -581,7 +580,6 @@ async def _serve(
     # harness defect instead of the topology.
     sweeps = [
         asyncio.create_task(_connection_sweep_loop(protocol, EventLoopLag())),
-        asyncio.create_task(_runtime_state_sweep_loop(protocol)),
     ]
 
     bench = BenchServer(

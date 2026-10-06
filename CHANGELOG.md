@@ -123,6 +123,13 @@ version of their own to them without also giving them a release of their own.
   effect was a line in the agent's room instructions promising elevated
   capabilities that nothing granted. Migration `871623ec1ebf` drops the
   column.
+- **Runtime-state reports.** `POST /agents/{id}/runtime-state`, the
+  `com.switch.agent.runtime_state` event and the sweep that reset stale
+  states are gone; no client has reported a state since sessions moved to the
+  session-activity contract. `!agents-status` now shows each agent's presence
+  and type without the working / awaiting-input label or the Switch Console
+  link, which came from those reports. Migration `871623ec1ebf` drops the
+  `agent_runtime_states` table.
 
 ### [0.29.0] - 2026-09-29
 

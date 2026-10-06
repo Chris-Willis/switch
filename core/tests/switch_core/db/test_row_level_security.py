@@ -57,7 +57,7 @@ _RLS_REVISION = "265ed188ad6f"
 
 # Scoped by the frozen inventories and dropped afterwards: the server-side
 # session tables by `b9e4d2a71c05`, the server-side connectors and tasks by
-# `7c26ad1a2d81`.
+# `7c26ad1a2d81`, and the tables nothing read by `871623ec1ebf`.
 _DROPPED_BY_LATER_REVISIONS = frozenset(
     {
         "sdk_sessions",
@@ -65,6 +65,7 @@ _DROPPED_BY_LATER_REVISIONS = frozenset(
         "sdk_session_commands",
         "server_connectors",
         "tasks",
+        "agent_runtime_states",
     }
 )
 

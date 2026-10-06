@@ -2035,60 +2035,6 @@ class AgentSession(TenantScoped, Base):
     )
 
 
-class AgentRuntimeState(TenantScoped, Base):
-    """The runtime/liveness state of an agent's session as seen in one room.
-
-    Distinct from `AgentSession` (which tracks *reachability*): this captures
-    what the agent's live session is *doing* — `'working'`, `'awaiting-input'`,
-    or `'idle'` — derived from the Switch Console-managed Claude Code session and
-    surfaced on the room's bridged channel. One row per (agent, room), mirroring
-    the `AgentSession` grain, so a state is conceptually tied to that room's
-    session: when the session's heartbeat lapses the sweep resets the row to
-    `'idle'` so a "working" surface doesn't linger after the session leaves.
-    """
-
-    __tablename__ = "agent_runtime_states"
-    __table_args__ = (
-        Index("ix_agent_runtime_states_tenant_id", "tenant_id"),
-        UniqueConstraint(
-            "agent_id", "room_id", name="uq_agent_runtime_states_agent_room"
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "agent_id"],
-            ["agents.tenant_id", "agents.id"],
-            name="fk_agent_runtime_states_agent",
-            ondelete="CASCADE",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "room_id"],
-            ["rooms.tenant_id", "rooms.id"],
-            name="fk_agent_runtime_states_room",
-            ondelete="CASCADE",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
-    room_id: Mapped[str] = mapped_column(Text, nullable=False)
-    state: Mapped[str] = mapped_column(Text, nullable=False)
-    # The switchdash://session deeplink the reporting client (Switch Console) last
-    # sent for this (agent, room), so `!status` can surface an on-demand link to
-    # the session. Null for agents whose connector doesn't report one.
-    deeplink_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Which session-control commands (reset/compact/interrupt) the live session
-    # behind this (agent, room) can execute, as reported by its controller
-    # (Switch Console) — e.g. {"reset": true, "compact": true, "interrupt": true}.
-    # Null when no controller reports capabilities (e.g. a standalone `claude`
-    # session), which resolves session_dependent commands to "unsupported".
-    control_capabilities: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    updated_at: Mapped[str] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
-
-
 # ── Room Roles ────────────────────────────────────────────────────────────────
 
 

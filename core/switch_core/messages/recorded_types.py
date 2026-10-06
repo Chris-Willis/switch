@@ -19,8 +19,10 @@ from __future__ import annotations
 # arrival from something someone said.
 MEMBERSHIP_EVENT_TYPE = "m.room.member"
 
-# Ephemeral: presence-like state, superseded by the next one, null body.
-EPHEMERAL = frozenset({"com.switch.agent.runtime_state"})
+# Ephemeral: presence-like state, superseded by the next one, null body. The
+# transport delivers these live instead of storing them (`transport/
+# ephemeral.py`). None is today; typing would be one if it returned.
+EPHEMERAL: frozenset[str] = frozenset()
 
 # Measurements of a run, not utterances in a room. If these are worth keeping
 # they want a table shaped for querying them, not the conversation log.
@@ -60,6 +62,8 @@ RETIRED = frozenset(
         "com.switch.task.update",
         "com.switch.task.finalise",
         "com.switch.task.cancel",
+        # Deleted with the runtime-state report, which nothing sent any more.
+        "com.switch.agent.runtime_state",
     }
 )
 
