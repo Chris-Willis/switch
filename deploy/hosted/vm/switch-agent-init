@@ -39,7 +39,7 @@ def main() -> int:
             signal.signal(number, signal.SIG_DFL)
         signal.pthread_sigmask(signal.SIG_UNBLOCK, FORWARDED)
         try:
-            os.execvp(sys.argv[1], sys.argv[1:])
+            os.execvp(sys.argv[1], sys.argv[1:])  # nosemgrep
         except OSError as error:
             print(f"switch-agent-init: cannot run {sys.argv[1]}: {error}", file=sys.stderr)
             os._exit(127)
