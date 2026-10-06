@@ -121,6 +121,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.feature_flag_store import FeatureFlagStore
 from switch_core.feature_flags import is_known_flag
 from switch_core.gateway.known_agents import KNOWN_AGENTS
+from switch_core.trust.client import GuardrailBlockedError
 from switch_core.version import switch_core_version
 
 logger = logging.getLogger(__name__)
@@ -481,6 +482,8 @@ async def send_message(
         event_id = await protocol.send_message(agent.id, req.room_id, req.content)
     except BudgetExceeded as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
+    except GuardrailBlockedError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except PermissionError as e:
@@ -671,6 +674,8 @@ async def update_status(
     if req.detail:
         try:
             await protocol.update_status(agent.id, req.room_id, req.detail)
+        except GuardrailBlockedError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         except PermissionError as e:
@@ -1557,6 +1562,8 @@ async def finalise_task(
     try:
         await protocol.finalise_task(agent.id, req.task_id, req.outcome)
         task = await protocol.get_task(agent.id, req.task_id)
+    except GuardrailBlockedError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except PermissionError as e:

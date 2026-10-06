@@ -88,6 +88,7 @@ from switch_core.room_service import RoomService
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
+from switch_core.trust.client import NullTrustClient
 
 # ── Mirrors deploy/local/docker-compose.yml — keep in sync ──────────────────────
 POSTGRES_IMAGE = "postgres:16-alpine"
@@ -628,6 +629,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             config=config,
             # Required since #543; no integration test answers an approval.
             approval_outcomes=MagicMock(),
+            trust_client=NullTrustClient(),
             connections=connections,
         )
 
