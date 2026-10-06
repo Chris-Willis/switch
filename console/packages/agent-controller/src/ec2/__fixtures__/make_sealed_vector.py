@@ -27,7 +27,14 @@ def additional_data(context: dict[str, str], revision: int) -> bytes:
     ).encode()
 
 
-def seal(provider: str, kind: str, credential: str, revision: int, context: dict[str, str], iv: bytes) -> dict:
+def seal(
+    provider: str,
+    kind: str,
+    credential: str,
+    revision: int,
+    context: dict[str, str],
+    iv: bytes,
+) -> dict:
     plaintext = json.dumps(
         {
             "status": "connected",
@@ -71,10 +78,38 @@ vector = {
     "encryptedKey": b64(ENCRYPTED_KEY),
     "keyArn": KEY_ARN,
     "cases": {
-        "claude": seal("claude", "api-key", "sk-ant-test-placeholder", 3, context("claude", "tenant-1"), bytes(range(12))),
-        "claudeNext": seal("claude", "api-key", "sk-ant-test-placeholder-2", 4, context("claude", "tenant-1"), bytes(range(1, 13))),
-        "codex": seal("codex", "auth-json", '{"tokens":{"access_token":"placeholder"}}', 7, context("codex", "tenant-1"), bytes(range(2, 14))),
-        "unicode": seal("claude", "setup-token", "sk-ant-oat-placeholder", 12, context("claude", "ténant-ü-\U0001f600"), bytes(range(3, 15))),
+        "claude": seal(
+            "claude",
+            "api-key",
+            "sk-ant-test-placeholder",
+            3,
+            context("claude", "tenant-1"),
+            bytes(range(12)),
+        ),
+        "claudeNext": seal(
+            "claude",
+            "api-key",
+            "sk-ant-test-placeholder-2",
+            4,
+            context("claude", "tenant-1"),
+            bytes(range(1, 13)),
+        ),
+        "codex": seal(
+            "codex",
+            "auth-json",
+            '{"tokens":{"access_token":"placeholder"}}',
+            7,
+            context("codex", "tenant-1"),
+            bytes(range(2, 14)),
+        ),
+        "unicode": seal(
+            "claude",
+            "setup-token",
+            "sk-ant-oat-placeholder",
+            12,
+            context("claude", "ténant-ü-\U0001f600"),
+            bytes(range(3, 15)),
+        ),
     },
 }
 
