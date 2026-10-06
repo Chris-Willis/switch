@@ -22,10 +22,11 @@ from __future__ import annotations
 import logging
 import ntpath
 import posixpath
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -66,6 +67,7 @@ from switch_core.db.stores.hosted_machine_store import (
     HostedMachineStore,
     accepts_controller_exchange,
 )
+from switch_core.gateway.cloud_workspace import worktree_path
 from switch_core.gateway.hosted_controller_activity import (
     record_controller_heartbeat,
     wake_controller_machine,
@@ -86,6 +88,7 @@ from switch_core.management.schemas import (
     CreateManagedAgentRequest,
     DefinitionV1,
     PublicKey,
+    RepositoryRef,
     StatusReport,
     assignment_entry,
     controller_view,
@@ -947,11 +950,13 @@ class ManagementService:
         owner_id: str,
         request: CreateManagedAgentRequest,
         protocol: AgentCore,
+        repository_name: Callable[[RepositoryRef], Awaitable[str]],
     ) -> dict[str, Any]:
         """Register a new agent through the known-agent spec for its provider,
         and place it. Placement is checked before anything is registered, so a
         refusal leaves nothing behind; a failure after registering deletes the
-        registered agent again."""
+        registered agent again. `repository_name` resolves the `owner/name` of
+        the repository a Switch cloud agent works in."""
         controller = await self._check_target(
             session,
             tenant_id,
@@ -960,7 +965,19 @@ class ManagementService:
             request.definition.provider,
             check_placement=True,
         )
-        definition = with_directory(request.definition, controller, request.name)
+        refuse_repository_off_cloud(request.definition, controller)
+        agent_id: str | None = None
+        if controller is not None and controller.kind == CLOUD_CONTROLLER_KIND:
+            # Its worktree there is named by its id, so the id comes first.
+            agent_id = str(uuid4())
+            repository = request.definition.repository
+            definition = cloud_definition(
+                request.definition,
+                agent_id,
+                None if repository is None else await repository_name(repository),
+            )
+        else:
+            definition = with_directory(request.definition, controller, request.name)
         try:
             icon_url = normalise_icon_url(request.icon_url) or generated_icon_url(
                 request.name
@@ -983,6 +1000,7 @@ class ManagementService:
                 metadata=metadata,
                 owner_id=owner_id,
                 owner_only=True,
+                reserved_agent_id=agent_id,
             )
         except AgentExistsError as exc:
             raise ManagementError(409, reason_codes.VALIDATION_ERROR, str(exc)) from exc
@@ -1103,6 +1121,7 @@ class ManagementService:
             definition.provider,
             check_placement=moved or to_running,
         )
+        refuse_repository_off_cloud(definition, controller)
         directory = definition.directory
         if (
             moved
@@ -1114,10 +1133,10 @@ class ManagementService:
                 session, tenant_id, existing.controller_id
             )
             # The old machine's workspace for the agent means nothing on the new one.
-            if directory == default_directory(previous, agent.name):
+            if directory == placed_directory(previous, agent.id, agent.name):
                 directory = None
         if directory is None:
-            directory = default_directory(controller, agent.name)
+            directory = placed_directory(controller, agent.id, agent.name)
         if directory != definition.directory:
             definition = definition.model_copy(update={"directory": directory})
             target = replace(
@@ -1369,6 +1388,48 @@ def default_directory(controller: AgentController | None, name: str) -> str | No
     if platform.get("os") == "windows":
         return ntpath.join(root, name)
     return posixpath.join(root, name)
+
+
+def placed_directory(
+    controller: AgentController | None, agent_id: str, name: str
+) -> str | None:
+    """The directory an agent works in on `controller` when its definition
+    names none: on a Switch cloud machine its own worktree, which is the only
+    place that machine runs it; elsewhere the machine's workspace for it."""
+    if controller is not None and controller.kind == CLOUD_CONTROLLER_KIND:
+        return worktree_path(agent_id, None)
+    return default_directory(controller, name)
+
+
+def cloud_definition(
+    definition: DefinitionV1, agent_id: str, repository: str | None
+) -> DefinitionV1:
+    """A new agent's definition on a Switch cloud machine, which runs every
+    agent isolated, in its own worktree of `repository` (its `owner/name`)
+    unless the definition names a directory."""
+    return definition.model_copy(
+        update={
+            "isolation": "isolated",
+            "directory": definition.directory or worktree_path(agent_id, repository),
+        }
+    )
+
+
+def refuse_repository_off_cloud(
+    definition: DefinitionV1, controller: AgentController | None
+) -> None:
+    """Only a Switch cloud machine clones a repository for its agents."""
+    if (
+        definition.repository is not None
+        and controller is not None
+        and controller.kind != CLOUD_CONTROLLER_KIND
+    ):
+        raise ManagementError(
+            422,
+            reason_codes.VALIDATION_ERROR,
+            "Only an agent on a Switch cloud machine can work in a GitHub "
+            "repository; choose your Switch cloud machine, or no repository.",
+        )
 
 
 def with_directory(

@@ -54,6 +54,7 @@ from switch_core.db.stores.provider_connection_store import (
     ProviderConnectionStore,
 )
 from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.cloud_workspace import worktree_path
 from switch_core.gateway.dependencies import get_config, get_protocol, get_session
 from switch_core.gateway.github_connections import connection_status
 from switch_core.gateway.github_connections import service as get_github
@@ -180,13 +181,6 @@ async def launch_summary(session: AsyncSession, launch: HostedLaunch) -> dict:
         else await HostedMachineStore().get(session, launch.machine_id)
     )
     return summary(launch, machine)
-
-
-def worktree_path(agent_id: str, repository: str | None) -> str:
-    """The agent's worktree on its machine's disk, which is also its `repo_dir`."""
-    if repository is None:
-        return f"/data/worktrees/{agent_id}/workspace"
-    return f"/data/worktrees/{agent_id}/{repository.lower()}"
 
 
 async def locked_owned(

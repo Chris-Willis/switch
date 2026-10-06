@@ -34,6 +34,7 @@ from switch_core.management.schemas import (
     CreateManagedAgentRequest,
     DefinitionV1,
     PatchManagedAgentRequest,
+    RepositoryRef,
     agent_status_from,
     wire_time_or_none,
 )
@@ -238,7 +239,7 @@ class ManagementAgentOperations:
                 ) from exc
             try:
                 view = await self._service.create_managed_agent(
-                    session, tenant_id, owner_id, request, protocol
+                    session, tenant_id, owner_id, request, protocol, _no_repository
                 )
             except ManagementError as exc:
                 sentence = _placement_sentence(exc.code, controller.name, spec.provider)
@@ -421,3 +422,12 @@ class ManagementAgentOperations:
         if entry is None:
             raise RuntimeError(f"managed agent {agent_id} vanished while updating it")
         return entry
+
+
+async def _no_repository(repository: RepositoryRef) -> str:
+    """An agent created through the agent tools is given no repository, so
+    there is none to name."""
+    raise RuntimeError(
+        "An agent created through the agent tools names no repository, yet "
+        f"one was asked for: {repository.installation_id}/{repository.repository_id}"
+    )

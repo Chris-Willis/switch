@@ -442,15 +442,15 @@ class AgentCore:
                     "A cloud launch already reserves this agent name."
                 )
             existing = await self.agent_store.get_by_name(session, name)
-            if reserved_agent_id is not None and existing is not None:
-                raise AgentExistsError(
-                    "The reserved cloud identity cannot overwrite an agent."
-                )
             if existing and not overwrite:
                 raise AgentExistsError(
                     f"Agent already exists: {name!r}. "
                     "Pass overwrite=True to re-register (rotates API key, "
                     "replaces integration profile)."
+                )
+            if reserved_agent_id is not None and existing is not None:
+                raise AgentExistsError(
+                    "The reserved cloud identity cannot overwrite an agent."
                 )
             if existing and existing.owner_id != owner_id:
                 # `agents.name` is unique per tenant, not globally, but

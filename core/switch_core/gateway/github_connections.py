@@ -33,6 +33,7 @@ from switch_core.providers.github import (
     GitHubConnections,
     GitHubError,
     GitHubFlow,
+    repository_writable,
 )
 from switch_core.providers.github_installation import (
     GitHubInstallationCredentials,
@@ -499,6 +500,43 @@ async def connection_status(
         "installations": installations,
         "install_url": github.install_url,
     }
+
+
+async def writable_repository_name(
+    user_id: str,
+    session: AsyncSession,
+    config: SwitchConfig,
+    github: GitHubConnections,
+    installation_id: int,
+    repository_id: int,
+) -> str:
+    """The `owner/name` of a repository the user's GitHub App installation
+    shares with Switch and the user can push to; 422 otherwise."""
+    access = await connection_status(user_id, session, config, github)
+    if access["status"] != "connected":
+        raise HTTPException(
+            422, "Connect GitHub before choosing a repository for a cloud agent."
+        )
+    repository = next(
+        (
+            repo
+            for installation in access["installations"]
+            if installation["id"] == installation_id
+            for repo in installation["repositories"]
+            if repo["id"] == repository_id
+        ),
+        None,
+    )
+    if repository is None:
+        raise HTTPException(
+            422, "Your GitHub account no longer has access to the selected repository."
+        )
+    if not repository_writable(repository):
+        raise HTTPException(
+            422,
+            "Your GitHub account needs write access to this repository to run a cloud agent.",
+        )
+    return str(repository["name"])
 
 
 @router.delete("")

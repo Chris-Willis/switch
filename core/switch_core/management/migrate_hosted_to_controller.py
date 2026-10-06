@@ -74,7 +74,7 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.hosted_machine_store import HostedMachineStore, bump_revision
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
-from switch_core.gateway.hosted_launches import worktree_path
+from switch_core.gateway.cloud_workspace import worktree_path
 from switch_core.logging_config import configure_logging
 from switch_core.management.schemas import DefinitionV1, RepositoryRef
 from switch_core.management.service import ManagementService

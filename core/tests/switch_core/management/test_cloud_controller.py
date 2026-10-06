@@ -31,7 +31,9 @@ from switch_core.bridges.agent.api.hosted_routes import router as hosted_router
 from switch_core.connections.loader import CATALOG, deployment_skills
 from switch_core.db.models import (
     TENANT_ZERO_ID,
+    Agent,
     AgentController,
+    AgentDefinition,
     HostedMachine,
     ProviderConnection,
     SealedProviderCredential,
@@ -88,6 +90,7 @@ class Cloud:
     client: httpx.AsyncClient
     config: SimpleNamespace
     issue: AsyncMock
+    repositories: AsyncMock
 
     @property
     def factory(self) -> async_sessionmaker[AsyncSession]:
@@ -228,8 +231,45 @@ async def cloud(
         "switch_core.bridges.agent.api.hosted_routes.GitHubInstallationCredentials",
         lambda *_: SimpleNamespace(issue=issue, revoke=AsyncMock()),
     )
+    repositories = AsyncMock(
+        return_value=[
+            {
+                "id": 123,
+                "account": "example",
+                "repositories": [
+                    {
+                        "id": 456,
+                        "name": "Example/Project",
+                        "permissions": {
+                            "push": True,
+                            "maintain": False,
+                            "admin": False,
+                        },
+                    },
+                    {
+                        "id": 789,
+                        "name": "example/read-only",
+                        "permissions": {
+                            "push": False,
+                            "maintain": False,
+                            "admin": False,
+                        },
+                    },
+                ],
+            }
+        ]
+    )
+    gateway.state.github_connections = SimpleNamespace(
+        repositories=repositories, install_url="https://github.example/install"
+    )
     async with harness.client() as client:
-        yield Cloud(harness=harness, client=client, config=config, issue=issue)
+        yield Cloud(
+            harness=harness,
+            client=client,
+            config=config,
+            issue=issue,
+            repositories=repositories,
+        )
 
 
 def _open(envelope: dict[str, Any]) -> dict[str, Any]:
@@ -265,6 +305,30 @@ async def _connection(cloud: Cloud, owner: User, provider_name: str) -> Any:
                 ProviderConnection.provider == provider_name,
             )
         )
+
+
+async def _connect_github(cloud: Cloud, owner: User) -> None:
+    async with cloud.factory() as session:
+        session.add(
+            ProviderConnection(
+                user_id=owner.id,
+                provider="github",
+                kind="oauth",
+                encrypted_credential=KEYRING.encrypt(
+                    json.dumps(
+                        {
+                            "access_token": "SYNTHETIC-GITHUB",
+                            "login": "ada",
+                            "expires_at": (
+                                datetime.now(UTC) + timedelta(hours=1)
+                            ).timestamp(),
+                        }
+                    )
+                ),
+                verified_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
 
 
 class TestPrepare:
@@ -458,6 +522,126 @@ class TestEnsure:
         )
         assert envelope.status_code == 200, envelope.text
         assert _open(envelope.json())["credential"] == "PLACEHOLDER-CLAUDE-TOKEN"
+
+    async def test_an_agent_in_a_repository_is_placed_before_the_machine_reports(
+        self, cloud: Cloud
+    ) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        await _connect_github(cloud, owner)
+        ensured = await cloud.client.post(
+            "/gateway/hosted-machines/ensure", cookies=cookies_for(owner)
+        )
+        assert ensured.status_code == 200, ensured.text
+
+        created = await create_managed_agent(
+            cloud.client,
+            owner,
+            name="cloud-helper",
+            controller_id=ensured.json()["controller_id"],
+            definition_body=definition(repository=REPOSITORY),
+        )
+
+        assert created.status_code == 201, created.text
+        agent_id = created.json()["agent_id"]
+        async with cloud.factory() as session:
+            row = await session.scalar(
+                select(AgentDefinition).where(AgentDefinition.agent_id == agent_id)
+            )
+        assert row is not None
+        assert row.controller_id == ensured.json()["controller_id"]
+        assert row.definition["repository"] == REPOSITORY
+        assert row.definition["isolation"] == "isolated"
+        assert (
+            row.definition["directory"] == f"/data/worktrees/{agent_id}/example/project"
+        )
+
+    async def test_an_agent_without_a_repository_works_in_a_fresh_workspace(
+        self, cloud: Cloud
+    ) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        ensured = await cloud.client.post(
+            "/gateway/hosted-machines/ensure", cookies=cookies_for(owner)
+        )
+        assert ensured.status_code == 200, ensured.text
+
+        created = await create_managed_agent(
+            cloud.client,
+            owner,
+            name="cloud-helper",
+            controller_id=ensured.json()["controller_id"],
+        )
+
+        assert created.status_code == 201, created.text
+        agent_id = created.json()["agent_id"]
+        assert (
+            created.json()["definition"]["directory"]
+            == f"/data/worktrees/{agent_id}/workspace"
+        )
+        cloud.repositories.assert_not_awaited()
+
+    async def test_a_name_already_taken_is_refused_as_taken(self, cloud: Cloud) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        ensured = await cloud.client.post(
+            "/gateway/hosted-machines/ensure", cookies=cookies_for(owner)
+        )
+        assert ensured.status_code == 200, ensured.text
+        first = await create_managed_agent(
+            cloud.client,
+            owner,
+            name="cloud-helper",
+            controller_id=ensured.json()["controller_id"],
+        )
+        assert first.status_code == 201, first.text
+
+        again = await create_managed_agent(
+            cloud.client,
+            owner,
+            name="cloud-helper",
+            controller_id=ensured.json()["controller_id"],
+        )
+
+        assert again.status_code == 409, again.text
+        assert "already exists" in again.json()["error"]["message"]
+
+    @pytest.mark.parametrize(
+        ("connected", "repository", "message"),
+        [
+            (False, REPOSITORY, "Connect GitHub"),
+            (
+                True,
+                {"installation_id": 123, "repository_id": 999},
+                "no longer has access",
+            ),
+            (True, {"installation_id": 123, "repository_id": 789}, "write access"),
+        ],
+    )
+    async def test_a_repository_the_owner_cannot_push_to_registers_nothing(
+        self, cloud: Cloud, connected: bool, repository: dict[str, int], message: str
+    ) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        if connected:
+            await _connect_github(cloud, owner)
+        ensured = await cloud.client.post(
+            "/gateway/hosted-machines/ensure", cookies=cookies_for(owner)
+        )
+        assert ensured.status_code == 200, ensured.text
+
+        created = await create_managed_agent(
+            cloud.client,
+            owner,
+            name="cloud-helper",
+            controller_id=ensured.json()["controller_id"],
+            definition_body=definition(repository=repository),
+        )
+
+        assert created.status_code == 422, created.text
+        assert created.json()["error"]["code"] == "validation_error"
+        assert message in created.json()["error"]["message"]
+        async with cloud.factory() as session:
+            assert (
+                await session.scalar(select(Agent).where(Agent.name == "cloud-helper"))
+                is None
+            )
 
 
 class TestExchange:
@@ -789,28 +973,6 @@ class TestRepositoryCredential:
         assert created.status_code == 201, created.text
         return str(created.json()["agent_id"])
 
-    async def _github(self, cloud: Cloud, owner: User) -> None:
-        async with cloud.factory() as session:
-            session.add(
-                ProviderConnection(
-                    user_id=owner.id,
-                    provider="github",
-                    kind="oauth",
-                    encrypted_credential=KEYRING.encrypt(
-                        json.dumps(
-                            {
-                                "access_token": "SYNTHETIC-GITHUB",
-                                "expires_at": (
-                                    datetime.now(UTC) + timedelta(hours=1)
-                                ).timestamp(),
-                            }
-                        )
-                    ),
-                    verified_at=datetime.now(UTC),
-                )
-            )
-            await session.commit()
-
     async def _fetch(
         self, cloud: Cloud, controller: EnrolledController, agent_id: str
     ) -> httpx.Response:
@@ -823,7 +985,7 @@ class TestRepositoryCredential:
         self, cloud: Cloud
     ) -> None:
         owner = await add_member(cloud.factory, "ada")
-        await self._github(cloud, owner)
+        await _connect_github(cloud, owner)
         controller = await cloud.cloud_controller(owner)
         agent_id = await self._agent(cloud, controller, repository=REPOSITORY)
 
@@ -842,7 +1004,7 @@ class TestRepositoryCredential:
 
     async def test_an_agent_without_a_repository_gets_none(self, cloud: Cloud) -> None:
         owner = await add_member(cloud.factory, "ada")
-        await self._github(cloud, owner)
+        await _connect_github(cloud, owner)
         controller = await cloud.cloud_controller(owner)
         agent_id = await self._agent(cloud, controller)
 
@@ -853,6 +1015,7 @@ class TestRepositoryCredential:
         self, cloud: Cloud
     ) -> None:
         owner = await add_member(cloud.factory, "ada")
+        await _connect_github(cloud, owner)
         controller = await cloud.cloud_controller(owner)
         in_repository = await self._agent(cloud, controller, repository=REPOSITORY)
 
@@ -885,9 +1048,57 @@ class TestRepositoryCredential:
 
     async def test_a_console_controller_gets_none(self, cloud: Cloud) -> None:
         owner = await add_member(cloud.factory, "ada")
-        await self._github(cloud, owner)
+        await _connect_github(cloud, owner)
         console = await enroll_console(cloud.harness, cloud.client, owner)
-        agent_id = await self._agent(cloud, console, repository=REPOSITORY)
+        agent_id = await self._agent(cloud, console)
 
         assert (await self._fetch(cloud, console, agent_id)).status_code == 403
         cloud.issue.assert_not_awaited()
+
+    async def test_a_console_controller_is_refused_a_repository(
+        self, cloud: Cloud
+    ) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        console = await enroll_console(cloud.harness, cloud.client, owner)
+        await report_status(cloud.client, console, 1, providers=[provider("claude")])
+
+        created = await create_managed_agent(
+            cloud.client,
+            owner,
+            name="cloud-helper",
+            controller_id=console.controller_id,
+            definition_body=definition(repository=REPOSITORY),
+        )
+
+        assert created.status_code == 422, created.text
+        assert "Switch cloud machine" in created.json()["error"]["message"]
+        async with cloud.factory() as session:
+            assert (
+                await session.scalar(select(Agent).where(Agent.name == "cloud-helper"))
+                is None
+            )
+
+
+class TestTheCloudWorkingDirectory:
+    async def test_an_agent_moved_onto_a_cloud_machine_works_in_its_worktree(
+        self, cloud: Cloud
+    ) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        controller = await cloud.cloud_controller(owner)
+        await report_status(cloud.client, controller, 1, providers=[provider("claude")])
+        created = await create_managed_agent(
+            cloud.client, owner, name="cloud-helper", controller_id=None
+        )
+        agent_id = created.json()["agent_id"]
+
+        moved = await cloud.client.patch(
+            f"/gateway/management/agents/{agent_id}",
+            json={"controller_id": controller.controller_id},
+            cookies=cookies_for(owner),
+        )
+
+        assert moved.status_code == 200, moved.text
+        assert (
+            moved.json()["definition"]["directory"]
+            == f"/data/worktrees/{agent_id}/workspace"
+        )
