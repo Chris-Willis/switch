@@ -2,10 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Computer, ExternalLink, Pencil, RefreshCw, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
-import {
-  moveAllState,
-  moveAllSummary,
-} from '@renderer/features/agent-migration/agent-migration-presentation';
+import { MoveAllAgents } from '@renderer/features/agent-migration/move-all-agents';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useStateBoundFailure } from '@renderer/lib/hooks/use-state-bound-failure';
@@ -26,7 +23,6 @@ import { Label } from '@renderer/lib/ui/label';
 import { StatusBadge, type StatusTone } from '@renderer/lib/ui/status-badge';
 import { Switch } from '@renderer/lib/ui/switch';
 import { Textarea } from '@renderer/lib/ui/textarea';
-import { MOVE_RULE } from '@shared/core/agent-migration/agent-migration';
 import {
   type EmbeddedControllerOverview,
   MAX_MACHINE_DESCRIPTION,
@@ -421,102 +417,6 @@ function MachineDetails({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
-  );
-}
-
-/**
- * Moving every agent this Console runs for the workspace, on this computer
- * and on its SSH hosts, onto their machines all at once ("Move all"), or
- * bringing them all back, and whether that is complete. Each agent can also
- * be moved on its own page.
- */
-function MoveAllAgents({ serverId, workspaceId }: { serverId: string; workspaceId: string }) {
-  const queryClient = useQueryClient();
-  const scope = { serverId, workspaceId };
-  const progressKey = ['agent-migration', 'workspace', serverId, workspaceId];
-  const progress = useQuery({
-    queryKey: progressKey,
-    queryFn: () => rpc.agentMigration.moveAllProgressInWorkspace(scope),
-    refetchInterval: REFRESH_MS,
-  });
-  const [outcome, setOutcome] = useState<string[] | null>(null);
-  const settle = (lines: string[]) => {
-    setOutcome(lines);
-    void queryClient.invalidateQueries({ queryKey: overviewKey(serverId) });
-    void queryClient.invalidateQueries({ queryKey: ['agent-migration'] });
-  };
-  const moveAll = useMutation({
-    mutationFn: () => rpc.agentMigration.moveAllInWorkspace(scope),
-    onSuccess: (result) => settle(moveAllSummary(result, 'Moved')),
-  });
-  const bringBack = useMutation({
-    mutationFn: () => rpc.agentMigration.stopManagingAllInWorkspace(scope),
-    onSuccess: (result) => settle(moveAllSummary(result, 'Brought back')),
-  });
-  const working = moveAll.isPending || bringBack.isPending;
-  const failure = moveAll.error ?? bringBack.error ?? progress.error;
-  const state = progress.data ? moveAllState(progress.data) : null;
-  return (
-    <div className="space-y-2 rounded-lg border border-border px-3 py-2">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-foreground">Move all agents to managed</p>
-        {state && (
-          <StatusBadge tone={TONE[state.tone]} className="shrink-0">
-            {state.label}
-          </StatusBadge>
-        )}
-      </div>
-      <p className="text-xs text-foreground-muted">
-        Move every agent this Console runs for this workspace, on this computer and on your SSH
-        hosts, onto that computer’s machine, so Switch manages them. An agent on an SSH host needs
-        the host turned on as a machine first. {MOVE_RULE} Agents that cannot move are left as they
-        are, with the reason.
-      </p>
-      {state?.detail && <p className="text-xs text-foreground-muted">{state.detail}</p>}
-      {progress.data && (
-        <ul className="space-y-0.5 text-xs text-foreground-muted">
-          {progress.data.remaining.flatMap((agent) =>
-            agent.reason === null
-              ? []
-              : [
-                  <li key={agent.name}>
-                    {agent.name}: {agent.reason}
-                  </li>,
-                ]
-          )}
-        </ul>
-      )}
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={working || progress.data?.remaining.length === 0}
-          onClick={() => moveAll.mutate()}
-        >
-          {moveAll.isPending ? 'Moving…' : 'Move all'}
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={working || !progress.data?.managed.length}
-          onClick={() => bringBack.mutate()}
-        >
-          {bringBack.isPending ? 'Bringing back…' : 'Bring all back'}
-        </Button>
-      </div>
-      {outcome && (
-        <ul className="space-y-0.5 text-xs text-foreground-muted">
-          {outcome.map((line) => (
-            <li key={line}>{line}</li>
-          ))}
-        </ul>
-      )}
-      {failure && (
-        <p className="text-xs text-foreground-error">
-          {failureText(failure, 'That did not work.')}
-        </p>
-      )}
     </div>
   );
 }
