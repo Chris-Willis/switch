@@ -219,3 +219,13 @@ def test_a_placeholder_may_describe_its_levels(catalog_copy):
     )
     definition = load_catalog(catalog_copy)["jira"].definition
     assert definition.level_tools("read") == ["search_issues"]
+
+
+@pytest.mark.parametrize(
+    "phrase", ["GH_TOKEN", "gh auth status", "an Access Token", "API key"]
+)
+def test_rejects_a_skill_that_talks_about_credentials(catalog_copy, phrase):
+    path = catalog_copy / "github" / "skill" / "SKILL.md"
+    path.write_text(path.read_text() + f"\nNever use {phrase}.\n")
+    with pytest.raises(CatalogError, match="never credentials or setup"):
+        load_catalog(catalog_copy)

@@ -27,6 +27,10 @@ SKILL_PATH_RE = re.compile(
     r"^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}(/[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}){0,7}$"
 )
 FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
+# A skill describes tasks, tools and limits. How a credential reaches the agent
+# is its host's business, and a skill that names one invites the agent to go
+# looking for it.
+SKILL_FORBIDDEN = ("GH_TOKEN", "gh auth", "access token", "API key")
 
 # Hosts whose agent loads skills from a directory the hosted bootstrap can
 # install into. Cursor and Antigravity have none, so a cloud agent on those
@@ -158,6 +162,14 @@ def _load_skill(slug: str, root: Path) -> dict[str, str]:
             ) from None
         if "\x00" in content:
             raise CatalogError(f"Connection {slug} skill file contains NUL: {relative}")
+        lowered = content.lower()
+        for phrase in SKILL_FORBIDDEN:
+            if phrase.lower() in lowered:
+                raise CatalogError(
+                    f"Connection {slug} skill file {relative} mentions {phrase!r}. "
+                    "A skill describes tasks, tools and limits, never credentials "
+                    "or setup."
+                )
         files[relative] = content
     if "SKILL.md" not in files:
         raise CatalogError(f"Connection {slug} is enabled but has no skill/SKILL.md.")

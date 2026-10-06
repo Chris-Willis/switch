@@ -412,6 +412,10 @@ class ServiceBroker:
         )
         try:
             issued = await adapter.issue(access_token, request)
+        except ReauthorizationRequiredError as error:
+            raise await self._needs_reauthorization(
+                decision.owner_id, service, error
+            ) from None
         except ServiceUnavailableError as error:
             raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
         except ServiceAdapterError as error:
@@ -634,13 +638,7 @@ class ServiceBroker:
                     session, owner_id, service, "refresh_refused"
                 )
                 await session.commit()
-                raise ServiceError(
-                    409,
-                    CONNECTOR_REVOKED,
-                    f"{error} The agent's owner must reconnect {name} under "
-                    "Settings, Connections.",
-                    retryable=False,
-                ) from None
+                raise self._revoked(service, error) from None
             except ServiceUnavailableError as error:
                 raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
             except ServiceAdapterError as error:
@@ -662,6 +660,36 @@ class ServiceBroker:
             )
             await session.commit()
             return token
+
+    def _revoked(self, service: str, error: Exception) -> ServiceError:
+        name = self._entry(service).definition.name
+        return ServiceError(
+            409,
+            CONNECTOR_REVOKED,
+            f"{error} The agent's owner must reconnect {name} under Settings, "
+            "Connections.",
+            retryable=False,
+        )
+
+    async def _needs_reauthorization(
+        self, owner_id: str, service: str, error: Exception
+    ) -> ServiceError:
+        """Record that the vendor refused the owner's sign-in; the refusal to raise.
+
+        In a transaction of its own: the vendor's answer stands whatever the
+        caller's transaction does next.
+        """
+        tenant_id = require_tenant_id()
+
+        async def mark() -> None:
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                await self._store.mark_needs_reauthorization(
+                    session, owner_id, service, "sign_in_refused"
+                )
+                await session.commit()
+
+        await finish_shielded(mark())
+        return self._revoked(service, error)
 
     def _secret(self, connection: ServiceConnection) -> ConnectionSecret:
         return ConnectionSecret(
@@ -800,6 +828,8 @@ class ServiceBroker:
         )
         try:
             checked = await adapter.check_grant(access_token, request)
+        except ReauthorizationRequiredError as error:
+            raise await self._needs_reauthorization(actor_id, service, error) from None
         except ServiceUnavailableError as error:
             raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
         except ServiceAdapterError as error:

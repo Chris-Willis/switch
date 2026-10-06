@@ -182,6 +182,13 @@ class SwitchConfig(BaseSettings):
     service_token_retention_days: int = Field(default=30, ge=1)
     hosted_controller_config_path: str | None = None
     hosted_github_config_path: str | None = None
+    # The GitHub App this deployment connects people's GitHub accounts through
+    # and issues repository tokens from: its JSON settings
+    # ({client_id, client_secret, slug, origin}) and the absolute path to its
+    # signing key. Both or neither. Unset, GitHub is shown as not set up here,
+    # unless the deprecated hosted settings above still name an App.
+    github_app_config_path: str | None = None
+    github_app_private_key_path: str | None = None
     hosted_provider_verification_enabled: bool = False
     hosted_claude_verifier_path: str | None = None
     # Sets the Secure flag on the gateway's cookies (the switch_auth session
@@ -896,6 +903,22 @@ class SwitchConfig(BaseSettings):
                 "interval such as '15s', '500ms' or a bare count of "
                 f"milliseconds, got {value!r}."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_github_app(self) -> "SwitchConfig":
+        if (self.github_app_config_path is None) != (
+            self.github_app_private_key_path is None
+        ):
+            raise ValueError(
+                "GITHUB_APP_CONFIG_PATH and GITHUB_APP_PRIVATE_KEY_PATH are set "
+                "together or not at all."
+            )
+        if (
+            self.github_app_private_key_path is not None
+            and not Path(self.github_app_private_key_path).is_absolute()
+        ):
+            raise ValueError("GITHUB_APP_PRIVATE_KEY_PATH must be an absolute path.")
         return self
 
     @model_validator(mode="after")

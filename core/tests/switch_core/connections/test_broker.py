@@ -620,3 +620,22 @@ class TestRevocation:
         assert len(reads) == 1 and reads[0].lstrip().upper().startswith("SELECT")
         assert not any("pg_advisory_xact_lock" in s for s in statements)
         assert vendor.revoked == []
+
+
+class TestReauthorization:
+    async def test_a_sign_in_github_refuses_on_issue_needs_reauthorization(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory)
+        vendor.issue_error = ReauthorizationRequiredError(
+            "GitHub access expired or was revoked."
+        )
+        refused = await _refused(broker, session_factory, world.agent.id)
+        assert (refused.status_code, refused.code) == (409, "connector_revoked")
+        assert "reconnect GitHub" in refused.message
+        connection = await _connection(session_factory, world.owner.id)
+        assert connection is not None
+        assert (connection.status, connection.error_code) == (
+            "needs_reauthorization",
+            "sign_in_refused",
+        )
