@@ -1,10 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
-import { Field, FieldDescription, FieldLabel } from '@renderer/lib/ui/field';
+import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import {
   Select,
   SelectContent,
@@ -18,24 +18,25 @@ import {
   providerDisplayName,
   type AgentProviderId,
 } from '@shared/core/providers/agent-provider-registry';
-import type { CloudRepositorySelection } from '@shared/core/switch-servers/cloud-launch';
 
-export function CloudAgentRepository({
+/**
+ * The provider a new Switch cloud agent runs, chosen before the user has a
+ * cloud machine to report its providers, with the login Switch holds for it.
+ * Reports whether that login is connected, which the agent cannot run without.
+ */
+export function CloudAgentProvider({
   serverId,
   providerId,
   onProviderChange,
-  onSelection,
+  onConnectedChange,
   onConnectProvider,
-  onConnectGitHub,
 }: {
   serverId: string;
   providerId: AgentProviderId;
   onProviderChange: (provider: AgentProviderId) => void;
-  onSelection: (value: CloudRepositorySelection | null) => void;
+  onConnectedChange: (connected: boolean) => void;
   onConnectProvider: () => void;
-  onConnectGitHub: () => void;
 }) {
-  const [repository, setRepository] = useState<string | null>(null);
   const provider = useQuery({
     queryKey: ['cloud-agent-connections', serverId, providerId],
     queryFn: () => rpc.switchServers.getCloudProviderConnection(serverId, providerId),
@@ -43,32 +44,11 @@ export function CloudAgentRepository({
     retry: false,
     refetchInterval: (query) => (query.state.data?.status === 'verifying' ? 2000 : false),
   });
-  const github = useQuery({
-    queryKey: ['cloud-agent-github', serverId],
-    queryFn: () => rpc.switchServers.getGitHubConnection(serverId),
-    staleTime: 0,
-    retry: false,
-  });
-  const repositories =
-    github.data?.status === 'connected'
-      ? github.data.installations.flatMap((installation) =>
-          installation.repositories.map((repo) => ({
-            value: `${installation.id}:${repo.id}`,
-            label: repo.name,
-          }))
-        )
-      : [];
-  const selected = repositories.some((repo) => repo.value === repository)
-    ? repository
-    : repositories.length === 1
-      ? repositories[0].value
-      : null;
   const connected = provider.data?.status === 'connected' || provider.data?.status === 'configured';
   useEffect(() => {
-    const ids = selected?.split(':').map(Number);
-    onSelection(connected && ids ? { installationId: ids[0], repositoryId: ids[1] } : null);
-    return () => onSelection(null);
-  }, [selected, connected, onSelection]);
+    onConnectedChange(connected);
+    return () => onConnectedChange(false);
+  }, [connected, onConnectedChange]);
   return (
     <>
       <Field>
@@ -133,60 +113,18 @@ export function CloudAgentRepository({
             )}
         </div>
       </Field>
-      {(provider.isPending || github.isPending) && (
+      {provider.isPending && (
         <p role="status" className="flex items-center gap-2 text-sm">
-          <Spinner /> Loading cloud connections…
+          <Spinner /> Loading the cloud connection…
         </p>
       )}
-      {(provider.error || github.error) && (
+      {provider.error && (
         <div role="alert" className="space-y-2 text-sm text-destructive">
-          <p>{failureText(provider.error || github.error, 'Could not load cloud connections.')}</p>
-          <Button
-            variant="outline"
-            onClick={() => {
-              void provider.refetch();
-              void github.refetch();
-            }}
-          >
+          <p>{failureText(provider.error, 'Could not load the cloud connection.')}</p>
+          <Button variant="outline" onClick={() => void provider.refetch()}>
             Retry
           </Button>
         </div>
-      )}
-      <Button variant="outline" onClick={onConnectGitHub}>
-        {github.data?.status === 'connected'
-          ? 'Manage GitHub access'
-          : github.error
-            ? 'Reconnect GitHub'
-            : 'Connect GitHub'}
-      </Button>
-      {github.data && (
-        <Field>
-          <FieldLabel htmlFor="cloud-agent-repository">Repository</FieldLabel>
-          <Select
-            items={repositories}
-            value={selected}
-            onValueChange={setRepository}
-            disabled={!repositories.length}
-          >
-            <SelectTrigger id="cloud-agent-repository" className="w-full">
-              <SelectValue placeholder="Choose a repository" />
-            </SelectTrigger>
-            <SelectContent>
-              {repositories.map((repo) => (
-                <SelectItem key={repo.value} value={repo.value}>
-                  {repo.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <FieldDescription>
-            {github.data.status !== 'connected'
-              ? 'Connect GitHub to choose a repository.'
-              : !repositories.length
-                ? 'Grant Switch access to a repository in GitHub to continue.'
-                : 'Only repositories shared with Switch on GitHub appear here.'}
-          </FieldDescription>
-        </Field>
       )}
     </>
   );

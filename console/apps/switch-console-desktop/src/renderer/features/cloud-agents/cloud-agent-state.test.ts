@@ -15,6 +15,7 @@ function machine(overrides: Partial<CloudMachine>): CloudMachine {
     error_code: null,
     retain_until: null,
     heartbeat_at: null,
+    controller_id: null,
     disk: null,
     memory: null,
     agents: [],

@@ -27,13 +27,14 @@ const CLOUD_MACHINE_KIND = 'ec2';
 
 /**
  * The owner's Switch cloud machine: their `ec2` controller, which "Switch
- * cloud" places a new agent on as a managed agent. Null when they have none,
- * and "Switch cloud" then creates a hosted launch as it always has.
+ * cloud" places a new agent on as a managed agent. Null when they have none
+ * yet, and "Switch cloud" ensures their cloud machine first.
  */
 export function switchCloudMachine(machines: OwnedMachine[] | null): OwnedMachine | null {
   return (
-    machines?.find((machine) => machine.kind === CLOUD_MACHINE_KIND && machine.state !== 'revoked') ??
-    null
+    machines?.find(
+      (machine) => machine.kind === CLOUD_MACHINE_KIND && machine.state !== 'revoked'
+    ) ?? null
   );
 }
 
@@ -131,4 +132,23 @@ export function reconciledRunLocation(
   if (!machines || managedCloud) return null;
   const enrolled = machineFor(runLocation, machines);
   return enrolled ? machineRunLocation(enrolled.id) : null;
+}
+
+/**
+ * Create a "Switch cloud" agent as a managed agent on the owner's ec2
+ * controller. With no Switch cloud machine yet, it ensures their cloud machine
+ * first, which links the controller the agent is placed on.
+ */
+export async function addSwitchCloudAgent<T>(
+  cloudMachine: OwnedMachine | null,
+  ensureCloudMachine: () => Promise<{ controller_id: string | null }>,
+  addManagedAgent: (machineId: string) => Promise<T>
+): Promise<T> {
+  if (cloudMachine) return addManagedAgent(cloudMachine.id);
+  const ensured = await ensureCloudMachine();
+  if (!ensured.controller_id)
+    throw new Error(
+      'Your Switch cloud machine does not run the agent controller, so the agent cannot be placed on it.'
+    );
+  return addManagedAgent(ensured.controller_id);
 }

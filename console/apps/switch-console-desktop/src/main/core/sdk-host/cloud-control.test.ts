@@ -235,6 +235,7 @@ function machine(overrides: Record<string, unknown>) {
     error_code: null,
     retain_until: null,
     heartbeat_at: null,
+    controller_id: null,
     disk: null,
     memory: null,
     agents: [],

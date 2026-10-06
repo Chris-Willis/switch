@@ -102,6 +102,7 @@ export const cloudMachineSchema = z.object({
   error_code: z.string().nullable(),
   retain_until: z.string().nullable(),
   heartbeat_at: z.string().nullable(),
+  controller_id: z.string().nullable(),
   disk: machineCapacitySchema,
   memory: machineCapacitySchema,
   agents: z.array(z.string()),

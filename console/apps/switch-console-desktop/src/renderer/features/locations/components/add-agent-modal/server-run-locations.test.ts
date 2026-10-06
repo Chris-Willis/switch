@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import {
+  addSwitchCloudAgent,
   isCloudRunLocation,
   machineFor,
   machineIdOf,
@@ -134,5 +135,37 @@ describe('the Switch cloud machine', () => {
     expect(machineRunLocations([...MACHINES, cloud]).map((option) => option.value)).toEqual(
       machineRunLocations(MACHINES).map((option) => option.value)
     );
+  });
+});
+
+describe('adding a Switch cloud agent', () => {
+  it('ensures the cloud machine first, then places the agent on its controller', async () => {
+    const calls: string[] = [];
+    const ensure = vi.fn(async () => {
+      calls.push('ensure');
+      return { controller_id: 'controller-1' };
+    });
+    const add = vi.fn(async (machineId: string) => {
+      calls.push(`add:${machineId}`);
+      return 'agent';
+    });
+    await expect(addSwitchCloudAgent(null, ensure, add)).resolves.toBe('agent');
+    expect(calls).toEqual(['ensure', 'add:controller-1']);
+  });
+
+  it('places the agent on the existing cloud machine without ensuring one', async () => {
+    const ensure = vi.fn(async () => ({ controller_id: 'other' }));
+    const add = vi.fn(async (machineId: string) => machineId);
+    const cloud = machine({ id: 'cloud', kind: 'ec2' });
+    await expect(addSwitchCloudAgent(cloud, ensure, add)).resolves.toBe('cloud');
+    expect(ensure).not.toHaveBeenCalled();
+  });
+
+  it('fails loud when the ensured machine runs no controller', async () => {
+    const add = vi.fn(async (machineId: string) => machineId);
+    await expect(
+      addSwitchCloudAgent(null, async () => ({ controller_id: null }), add)
+    ).rejects.toThrow(/does not run the agent controller/);
+    expect(add).not.toHaveBeenCalled();
   });
 });
