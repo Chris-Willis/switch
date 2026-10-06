@@ -29,12 +29,13 @@ export const ec2ConfigSchema = z.object({
     /** A KMS endpoint other than the region's; for tests against a local KMS only. */
     endpoint: z.url().optional(),
   }),
+  /** Claude always; another provider only when the image installed its CLI. */
   providers: z.strictObject({
     claude: absolutePath,
-    codex: absolutePath,
-    opencode: absolutePath,
-    cursor: absolutePath,
-    antigravity: absolutePath,
+    codex: absolutePath.optional(),
+    opencode: absolutePath.optional(),
+    cursor: absolutePath.optional(),
+    antigravity: absolutePath.optional(),
   }),
 });
 export type Ec2Config = z.infer<typeof ec2ConfigSchema>;

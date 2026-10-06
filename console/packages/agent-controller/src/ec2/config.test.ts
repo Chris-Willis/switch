@@ -69,6 +69,13 @@ describe('readEc2Config', () => {
     expect(config.providers.cursor).toBe('/opt/switch/providers/cursor-agent');
   });
 
+  it('reads a machine whose image installed only claude', async () => {
+    const path = join(dir, 'controller.json');
+    writeFileSync(path, JSON.stringify({ ...CONFIG, providers: { claude: CONFIG.providers.claude } }));
+    const config = await readEc2Config(path);
+    expect(config.providers).toEqual({ claude: '/opt/switch/providers/claude' });
+  });
+
   it('refuses a context for another controller, or an unsafe instance id', async () => {
     const path = join(dir, 'controller.json');
     writeFileSync(

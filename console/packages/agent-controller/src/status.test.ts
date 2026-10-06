@@ -408,4 +408,9 @@ describe('FixedProviderLocator', () => {
     expect(await locator.locate('cursor')).toEqual({ path: script, version: '2026.01.15-abc' });
     expect(await locator.locate('claude')).toBeNull();
   });
+
+  it('reports a provider the image did not install as absent', async () => {
+    const locator = new FixedProviderLocator({ claude: join(dir, 'claude') });
+    expect(await locator.locate('codex')).toBeNull();
+  });
 });

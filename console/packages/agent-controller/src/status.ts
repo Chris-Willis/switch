@@ -88,10 +88,11 @@ export class PathProviderLocator implements ProviderLocator {
 export class FixedProviderLocator implements ProviderLocator {
   readonly authSource = 'sealed';
 
-  constructor(private readonly paths: Record<Provider, string>) {}
+  constructor(private readonly paths: Partial<Record<Provider, string>>) {}
 
   async locate(provider: Provider): Promise<LocatedProvider | null> {
     const path = this.paths[provider];
+    if (path === undefined) return null;
     try {
       await access(path, constants.X_OK);
     } catch {
