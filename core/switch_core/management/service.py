@@ -44,6 +44,7 @@ from switch_core.bridges.agent.protocol.controller_presence import (
     Binding,
     ControllerPresence,
 )
+from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.db.models import (
     CONTROLLER_ENROLLMENT_KEY_TYPE,
     CONTROLLER_KEY_TYPE,
@@ -1195,10 +1196,22 @@ class ManagementService:
         self, session: AsyncSession, tenant_id: str, owner_id: str, agent_id: str
     ) -> None:
         """Stop managing the agent. Its controller stops it; the agent itself
-        is not deleted."""
-        row, _agent = await self._owned_definition(
+        is not deleted.
+
+        A cloud agent is refused: its cloud machine's controller is the only
+        thing that runs it, and its launch would stay listed with nothing
+        running it. Removing the cloud agent unmanages it with the launch.
+        """
+        row, agent = await self._owned_definition(
             session, tenant_id, owner_id, agent_id
         )
+        if hosted_launch_of(agent.metadata_) is not None:
+            raise ManagementError(
+                409,
+                reason_codes.VALIDATION_ERROR,
+                "This is a cloud agent. Remove it from Switch Console's cloud "
+                "agents instead.",
+            )
         await self.definitions.delete(session, tenant_id, agent_id)
         if row.controller_id is not None:
             await self.operations.cancel_open(

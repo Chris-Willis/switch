@@ -533,6 +533,31 @@ class TestManagedAgents:
         async with harness.session_factory() as session:
             assert await AgentStore().get(session, agent_id) is not None
 
+    async def test_unmanaging_a_cloud_agent_is_refused(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client, owner, name="reviewer", controller_id=controller.controller_id
+            )
+            agent_id = created.json()["agent_id"]
+            async with harness.session_factory() as session:
+                agent = await AgentStore().get(session, agent_id)
+                assert agent is not None
+                agent.metadata_ = {**agent.metadata_, "hosted_launch_id": "launch-1"}
+                await session.commit()
+            refused = await client.delete(
+                f"/gateway/management/agents/{agent_id}", cookies=cookies_for(owner)
+            )
+            kept = await client.get(
+                f"/gateway/management/agents/{agent_id}", cookies=cookies_for(owner)
+            )
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["error"]["code"] == "validation_error"
+        assert "cloud agent" in refused.json()["error"]["message"]
+        assert kept.status_code == 200
+
     async def test_the_view_carries_the_agents_reported_status(
         self, harness: Harness
     ) -> None:
