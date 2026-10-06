@@ -39,7 +39,6 @@ from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.bridges.agent.protocol.presence import rooms_occupied
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
-    AgentEvent,
     AgentStatus,
     IntegrationProfile,
     LlmCallReport,
@@ -1680,16 +1679,6 @@ class AgentCore:
             raise ValueError(f"Agent not found: {agent_id}")
         await collaboration_core.handle_outbound_typing(room.id, agent.name, is_typing)
 
-    async def update_status(self, agent_id: str, room_id: str, detail: str) -> None:
-        """Send a status message to a room."""
-        room = await self.require_room_member(agent_id, room_id)
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client is None:
-            raise ValueError("Agent client not running")
-        await client.send_message(
-            room.transport_room_id, f"*{detail}*", format="markdown", metered=True
-        )
-
     async def set_runtime_state(
         self,
         agent_id: str,
@@ -2125,64 +2114,6 @@ class AgentCore:
 
     # ── Events ───────────────────────────────────────────────────────────────
 
-    async def _rooms_agent_is_in(self, agent_id: str) -> set[str]:
-        """The rooms the agent is a member of, read fresh.
-
-        Archived rooms included: what this is applied as is membership, and an
-        agent still in an archived room was not removed from it.
-        """
-        async with self.session_factory() as session:
-            rooms = await self.room_store.get_rooms_for_agent(
-                session, agent_id, include_archived=True
-            )
-        return {room.id for room in rooms}
-
-    async def poll_events(self, agent_id: str, timeout: float = 10) -> list[AgentEvent]:
-        """Poll for events across all rooms the agent is in.
-
-        Membership is applied here rather than trusted from the buffer, which
-        is keyed by agent and knows nothing about who is in what. Its
-        room-scoped sibling `poll_room_events` calls `require_room_member`;
-        without the same check this call would hand over events from a room
-        the agent has since been removed from.
-
-        `AgentConsumer.on_removed` already empties the buffer of a removed
-        room's events, so this is the second of two answers. It is the
-        authoritative one: that signal is in-process, and this reads the table
-        the removal wrote.
-        """
-        async with self.session_factory() as session:
-            await self.agent_session_store.touch_heartbeat(session, agent_id, None)
-            await session.commit()
-        return await self.event_buffer.poll(
-            agent_id,
-            timeout=timeout,
-            rooms=await self._rooms_agent_is_in(agent_id),
-        )
-
-    async def poll_notifications(
-        self, agent_id: str, timeout: float = 10
-    ) -> list[AgentEvent]:
-        """Long-poll the agent's notification stream across all its rooms.
-
-        Returns only notifiable events (addressed messages and the room_join
-        events the agent listens for) — see EventBuffer. Unlike
-        `poll_events`, this does NOT touch any heartbeat: an auto_session
-        connector maintains its "watching" presence via the dedicated
-        `touch_watch_heartbeat` path, decoupled from this long-poll. Consuming
-        this stream never drains the per-room queues, so live session pollers
-        are unaffected.
-
-        Membership is applied exactly as it is for `poll_events`, and matters
-        more here: this is the stream carrying the messages addressed at the
-        agent.
-        """
-        return await self.event_buffer.poll_notifications(
-            agent_id,
-            timeout=timeout,
-            rooms=await self._rooms_agent_is_in(agent_id),
-        )
-
     async def touch_watch_heartbeat(self, agent_id: str) -> None:
         """Refresh an auto_session connector's global "watching" heartbeat.
 
@@ -2195,19 +2126,6 @@ class AgentCore:
         async with self.session_factory() as session:
             await self.agent_session_store.touch_heartbeat(session, agent_id, None)
             await session.commit()
-
-    async def poll_room_events(
-        self, agent_id: str, room_id: str, timeout: float = 10
-    ) -> list[AgentEvent]:
-        """Poll for events in a specific room.
-
-        Polling no longer refreshes the room-scoped liveness heartbeat —
-        session_addressable agents keep it fresh via the dedicated
-        `touch_connection` renew path (POST /connection/renew), decoupled from
-        the long-poll cadence so the TTL can stay short.
-        """
-        await self.require_room_member(agent_id, room_id)
-        return await self.event_buffer.poll_room(agent_id, room_id, timeout=timeout)
 
     async def report_events(
         self,
@@ -3567,12 +3485,6 @@ class AgentCore:
         # count rose anyway.
         await self.room_service.set_room_archived(room_id, archived)
         return await self.get_room_detail(agent_id, room_id)
-
-    async def list_all_agents(self, agent_id: str) -> list[Agent]:
-        """List all agents (moderation only)."""
-        async with self.session_factory() as session:
-            agents = await self.agent_store.get_all(session)
-        return agents
 
     async def pre_tool_call(
         self,

@@ -206,6 +206,9 @@ DELETE /gateway/agents/by-name/{name}      (admin teardown, no agent key needed)
 
 ### Switch agent bridge
 
+The event-stream, `connection/beat` and `ops/read_context` entries are taken from
+switch-core's handlers and have not yet been exercised against a live stack.
+
 ```
 GET  /health                                      -> {"status":"ok"}
 POST /agents/register-known                       Authorization: Bearer <registration token>
@@ -214,18 +217,24 @@ POST /agents/register-known                       Authorization: Bearer <registr
      -> {"id":"…","api_key":"…"}
      Also mints the agent's Mattermost bot, via create_agent_identity on every
      collaboration bridge.
-GET  /agents/{id}/notifications?timeout=<s>       Authorization: Bearer <agent api_key>
-     -> 204 when nothing, else {"events":[…]}; addressed messages only, and it
-        does not drain the per-room queues a live session polls.
-GET  /agents/{id}/rooms/{room}/history?limit=     -> {"events":[{sender,sender_name,body,timestamp}]}
-                                                     includes UNaddressed chatter
+GET  /agents/{id}/events?connection_id=<uuid>&scope=all&filter=addressed&start_from=head
+     Accept: text/event-stream, Authorization: Bearer <agent api_key>
+     -> server-sent events: first `connection_state` {connection_id, generation,
+        cursor, heartbeat_interval_seconds, …}, then one frame per room event
+        (`id: <sequence>`, `event: <type>`, data = the event); addressed messages
+        and listened-for joins only. Starts at head, so open it before posting.
+POST /agents/{id}/connection/beat                 {"connection_id":"…","cursor":<last sequence>,"generation":<n>}
+     every ~2 s while the stream is open; without it the server closes the stream.
+POST /agents/{id}/ops/read_context                {"room_id":"…","limit":50}
+     -> {"result":{"threads":[{"root":entry,"replies":[entry…]}],"truncated":…}}
+        entry = {id,kind,sender,sender_name,body,timestamp,attachments};
+        includes UNaddressed chatter
 POST /agents/{id}/message                         {"room_id":"…","content":"…"}
      -> {"ok":true,"event_id":"$…"}
 POST /agents/{id}/watch/heartbeat                 the auto_session "I am watching" beat
-DELETE /agents/{id}                               agent's own key only, not the registration token
 ```
 
-A notification event's text is **`payload.body`**, not a top-level `content`:
+A stream event's text is **`payload.body`**, not a top-level `content`:
 
 ```json
 { "type": "message", "room_id": "…", "bridge_id": "…", "channel_type": "channel_public",

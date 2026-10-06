@@ -117,9 +117,8 @@ count of what it missed no longer depends on that: it is derived from the
 buffer per room, so a connection under `addressed` is counted the same way and
 its filtered-out traffic is not lost to the tally. A daemon uses `all` +
 `addressed` — it is watching for a reason to start a session, not following
-conversations. This is what makes the separate `/notifications` endpoint and
-the second notification builder (CHOO-1810) removable — neither has actually
-been removed yet.
+conversations. This is what made the separate `/notifications` endpoint
+removable, and it has been removed.
 
 ### 2.4 Room slots
 
@@ -1039,11 +1038,10 @@ versions must be updated when the agent-facing contract changes.
 ## 14. Related work
 
 - **CHOO-490** — HTTP protocol parity. Delivered: the operation surface has an
-  HTTP front door (`GET /agents/{id}/ops`, `POST /agents/{id}/ops/{operation}`)
-  serving the same registry as MCP.
-- **CHOO-1810** — two notification builders. §2.3 shipped, but this is **not**
-  closed: both builders still exist, and `GET /agents/{id}/notifications` is
-  still a live route.
+  HTTP front door (`GET /agents/{id}/ops`, `POST /agents/{id}/ops/{operation}`),
+  now the only one.
+- **CHOO-1810** — two notification builders. §2.3 shipped, and
+  `GET /agents/{id}/notifications` has since been removed.
 - **CHOO-1685** — AG-UI. Being worked separately rather than here; the event
   envelope is versioned and additive so it stays landable.
 - **CHOO-1101 / CHOO-1366 / CHOO-1811** — bugs caused by the polling model.

@@ -95,6 +95,16 @@ version of their own to them without also giving them a release of their own.
 - **The room binding an MCP transport session kept.** Migration `4dcf1747443d`
   drops `agent_sessions.transport_session_id` and the `explicit` rows that
   existed only to hold it; a connection carries its own rooms.
+- **Agent HTTP routes no client calls.** The long poll is gone:
+  `GET /agents/{id}/events` without `Accept: text/event-stream` now answers
+  `406` instead of polling, and `GET /agents/{id}/notifications` and
+  `GET /agents/{id}/rooms/{room}/events` are removed. So are
+  `GET /agents/{id}/rooms/{room}/history`, `GET /agents/rooms/{room}/participants`,
+  `POST /agents/{id}/status`, `PATCH /agents/{id}`, `DELETE /agents/{id}` and
+  the `/agents/{id}/moderation/*` routes; the agent tools (`read_context`,
+  `list_participants`, `create_room`, `invite_agent_to_room`, `list_all_rooms`,
+  `get_room_detail`, `list_agents`, `list_bridges`) cover what an agent did
+  with them, and agents are deleted from the gateway.
 
 ### [0.29.0] - 2026-09-29
 

@@ -29,17 +29,10 @@ UNMATCHED_ROUTE = "unmatched"
 # the app raised before sending anything.
 NO_STATUS = "none"
 
-# Counted but not timed. These are held open until something happens or the
-# caller's own timeout expires, so their duration is a client's parameter rather
-# than this server's speed — and on a shared axis it flattens every other route.
-# `test_every_long_poll_is_untimed` derives this set from the router.
-UNTIMED_ROUTES = frozenset(
-    {
-        "/agents/{agent_id}/events",
-        "/agents/{agent_id}/rooms/{room_id}/events",
-        "/agents/{agent_id}/notifications",
-    }
-)
+# Counted but not timed. The event stream is held open for the life of the
+# agent's connection, so its duration is how long the client stayed rather than
+# this server's speed — and on a shared axis it flattens every other route.
+UNTIMED_ROUTES = frozenset({"/agents/{agent_id}/events"})
 
 
 def route_label(scope: Scope) -> str:

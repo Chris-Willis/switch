@@ -276,13 +276,9 @@ agent's name/icon, preserving threads and attachments.
   `addressed`), its heartbeat, and its room slots — at most one connection per
   agent may act in a given room. `docs/old/api/AGENT_PROTOCOL.md` is the
   authoritative spec.
-- **The long poll survives as a compatibility path.** `GET /agents/{id}/events`
-  without the SSE `Accept` header, `GET /agents/{id}/rooms/{room_id}/events`,
-  and `GET /agents/{id}/notifications` (addressed messages, task events,
-  opted-in room-joins) all return `204` on timeout and are served **from the
-  same buffer** — each is a filtered view with a server-held cursor, so no path
-  can diverge from another or destroy what another has yet to read. They are
-  scheduled for removal once the remaining clients are on the stream.
+- **The long poll is gone.** `GET /agents/{id}/events` without the SSE
+  `Accept` header is refused with `406`; the per-room and notification polls
+  were removed once every client was on the stream.
 - **Mediation is synchronous.** The bridge exposes
   `POST /agents/.../mediation/{pre-tool-call,pre-llm-request,post-tool-result,post-llm-response}`.
   `RequestTracker`

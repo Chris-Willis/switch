@@ -63,9 +63,6 @@ AGENT_ID_HEADER = b"x-switch-agent-id"
 # `/agents/{agent_id}/` and `/agent-sessions/`.
 _AGENT_PATH = re.compile(r"/agents/(?P<segment>[^/]+)(?P<rest>/.*)?")
 _AGENT_SESSIONS_PREFIX = "/agent-sessions/"
-# First segments under `/agents/` that name no agent. On these the agent comes
-# from `X-Switch-Agent-Id` alone.
-_NOT_AN_AGENT_SEGMENT = frozenset({"rooms", "feature-flags"})
 # Registration: a controller registers nothing, so its token is refused here.
 _REGISTRATION_SEGMENTS = frozenset({"register-known", "register-known-bulk"})
 # The connection surface a controller serves its agents itself, from its own
@@ -73,7 +70,7 @@ _REGISTRATION_SEGMENTS = frozenset({"register-known", "register-known-bulk"})
 # connection of its own, and the legacy heartbeats would make it look live from
 # a second source.
 _SERVED_ON_THE_CONTROLLER_STREAM = re.compile(
-    r"/(events|notifications|rooms/[^/]+/events|connection/.*|watch/heartbeat)"
+    r"/(events|connection/.*|watch/heartbeat)"
 )
 
 
@@ -475,7 +472,7 @@ def _is_agent_route(path: str) -> bool:
 def _path_agent(path: str) -> tuple[str | None, str]:
     """The agent an agent route's path names, if any, and the rest of the path."""
     match = _AGENT_PATH.fullmatch(path)
-    if match is None or match["segment"] in _NOT_AN_AGENT_SEGMENT:
+    if match is None:
         return None, ""
     return match["segment"], match["rest"] or ""
 

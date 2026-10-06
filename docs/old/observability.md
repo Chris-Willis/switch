@@ -168,10 +168,9 @@ not list.
 
 **Traces** are not implemented. See "What is missing" below.
 
-**The agent event streams are counted but not timed.** A long poll is held
-open until something happens or the caller's own timeout expires, so its
-duration measures a parameter the client chose rather than anything this
-server did. In a latency histogram that is worse than useless: it would make
+**The agent event stream is counted but not timed.** It is held open for as
+long as the agent stays connected, so its duration measures how long the
+client stayed rather than anything this server did. In a latency histogram that is worse than useless: it would make
 those routes' percentiles meaningless and, sharing an axis, flatten every
 other route to the floor. They are counted like everything else.
 

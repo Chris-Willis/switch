@@ -5,8 +5,6 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from switch_core.bridges.agent.protocol.types import (
-    AgentEvent,
-    AgentStatus,
     IntegrationProfile,
     LlmCallReport,
     ModelSpec,
@@ -87,12 +85,6 @@ class RegisterKnownAgentBulkResponse(BaseModel):
     results: list[BulkRegisterResult]
 
 
-class UpdateAgentRequest(BaseModel):
-    description: str | None = None
-    integration_profile: IntegrationProfile | None = None
-    metadata: dict[str, Any] | None = None
-
-
 # ── Messages ──────────────────────────────────────────────────────────────────
 
 
@@ -158,13 +150,6 @@ class ConnectionBeatRequest(BaseModel):
     generation: int | None = None
 
 
-class StatusRequest(BaseModel):
-    room_id: str
-    presence: Literal["online", "offline"] | None = None
-    status: str | None = None
-    detail: str | None = None
-
-
 class RuntimeStateRequest(BaseModel):
     room_id: str
     # The canonical runtime state. Connectors map provider-specific states onto
@@ -221,39 +206,6 @@ class AddModelResponse(BaseModel):
     id: str
     name: str
     agent_id: str
-
-
-# ── Events ────────────────────────────────────────────────────────────────────
-
-
-class EventResponse(BaseModel):
-    events: list[AgentEvent]
-
-
-class HistoryMessage(BaseModel):
-    sender: str
-    sender_name: str
-    body: str
-    timestamp: int | None = None
-
-
-class HistoryResponse(BaseModel):
-    events: list[HistoryMessage]
-    has_more: bool
-
-
-# ── Participants ──────────────────────────────────────────────────────────────
-
-
-class ParticipantInfo(BaseModel):
-    type: Literal["agent", "user"]
-    agent_id: str | None = None
-    name: str
-    status: AgentStatus | None = None
-
-
-class ParticipantsResponse(BaseModel):
-    participants: list[ParticipantInfo]
 
 
 # ── Mediation ────────────────────────────────────────────────────────────────
@@ -318,93 +270,6 @@ class PostLlmResponseResponse(BaseModel):
 class ReportEventsRequest(BaseModel):
     room_id: str
     events: list[ToolCallReport | LlmCallReport]
-
-
-# ── Moderation ───────────────────────────────────────────────────────────────
-
-
-class AgentInfo(BaseModel):
-    id: str
-    name: str
-    description: str
-    display_name: str | None
-
-
-class LinkedRoomCreateSpec(BaseModel):
-    target_room_id: str
-    label: str
-
-
-class CreateModerationRoomRequest(BaseModel):
-    name: str
-    description: str
-    agent_names: list[str]
-    # Per-agent opt-in: names (subset of agent_names) whose subagents to also add.
-    include_subagents_for: list[str] | None = None
-    user_names: list[str] | None = None
-    channel_type: Literal["channel_public", "channel_private"] | None = None
-    # Bridge is optional — omit to use the instance's default bridge.
-    bridge_id: str | None = None
-    # Opt out of the instance default bridge: create a room with no external
-    # channel. Ignored when bridge_id is set.
-    internal_only: bool = False
-    admin_mode: bool = False
-    security_config: dict[str, Any] | None = None
-    instructions: str | None = None
-    reference_ids: list[str] | None = None
-    package_ids: list[str] | None = None
-    linked_rooms: list[LinkedRoomCreateSpec] | None = None
-
-
-class CreateModerationRoomResponse(BaseModel):
-    id: str
-    name: str
-    transport_room_id: str
-    # Deprecated alias of `transport_room_id`, sent for the compatibility
-    # window. Connectors are installed copies and only update when someone
-    # clicks Update, so both names are carried until the shipped ones have
-    # moved. Same value in both; nothing dereferences either.
-    matrix_room_id: str
-    # Attachments that failed at attach-time (after the room was created).
-    # Empty on full success.
-    failed_attachments: list[dict[str, Any]] = []
-
-
-class ListBridgesResponse(BaseModel):
-    bridges: list[dict[str, Any]]
-
-
-class InviteAgentRequest(BaseModel):
-    agent_name: str
-    # When true, also add the invited agent's subagents (child agents).
-    include_subagents: bool = False
-
-
-class UpdateSecurityRequest(BaseModel):
-    checks: list[dict[str, Any]]
-
-
-class RoomInfo(BaseModel):
-    id: str
-    name: str
-    description: str
-
-
-class RoomDetailResponse(BaseModel):
-    id: str
-    name: str
-    description: str
-    channel_type: str | None
-    admin_mode: bool
-    agent_names: list[str]
-
-
-class RoomListResponse(BaseModel):
-    rooms: list[RoomInfo]
-
-
-class AgentListResponse(BaseModel):
-    agents: list[AgentInfo]
 
 
 class SetFeatureFlagRequest(BaseModel):

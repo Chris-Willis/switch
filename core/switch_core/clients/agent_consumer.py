@@ -487,9 +487,8 @@ class AgentConsumer(Consumer[AgentActor]):
 
         Dropping the subscription only stops what has not been read yet. What
         has is in the event buffer for the whole retention window, and is
-        served from there to a long poll, to the notification stream, and to an
-        SSE reader resuming from an old cursor — the last of which has no
-        membership of its own to apply.
+        served from there to an SSE reader resuming from an old cursor, which
+        has no membership of its own to apply.
         """
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
@@ -1414,7 +1413,7 @@ class AgentConsumer(Consumer[AgentActor]):
             return self._connections.controllers.is_live(self.agent.id)
         # Union of the presence sources while every kind of client exists
         # (CHOO-1857 stage B): a client on the push transport keeps only a
-        # connection, one still polling keeps only the heartbeat row, and a
+        # connection, one still beating keeps only the heartbeat row, and a
         # session Switch has a record of is answered from that record.
         if connection_model == "always_on":
             if self._connections.is_live(self.agent.id):

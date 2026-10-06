@@ -441,14 +441,14 @@ stream. The flag and everything else above stay as they are.
   lease (live while the agent is). Moving the agent changes it, so a lease does
   not survive a move.
 - **Act-as routes.** Every `/agents/{agent_id}/...` and `/agent-sessions/...`
-  route; on `/agents/rooms/...`, `/agents/feature-flags` and `/agent-sessions/...`
-  the agent comes from `X-Switch-Agent-Id` alone. Refused for a controller
+  route; on `/agent-sessions/...` the agent comes from `X-Switch-Agent-Id`
+  alone. Refused for a controller
   token: registration (`403 forbidden`), any non-agent route (`403
   forbidden`), and the per-agent connection surface the controller holds for the agent — `events`,
-  `notifications`, `rooms/{id}/events`, `connection/*`, `watch/heartbeat` —
+  `connection/*`, `watch/heartbeat` —
   with `409 managed_by_controller`. `X-Switch-Connection-Id` and the session
   selector headers are ignored for a controller principal.
-- **Own key.** A controller-backed agent's own API key (or OIDC token) is
+- **Own key.** A controller-backed agent's own API key is
   refused on every route with `409 managed_by_controller`, in the contract
   envelope. Binding an agent closes any connection it still held.
 - **Open/beat bodies.** `POST /connection` returns `agents: string[]` (the

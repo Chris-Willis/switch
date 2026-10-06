@@ -189,7 +189,7 @@ def test_an_unmounted_route_is_not_given_a_prefix(registry):
     }
 
 
-def test_a_long_poll_is_counted_but_not_timed(registry):
+def test_the_event_stream_is_counted_but_not_timed(registry):
     """Its duration is the caller's chosen wait, not the server's speed."""
     app = FastAPI()
 
@@ -204,33 +204,6 @@ def test_a_long_poll_is_counted_but_not_timed(registry):
     payloads = {p.name: p for p in registry.collect()}
     assert HTTP_REQUESTS.name in payloads
     assert HTTP_REQUEST_DURATION.name not in payloads
-
-
-def test_every_long_poll_is_untimed():
-    """Found by behaviour, because a hand-kept list goes stale.
-
-    A long poll is an endpoint taking the caller's own `timeout`, which is the
-    property that makes its duration meaningless as latency.
-    """
-    import inspect
-
-    from switch_core.bridges.agent.api.handlers import router
-    from switch_core.observability.http import UNTIMED_ROUTES
-
-    long_polls = {
-        f"/agents{route.path}"
-        for route in router.routes
-        if (endpoint := getattr(route, "endpoint", None)) is not None
-        and "timeout" in inspect.signature(endpoint).parameters
-    }
-    assert long_polls, "no long-poll endpoints found — has the router moved?"
-
-    untimed = long_polls - UNTIMED_ROUTES
-    assert not untimed, (
-        f"{sorted(untimed)} take a caller-supplied timeout but are timed into "
-        "switch.http.request.duration. Their percentiles would describe the "
-        "caller's wait, not this server. Add them to UNTIMED_ROUTES."
-    )
 
 
 def test_untimed_routes_are_real_routes():
