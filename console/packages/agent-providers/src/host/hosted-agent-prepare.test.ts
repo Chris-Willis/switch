@@ -3,7 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { buildSharedHostConfig } from './build-shared-config';
-import { type HostedWorkspace, prepareHostedAgent } from './hosted-bootstrap';
+import {
+  type HostedWorkspace,
+  hostedUnitGitHubEnvironment,
+  prepareHostedAgent,
+} from './hosted-bootstrap';
 import type { HostedCredential } from './hosted-provider';
 import type { SharedHostConfig } from './shared-config';
 
@@ -145,6 +149,39 @@ it('writes a codex sign-in, prepares the repository and installs skills', async 
     await readFile(join(agentRoot, 'provider-home', 'skills', 'github', 'SKILL.md'), 'utf8')
   ).toBe('# GitHub\n');
   expect((await stat(join(agentRoot, 'bin', 'gh'))).isFile()).toBe(true);
+});
+
+it("hands the unit's sessions the repository and credentials the preparation used", async () => {
+  await arrange({
+    provider: 'claude',
+    credential: connected('claude', 'setup-token', 'token-placeholder'),
+    workspace: {
+      repository: 'example/project',
+      mirrorPath: join(base, 'repos', 'example', 'project.git'),
+      workspacePath: join(base, 'worktrees', AGENT, 'example', 'project'),
+    },
+  });
+  const ensureRepository = vi.fn(async () => {});
+  await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials }, { ensureRepository });
+  const [call] = ensureRepository.mock.calls[0] as unknown as [{ env: NodeJS.ProcessEnv }];
+
+  const env = await hostedUnitGitHubEnvironment(agentRoot, config('claude'));
+
+  expect(env).toEqual({
+    SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: call.env.SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS,
+    SWITCH_HOSTED_GITHUB_REPOSITORY: 'example/project',
+    SWITCH_HOSTED_GITHUB_CLI: join(agentRoot, 'bin'),
+  });
+  expect((await stat(join(env.SWITCH_HOSTED_GITHUB_CLI!, 'gh'))).isFile()).toBe(true);
+});
+
+it('hands sessions nothing for a workspace with no repository', async () => {
+  await arrange({
+    provider: 'claude',
+    credential: connected('claude', 'setup-token', 'token-placeholder'),
+  });
+
+  expect(await hostedUnitGitHubEnvironment(agentRoot, config('claude'))).toEqual({});
 });
 
 it.each([

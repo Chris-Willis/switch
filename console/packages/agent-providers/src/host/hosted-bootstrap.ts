@@ -5,6 +5,9 @@ import { z } from 'zod';
 import {
   type ensureHostedRepository,
   githubLaunchEnvironment,
+  HOSTED_GITHUB_CLI_ENV,
+  HOSTED_GITHUB_CREDENTIALS_ENV,
+  HOSTED_GITHUB_REPOSITORY_ENV,
   prepareGitHubCli,
 } from './hosted-github';
 import {
@@ -200,6 +203,35 @@ async function migrateWorkerRoot(root: string, config: SharedHostConfig): Promis
     }
 }
 
+/**
+ * What an agent unit's watcher (`shared-host-daemon --unit`) sets on itself
+ * for its session hosts to inherit when its workspace is a worktree of a
+ * repository, so `git` and `gh` in a session renew the repository token
+ * through the unit's Switch credentials as the preparation did
+ * (`hostedGitHubEnvironment`). Empty for a workspace with no repository.
+ */
+export async function hostedUnitGitHubEnvironment(
+  agentRoot: string,
+  config: SharedHostConfig
+): Promise<Record<string, string>> {
+  const root = await realpath(agentRoot);
+  const workspacePath = join(root, HOSTED_WORKSPACE_FILE);
+  const parsed = hostedWorkspaceSchema.safeParse(
+    await readUnitFile(workspacePath, `${workspacePath} is missing or is not JSON.`)
+  );
+  if (!parsed.success)
+    throw new Error(
+      `${workspacePath} is invalid: ${parsed.error.issues[0]?.message ?? 'invalid value'}.`
+    );
+  if (parsed.data.repository === null) return {};
+  if (!config.execution) throw new Error('An agent unit names no Switch credentials.');
+  return {
+    [HOSTED_GITHUB_CREDENTIALS_ENV]: config.execution.credentialsPath,
+    [HOSTED_GITHUB_REPOSITORY_ENV]: parsed.data.repository,
+    [HOSTED_GITHUB_CLI_ENV]: join(root, 'bin'),
+  };
+}
+
 export interface HostedAgentPreparation {
   ensureRepository: typeof ensureHostedRepository;
 }
@@ -285,8 +317,8 @@ export async function prepareHostedAgent(
         ...inherited,
         ...environment,
         ...githubLaunchEnvironment(),
-        SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: credentialsPath,
-        SWITCH_HOSTED_GITHUB_REPOSITORY: workspace.repository,
+        [HOSTED_GITHUB_CREDENTIALS_ENV]: credentialsPath,
+        [HOSTED_GITHUB_REPOSITORY_ENV]: workspace.repository,
       },
     });
     await prepareGitHubCli(root);

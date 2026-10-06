@@ -1,13 +1,13 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { openSwitchStream, runAgentHost } from './agent-host';
 import { AttachmentTransfers } from './attachment-transfers';
 import { type ControlContext, ensureSessions, ensureThroughWatcher, serveControl } from './control';
 import { OBSOLETE_BUNDLE_EXIT_CODE } from './exit-codes';
 import { dirMode } from './host-permissions';
-import { prepareHostedAgent } from './hosted-bootstrap';
+import { hostedUnitGitHubEnvironment, prepareHostedAgent } from './hosted-bootstrap';
 import { ensureHostedRepository } from './hosted-github';
 import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
 import { replaceOwner } from './ownership-lock';
@@ -90,6 +90,7 @@ async function runUnit(watcherRoot: string): Promise<void> {
   const config = sharedConfigSchema.parse(
     JSON.parse(await readFile(join(unitRoot, 'config.json'), 'utf8'))
   );
+  Object.assign(process.env, await hostedUnitGitHubEnvironment(dirname(unitRoot), config));
   await rm(join(unitRoot, 'shared-owner.lock'), { force: true });
   await rm(join(unitRoot, 'supervisor', 'owner.json'), { force: true });
   await rm(join(unitRoot, 'ownership'), { recursive: true, force: true });

@@ -87,6 +87,43 @@ export function githubLaunchEnvironment(
   };
 }
 
+/**
+ * Set on an agent unit's watcher whose workspace is a worktree of a
+ * repository (`hostedUnitGitHubEnvironment`), and inherited by the session
+ * hosts it starts: where the unit's Switch credentials are, which repository
+ * they renew a token for, and the directory holding the `gh` wrapper.
+ */
+export const HOSTED_GITHUB_CREDENTIALS_ENV = 'SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS';
+export const HOSTED_GITHUB_REPOSITORY_ENV = 'SWITCH_HOSTED_GITHUB_REPOSITORY';
+export const HOSTED_GITHUB_CLI_ENV = 'SWITCH_HOSTED_GITHUB_CLI';
+
+/**
+ * What a session's provider is given on top of its own environment so `git`
+ * and `gh` renew the repository token through the unit's credentials: empty
+ * on a host that sets none of the variables above. It replaces whatever a
+ * session saved under an earlier host left in its environment.
+ */
+export function hostedGitHubEnvironment(
+  host: NodeJS.ProcessEnv,
+  path: string | undefined
+): Record<string, string> {
+  const credentials = host[HOSTED_GITHUB_CREDENTIALS_ENV];
+  const repository = host[HOSTED_GITHUB_REPOSITORY_ENV];
+  const cli = host[HOSTED_GITHUB_CLI_ENV];
+  if (!credentials && !repository && !cli) return {};
+  if (!credentials || !repository || !cli)
+    throw new Error(
+      `${HOSTED_GITHUB_CREDENTIALS_ENV}, ${HOSTED_GITHUB_REPOSITORY_ENV} and ${HOSTED_GITHUB_CLI_ENV} are set together.`
+    );
+  const rest = (path ?? '').split(':').filter((entry) => entry !== '' && entry !== cli);
+  return {
+    ...githubLaunchEnvironment(),
+    [HOSTED_GITHUB_CREDENTIALS_ENV]: credentials,
+    [HOSTED_GITHUB_REPOSITORY_ENV]: repository,
+    PATH: [cli, ...rest].join(':'),
+  };
+}
+
 export function githubRedactions(token: string): string[] {
   return [
     token,
@@ -127,9 +164,9 @@ export async function runGitHubCredentialHelper(operation: string | undefined): 
 }
 
 export async function currentGitHubToken(): Promise<string | undefined> {
-  const credentialsPath = process.env.SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS;
+  const credentialsPath = process.env[HOSTED_GITHUB_CREDENTIALS_ENV];
   if (!credentialsPath) return process.env.GH_TOKEN;
-  return renewGitHubCredential(credentialsPath, process.env.SWITCH_HOSTED_GITHUB_REPOSITORY);
+  return renewGitHubCredential(credentialsPath, process.env[HOSTED_GITHUB_REPOSITORY_ENV]);
 }
 
 export async function renewGitHubCredential(

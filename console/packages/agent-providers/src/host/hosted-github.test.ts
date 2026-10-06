@@ -9,6 +9,7 @@ import {
   githubLaunchEnvironment,
   githubRedactions,
   gitHubCredentialResponse,
+  hostedGitHubEnvironment,
   readGitHubCredential,
   renewGitHubCredential,
   validateGitHubCredential,
@@ -115,6 +116,36 @@ it("renews over plain HTTP only through an agents controller's relay on this mac
     );
   }
   expect(request).toHaveBeenCalledOnce();
+});
+
+describe('hostedGitHubEnvironment', () => {
+  const host = {
+    SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: '/run/credentials/unit/agent',
+    SWITCH_HOSTED_GITHUB_REPOSITORY: 'example/project',
+    SWITCH_HOSTED_GITHUB_CLI: '/data/agents/agent/bin',
+  };
+
+  it('gives nothing on a host that is not an agent unit with a repository', () => {
+    expect(hostedGitHubEnvironment({}, '/usr/bin:/bin')).toEqual({});
+  });
+
+  it("points git's helper and gh at the unit's credentials, ahead of anything else on PATH", () => {
+    const env = hostedGitHubEnvironment(host, '/data/agents/agent/bin:/usr/local/bin:/usr/bin');
+    expect(env).toMatchObject({
+      ...githubLaunchEnvironment(),
+      SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: '/run/credentials/unit/agent',
+      SWITCH_HOSTED_GITHUB_REPOSITORY: 'example/project',
+      PATH: '/data/agents/agent/bin:/usr/local/bin:/usr/bin',
+    });
+    expect(env.GIT_CONFIG_VALUE_1).toContain('--git-credential');
+    expect(hostedGitHubEnvironment(host, undefined).PATH).toBe('/data/agents/agent/bin');
+  });
+
+  it('refuses a host that sets only some of its variables', () => {
+    expect(() =>
+      hostedGitHubEnvironment({ SWITCH_HOSTED_GITHUB_REPOSITORY: 'example/project' }, '/bin')
+    ).toThrow('set together');
+  });
 });
 
 it('keeps raw and common transport encodings out of redacted output', () => {

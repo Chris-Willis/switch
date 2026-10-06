@@ -268,6 +268,64 @@ describe('the Codex login a session starts with', () => {
   });
 });
 
+it("gives an agent unit's sessions git and gh through the unit's credentials, over a saved session's", async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
+  try {
+    const credentialsPath = join(root, 'credentials.json');
+    await writeFile(
+      credentialsPath,
+      JSON.stringify({
+        env: {
+          SWITCH_API_ENDPOINT: 'http://127.0.0.1:47100',
+          SWITCH_API_TOKEN: 'relay-token',
+          SWITCH_AGENT_ID: 'agent',
+        },
+      })
+    );
+    vi.stubEnv('PATH', '/usr/local/bin:/usr/bin:/bin');
+    vi.stubEnv('SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS', credentialsPath);
+    vi.stubEnv('SWITCH_HOSTED_GITHUB_REPOSITORY', 'example/project');
+    vi.stubEnv('SWITCH_HOSTED_GITHUB_CLI', join(root, 'bin'));
+    const config = buildSharedHostConfig({
+      session: { sessionId: 'session', agentId: 'agent', provider: 'claude' },
+      launch: {
+        cwd: root,
+        runtimeMode: 'full-access',
+        // What a session saved under an earlier host still carries.
+        env: {
+          SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: '/run/gone/switch.json',
+          GIT_CONFIG_VALUE_1: '!stale-helper --git-credential',
+        },
+        model: undefined,
+      },
+      capabilities: { approvals: true, userInput: true },
+      execution: {
+        credentialsPath,
+        inheritEnv: [...EXECUTION_INHERIT_ENV],
+        binaryPath: 'claude',
+        codexConfig: '',
+        skill: '',
+        context: '',
+        agentDefinition: undefined,
+      },
+      ids: { hostId: 'host', epoch: 'epoch', connectionId: 'connection' },
+    });
+    const runtime = { transport: 'http' as const, url: 'http://127.0.0.1:4321/mcp', headers: {} };
+    const { input } = await prepareSharedConfig(root, config, runtime);
+    expect(input.env).toMatchObject({
+      SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: credentialsPath,
+      SWITCH_HOSTED_GITHUB_REPOSITORY: 'example/project',
+      GIT_CONFIG_KEY_1: 'credential.https://github.com.helper',
+      GIT_TERMINAL_PROMPT: '0',
+      PATH: `${join(root, 'bin')}:/usr/local/bin:/usr/bin:/bin`,
+    });
+    expect(input.env.GIT_CONFIG_VALUE_1).not.toContain('stale-helper');
+    expect(input.env.SWITCH_HOSTED_GITHUB_CLI).toBeUndefined();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 describe('agent definitions in the launch spec', () => {
   const base = (input: Record<string, unknown>, execution: Record<string, unknown> = {}) => ({
     session: {

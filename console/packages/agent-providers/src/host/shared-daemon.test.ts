@@ -69,6 +69,16 @@ async function writeUnitState(flags: { enabled: boolean }): Promise<void> {
   await writeFile(join(watcherRoot, 'config.json'), JSON.stringify(config));
   await writeFile(join(watcherRoot, 'watch.json'), JSON.stringify({ ...flags, spawn: true }));
   await writeFile(
+    join(agentRoot, 'workspace.json'),
+    JSON.stringify({
+      repository: null,
+      mirrorPath: null,
+      workspacePath: join(base, 'workspace'),
+      skills: [],
+      instructions: '',
+    })
+  );
+  await writeFile(
     join(credentials, 'agent'),
     JSON.stringify({
       env: {
