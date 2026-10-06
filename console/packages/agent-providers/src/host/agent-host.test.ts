@@ -1586,6 +1586,59 @@ it('takes the provider CLI and inherited environment from the template, so a fix
   expect(withDefinitionOf(saved, fixed).execution).not.toHaveProperty('binaryPath');
 });
 
+it('relaunches a session saved under another host layout with the template’s credentials', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-moved-credentials-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const before = structuredClone(config);
+  before.execution!.credentialsPath = '/run/old-layout/agent/switch.json';
+  const moved = await existing(root, before);
+  const assigned = await existing(root, before);
+  await assignTo(root, before, 1, 'room', assigned.sessionId);
+  const hosts = sessionHosts();
+  const launched: { sessionId: string; credentialsPath: string | undefined }[] = [];
+  vi.mocked(ensureSharedProcess).mockImplementation(
+    async ({ root: sessionRoot, config: started }) => {
+      launched.push({
+        sessionId: started.session.sessionId,
+        credentialsPath: started.execution?.credentialsPath,
+      });
+      return hosts.start(sessionRoot);
+    }
+  );
+  const control = new WatcherControl();
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    control,
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => control.running);
+    await control.ensure({
+      sessionId: moved.sessionId,
+      resuming: true,
+      restart: true,
+      startSource: null,
+    });
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(2, 'room'));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+  expect(launched).toEqual([
+    { sessionId: moved.sessionId, credentialsPath: config.execution!.credentialsPath },
+    { sessionId: assigned.sessionId, credentialsPath: config.execution!.credentialsPath },
+  ]);
+});
+
 it('leaves a session that runs as a definition file on disk as the agent it runs as', () => {
   const root = '/state';
   const edited = watchable(root);
