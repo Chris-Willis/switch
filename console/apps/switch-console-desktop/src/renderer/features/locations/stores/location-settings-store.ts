@@ -1,9 +1,7 @@
 import type { Result } from '@switch-console/shared';
 import { events, rpc } from '@renderer/lib/ipc';
 import { Resource } from '@renderer/lib/stores/resource';
-import { fsWatchEventChannel } from '@shared/core/fs/fsEvents';
 import {
-  LOCATION_CONFIG_FILE,
   type LocationSettings,
   type LocationSettingsPage,
 } from '@shared/core/location-settings/location-settings';
@@ -12,7 +10,6 @@ import type { UpdateLocationSettingsError } from '@shared/core/locations/locatio
 
 export class LocationSettingsStore {
   readonly pageData: Resource<LocationSettingsPage>;
-  private readonly _unsubscribeConfigWatch: () => void;
   private readonly _unsubscribeSettingsChanged: () => void;
 
   constructor(private readonly locationId: string) {
@@ -27,17 +24,6 @@ export class LocationSettingsStore {
       }
       return result.data;
     }, [{ kind: 'demand' }]);
-
-    this._unsubscribeConfigWatch = events.on(fsWatchEventChannel, (data) => {
-      if (data.locationId !== locationId) return;
-      if (
-        data.events.some(
-          (event) => event.path === LOCATION_CONFIG_FILE || event.oldPath === LOCATION_CONFIG_FILE
-        )
-      ) {
-        this.pageData.invalidate();
-      }
-    });
 
     this._unsubscribeSettingsChanged = events.on(locationSettingsChangedChannel, (data) => {
       if (data.locationId === locationId) {
@@ -72,7 +58,6 @@ export class LocationSettingsStore {
   }
 
   dispose(): void {
-    this._unsubscribeConfigWatch();
     this._unsubscribeSettingsChanged();
     this.pageData.dispose();
   }
