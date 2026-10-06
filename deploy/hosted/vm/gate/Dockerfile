@@ -35,7 +35,13 @@ RUN cd /opt/cc-gate/core \
  && uv pip install --python /opt/cc-gate/venv/bin/python 'moto[server]>=5,<6'
 
 # The image boots to systemd; nothing of Switch is installed until the gate runs.
+# Mask systemd-binfmt and proc-sys-fs-binfmt_misc mounts to prevent the container
+# from clearing the host VM's binfmt_misc registrations (which breaks amd64
+# emulation for all other docker builds on Mac).
 RUN systemctl mask systemd-firstboot.service getty.target console-getty.service \
+ && systemctl mask systemd-binfmt.service \
+ && systemctl mask proc-sys-fs-binfmt_misc.automount \
+ && systemctl mask proc-sys-fs-binfmt_misc.mount \
  && systemctl disable ssh.service ssh.socket 2>/dev/null || true
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]

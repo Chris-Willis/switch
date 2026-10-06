@@ -63,6 +63,10 @@ docker build -q -t "$image" "$work/context"
 
 echo "== booting $name"
 docker network inspect "$network" >/dev/null 2>&1 || docker network create "$network" >/dev/null
+
+# Capture host binfmt_misc state before the container starts.
+binfmt_before=$(docker run --rm --privileged alpine ls /proc/sys/fs/binfmt_misc 2>/dev/null | sort || true)
+
 docker run -d --name "$name" --hostname "$name" --network "$network" \
   --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
   --tmpfs /run --tmpfs /run/lock \
@@ -71,3 +75,14 @@ docker run -d --name "$name" --hostname "$name" --network "$network" \
 
 docker exec "$name" bash /src/deploy/hosted/vm/gate/container/setup.sh
 docker exec "$name" bash /src/deploy/hosted/vm/gate/container/checks.sh "$@"
+
+# Verify host binfmt_misc is unchanged after the container runs.
+binfmt_after=$(docker run --rm --privileged alpine ls /proc/sys/fs/binfmt_misc 2>/dev/null | sort || true)
+if [ "$binfmt_before" != "$binfmt_after" ]; then
+  echo "FATAL: the gate cleared the host VM's binfmt_misc registrations!" >&2
+  echo "before:" >&2
+  echo "$binfmt_before" >&2
+  echo "after:" >&2
+  echo "$binfmt_after" >&2
+  exit 1
+fi
