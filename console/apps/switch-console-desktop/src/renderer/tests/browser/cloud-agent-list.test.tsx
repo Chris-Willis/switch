@@ -2,7 +2,8 @@
  * A new cloud session whose start was never confirmed is not shown as a
  * failure: once the session appears, the row offers to open it, and until
  * then it asks again for the same session rather than a new one. An agent is
- * asked for its sessions only while its row is expanded.
+ * asked for its sessions only while its row is expanded. A cloud agent is
+ * listed once, as its cloud row, not also as a managed agent row.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
@@ -13,12 +14,17 @@ import type {
   CloudControllerAgent,
   CloudMachine,
 } from '@shared/core/cloud-agents/cloud-agents';
+import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 
 const sdkHost = vi.hoisted(() => ({
   cloudAgents: vi.fn(),
   cloudSessions: vi.fn(),
   cloudSessionOperation: vi.fn(),
   cloudWake: vi.fn(),
+}));
+const managedAgents = vi.hoisted(() => ({
+  list: vi.fn(),
+  machines: vi.fn(),
 }));
 const expandedCloudGroups = await vi.hoisted(async () => {
   const { observable } = await import('mobx');
@@ -36,7 +42,7 @@ vi.hoisted(() => {
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { sdkHost, switchServers: { cloudMachineLifecycle: vi.fn() } },
+  rpc: { sdkHost, managedAgents, switchServers: { cloudMachineLifecycle: vi.fn() } },
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
@@ -70,6 +76,7 @@ import {
   cloudOperationAttempts,
   startAttemptKey,
 } from '@renderer/features/cloud-agents/cloud-operation-attempts';
+import { ManagedAgentList } from '@renderer/features/managed-agents/managed-agent-list';
 
 const agentKey = 'cloud:server:agent=agent';
 
@@ -105,6 +112,9 @@ let root: Root | null = null;
 
 beforeEach(() => {
   navigate.mockReset();
+  managedAgents.list.mockReset();
+  managedAgents.list.mockResolvedValue([]);
+  managedAgents.machines.mockResolvedValue([]);
   sdkHost.cloudSessionOperation.mockReset();
   sdkHost.cloudSessions.mockReset();
   sdkHost.cloudWake.mockReset();
@@ -127,6 +137,7 @@ async function render(): Promise<HTMLDivElement> {
   await act(async () =>
     root!.render(
       <QueryClientProvider client={client}>
+        <ManagedAgentList />
         <CloudAgentList />
       </QueryClientProvider>
     )
@@ -388,4 +399,57 @@ it('says the machine is starting while the machine itself wakes', async () => {
   expect(el.textContent).toContain('waking…');
   expect(el.textContent).toContain('The cloud machine is starting.');
   expect(el.textContent).not.toContain('The agent is starting.');
+});
+
+function managed(
+  agentId: string,
+  name: string,
+  displayName: string | null,
+  kind: string
+): ManagedAgentView {
+  return {
+    serverId: 'server',
+    workspaceId: 'workspace',
+    agentId,
+    name,
+    displayName,
+    iconUrl: null,
+    description: '',
+    machine: { id: `${kind}-controller`, name: kind, kind, state: 'online' },
+    desiredState: 'running',
+    revision: 1,
+    definition: {
+      provider: 'claude',
+      model: null,
+      advancedConfig: {},
+      instructions: '',
+      autoApprove: false,
+      directory: null,
+      isolation: 'shared',
+    },
+    status: null,
+  };
+}
+
+it('lists each cloud agent once, as its cloud row under its display name', async () => {
+  managedAgents.list.mockResolvedValue([
+    managed('agent', 'claude', 'Claude Code', 'ec2'),
+    managed('other', 'claude2', null, 'ec2'),
+    managed('local', 'helper', 'Local Helper', 'daemon'),
+  ]);
+  sdkHost.cloudAgents.mockResolvedValue([
+    agent(agentKey, 'claude'),
+    agent('cloud:server:agent=other', 'claude2'),
+  ]);
+  const el = await render();
+
+  const managedRows = el.querySelector('[aria-label="Managed agents"]')!;
+  expect(managedRows.textContent).toContain('Local Helper');
+  expect(managedRows.textContent).not.toContain('Claude Code');
+  expect(managedRows.textContent).not.toContain('claude2');
+
+  const cloudRows = [...el.querySelectorAll('[aria-label="Cloud agents"] button[aria-expanded]')];
+  expect(cloudRows.map((row) => row.textContent)).toEqual(['Claude Code', 'claude2']);
+  expect(button(el, /New session on Claude Code/)).toBeDefined();
+  expect(el.textContent?.match(/Claude Code/g)).toHaveLength(1);
 });
