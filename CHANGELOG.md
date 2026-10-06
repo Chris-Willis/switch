@@ -1429,6 +1429,14 @@ version of their own to them without also giving them a release of their own.
 #### Removed
 - **The Switch skill no longer mentions the task protocol**, which
   switch-core has removed.
+- **Task events are no longer handled.** switch-core stopped sending them:
+  sessions, the agents controller's relay and its agent hub no longer treat a
+  `task_*` event as one that wakes the agent, and the addressing settings no
+  longer describe a delegated task as a way to talk to an agent.
+- **The agents controller's relay forwards `/agents/…` routes for the
+  authenticated agent only.** The two that named no agent,
+  `/agents/rooms/{room}/participants` and `/agents/feature-flags`, are gone
+  from switch-core.
 
 #### Fixed
 - **A Claude Code session is no longer parked while its background subagents
@@ -3097,6 +3105,9 @@ The Switch protocol client and MCP runtime
 #### Removed
 - A cloud agent's session instructions no longer describe the task protocol,
   which switch-core has removed.
+- The `TaskPayload` type and the unused `AgentBridgeEventResponse` type:
+  switch-core sends no task events and has no long poll to answer with an
+  event list.
 
 ### [0.8.0] - 2026-09-25
 
