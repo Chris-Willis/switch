@@ -766,8 +766,8 @@ async def poll_events(
     stream, with its heartbeat on `POST /connection/beat`: that is how an agent
     runtime built before the WebSocket connects (agent-protocol revision 7 and
     older), and it is kept for those clients for a compatibility window. It
-    goes once no client still connects over it. Anything else falls back to
-    the long poll, served from the same buffer.
+    goes once `switch.agents.connected{transport:sse}` stays at zero. Anything
+    else falls back to the long poll, served from the same buffer.
 
     The declaration parameters are all optional and all default to None,
     meaning *unknown* (CHOO-1865): a client that says nothing still connects.
@@ -1040,6 +1040,11 @@ async def _open_connection(
     return conn, frames
 
 
+def _refusal_reason(exc: HTTPException) -> str:
+    """The `reason` a refused open is counted under."""
+    return "protocol" if isinstance(exc.__cause__, ProtocolVersionError) else "other"
+
+
 async def _open_event_stream(
     *,
     agent: Agent,
@@ -1065,25 +1070,29 @@ async def _open_event_stream(
     loop, so the two cannot drift while both exist. A refusal is the HTTP
     error the socket would have sent as its `refused` frame.
     """
-    _conn, frames = await _open_connection(
-        agent=agent,
-        protocol=protocol,
-        config=config,
-        connection_id=connection_id,
-        scope=scope,
-        event_filter=event_filter,
-        start_from=start_from,
-        spawn_capable=spawn_capable,
-        declaration=declaration,
-        rooms=rooms,
-        expected_generation=expected_generation,
-        worker_capability=worker_capability,
-        host_boot_id=host_boot_id,
-        host_instance_id=host_instance_id,
-        worker_state_version=worker_state_version,
-        last_event_id=last_event_id,
-        transport="sse",
-    )
+    try:
+        _conn, frames = await _open_connection(
+            agent=agent,
+            protocol=protocol,
+            config=config,
+            connection_id=connection_id,
+            scope=scope,
+            event_filter=event_filter,
+            start_from=start_from,
+            spawn_capable=spawn_capable,
+            declaration=declaration,
+            rooms=rooms,
+            expected_generation=expected_generation,
+            worker_capability=worker_capability,
+            host_boot_id=host_boot_id,
+            host_instance_id=host_instance_id,
+            worker_state_version=worker_state_version,
+            last_event_id=last_event_id,
+            transport="sse",
+        )
+    except HTTPException as exc:
+        metrics().increment(AGENT_CONNECTIONS_REFUSED, {"reason": _refusal_reason(exc)})
+        raise
     return StreamingResponse(
         sse_stream(frames),
         media_type="text/event-stream",
@@ -1238,10 +1247,7 @@ async def connection_socket(
             worker_state_version=worker_state_version,
         )
     except HTTPException as exc:
-        reason = (
-            "protocol" if isinstance(exc.__cause__, ProtocolVersionError) else "other"
-        )
-        metrics().increment(AGENT_CONNECTIONS_REFUSED, {"reason": reason})
+        metrics().increment(AGENT_CONNECTIONS_REFUSED, {"reason": _refusal_reason(exc)})
         await websocket.send_json(
             {
                 "event": "refused",
