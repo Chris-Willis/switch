@@ -106,7 +106,8 @@ from switch_core.bridges.agent.registration_bootstrap import (
     resolve_registration_owner_id,
 )
 from switch_core.budgets import BudgetExceeded
-from switch_core.db.models import Agent, Task
+from switch_core.db.models import Agent, Task, require_tenant_id
+from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.feature_flag_store import FeatureFlagStore
 from switch_core.feature_flags import is_known_flag
@@ -437,10 +438,18 @@ async def update_agent(
 async def delete_agent(
     agent_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
+    session: Annotated[AsyncSession, Depends(get_session)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict[str, bool]:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")
+    if await AgentDefinitionStore().on_cloud_controller(
+        session, require_tenant_id(), agent_id
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="This is a cloud agent. Remove it from Switch Console's cloud agents instead.",
+        )
     try:
         await protocol.delete_agent(agent_id=agent_id)
     except ValueError as e:

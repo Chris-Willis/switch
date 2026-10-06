@@ -57,6 +57,7 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
+from switch_core.gateway.agents import router as gateway_agents_router
 from switch_core.gateway.auth import create_jwt
 from switch_core.keys import Keyring
 from switch_core.management import controller_routes, tokens
@@ -218,11 +219,13 @@ def build_harness(
     )
     agent_app.dependency_overrides[bridge_deps.get_protocol] = lambda: protocol
 
+    gateway_app.include_router(gateway_agents_router, prefix="/agents")
     gateway_app.dependency_overrides[gw_deps.get_session] = _session
     gateway_app.dependency_overrides[gw_deps.get_session_factory] = lambda: (
         session_factory
     )
     gateway_app.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
+    gateway_app.dependency_overrides[gw_deps.get_agent_store] = lambda: AgentStore()
     gateway_app.dependency_overrides[gw_deps.get_protocol] = lambda: protocol
     gateway_app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         keyring=KEYRING, gateway_tenant_choice_enabled=False

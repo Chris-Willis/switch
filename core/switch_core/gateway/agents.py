@@ -27,7 +27,8 @@ from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
     TaskProtocolConfig,
 )
-from switch_core.db.models import User
+from switch_core.db.models import User, require_tenant_id
+from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
@@ -62,6 +63,10 @@ from switch_core.gateway.subagent_registration import derive_subagent_registrati
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+CLOUD_AGENT_DELETE_REFUSED = (
+    "This is a cloud agent. Remove it from Switch Console's cloud agents instead."
+)
 
 
 @router.get("")
@@ -101,6 +106,10 @@ async def delete_agent_by_name(
             status_code=403,
             detail="Only the agent's owner or an admin can delete it.",
         )
+    if await AgentDefinitionStore().on_cloud_controller(
+        session, require_tenant_id(), agent.id
+    ):
+        raise HTTPException(status_code=409, detail=CLOUD_AGENT_DELETE_REFUSED)
     try:
         await protocol.delete_agent(agent_name=agent_name)
     except ValueError as exc:
@@ -132,6 +141,10 @@ async def delete_agent(
             status_code=403,
             detail="Only the agent's owner or an admin can delete it.",
         )
+    if await AgentDefinitionStore().on_cloud_controller(
+        session, require_tenant_id(), agent.id
+    ):
+        raise HTTPException(status_code=409, detail=CLOUD_AGENT_DELETE_REFUSED)
     try:
         await protocol.delete_agent(agent_id=agent_id)
     except ValueError as exc:
