@@ -120,13 +120,6 @@ it('a unit records why it could not start in its watcher root', async () => {
   expect((await stat(join(watcherRoot, 'supervisor', 'failure.json'))).mode & 0o777).toBe(0o640);
 });
 
-it('a unit refuses to run as a hosted worker', async () => {
-  await writeUnitState({ enabled: true });
-  const result = await daemon(['--unit', watcherRoot], { SWITCH_HOSTED_BOOTSTRAP: '1' });
-  expect(result.code).toBe(1);
-  expect(await failure(watcherRoot)).toContain('unset SWITCH_HOSTED_BOOTSTRAP');
-});
-
 it('prepares an agent root from its systemd credentials', async () => {
   await writeUnitState({ enabled: true });
   await writeFile(

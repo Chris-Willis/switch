@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { buildSharedHostConfig } from './build-shared-config';
-import { HOSTED_STATE_VERSION, STATE_VERSION_FILE } from './cutover-manifest';
 import { type HostedWorkspace, prepareHostedAgent } from './hosted-bootstrap';
 import type { HostedCredential } from './hosted-provider';
 import type { SharedHostConfig } from './shared-config';
@@ -242,10 +241,7 @@ it("seeds the watcher with a worker volume's assignments, once", async () => {
     join(agentRoot, 'hosted-deployment.json'),
     JSON.stringify({ version: 1, spec: { revision: 2, session: { agentId: AGENT } }, config: {} })
   );
-  await writeFile(
-    join(agentRoot, STATE_VERSION_FILE),
-    JSON.stringify({ version: HOSTED_STATE_VERSION })
-  );
+  await writeFile(join(agentRoot, 'state-version.json'), JSON.stringify({ version: 1 }));
   await writeFile(join(agentRoot, 'assignments.jsonl'), 'worker assignments\n');
   await writeFile(join(agentRoot, 'placements.json'), '{"placements":{}}');
 
@@ -272,4 +268,15 @@ it('refuses a worker volume that belongs to another agent', async () => {
   await expect(
     prepareHostedAgent({ agentRoot, credentialsDirectory: credentials }, unused)
   ).rejects.toThrow(`does not belong to agent ${AGENT}`);
+});
+
+it('refuses a worker volume whose layout migration never finished', async () => {
+  await arrange({ provider: 'claude', credential: connected('claude', 'api-key', 'placeholder') });
+  await writeFile(
+    join(agentRoot, 'hosted-deployment.json'),
+    JSON.stringify({ version: 1, spec: { session: { agentId: AGENT } } })
+  );
+  await expect(
+    prepareHostedAgent({ agentRoot, credentialsDirectory: credentials }, unused)
+  ).rejects.toThrow('layout migration never finished');
 });

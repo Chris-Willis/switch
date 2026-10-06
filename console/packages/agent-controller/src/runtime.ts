@@ -584,15 +584,7 @@ export class InProcessRuntime implements AgentRuntime {
           watcher: control,
           transfers,
         });
-        await runAgentHost(
-          root,
-          config,
-          signal,
-          sessions,
-          control,
-          null,
-          this.deps.openStream(agentId)
-        );
+        await runAgentHost(root, config, signal, sessions, control, this.deps.openStream(agentId));
       } finally {
         detach();
         stopRecording();
