@@ -155,10 +155,10 @@ _UNAVAILABLE_MESSAGES = {
 # the connector will spin a session up on demand to handle the message.
 _STARTING_SESSION_MESSAGE = "Starting a session to handle this — one moment."
 
-_WAKING_MESSAGE = "Waking up my cloud worker — I'll answer in a minute or two."
+_WAKING_MESSAGE = "Waking up my cloud machine — I'll answer in a minute or two."
 
 _MAILBOX_FULL_MESSAGE = (
-    f"My cloud worker already has {MAILBOX_LIMIT} messages waiting, so I did not "
+    f"My cloud machine already has {MAILBOX_LIMIT} messages waiting, so I did not "
     "queue this one. Please send it again once I have caught up."
 )
 

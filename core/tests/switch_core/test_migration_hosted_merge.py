@@ -684,7 +684,9 @@ async def test_pilot_upgrade_refuses_to_drop_sessions_before_the_manifest(
             )
             await _seed_sdk_rows(connection)
 
-        with pytest.raises(RuntimeError, match="just hosted-cutover-upgrade"):
+        with pytest.raises(
+            RuntimeError, match="a Switch release that still has the cutover tool"
+        ):
             async with engine.begin() as connection:
                 await connection.run_sync(_upgrade_to("heads"))
 
@@ -1115,7 +1117,8 @@ async def test_real_upgrade_refuses_a_cutover_never_prepared(
         await engine.dispose()
 
     with pytest.raises(
-        RuntimeError, match=r"launch l1 .*run `just hosted-cutover-upgrade prepare`"
+        RuntimeError,
+        match=r"launch l1 has hosted state the cutover has not captured.*predates the controller runtime",
     ):
         await migrate(_migration_config(pilot_url, monkeypatch))
 
