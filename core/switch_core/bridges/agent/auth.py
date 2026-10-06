@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -530,11 +531,35 @@ class BearerAuthMiddleware:
             return await self._agent_store.get_by_oauth_client_id(session, client_id)
 
 
-def _controller_refusal(code: str, message: str, status_code: int) -> Response:
-    return JSONResponse(
+def _controller_refusal(code: str, message: str, status_code: int) -> ASGIApp:
+    """A controller refusal, in the contract's error envelope.
+
+    On a WebSocket, which cannot read a refused handshake (see
+    `_unauthorized`), the same refusal the agent connection sends: a `refused`
+    frame carrying the code, then a close with 4000 plus the status.
+    """
+    response = JSONResponse(
         {"error": {"code": code, "message": message, "retryable": False}},
         status_code=status_code,
     )
+
+    async def refuse(scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "websocket":
+            await response(scope, receive, send)
+            return
+        await receive()  # the client's websocket.connect
+        await send({"type": "websocket.accept"})
+        frame = {
+            "event": "refused",
+            "data": {
+                "status": status_code,
+                "detail": {"code": code, "message": message},
+            },
+        }
+        await send({"type": "websocket.send", "text": json.dumps(frame)})
+        await send({"type": "websocket.close", "code": 4000 + status_code})
+
+    return refuse
 
 
 def _is_agent_route(path: str) -> bool:

@@ -1106,8 +1106,9 @@ export class SwitchEventStream {
         `this runtime needs Node 22 or newer to connect to Switch (it has ${process.version}, with no WebSocket)`
       );
     }
+    // A hosted worker proves who it is on the socket exactly as on the stream.
     const socket = new Socket(url, {
-      headers: { Authorization: `Bearer ${this.deps.creds.token}` },
+      headers: { Authorization: `Bearer ${this.deps.creds.token}`, ...this.workerHeaders() },
     });
     const pending: SocketFrame[] = [];
     let refused: unknown = null;

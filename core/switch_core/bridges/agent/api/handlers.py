@@ -1178,6 +1178,16 @@ async def connection_socket(
     client: Annotated[str | None, Query()] = None,
     client_version: Annotated[str | None, Query()] = None,
     rooms: Annotated[str | None, Query()] = None,
+    worker_capability: Annotated[
+        str | None, Header(alias="x-switch-worker-capability")
+    ] = None,
+    host_boot_id: Annotated[str | None, Header(alias="x-switch-host-boot-id")] = None,
+    host_instance_id: Annotated[
+        str | None, Header(alias="x-switch-host-instance-id")
+    ] = None,
+    worker_state_version: Annotated[
+        int | None, Header(alias="x-switch-worker-state-version")
+    ] = None,
 ) -> None:
     """The agent's connection over one WebSocket: events down, heartbeats up.
 
@@ -1194,6 +1204,12 @@ async def connection_socket(
     A refusal on opening is sent as a `refused` frame carrying the status and
     detail an HTTP request would have been answered with, then the socket closes
     with code 4000 plus that status.
+
+    A hosted agent's worker opens it as it opens the stream, with its
+    capability and host identity in the `X-Switch-Worker-*` and
+    `X-Switch-Host-*` headers, and is admitted and refused by the same rules
+    (agent-protocol 7). Its frames come down the socket; its up-calls stay
+    HTTP requests.
     """
     await websocket.accept()
     try:
@@ -1214,6 +1230,10 @@ async def connection_socket(
             ),
             rooms=rooms,
             expected_generation=expected_generation,
+            worker_capability=worker_capability,
+            host_boot_id=host_boot_id,
+            host_instance_id=host_instance_id,
+            worker_state_version=worker_state_version,
         )
     except HTTPException as exc:
         await websocket.send_json(
