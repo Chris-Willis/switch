@@ -359,12 +359,6 @@ export async function updateRoom(
   return jsonRequest<RoomDetail>(`/rooms/${roomId}`, "PATCH", input);
 }
 
-export async function fetchRoomRoles(
-  roomId: string,
-): Promise<RoomRoleDetail[] | null> {
-  return fetchJson<RoomRoleDetail[]>(`/rooms/${roomId}/roles`);
-}
-
 export async function createRoomRole(
   roomId: string,
   input: RoomRoleSpec,
@@ -447,16 +441,6 @@ export async function deleteRoom(roomId: string): Promise<boolean> {
     method: "DELETE",
   });
   return res?.ok ?? false;
-}
-
-export async function bulkDeleteRooms(
-  roomIds: string[],
-): Promise<{ deleted: number } | null> {
-  return fetchJson<{ deleted: number }>("/rooms/bulk-delete", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ room_ids: roomIds }),
-  });
 }
 
 export async function bulkArchiveRooms(
@@ -851,10 +835,6 @@ export async function logout(): Promise<void> {
     method: "POST",
     credentials: "include",
   });
-}
-
-export async function fetchMe(): Promise<UserInfo | null> {
-  return fetchJson<UserInfo>("/auth/me");
 }
 
 export type SignupMode = "default_tenant" | "invite_only" | "open";

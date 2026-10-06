@@ -36,8 +36,6 @@ from switch_core.gateway.dependencies import (
 from switch_core.gateway.schemas import (
     BulkArchiveRequest,
     BulkArchiveResponse,
-    BulkDeleteRequest,
-    BulkDeleteResponse,
     RoomAgentsRequest,
     RoomAgentUpdateRequest,
     RoomCreateRequest,
@@ -867,32 +865,6 @@ async def delete_room(
     except ValueError:
         raise HTTPException(status_code=404, detail="Room not found")
     return {"ok": True}
-
-
-@router.post("/bulk-delete")
-async def bulk_delete_rooms(
-    req: BulkDeleteRequest,
-    session: Annotated[AsyncSession, Depends(get_session)],
-    room_service: Annotated[RoomService, Depends(get_room_service)],
-    room_store: Annotated[RoomStore, Depends(get_room_store)],
-    user: Annotated[User, Depends(get_current_user)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
-) -> BulkDeleteResponse:
-    principal = Principal(user.id, is_admin)
-    deleted = 0
-    for room_id in req.room_ids:
-        room = await room_store.get(session, room_id)
-        if room is None:
-            logger.warning("Skipping unknown room %s during bulk delete", room_id)
-            continue
-        if not can(principal, "delete", room):
-            logger.warning(
-                "Skipping room %s during bulk delete: not authorized", room_id
-            )
-            continue
-        await room_service.delete_room(room_id)
-        deleted += 1
-    return BulkDeleteResponse(deleted=deleted)
 
 
 @router.post("/bulk-archive")

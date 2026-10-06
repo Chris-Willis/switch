@@ -153,14 +153,6 @@ class RoomUsersRequest(BaseModel):
     user_names: list[str]
 
 
-class BulkDeleteRequest(BaseModel):
-    room_ids: list[str]
-
-
-class BulkDeleteResponse(BaseModel):
-    deleted: int
-
-
 class BulkArchiveRequest(BaseModel):
     room_ids: list[str]
     # True archives the rooms, False unarchives them.

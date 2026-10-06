@@ -11,7 +11,6 @@ import {
   type ExternalUserSummary,
   type DocumentDetail,
   type DocumentSummary,
-  type InboundLinkedRoomDetail,
   type InstalledApp,
   type KnownAgentType,
   type LinkedRoomDetail,
@@ -39,14 +38,12 @@ import {
   fetchBridgeUsers,
   fetchDocumentRooms,
   fetchDocuments,
-  fetchInboundLinkedRooms,
   fetchInstallablePlatforms,
   fetchInstalledApps,
   fetchKnownAgentTypes,
   fetchLinkedRooms,
   fetchRoomGraph,
   fetchEcosystemGraph,
-  fetchPackage,
   fetchPackageDocuments,
   fetchPackageReferences,
   fetchPackageRooms,
@@ -212,16 +209,6 @@ export function useLinkedRooms(
   return useQuery(fetcher);
 }
 
-export function useInboundLinkedRooms(
-  roomId: string | undefined,
-): UseQueryResult<InboundLinkedRoomDetail[]> {
-  const fetcher = useCallback(
-    () => (roomId ? fetchInboundLinkedRooms(roomId) : Promise.resolve(null)),
-    [roomId],
-  );
-  return useQuery(fetcher);
-}
-
 export function useRoomGraph(): UseQueryResult<RoomGraphData> {
   return useQuery(fetchRoomGraph);
 }
@@ -286,16 +273,6 @@ export function useDocumentRooms(
 
 export function usePackages(): UseQueryResult<PackageDetail[]> {
   return useQuery(fetchPackages);
-}
-
-export function usePackage(
-  packageId: string | undefined,
-): UseQueryResult<PackageDetail> {
-  const fetcher = useCallback(
-    () => (packageId ? fetchPackage(packageId) : Promise.resolve(null)),
-    [packageId],
-  );
-  return useQuery(fetcher);
 }
 
 export function useRoomPackages(

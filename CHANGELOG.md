@@ -149,6 +149,8 @@ version of their own to them without also giving them a release of their own.
 - **Unused tables.** Migration `871623ec1ebf` drops `delivery_cursors`,
   which no code read or wrote, and `skills`, `agent_skills` and
   `room_skills`, which nothing ever filled.
+- **`POST /gateway/rooms/bulk-delete`**, which nothing called, and five
+  operator-dashboard client functions with no caller.
 
 ### [0.29.0] - 2026-09-29
 
