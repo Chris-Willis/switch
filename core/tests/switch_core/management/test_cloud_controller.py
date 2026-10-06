@@ -48,6 +48,7 @@ from switch_core.providers.github_installation import RepositoryCredential
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.providers.sealing import SealingNotConfigured
 from tests.switch_core.hosted_machine_helpers import seed_machine
+from tests.switch_core.hosted_wire_fixtures import MACHINE_ID, assert_wire_fixture
 from tests.switch_core.management.harness import (
     KEYRING,
     EnrolledController,
@@ -69,6 +70,10 @@ DATA_KEY = bytes(range(32))
 INSTANCE = "i-00000000000000001"
 BOOT = "boot-00000001"
 REPOSITORY = {"installation_id": 123, "repository_id": 456}
+FIXTURE_SLOT_ID = "slot-a"
+FIXTURE_OWNER_ID = "3f1c2b4a-0000-4000-8000-0000000000b1"
+FIXTURE_CONTROLLER_ID = "3f1c2b4a-0000-4000-8000-0000000000e1"
+FIXTURE_CREDENTIAL = "swcc_test-000000000000000000000000000000000000"
 
 
 class FakeKms:
@@ -297,6 +302,32 @@ class TestPrepare:
         )
         assert machine.controller_id == controller_id
         assert machine.state == "provisioning"
+
+    async def test_the_response_matches_the_controllers_wire_fixture(
+        self, cloud: Cloud
+    ) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        machine_id = await cloud.machine(owner)
+        async with cloud.factory() as session:
+            machine = await session.get(HostedMachine, (TENANT_ZERO_ID, machine_id))
+            assert machine is not None
+            slot_id = machine.slot_id
+
+        prepared = await cloud.prepare(machine_id)
+
+        assert prepared.status_code == 200, prepared.text
+        body = prepared.json()
+        assert_wire_fixture(
+            "prepare_controller_response.json",
+            body,
+            placeholders={
+                MACHINE_ID: machine_id,
+                FIXTURE_SLOT_ID: slot_id,
+                FIXTURE_OWNER_ID: owner.id,
+                FIXTURE_CONTROLLER_ID: body["controller"]["id"],
+            },
+            volatile={("controller", "credential"): FIXTURE_CREDENTIAL},
+        )
 
     async def test_a_new_revision_replaces_the_credential_and_its_tokens(
         self, cloud: Cloud

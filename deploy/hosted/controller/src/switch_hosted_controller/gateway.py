@@ -223,9 +223,14 @@ class Gateway:
                 self._record_failure(core, error)
 
     def _record_failure(self, core: CoreMachine, error: Exception) -> None:
-        logger.error(
-            "Cloud machine preparation failed for %s: %s", core.machine_id, type(error).__name__
-        )
+        if isinstance(error, ConfigError):
+            logger.error("Cloud machine preparation failed for %s: %s", core.machine_id, error)
+        else:
+            logger.error(
+                "Cloud machine preparation failed for %s: %s",
+                core.machine_id,
+                type(error).__name__,
+            )
         if core.desired_state != "running":
             return
         if isinstance(error, GatewayError) and error.status == 409:
@@ -527,10 +532,14 @@ class Gateway:
         if not isinstance(credential, str) or not CONTROLLER_CREDENTIAL_RE.fullmatch(credential):
             raise ConfigError("Cloud gateway returned no valid controller credential.")
         kms = prepared.get("kms")
-        if not isinstance(kms, dict) or set(kms) != {"key_arn", "context"}:
+        if not isinstance(kms, dict) or set(kms) != {"key_arn", "region", "context"}:
             raise ConfigError("Cloud gateway returned no valid login key.")
         if kms["key_arn"] != self.config.login_kms_key_arn:
             raise ConfigError("Cloud gateway returned a login key other than the configured one.")
+        if kms["region"] != self.config.region:
+            raise ConfigError(
+                "Cloud gateway returned a login key region other than the configured one."
+            )
         context = validate_context(kms["context"])
         if context["switch:controller_id"] != controller_id:
             raise ConfigError("Cloud gateway returned a login key context for another controller.")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from pathlib import Path
@@ -9,7 +10,7 @@ import pytest
 from botocore.exceptions import ClientError
 from botocore.stub import Stubber
 from test_bundle_revisions import FakeSecrets, token
-from test_controller import MACHINE_ID, config_dict, ec2_client
+from test_controller import CORE_FIXTURES, MACHINE_ID, config_dict, ec2_client
 from test_kms_grants import CONTEXT, KEY_ARN, FakeKms
 
 from switch_hosted_controller.cloud import CloudResourceError, Ec2Cloud
@@ -25,6 +26,7 @@ CONTROLLER_ID = CONTEXT["switch:controller_id"]
 CREDENTIAL = "swcc_SYNTHETIC-CONTROLLER-CREDENTIAL-0001"
 VOLUME_ID = "vol-0123456789abcdef0"
 ROLE_ARN = "arn:aws:iam::123456789012:role/worker-1"
+CORE_PREPARE = json.loads((CORE_FIXTURES / "prepare_controller_response.json").read_text())
 
 
 def controller_dict(tmp_path: Path, *, max_machines: int = 1) -> dict:
@@ -89,7 +91,7 @@ class ControllerCore:
         }
         if self.runtime == "controller":
             prepared["controller"] = {"id": CONTROLLER_ID, "credential": CREDENTIAL}
-            prepared["kms"] = {"key_arn": KEY_ARN, "context": dict(CONTEXT)}
+            prepared["kms"] = {"key_arn": KEY_ARN, "region": "us-east-1", "context": dict(CONTEXT)}
         else:
             prepared["machine_capability"] = f"SYNTHETIC-CAPABILITY-REVISION-{self.revision:04d}"
         prepared.update(self.prepared)
@@ -199,6 +201,49 @@ def test_controller_runtime_writes_bundle_v3_after_the_grant(harness):
     )
 
 
+def _shape(value):
+    if isinstance(value, dict):
+        return {key: _shape(item) for key, item in value.items()}
+    return type(value).__name__
+
+
+def test_harness_serves_cores_prepare_shape(harness):
+    assert _shape(harness.core.prepare()) == _shape(CORE_PREPARE)
+
+
+def test_cores_prepare_response_makes_a_v3_bundle(harness):
+    prepared = json.loads(json.dumps(CORE_PREPARE))
+    prepared["slot_id"] = "slot-1"
+    prepared["kms"]["key_arn"] = KEY_ARN
+    harness.core.prepared = prepared
+
+    harness.sync()
+
+    record = harness.store.grant("slot-1", 1)
+    assert harness.bundle() == {
+        **expected_bundle(record.grant_token),
+        "apiEndpoint": CORE_PREPARE["api_endpoint"],
+        "controller": CORE_PREPARE["controller"],
+        "kms": {
+            "keyArn": KEY_ARN,
+            "region": CORE_PREPARE["kms"]["region"],
+            "grantTokens": [record.grant_token],
+            "context": CORE_PREPARE["kms"]["context"],
+        },
+    }
+
+
+def test_v3_is_refused_when_core_seals_logins_in_another_region(harness, caplog):
+    harness.core.prepared = {
+        "kms": {"key_arn": KEY_ARN, "region": "eu-west-1", "context": dict(CONTEXT)}
+    }
+    with caplog.at_level(logging.ERROR):
+        harness.gateway.sync_machines([harness.core.machine()])
+    assert "login key region other than the configured one" in caplog.text
+    assert "create_grant" not in harness.events
+    assert harness.secrets.puts == []
+
+
 def test_v3_is_refused_unless_the_image_passes_the_capability_gate(harness):
     harness.images.capabilities[CONTROLLER_IMAGE] = set()
     with pytest.raises(CloudResourceError):
@@ -214,13 +259,36 @@ def test_v3_is_refused_unless_the_image_passes_the_capability_gate(harness):
 @pytest.mark.parametrize(
     ("prepared", "message"),
     [
-        ({"kms": {"key_arn": KEY_ARN.replace("aa", "bb"), "context": CONTEXT}}, "login key"),
         (
-            {"kms": {"key_arn": KEY_ARN, "context": {**CONTEXT, "switch:controller_id": "x"}}},
+            {
+                "kms": {
+                    "key_arn": KEY_ARN.replace("aa", "bb"),
+                    "region": "us-east-1",
+                    "context": CONTEXT,
+                }
+            },
+            "login key",
+        ),
+        (
+            {
+                "kms": {
+                    "key_arn": KEY_ARN,
+                    "region": "us-east-1",
+                    "context": {**CONTEXT, "switch:controller_id": "x"},
+                }
+            },
             "another controller",
         ),
-        ({"kms": {"key_arn": KEY_ARN, "context": {**CONTEXT, "extra": "x"}}}, "context"),
-        ({"kms": {"key_arn": KEY_ARN, "context": CONTEXT, "region": "x"}}, "login key"),
+        (
+            {"kms": {"key_arn": KEY_ARN, "region": "us-east-1", "context": {**CONTEXT, "x": "x"}}},
+            "context",
+        ),
+        ({"kms": {"key_arn": KEY_ARN, "region": "eu-west-1", "context": CONTEXT}}, "region"),
+        ({"kms": {"key_arn": KEY_ARN, "context": CONTEXT}}, "login key"),
+        (
+            {"kms": {"key_arn": KEY_ARN, "region": "us-east-1", "context": CONTEXT, "x": "x"}},
+            "login key",
+        ),
         ({"kms": None}, "login key"),
         ({"controller": {"id": CONTROLLER_ID, "credential": "swct_" + "x" * 32}}, "credential"),
         ({"controller": {"id": CONTROLLER_ID, "credential": "swcc_short"}}, "credential"),
