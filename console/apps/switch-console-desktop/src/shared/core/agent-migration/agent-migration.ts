@@ -96,11 +96,24 @@ export type MoveAllResult = {
   failed: { agentId: string; name: string; message: string }[];
 };
 
-/** How far "Move all" has got; see `AgentMigrationService.moveAllProgress`. */
-export type MoveAllProgress = {
-  managed: string[];
-  remaining: { name: string; reason: string | null }[];
+/** One machine's agents in "Move all"; see `AgentMigrationService.moveAllProgress`. */
+export type MoveAllMachine = {
+  kind: 'this-computer' | 'ssh-host';
+  /** "This computer", or the SSH host's name. */
+  name: string;
+  total: number;
+  managed: number;
+  /** Moving, or coming back, right now. */
+  moving: number;
+  /** Not managed, and kept from moving by something other than the machine not being set up. */
+  blocked: number;
+  /** The commonest reason among the blocked ones; null when none is. */
+  reason: string | null;
+  /** The machine is not running managed agents yet, and "Move all" turns it on. */
+  setUpOnMove: boolean;
 };
+
+export type MoveAllProgress = { machines: MoveAllMachine[] };
 
 export type AgentMigrationEvent = {
   agentId: string;
