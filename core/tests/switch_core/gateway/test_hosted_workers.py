@@ -819,6 +819,26 @@ async def test_relay_to_an_errored_machine_is_machine_error(worker_app):
     assert (await _launch(factory, request_id)).relay_seq == 0
 
 
+async def test_mutating_relay_to_a_controller_machine_is_refused(worker_app):
+    client, request_id, _, _, factory, prepared = worker_app
+    machine_id = prepared["machine_id"]
+    await _ready_worker(worker_app)
+    await set_machine(
+        factory,
+        machine_id,
+        runtime="controller",
+        desired_state="stopped",
+        stop_reason="idle",
+        state="stopped",
+        revision=2,
+    )
+    status, body = await _relay_code(client, request_id, {"forget": str(uuid4())})
+    assert (status, body["error"]["code"]) == (409, "controller_managed")
+    machine = await _machine(factory, machine_id)
+    assert (machine.desired_state, machine.revision) == ("stopped", 2)
+    assert (await _launch(factory, request_id)).relay_seq == 0
+
+
 async def test_relay_to_a_machine_needing_an_administrator_says_so(worker_app):
     client, request_id, _, _, factory, prepared = worker_app
     await set_machine(

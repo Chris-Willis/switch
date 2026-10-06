@@ -84,11 +84,20 @@ MACHINE_ERROR_NEEDS_ADMIN = (
 )
 MACHINE_STOPPED = "The owner stopped the cloud machine. Start it in Switch Console."
 WORKER_WAKING = "The cloud machine is starting. Try again in a moment."
+CONTROLLER_MANAGED = (
+    "This agent now runs on its cloud machine's controller. Manage it from its "
+    "agent page."
+)
 
 
 def coded_conflict(code: str, message: str) -> JSONResponse:
     """A 409 whose `detail` is the message and whose `code` names the refusal."""
     return JSONResponse(status_code=409, content={"detail": message, "code": code})
+
+
+def controller_managed(machine: HostedMachine | None) -> bool:
+    """Whether the machine's controller, not a worker, runs its agents."""
+    return machine is not None and machine.runtime == "controller"
 
 
 def machine_error_detail(machine: HostedMachine) -> str:
@@ -262,22 +271,24 @@ async def get_configuration(
     return configuration(launch.spec)
 
 
-@router.put("/{request_id}/configuration")
+@router.put("/{request_id}/configuration", response_model=None)
 async def update_configuration(
     request_id: UUID,
     body: ConfigurationRequest,
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
-) -> dict:
+) -> dict | JSONResponse:
     """Replace the launch's instructions and definition; the agent's next start runs them.
 
     The revision is not bumped: a running agent keeps its deployment until a
     lifecycle action issues a new revision, which the machine applies from
     this spec.
     """
-    launch, _machine = await locked_owned(session, str(request_id), user.id)
+    launch, machine = await locked_owned(session, str(request_id), user.id)
     if launch.desired_state == "deleted":
         raise HTTPException(409, "This worker has been removed.")
+    if controller_managed(machine):
+        return coded_conflict("controller_managed", CONTROLLER_MANAGED)
     if launch.spec.get("provider", "claude") == "claude" and not body.definition:
         raise HTTPException(422, "Claude Code requires an agent definition.")
     changes = body.model_dump(mode="json")
@@ -459,6 +470,8 @@ async def lifecycle(
     resuming_remove = body.action == "remove" and launch.state == "deleting"
     if launch.desired_state == "deleted" and not resuming_remove:
         raise HTTPException(409, "This worker has been removed.")
+    if body.action != "remove" and controller_managed(machine):
+        return coded_conflict("controller_managed", CONTROLLER_MANAGED)
     if body.action == "restart" and launch.state != "ready":
         raise HTTPException(409, "Only a ready worker can be restarted.")
     if body.action == "retry" and launch.state != "error":
@@ -698,6 +711,8 @@ async def session_operation(
                 409, "This operation ID was already used for different details."
             )
         return operation_summary(existing)
+    if controller_managed(machine):
+        return coded_conflict("controller_managed", CONTROLLER_MANAGED)
     if machine.state == "error":
         return coded_conflict("machine_error", machine_error_detail(machine))
     if owner_stopped(machine):

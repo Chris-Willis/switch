@@ -814,6 +814,75 @@ async def test_session_operation_is_queued_on_a_ready_machine_and_replayed(
     assert replayed.json()["id"] == operation_id
 
 
+CONTROLLER_MANAGED = {
+    "detail": "This agent now runs on its cloud machine's controller. Manage it from its agent page.",
+    "code": "controller_managed",
+}
+
+
+async def _controller_launch(app) -> dict:
+    created = await _ready_launch(app)
+    await _update(
+        app.factory, HostedMachine, created["machine_id"], runtime="controller"
+    )
+    return created
+
+
+@pytest.mark.parametrize("action", ["stop", "start", "restart", "retry"])
+async def test_lifecycle_refuses_a_launch_its_machine_controller_runs(
+    launch_app, action
+):
+    app = launch_app
+    created = await _controller_launch(app)
+    refused = await _lifecycle(app, created["request_id"], action, 1)
+    assert refused.status_code == 409
+    assert refused.json() == CONTROLLER_MANAGED
+    launch = await _launch(app.factory, created["request_id"])
+    assert (launch.state, launch.desired_state, launch.revision) == (
+        "ready",
+        "running",
+        1,
+    )
+    assert (await _machine(app.factory, created["machine_id"])).revision == 2
+
+
+async def test_remove_still_removes_a_launch_its_machine_controller_runs(launch_app):
+    app = launch_app
+    created = await _controller_launch(app)
+    removed = await _lifecycle(app, created["request_id"], "remove", 1)
+    assert removed.status_code == 200, removed.text
+    assert removed.json()["state"] == "deleted"
+    async with app.factory() as session:
+        assert await session.get(Agent, created["agent_id"]) is None
+
+
+async def test_session_operation_refuses_a_launch_its_machine_controller_runs(
+    launch_app,
+):
+    app = launch_app
+    created = await _controller_launch(app)
+    refused = await _session_operation(app, created["request_id"])
+    assert refused.status_code == 409
+    assert refused.json() == CONTROLLER_MANAGED
+    assert await _operation_count(app.factory) == 0
+
+
+async def test_configuration_refuses_a_launch_its_machine_controller_runs(
+    launch_app,
+):
+    app = launch_app
+    created = await _controller_launch(app)
+    refused = await app.client.put(
+        f"/hosted-launches/{created['request_id']}/configuration",
+        json=_configuration(),
+    )
+    assert refused.status_code == 409
+    assert refused.json() == CONTROLLER_MANAGED
+    assert (await _launch(app.factory, created["request_id"])).spec[
+        "instructions"
+    ] == ""
+
+
 async def _restartable(app, action: str, stop_reason: str) -> dict:
     """A launch that `action` accepts, on a machine stopped for `stop_reason`."""
     created = (await app.client.post("/hosted-launches", json=body())).json()

@@ -46,6 +46,8 @@ from switch_core.db.stores.hosted_machine_store import (
 from switch_core.gateway.auth import get_current_user, get_current_user_in_transaction
 from switch_core.gateway.dependencies import get_protocol, get_session
 from switch_core.gateway.hosted_launches import (
+    CONTROLLER_MANAGED,
+    controller_managed,
     launch_summary,
     machine_error_detail,
     summary,
@@ -188,6 +190,8 @@ async def dispatch_mutating(
         launch, machine = await machines.locked_launch(session, launch_id)
         if launch is None or launch.desired_state == "deleted":
             raise RelayError("worker_not_attached", "The cloud launch is gone.", 409)
+        if controller_managed(machine):
+            raise RelayError("controller_managed", CONTROLLER_MANAGED, 409)
         now = datetime.now(UTC)
         if (
             machine is not None
