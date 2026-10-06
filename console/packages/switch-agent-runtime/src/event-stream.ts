@@ -18,7 +18,7 @@ const AGENT_PROTOCOL = contractRange('agent-protocol', RUNTIME_ARTIFACT);
  * end the connection, so reconnecting within the heartbeat TTL keeps the room
  * slot and the role lease and resumes from the cursor.
  *
- * A server from before the socket (agent-protocol 6 and older) has none, and
+ * A server from before the socket (agent-protocol 7 and older) has none, and
  * is spoken to the way this runtime used to: the same frames as a Server-Sent
  * Events stream, and a heartbeat we send ourselves, `POST /connection/beat`
  * every two seconds with the cursor. Which one is decided on each open (see
@@ -50,7 +50,7 @@ export const BEAT_INTERVAL_MS = 2000;
 export const BEAT_SETTLE_LIMIT_MS = 1000;
 /** The agent-protocol revision that brought the socket. A server that speaks
  * an older one has no socket, only the event stream. */
-const SOCKET_PROTOCOL_REVISION = 7;
+const SOCKET_PROTOCOL_REVISION = 8;
 /** The code a server answers the event stream with once it has removed it. */
 const TRANSPORT_REMOVED = 'transport_removed';
 const INITIAL_BACKOFF_MS = 1000;

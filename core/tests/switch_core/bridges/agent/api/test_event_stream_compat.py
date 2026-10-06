@@ -1,7 +1,8 @@
 """An old client keeps working against this server.
 
-Agent runtimes up to 0.7.x connect over the Server-Sent Events stream and beat
-with `POST /connection/beat`, declaring agent-protocol 6.
+Agent runtimes up to 0.8.x connect over the Server-Sent Events stream and beat
+with `POST /connection/beat`, declaring agent-protocol 6 (0.7.x) or 7 (0.8.0,
+which added the hosted worker).
 The WebSocket replaces both, and both are kept beside it for a compatibility
 window (the expand half of expand/contract), so these drive the server the way
 such a client does: open the stream, read events, beat, and lapse when it stops
@@ -210,16 +211,24 @@ def _overlap(a: tuple[int, int], b: tuple[int, int]) -> bool:
     return a[1] <= b[0] and b[1] <= a[0]
 
 
-def test_an_old_runtime_and_this_server_share_a_revision() -> None:
+# What the releases before the socket declare, on either side: agent-protocol
+# 6 (agent-runtime 0.7.x, and switch-core before the hosted worker) and 7
+# (agent-runtime 0.8.0, and switch-core with it).
+BEFORE_THE_SOCKET = [(6, 1), (7, 1)]
+
+
+@pytest.mark.parametrize("old", BEFORE_THE_SOCKET)
+def test_an_old_runtime_and_this_server_share_a_revision(old: tuple[int, int]) -> None:
     server = contract_range("agent-protocol", "switch-core")
 
-    assert _overlap((6, 1), (server.speaks, server.accepts))
+    assert _overlap(old, (server.speaks, server.accepts))
 
 
-def test_this_runtime_and_an_old_server_share_a_revision() -> None:
+@pytest.mark.parametrize("old", BEFORE_THE_SOCKET)
+def test_this_runtime_and_an_old_server_share_a_revision(old: tuple[int, int]) -> None:
     runtime = contract_range("agent-protocol", "agent-runtime")
 
-    assert _overlap((runtime.speaks, runtime.accepts), (6, 1))
+    assert _overlap((runtime.speaks, runtime.accepts), old)
 
 
 def test_this_runtime_and_this_server_share_the_newest_revision() -> None:
@@ -229,7 +238,8 @@ def test_this_runtime_and_this_server_share_the_newest_revision() -> None:
     assert runtime.speaks == server.speaks
 
 
-def test_this_server_admits_an_old_runtime() -> None:
+@pytest.mark.parametrize("speaks", [6, 7])
+def test_this_server_admits_an_old_runtime(speaks: int) -> None:
     registry = AgentConnectionRegistry()
     conn = registry.open(
         agent_id=AGENT_ID,
@@ -238,7 +248,7 @@ def test_this_server_admits_an_old_runtime() -> None:
         delivery_filter="all",
         spawn_capable=False,
         cursor=0,
-        declaration=ClientDeclaration(speaks=6, accepts=1),
+        declaration=ClientDeclaration(speaks=speaks, accepts=1),
         expected_generation=None,
         transport="sse",
     )

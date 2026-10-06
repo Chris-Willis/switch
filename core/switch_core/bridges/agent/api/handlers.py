@@ -762,7 +762,7 @@ async def poll_events(
     The live connection is the WebSocket at `/connection/ws`. `Accept:
     text/event-stream` opens the same connection as a Server-Sent Events
     stream, with its heartbeat on `POST /connection/beat`: that is how an agent
-    runtime built before the WebSocket connects (agent-protocol revision 6 and
+    runtime built before the WebSocket connects (agent-protocol revision 7 and
     older), and it is kept for those clients for a compatibility window. It
     goes once no client still connects over it. Anything else falls back to
     the long poll, served from the same buffer.

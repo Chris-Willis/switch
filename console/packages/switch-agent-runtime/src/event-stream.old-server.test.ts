@@ -13,7 +13,8 @@ import {
 } from './event-stream';
 
 /**
- * The runtime against a server from before the socket (agent-protocol 6).
+ * The runtime against a server from before the socket (agent-protocol 7 and
+ * older).
  *
  * Such a server has no `/connection/ws`: the upgrade fails before it opens,
  * which Node's WebSocket reports as an error and a 1006 close and nothing
@@ -2197,18 +2198,22 @@ describe('choosing the transport', () => {
     );
   }
 
-  it('falls back to the event stream, then opens it straight away for a server without a socket', async () => {
-    vi.useFakeTimers();
-    const fetchMock = serving(() => announcingThenClose(6));
-    const { abort } = makeStream(fetchMock, { rooms: [] });
+  // 6 is a server before the hosted worker, 7 one with it: neither has a socket.
+  it.each([6, 7])(
+    'falls back to the event stream, then opens it straight away for a server speaking %i',
+    async (protocol) => {
+      vi.useFakeTimers();
+      const fetchMock = serving(() => announcingThenClose(protocol));
+      const { abort } = makeStream(fetchMock, { rooms: [] });
 
-    // The stream ends at once each time: opens at 0, 1 and 3 seconds.
-    await vi.advanceTimersByTimeAsync(4000);
+      // The stream ends at once each time: opens at 0, 1 and 3 seconds.
+      await vi.advanceTimersByTimeAsync(4000);
 
-    expect(urlsFor(fetchMock, '/events')).toHaveLength(3);
-    expect(SocketThatNeverOpens.opened).toHaveLength(1);
-    abort.abort();
-  });
+      expect(urlsFor(fetchMock, '/events')).toHaveLength(3);
+      expect(SocketThatNeverOpens.opened).toHaveLength(1);
+      abort.abort();
+    }
+  );
 
   it('declares a range a server from before the socket shares', async () => {
     const fetchMock = serving(() => openForever());
@@ -2216,7 +2221,7 @@ describe('choosing the transport', () => {
     await flush();
 
     const params = new URL(urlsFor(fetchMock, '/events')[0]!).searchParams;
-    expect(params.get('protocol')).toBe('7');
+    expect(params.get('protocol')).toBe('8');
     expect(Number(params.get('protocol_accepts'))).toBeLessThanOrEqual(6);
     abort.abort();
   });
@@ -2244,7 +2249,7 @@ describe('choosing the transport', () => {
   it('goes back to the socket once the server says it speaks a revision with one', async () => {
     vi.useFakeTimers();
     // The socket failed to open (a proxy, say) but the server is a new one.
-    const fetchMock = serving(() => announcingThenClose(7));
+    const fetchMock = serving(() => announcingThenClose(8));
     const { abort } = makeStream(fetchMock, { rooms: [] });
 
     await vi.advanceTimersByTimeAsync(2000);

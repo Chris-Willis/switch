@@ -102,7 +102,7 @@ def encode_sse(frame: Frame) -> bytes:
 async def sse_stream(frames: AsyncGenerator[Frame]) -> AsyncIterator[bytes]:
     """The connection's frames as a `text/event-stream` body.
 
-    Kept for clients built before the WebSocket (agent-protocol revision 6 and
+    Kept for clients built before the WebSocket (agent-protocol revision 7 and
     older), for a compatibility window: it goes once no client still connects
     over it.
     """
