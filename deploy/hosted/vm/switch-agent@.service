@@ -47,6 +47,8 @@ ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
 RestrictRealtime=yes
-RestrictSUIDSGID=yes
+# No RestrictSUIDSGID: it also refuses the setgid bit on directories, and
+# the agents' shared directories are setgid (3770). /data is mounted nosuid
+# and NoNewPrivileges is set, so a set-id file there grants nothing.
 LockPersonality=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
