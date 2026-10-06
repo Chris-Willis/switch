@@ -9,9 +9,8 @@ variable "availability_zone" { type = string }
 variable "worker_vpc_cidr" { type = string }
 variable "public_subnet_cidr" { type = string }
 variable "private_subnet_cidr" { type = string }
-variable "worker_image_id" { type = string }
 variable "controller_image_id" {
-  description = "AMI for slots running the agent controller; may equal worker_image_id"
+  description = "AMI every machine slot runs: the agent controller image"
   type        = string
 }
 variable "login_kms_key_arn" {

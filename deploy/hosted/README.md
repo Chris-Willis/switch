@@ -276,8 +276,9 @@ and create the agents again. Do these steps in order.
    - `gateway.json`: set `instance_type`, for example `c7i.2xlarge`.
    - Set `HOSTED_DISK_RETENTION_DAYS` and `HOSTED_IDLE_STOP_MINUTES` if you do
      not want the defaults.
-7. Build and roll out the new worker AMI. Set `image_id` in `controller.json` and
-   `worker_image_id` in the Terraform overlay to the new AMI, and apply Terraform.
+7. Build and roll out the new controller AMI. Set `image_id` in `controller.json`
+   and `controller_image_id` in the Terraform overlay to the new AMI, and apply
+   Terraform.
 8. Upgrade Core. Its database migration refuses to run while any cloud agent is
    not removed, and names this section. Then upgrade the controller. It refuses
    to start while its database holds per-agent rows that are not deleted, and

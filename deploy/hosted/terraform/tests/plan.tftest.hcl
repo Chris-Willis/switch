@@ -19,7 +19,6 @@ variables {
   worker_vpc_cidr     = "10.80.0.0/16"
   public_subnet_cidr  = "10.80.0.0/24"
   private_subnet_cidr = "10.80.1.0/24"
-  worker_image_id     = "ami-00000000000000000"
   controller_image_id = "ami-11111111111111111"
   login_kms_key_arn   = "arn:aws:kms:us-east-1:000000000000:key/11111111-1111-1111-1111-111111111111"
   oidc_provider_arn   = "arn:aws:iam::000000000000:oidc-provider/example.invalid"
@@ -132,12 +131,15 @@ run "rendered_permissions" {
   }
   assert {
     condition = toset(one([for statement in jsondecode(aws_iam_role_policy.controller.policy).Statement : statement if statement.Sid == "ApprovedLaunchInputs"]).Resource) == toset([
-      "arn:aws:ec2:us-east-1::image/${var.worker_image_id}",
       "arn:aws:ec2:us-east-1::image/${var.controller_image_id}",
       "arn:aws:ec2:us-east-1:000000000000:subnet/${aws_subnet.worker.id}",
       "arn:aws:ec2:us-east-1:000000000000:security-group/${aws_security_group.worker.id}",
     ])
-    error_message = "RunInstances must allow exactly the worker and controller images in the worker subnet and security group."
+    error_message = "RunInstances must allow exactly the controller image in the worker subnet and security group."
+  }
+  assert {
+    condition     = !strcontains(aws_iam_role_policy.controller.policy, "switch-provider-verification")
+    error_message = "The controller must not launch provider-verification instances."
   }
   assert {
     condition = alltrue([
