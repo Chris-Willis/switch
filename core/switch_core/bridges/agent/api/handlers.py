@@ -1151,26 +1151,6 @@ async def connection_placements(
 # Reporting endpoint
 
 
-@router.post("/{agent_id}/events/report")
-async def report_events(
-    agent_id: str,
-    req: ReportEventsRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> Response:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        await protocol.report_events(agent.id, req.room_id, req.events)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return Response(status_code=202)
-
-
 # Mediation endpoints
 
 

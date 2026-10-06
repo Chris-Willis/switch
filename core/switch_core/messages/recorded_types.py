@@ -25,8 +25,9 @@ MEMBERSHIP_EVENT_TYPE = "m.room.member"
 EPHEMERAL: frozenset[str] = frozenset()
 
 # Measurements of a run, not utterances in a room. If these are worth keeping
-# they want a table shaped for querying them, not the conversation log.
-TELEMETRY = frozenset({"com.switch.report.tool_call", "com.switch.report.llm_call"})
+# they want a table shaped for querying them, not the conversation log. None
+# is sent today.
+TELEMETRY: frozenset[str] = frozenset()
 
 # Types no code sends any more. The bus keeps its history forever, so events of
 # a retired type stay readable long after the last line that could produce one
@@ -64,6 +65,9 @@ RETIRED = frozenset(
         "com.switch.task.cancel",
         # Deleted with the runtime-state report, which nothing sent any more.
         "com.switch.agent.runtime_state",
+        # Deleted with the tool and LLM call reports, which nothing consumed.
+        "com.switch.report.tool_call",
+        "com.switch.report.llm_call",
     }
 )
 

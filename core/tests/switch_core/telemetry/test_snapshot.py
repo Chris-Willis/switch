@@ -1175,8 +1175,6 @@ class TestATurnNeedsTwoParticipants:
 NOT_SPOKEN = frozenset(
     {
         MEMBERSHIP_EVENT_TYPE,  # an arrival
-        "com.switch.report.tool_call",  # measurements of a run
-        "com.switch.report.llm_call",
     }
 )
 

@@ -13,12 +13,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from switch_core.events import (
-    CommandEvent,
-    LlmCallReport,
-    SwitchEvent,
-    ToolCallReport,
-)
+from switch_core.events import CommandEvent, SwitchEvent
 from switch_core.transport import (
     InboundCustomEvent,
     InboundEvent,
@@ -247,8 +242,6 @@ class Consumer[ActorT: Actor[Any]]:
 
     _EVENT_DISPATCH: dict[str, tuple[type[SwitchEvent], str]] = {
         "com.switch.command": (CommandEvent, "on_command"),
-        "com.switch.report.tool_call": (ToolCallReport, "on_tool_call_report"),
-        "com.switch.report.llm_call": (LlmCallReport, "on_llm_call_report"),
     }
 
     async def _handle_custom_event(
@@ -342,10 +335,4 @@ class Consumer[ActorT: Actor[Any]]:
         """
 
     async def on_command(self, room: RoomRef, event: CommandEvent) -> None:
-        pass
-
-    async def on_tool_call_report(self, room: RoomRef, event: ToolCallReport) -> None:
-        pass
-
-    async def on_llm_call_report(self, room: RoomRef, event: LlmCallReport) -> None:
         pass

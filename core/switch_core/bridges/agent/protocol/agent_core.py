@@ -5,7 +5,7 @@ import logging
 import re
 import secrets
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -40,7 +40,6 @@ from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
     AgentStatus,
     IntegrationProfile,
-    LlmCallReport,
     ModelSpec,
     ParticipantDescriptor,
     RegistrationResult,
@@ -48,7 +47,6 @@ from switch_core.bridges.agent.protocol.types import (
     RoomDetailDescriptor,
     RoomWideMentionStatus,
     SendTargetedResult,
-    ToolCallReport,
     ToolSpec,
 )
 from switch_core.bridges.agent.registration_bootstrap import (
@@ -86,12 +84,6 @@ from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import tenant_of_api_key
-from switch_core.events import (
-    LlmCallReport as RoomLlmCallReport,
-)
-from switch_core.events import (
-    ToolCallReport as RoomToolCallReport,
-)
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.room_wide_mention import (
     ROOM_WIDE_TARGET,

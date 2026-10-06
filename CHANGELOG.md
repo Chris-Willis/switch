@@ -130,6 +130,10 @@ version of their own to them without also giving them a release of their own.
   and type without the working / awaiting-input label or the Switch Console
   link, which came from those reports. Migration `871623ec1ebf` drops the
   `agent_runtime_states` table.
+- **Tool and LLM call reports.** `POST /agents/{id}/events/report` and the
+  `com.switch.report.*` events it wrote are gone; nothing consumed them. The
+  deprecated Claude Code plugin's hook still posts there and ignores the
+  failure.
 
 ### [0.29.0] - 2026-09-29
 

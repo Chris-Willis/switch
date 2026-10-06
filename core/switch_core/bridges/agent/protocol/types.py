@@ -56,32 +56,6 @@ class RegistrationResult(BaseModel):
     api_key: str
 
 
-# ── Reporting ─────────────────────────────────────────────────────────────────
-
-
-class ToolCallReport(BaseModel):
-    type: Literal["tool_call"] = "tool_call"
-    tool_name: str
-    arguments: dict[str, Any]
-    result: Any
-    request_id: str
-    timestamp: str
-    duration_ms: int | None = None
-    cost: float | None = None
-
-
-class LlmCallReport(BaseModel):
-    type: Literal["llm_call"] = "llm_call"
-    model: str
-    messages: list[dict[str, Any]]
-    response: Any
-    request_id: str
-    timestamp: str
-    usage: dict[str, Any] | None = None
-    duration_ms: int | None = None
-    cost: float | None = None
-
-
 class RoomDescriptor(BaseModel):
     id: str
     name: str

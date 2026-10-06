@@ -6,9 +6,7 @@ from pydantic import BaseModel
 
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
-    LlmCallReport,
     ModelSpec,
-    ToolCallReport,
     ToolSpec,
 )
 

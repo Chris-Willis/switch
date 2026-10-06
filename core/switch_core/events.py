@@ -28,27 +28,3 @@ class CommandEvent(SwitchEvent):
     # the command's own event id when it roots its own thread. Populated at
     # dispatch. None for synthetic/legacy events that carry no id.
     thread_id: str | None = None
-
-
-# ── Event reporting ───────────────────────────────────────────────────────────
-
-
-class ToolCallReport(SwitchEvent):
-    agent_id: str
-    tool_id: str
-    args: dict[str, object]
-    result: object
-    task_id: str | None = None
-    duration_ms: int | None = None
-    cost: float | None = None
-
-
-class LlmCallReport(SwitchEvent):
-    agent_id: str
-    model_id: str
-    messages: list[dict[str, object]]
-    response: object
-    task_id: str | None = None
-    usage: dict[str, object] | None = None
-    duration_ms: int | None = None
-    cost: float | None = None
