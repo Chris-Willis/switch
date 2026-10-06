@@ -1245,9 +1245,7 @@ class AgentCore:
         admin = next(
             (
                 c
-                for c in self.client_lifecycle.get_by_type(
-                    "admin", require_tenant_id()
-                )
+                for c in self.client_lifecycle.get_by_type("admin", require_tenant_id())
                 if isinstance(c, SystemActor)
             ),
             None,
