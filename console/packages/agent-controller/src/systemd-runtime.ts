@@ -53,6 +53,7 @@ export const systemctl: Systemctl = async (args) => {
 export interface UnitLogins {
   materialize(agentId: string, provider: Provider): Promise<void>;
   remove(agentId: string): Promise<void>;
+  removeNative(agentId: string, provider: Provider): Promise<void>;
   readiness(provider: Provider): Promise<ProviderReadiness>;
   onRevision(listener: (change: LoginRevision) => void): () => void;
 }
@@ -88,7 +89,7 @@ type UnitState = {
   invocationId: string;
 };
 
-type PendingRestart = { connected: boolean; since: number };
+type PendingRestart = { provider: Provider; connected: boolean; since: number };
 
 /**
  * Runs each agent as an instance of the `switch-agent@.service` template unit
@@ -330,7 +331,7 @@ export class SystemdRuntime implements AgentRuntime {
   private queue(change: LoginRevision): void {
     for (const agentId of change.agentIds) {
       const since = this.pending.get(agentId)?.since ?? this.deps.now();
-      this.pending.set(agentId, { connected: change.connected, since });
+      this.pending.set(agentId, { provider: change.provider, connected: change.connected, since });
     }
   }
 
@@ -355,6 +356,7 @@ export class SystemdRuntime implements AgentRuntime {
           { agentId, forced: overdue }
         );
         await this.deps.systemctl([pending.connected ? 'restart' : 'stop', unit]);
+        if (!pending.connected) await this.deps.logins.removeNative(agentId, pending.provider);
       } catch (error) {
         this.deps.log.error('Could not apply a provider login change to an agent', {
           agentId,

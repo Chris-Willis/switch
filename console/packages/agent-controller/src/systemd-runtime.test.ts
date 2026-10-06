@@ -30,6 +30,9 @@ class FakeLogins implements UnitLogins {
   async remove(agentId: string) {
     this.removed.push(agentId);
   }
+  async removeNative(agentId: string, provider: Provider) {
+    this.removed.push(`${agentId}:${provider}`);
+  }
   async readiness(): Promise<ProviderReadiness> {
     return { status: 'authenticated', message: '', models: [] };
   }
@@ -409,7 +412,9 @@ describe('SystemdRuntime', () => {
     ]);
     logins.emit({ provider: 'claude', agentIds: ['agent-2'], connected: false });
     writeFileSync(join(layout.watcherRoot('agent-2'), 'health.json'), health('inv-4242', false));
+    expect(logins.removed).toEqual([]);
     await act();
     expect(systemctl.verbs().at(-1)).toBe('stop switch-agent@agent-2.service');
+    expect(logins.removed).toEqual(['agent-2:claude']);
   });
 });

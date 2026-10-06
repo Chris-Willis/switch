@@ -1,6 +1,15 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from '../log';
@@ -36,16 +45,33 @@ function harness(initial: Partial<Record<Provider, unknown>>, context = CONTEXT)
     return Buffer.from(vector.dataKey, 'base64');
   };
   const changes: LoginRevision[] = [];
+  const errors: string[] = [];
   const logins = new SealedLogins({
     fetchEnvelope: async (provider) => envelopes[provider] ?? null,
     decrypt,
     kms: { keyArn: vector.keyArn, grantTokens: GRANT_TOKENS, context },
     layout,
-    log: silentLogger,
+    log: { ...silentLogger, error: (message) => errors.push(message) },
   });
   logins.onRevision((change) => changes.push(change));
-  return { envelopes, decrypts, changes, logins };
+  return { envelopes, decrypts, changes, errors, logins };
 }
+
+/** Writes `parts` below `agentId`'s root as its unit would, answering the path. */
+function agentFile(agentId: string, parts: string): string {
+  const path = join(layout.agentRoot(agentId), parts);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, 'placeholder');
+  return path;
+}
+
+const SESSION = 'a'.repeat(64);
+const revoked = (provider: Provider, revision: number) => ({
+  v: 1,
+  provider,
+  revision,
+  status: 'revoked',
+});
 
 const envelope = (name: Case) => structuredClone(vector.cases[name].envelope);
 
@@ -163,6 +189,82 @@ describe('SealedLogins', () => {
     });
     delete envelopes.claude;
     expect(await logins.readiness('claude')).toMatchObject({ status: 'unconfigured' });
+  });
+
+  it('removes the native login files a revoked login left in every agent root', async () => {
+    const { envelopes, errors, logins } = harness({ codex: envelope('codex') });
+    await logins.materialize('agent-1', 'codex');
+    const written = [
+      agentFile('agent-1', 'provider-home/auth.json'),
+      agentFile('agent-1', 'provider-home/auth.json.switch-credential'),
+      agentFile('agent-1', `provider-home/${SESSION}/auth.json`),
+      agentFile('agent-1', `provider-home/${SESSION}/.switch-auth-source`),
+      agentFile('agent-2', 'provider-home/auth.json'),
+    ];
+    const kept = [
+      agentFile('agent-1', 'provider-home/config.toml'),
+      agentFile('agent-1', `provider-home/${SESSION}/config.toml`),
+      agentFile('agent-1', 'provider-home/antigravity-acp/acp_token.json'),
+    ];
+    envelopes.codex = revoked('codex', 8);
+    await logins.current('codex');
+    for (const path of written) expect(existsSync(path), path).toBe(false);
+    for (const path of kept) expect(existsSync(path), path).toBe(true);
+    expect(errors).toEqual([]);
+  });
+
+  it('removes them when the login is deleted outright, once per withdrawal', async () => {
+    const { envelopes, logins } = harness({});
+    const token = agentFile('agent-1', 'provider-home/antigravity-acp/acp_token.json');
+    await logins.current('antigravity');
+    expect(existsSync(token)).toBe(false);
+    agentFile('agent-1', 'provider-home/antigravity-acp/acp_token.json');
+    await logins.current('antigravity');
+    expect(existsSync(token)).toBe(true);
+    envelopes.antigravity = revoked('antigravity', 2);
+    await logins.current('antigravity');
+    expect(existsSync(token)).toBe(true);
+  });
+
+  it('removes an imported OpenCode console login with the database it lives in', async () => {
+    const { logins } = harness({});
+    const database = [
+      agentFile('agent-1', 'provider-data/opencode/opencode.db'),
+      agentFile('agent-1', 'provider-data/opencode/opencode.db-wal'),
+      agentFile('agent-1', 'provider-data/opencode/.switch-console-credential'),
+      agentFile('agent-1', 'provider-data/opencode/auth.json'),
+    ];
+    const untouched = agentFile('agent-2', 'provider-data/opencode/opencode.db');
+    await logins.current('opencode');
+    for (const path of database) expect(existsSync(path), path).toBe(false);
+    expect(existsSync(untouched)).toBe(true);
+  });
+
+  it('removes every native login of an agent removed from the machine, and only its', async () => {
+    const { logins } = harness({ codex: envelope('codex') });
+    await logins.materialize('agent-1', 'codex');
+    const own = [
+      agentFile('agent-1', 'provider-home/auth.json'),
+      agentFile('agent-1', 'provider-data/opencode/auth.json'),
+      agentFile('agent-1', 'provider-home/antigravity-acp/acp_token.json'),
+    ];
+    const other = agentFile('agent-2', 'provider-home/auth.json');
+    await logins.remove('agent-1');
+    for (const path of own) expect(existsSync(path), path).toBe(false);
+    expect(existsSync(layout.providerFile('agent-1'))).toBe(false);
+    expect(existsSync(other)).toBe(true);
+  });
+
+  it('follows no link an agent planted, and says so', async () => {
+    const { errors, logins } = harness({});
+    const outside = join(dir, 'outside');
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'auth.json'), 'placeholder');
+    mkdirSync(layout.agentRoot('agent-1'), { recursive: true });
+    symlinkSync(outside, join(layout.agentRoot('agent-1'), 'provider-home'));
+    await logins.remove('agent-1');
+    expect(existsSync(join(outside, 'auth.json'))).toBe(true);
+    expect(errors.length).toBeGreaterThan(0);
   });
 });
 

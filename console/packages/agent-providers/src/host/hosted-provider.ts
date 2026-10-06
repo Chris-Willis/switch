@@ -4,6 +4,7 @@ import { lstat, mkdir, open, readFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { linkCodexAuthentication } from '../codex/home';
+import { shareLoginDirectory } from './host-permissions';
 import { importOpenCodeConsole } from './opencode-console';
 import { readSharedCredentials, type SharedHostConfig } from './shared-config';
 
@@ -116,6 +117,7 @@ async function writeAuthentication(root: string, relative: string, content: stri
     await mkdir(directory, { recursive: true, mode: 0o700 });
     if ((await lstat(directory)).isSymbolicLink())
       throw new Error('Provider authentication directory must not be a symbolic link.');
+    await shareLoginDirectory(directory);
   }
   const path = join(root, relative);
   const fingerprint = createHash('sha256').update(content).digest('hex');

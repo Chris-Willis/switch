@@ -13,6 +13,7 @@ import {
 } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse, stringify } from 'smol-toml';
+import { shareLoginDirectory } from '../host/host-permissions';
 import { linkHomeAsset, linkSkills, optionalText } from '../host/provider-home';
 
 /** Native rollouts remain in the persistent session directory on the execution host. */
@@ -32,6 +33,7 @@ export async function prepareCodexSessionHome(input: {
   const home = join(input.root, key);
   await mkdir(home, { recursive: true, mode: 0o700 });
   await chmod(home, 0o700);
+  await shareLoginDirectory(home);
   if (input.auth === 'shared') await linkCodexAuthentication(home, input.sourceHome);
   else await copyCodexAuthenticationOnce(home, input.sourceHome);
   const sourceConfig = await optionalText(join(input.sourceHome, 'config.toml'));

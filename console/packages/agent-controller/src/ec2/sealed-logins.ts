@@ -1,5 +1,6 @@
 import { createDecipheriv } from 'node:crypto';
-import { mkdir, readdir } from 'node:fs/promises';
+import { lstat, mkdir, readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   applyHostedProvider,
   type HostedCredential,
@@ -8,10 +9,10 @@ import {
 } from '@switch-console/agent-providers';
 import { z } from 'zod';
 import { ReasonedError } from '../errors';
-import type { Logger } from '../log';
+import { errorMessage, type Logger } from '../log';
 import { AGENT_ID, type Ec2Layout } from '../paths';
 import { readOptional, removeOptional, writeAtomic } from '../runtime';
-import type { Provider } from '../schemas';
+import { PROVIDERS, type Provider } from '../schemas';
 import type { KmsDecrypt } from './kms';
 
 const IV_BYTES = 12;
@@ -91,15 +92,40 @@ type Connected = Extract<HostedCredential, { status: 'connected' }>;
 const ENV_VALUE = /^[A-Za-z0-9._~+/=:@-]+$/;
 
 /**
+ * The provider's native login files an agent unit writes below its agent root
+ * from the login it is handed (`materializeHostedProvider`), with the
+ * fingerprint and temporary files written beside each.
+ */
+const NATIVE_LOGINS: Record<Provider, string[][]> = {
+  claude: [],
+  cursor: [],
+  codex: [['provider-home', 'auth.json']],
+  opencode: [['provider-data', 'opencode', 'auth.json']],
+  antigravity: [['provider-home', 'antigravity-acp', 'acp_token.json']],
+};
+const NATIVE_SUFFIXES = ['', '.switch-credential', '.switch-new'];
+/** A Codex session's own home below `provider-home`, holding its copy of the login. */
+const CODEX_SESSION_HOME = /^[0-9a-f]{64}$/;
+const CODEX_SESSION_LOGIN = ['auth.json', '.switch-auth-source'];
+/** An OpenCode console login is imported into OpenCode's database, marked by this file. */
+const OPENCODE_CONSOLE_MARKER = '.switch-console-credential';
+const OPENCODE_DATABASE = ['opencode.db', 'opencode.db-wal', 'opencode.db-shm'];
+
+/**
  * The provider logins Switch seals for this machine: each envelope fetched
  * from Core, its data key unwrapped by KMS under the sealed encryption
  * context, and the login opened. Opened logins are kept in memory only, one
- * per provider and revision; on disk they exist only as the files each agent
- * unit loads as credentials, in the controller's runtime directory.
+ * per provider and revision. On disk a login exists as the files each agent
+ * unit loads as credentials, in the controller's runtime directory, and as
+ * the provider's native login files the unit writes from them below its agent
+ * root. Both are removed when the login is revoked or disconnected, and when
+ * the agent is removed from this machine.
  */
 export class SealedLogins {
   private readonly logins = new Map<Provider, Login>();
   private readonly loading = new Map<Provider, Promise<Login | null>>();
+  /** Providers with no connected login whose native files every agent root has been cleared of. */
+  private readonly withdrawn = new Set<Provider>();
   private readonly listeners = new Set<(change: LoginRevision) => void>();
 
   constructor(
@@ -166,8 +192,13 @@ export class SealedLogins {
     await this.write(agentId, credential);
   }
 
-  /** Removes an agent's login files. */
+  /** Removes an agent's login files: those its unit loads, and the native ones it wrote. */
   async remove(agentId: string): Promise<void> {
+    await this.removeUnitFiles(agentId);
+    for (const provider of PROVIDERS) await this.removeNative(agentId, provider);
+  }
+
+  private async removeUnitFiles(agentId: string): Promise<void> {
     await removeOptional(this.deps.layout.providerFile(agentId));
     await removeOptional(this.deps.layout.envFile(agentId));
   }
@@ -176,6 +207,7 @@ export class SealedLogins {
     const raw = await this.deps.fetchEnvelope(provider);
     if (raw === null) {
       this.logins.delete(provider);
+      await this.withdraw(provider);
       await this.reconcile(provider, null);
       return null;
     }
@@ -196,8 +228,79 @@ export class SealedLogins {
       };
       this.logins.set(provider, login);
     }
+    if (login.credential.status === 'connected') this.withdrawn.delete(provider);
+    else await this.withdraw(provider);
     await this.reconcile(provider, login);
     return login;
+  }
+
+  /**
+   * Clears every agent root of the provider's native login files, once per
+   * withdrawal: the units that wrote them may be stopped, or this machine
+   * rebooted since, so the runtime directory no longer names them.
+   */
+  private async withdraw(provider: Provider): Promise<void> {
+    if (this.withdrawn.has(provider)) return;
+    let names: string[];
+    try {
+      names = await readdir(this.deps.layout.agentsRoot);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      names = [];
+    }
+    for (const agentId of names)
+      if (AGENT_ID.test(agentId)) await this.removeNative(agentId, provider);
+    this.withdrawn.add(provider);
+  }
+
+  /**
+   * Removes the native login files the agent's unit wrote for `provider`. The
+   * agent root is the agent's to write, so no directory on the way may be a
+   * link. What cannot be removed is logged as an error, and the rest still is.
+   */
+  async removeNative(agentId: string, provider: Provider): Promise<void> {
+    const root = this.deps.layout.agentRoot(agentId);
+    const doomed: string[] = [];
+    try {
+      for (const parts of NATIVE_LOGINS[provider]) {
+        const directory = await directoryBelow(root, parts.slice(0, -1));
+        if (directory !== null)
+          for (const suffix of NATIVE_SUFFIXES)
+            doomed.push(join(directory, parts.at(-1)! + suffix));
+      }
+      if (provider === 'codex') {
+        const home = await directoryBelow(root, ['provider-home']);
+        const sessions = home === null ? [] : await readdir(home);
+        for (const name of sessions.filter((entry) => CODEX_SESSION_HOME.test(entry))) {
+          const session = await directoryBelow(root, ['provider-home', name]);
+          if (session !== null)
+            for (const file of CODEX_SESSION_LOGIN) doomed.push(join(session, file));
+        }
+      }
+      if (provider === 'opencode') {
+        const data = await directoryBelow(root, ['provider-data', 'opencode']);
+        if (data !== null && (await exists(join(data, OPENCODE_CONSOLE_MARKER))))
+          for (const file of [...OPENCODE_DATABASE, OPENCODE_CONSOLE_MARKER])
+            doomed.push(join(data, file));
+      }
+    } catch (error) {
+      this.deps.log.error('Could not find an agent’s native provider login files to remove', {
+        agentId,
+        provider,
+        error: errorMessage(error),
+      });
+    }
+    for (const path of doomed)
+      try {
+        await removeOptional(path);
+      } catch (error) {
+        this.deps.log.error('Could not remove a native provider login file', {
+          agentId,
+          provider,
+          path,
+          error: errorMessage(error),
+        });
+      }
   }
 
   private async open(
@@ -273,7 +376,7 @@ export class SealedLogins {
     const connected = credential !== null;
     for (const agentId of stale)
       if (credential) await this.write(agentId, credential);
-      else await this.remove(agentId);
+      else await this.removeUnitFiles(agentId);
     this.deps.log.info('A sealed provider login changed for running agents', {
       provider,
       revision: login?.revision ?? null,
@@ -326,5 +429,34 @@ export class SealedLogins {
       this.deps.layout.envFile(agentId),
       entries.map(([name, value]) => `${name}=${value}\n`).join('')
     );
+  }
+}
+
+/** `root` joined with `parts`, null when a directory on the way is missing; a link or file there throws. */
+async function directoryBelow(root: string, parts: string[]): Promise<string | null> {
+  let directory = root;
+  for (const part of ['.', ...parts]) {
+    directory = join(directory, part);
+    let info;
+    try {
+      info = await lstat(directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+    if (info.isSymbolicLink())
+      throw new Error(`${directory} is a symbolic link; it is not followed.`);
+    if (!info.isDirectory()) throw new Error(`${directory} is not a directory.`);
+  }
+  return directory;
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
   }
 }
