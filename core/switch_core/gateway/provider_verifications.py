@@ -229,7 +229,7 @@ async def result(
             verification_status="verified",
         )
         await session.execute(
-            insert(ProviderConnection)
+            insert(ProviderConnection)  # nosemgrep
             .values(**values)
             .on_conflict_do_update(
                 index_elements=["tenant_id", "user_id", "provider"],

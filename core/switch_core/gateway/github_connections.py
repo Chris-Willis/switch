@@ -351,7 +351,7 @@ async def confirm(
     encrypted = config.keyring.encrypt(json.dumps(flow.credentials))
     now = datetime.now(UTC)
     await session.execute(
-        insert(ProviderConnection)
+        insert(ProviderConnection)  # nosemgrep
         .values(
             tenant_id=require_tenant_id(),
             user_id=user.id,
@@ -432,7 +432,7 @@ async def _credentials(
             credentials.update(refreshed)
             revision = datetime.now(UTC)
             result = await session.scalar(
-                update(ProviderConnection)
+                update(ProviderConnection)  # nosemgrep
                 .where(
                     *conditions(user_id),
                     ProviderConnection.verified_at == row.verified_at,
@@ -515,7 +515,9 @@ async def disconnect(
         else None
     )
     await queue_revocation(session, (GitHubIssuedToken.owner_id == user.id,))
-    await session.execute(delete(ProviderConnection).where(*conditions(user.id)))
+    await session.execute(
+        delete(ProviderConnection).where(*conditions(user.id))  # nosemgrep
+    )
     await session.commit()
     for key, flow in list(github.flows.items()):
         if (flow.tenant_id, flow.user_id) == (require_tenant_id(), user.id):

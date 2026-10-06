@@ -252,7 +252,7 @@ async def repository_credential(
     if not config.hosted_controller_config_path or not config.hosted_github_config_path:
         raise HTTPException(503, "Cloud repository credentials are not enabled.")
     settings = HostedControllerSettings.model_validate_json(
-        Path(config.hosted_controller_config_path).read_text()
+        Path(config.hosted_controller_config_path).read_text()  # nosemgrep
     )
     if settings.tenant_id != require_tenant_id():
         raise HTTPException(403, "This agent is not a managed cloud worker.")

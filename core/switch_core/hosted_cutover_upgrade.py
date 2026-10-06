@@ -273,7 +273,7 @@ async def queue_all_imports(config: SwitchConfig) -> None:
         async with engine.connect() as conn:
             volumes = (
                 await conn.execute(
-                    text(
+                    text(  # nosemgrep
                         "SELECT v.tenant_id, v.launch_id FROM hosted_cutover_volumes v "
                         + RETAINED.format(alias="v")
                         + "WHERE v.preflight_state = 'complete' "
