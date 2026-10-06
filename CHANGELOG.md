@@ -57,6 +57,13 @@ version of their own to them without also giving them a release of their own.
   itself. A test now fails when the agent bridge serves a path the chart does
   not route.
 
+#### Removed
+- **The gateway's Register Agent dialog**, and the two endpoints only it and a
+  retired Console flow used: `POST /gateway/agents/register-other` and
+  `POST /gateway/agents/register-known-bulk`. Agents are created from Switch
+  Console (or the Machines page); `POST /gateway/agents/register`, which
+  Console calls, is unchanged.
+
 ### [0.29.0] - 2026-09-29
 
 #### Added

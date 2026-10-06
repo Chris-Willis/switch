@@ -578,13 +578,6 @@ export interface KnownAgentType {
   options_schema: Record<string, unknown>;
 }
 
-export interface RegisterResult {
-  id: string;
-  api_key: string;
-  oauth_client_id: string | null;
-  oauth_client_secret: string | null;
-}
-
 export async function fetchAgents(): Promise<AgentSummary[] | null> {
   return fetchJson<AgentSummary[]>("/agents");
 }
@@ -626,26 +619,6 @@ export async function fetchKnownAgentTypes(): Promise<KnownAgentType[] | null> {
   return fetchJson<KnownAgentType[]>("/agents/known-types");
 }
 
-export async function registerKnownAgent(
-  agentType: string,
-  name: string,
-  description: string,
-  options: Record<string, unknown> = {},
-): Promise<RegisterResult> {
-  const res = await fetch(`${BASE}/agents/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ agent_type: agentType, name, description, options }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    const detail = body?.detail ?? `${res.status} ${res.statusText}`;
-    throw new Error(detail);
-  }
-  return (await res.json()) as RegisterResult;
-}
-
 export async function updateAgentOptions(
   agentId: string,
   options: Record<string, unknown>,
@@ -662,24 +635,6 @@ export async function updateAgentOptions(
     throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
   }
   return (await res.json()) as AgentSummary;
-}
-
-export async function registerOtherAgent(
-  name: string,
-  description: string,
-): Promise<RegisterResult> {
-  const res = await fetch(`${BASE}/agents/register-other`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ name, description }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    const detail = body?.detail ?? `${res.status} ${res.statusText}`;
-    throw new Error(detail);
-  }
-  return (await res.json()) as RegisterResult;
 }
 
 // ── Connectors ──────────────────────────────────────────────────────────────

@@ -45,7 +45,7 @@ from switch_core.gateway.schemas import (
 
 class AgentOptionsNotEditable(Exception):
     """Raised when an agent has no known-agent type, so its options are not
-    editable (the `register-other` case)."""
+    editable."""
 
 
 async def build_agent_summary(

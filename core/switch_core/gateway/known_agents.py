@@ -753,7 +753,7 @@ def known_agent_for(
     """Resolve the KnownAgent spec and parsed options for a registered Agent.
 
     Returns None when the agent was not registered via `/agents/register`
-    (e.g. `register-other` agents have no `known_agent_type` in metadata).
+    and so has no `known_agent_type` in metadata.
     """
     md = agent.metadata_ if isinstance(agent.metadata_, dict) else {}
     agent_type = md.get("known_agent_type")

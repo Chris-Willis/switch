@@ -398,46 +398,6 @@ class RegisterKnownAgentRequest(BaseModel):
     overwrite: bool = False
 
 
-class BulkSubagentSpec(BaseModel):
-    """One Claude Code subagent to register under a parent agent.
-
-    `subagent_name` is the bare Claude Code subagent identifier (the `name`
-    frontmatter field, used for the `--agent <name>` launch flag); the Switch
-    agent name is derived server-side as `<parent-name>.<subagent_name>`.
-    """
-
-    subagent_name: str
-    description: str
-
-
-class RegisterKnownSubagentsRequest(BaseModel):
-    """Register many Claude Code subagents under one parent agent.
-
-    Session-authed counterpart of the agent-bridge `register-known-bulk`
-    endpoint: the caller must own the parent. `options` is the shared base
-    applied to every subagent (the per-subagent `subagent_name` is merged on
-    top); when omitted, each subagent inherits the parent's `channels_enabled`
-    and `repo_dir`.
-    """
-
-    agent_type: str
-    parent_agent_id: str
-    options: dict[str, Any] = {}
-    subagents: list[BulkSubagentSpec]
-    overwrite: bool = False
-
-
-class BulkRegisterResult(BaseModel):
-    subagent_name: str
-    name: str
-    id: str
-    api_key: str
-
-
-class RegisterKnownSubagentsResponse(BaseModel):
-    results: list[BulkRegisterResult]
-
-
 class UpdateAgentOptionsRequest(BaseModel):
     """Full-replacement update of a known-agent's options.
 
@@ -448,14 +408,6 @@ class UpdateAgentOptionsRequest(BaseModel):
     """
 
     options: dict[str, Any]
-
-
-class RegisterOtherAgentRequest(BaseModel):
-    name: str
-    description: str
-    icon_url: str | None = None
-    display_name: str | None = None
-    overwrite: bool = False
 
 
 class RegisterAgentResponse(BaseModel):
