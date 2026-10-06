@@ -1120,10 +1120,6 @@ class EcosystemNode(BaseModel):
     kind: str  # "switch" | "agent_type" | "agent" | "bridge"
     label: str
     sublabel: str = ""
-    # Set on agent nodes only when the `ecosystem.show_owners` feature flag is
-    # ON; otherwise omitted so the frontend "Show owners" toggle has nothing to
-    # reveal.
-    owner_name: str | None = None
 
 
 class EcosystemEdge(BaseModel):
@@ -1134,9 +1130,6 @@ class EcosystemEdge(BaseModel):
 class EcosystemGraphResponse(BaseModel):
     nodes: list[EcosystemNode]
     edges: list[EcosystemEdge]
-    # Reflects the `ecosystem.show_owners` server flag. False → owner data is
-    # withheld and the frontend toggle is inert.
-    show_owners: bool = False
 
 
 # ── Documents ──────────────────────────────────────────────────────────────

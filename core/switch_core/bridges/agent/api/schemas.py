@@ -270,16 +270,3 @@ class PostLlmResponseResponse(BaseModel):
 class ReportEventsRequest(BaseModel):
     room_id: str
     events: list[ToolCallReport | LlmCallReport]
-
-
-class SetFeatureFlagRequest(BaseModel):
-    enabled: bool
-
-
-class FeatureFlagInfo(BaseModel):
-    key: str
-    enabled: bool
-
-
-class FeatureFlagListResponse(BaseModel):
-    flags: list[FeatureFlagInfo]

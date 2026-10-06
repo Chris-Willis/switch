@@ -1378,9 +1378,6 @@ export interface EcosystemNode {
   kind: EcosystemNodeKind;
   label: string;
   sublabel: string;
-  // Present on agent nodes only when the `ecosystem.show_owners` server flag
-  // is ON; otherwise omitted so the "Show owners" toggle has nothing to show.
-  owner_name?: string | null;
 }
 
 export interface EcosystemEdge {
@@ -1391,8 +1388,6 @@ export interface EcosystemEdge {
 export interface EcosystemGraphData {
   nodes: EcosystemNode[];
   edges: EcosystemEdge[];
-  // Reflects the server flag. When false, owner data is withheld.
-  show_owners: boolean;
 }
 
 export async function fetchEcosystemGraph(): Promise<EcosystemGraphData | null> {

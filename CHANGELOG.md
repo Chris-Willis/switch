@@ -105,6 +105,13 @@ version of their own to them without also giving them a release of their own.
   `list_participants`, `create_room`, `invite_agent_to_room`, `list_all_rooms`,
   `get_room_detail`, `list_agents`, `list_bridges`) cover what an agent did
   with them, and agents are deleted from the gateway.
+- **Feature flags.** The only one, `ecosystem.show_owners`, was stored
+  deployment-wide and could be flipped with any agent's key through
+  `GET`/`PUT /agents/feature-flags`. The routes, the store and the
+  `feature_flags` table are gone, and the ecosystem graph keeps the flag's
+  default: it never carries owner names, and the gateway's ecosystem page no
+  longer shows its inert "Show owners" toggle. Migration `4dcf1747443d` drops
+  the table.
 
 ### [0.29.0] - 2026-09-29
 
