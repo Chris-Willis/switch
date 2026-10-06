@@ -1,14 +1,14 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { expect, it } from 'vitest';
 import {
+  cloudAgentKey,
   cloudAgentPhase,
   type CloudControllerAgent,
-  type CloudLaunch,
-  cloudLaunchSchema,
   type CloudMachine,
   cloudMachineSchema,
+  parseCloudAgentKey,
 } from './cloud-agents';
 
 const CORE_FIXTURES = join(
@@ -22,22 +22,13 @@ function coreFixture(name: string): unknown {
 
 const idleSleeping = coreFixture('machine_summary_sleeping.json');
 
-const launch: CloudLaunch = cloudLaunchSchema.parse({
-  request_id: '00000000-0000-4000-8000-000000000001',
-  name: 'reviewer',
-  provider: 'claude',
-  state: 'ready',
-  desired_state: 'running',
-  revision: 3,
-  agent_id: '3f1c2b4a-0000-4000-8000-0000000000a1',
-  error: null,
-  error_code: null,
-  sleeping: false,
-  machine_id: '3f1c2b4a-0000-4000-8000-000000000001',
-  process_state: 'running',
-  process_restarts: 0,
-  oom_kills: 0,
-});
+const controller: CloudControllerAgent = {
+  controllerId: 'cloud-controller',
+  desiredState: 'running',
+  process: 'running',
+  detail: null,
+};
+const stoppedAgent: CloudControllerAgent = { ...controller, desiredState: 'stopped' };
 
 function machine(overrides: Partial<CloudMachine>): CloudMachine {
   return {
@@ -54,25 +45,12 @@ it('parses the idle-sleeping machine summary Core serves', () => {
   expect(cloudMachineSchema.parse(idleSleeping)).toEqual(idleSleeping);
 });
 
-it('parses every launch summary Core serves', () => {
-  for (const name of readdirSync(CORE_FIXTURES).filter((file) =>
-    /^launch_summary.*\.json$/.test(file)
-  )) {
-    const summary = coreFixture(name);
-    expect(cloudLaunchSchema.parse(summary), name).toEqual(summary);
-  }
-});
-
-it('parses a launch summary with its machine and process', () => {
-  expect(launch).toMatchObject({
-    machine_id: '3f1c2b4a-0000-4000-8000-000000000001',
-    process_state: 'running',
-    process_restarts: 0,
-    oom_kills: 0,
-  });
-  expect(
-    cloudLaunchSchema.parse({ ...launch, machine_id: null, process_state: null })
-  ).toMatchObject({ machine_id: null, process_state: null });
+it('names a cloud agent by its server and managed agent', () => {
+  const key = cloudAgentKey('server:1', 'agent_1');
+  expect(parseCloudAgentKey(key)).toEqual({ serverId: 'server:1', agentId: 'agent_1' });
+  expect(parseCloudAgentKey('cloud:server:00000000-0000-4000-8000-000000000001')).toBeNull();
+  expect(parseCloudAgentKey('cloud:server:agent=')).toBeNull();
+  expect(parseCloudAgentKey('local-agent')).toBeNull();
 });
 
 it('refuses a machine in a state it does not know', () => {
@@ -97,96 +75,36 @@ it.each([
   ['a retained machine being reused', machine({ state: 'retained' }), 'waking'],
   ['a ready machine', machine({}), null],
 ] as const)('reads %s', (_name, onMachine, phase) => {
-  expect(cloudAgentPhase(launch, onMachine, null)).toBe(phase);
+  expect(cloudAgentPhase(onMachine, controller)).toBe(phase);
 });
 
-const stopped: CloudLaunch = { ...launch, desired_state: 'stopped', state: 'stopped' };
-const crashed: CloudLaunch = {
-  ...launch,
-  state: 'error',
-  error: 'crashed',
-  error_code: 'agent_crashed',
-  process_state: 'crashed',
-};
-
-it.each([
-  ['stopped', stopped],
-  ['crashed', crashed],
-] as const)('does not sleep or wake with its machine a launch that is %s', (_name, onLaunch) => {
-  expect(cloudAgentPhase(onLaunch, cloudMachineSchema.parse(idleSleeping), null)).toBeNull();
-  expect(cloudAgentPhase({ ...onLaunch, sleeping: true, machine_id: null }, null, null)).toBeNull();
-  expect(cloudAgentPhase(onLaunch, machine({ state: 'provisioning' }), null)).toBeNull();
+it('does not sleep or wake with its machine once its managed agent is stopped', () => {
+  expect(cloudAgentPhase(cloudMachineSchema.parse(idleSleeping), stoppedAgent)).toBeNull();
+  expect(cloudAgentPhase(machine({ state: 'provisioning' }), stoppedAgent)).toBeNull();
 });
 
-it('reads a machine its owner stopped whatever the launch', () => {
+it('reads a machine its owner stopped whatever the agent', () => {
   expect(
     cloudAgentPhase(
-      stopped,
       machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'owner' }),
-      null
+      stoppedAgent
     )
   ).toBe('machine_stopped');
 });
 
-it('reads a machine in error whatever the launch', () => {
-  expect(cloudAgentPhase(stopped, machine({ state: 'error' }), null)).toBe('machine_error');
+it('reads a machine in error whatever the agent', () => {
+  expect(cloudAgentPhase(machine({ state: 'error' }), stoppedAgent)).toBe('machine_error');
 });
 
 it('reads a machine in error before its owner stopping it', () => {
   expect(
     cloudAgentPhase(
-      stopped,
       machine({ state: 'error', desired_state: 'stopped', stop_reason: 'owner' }),
-      null
+      controller
     )
   ).toBe('machine_error');
 });
 
-it('reads a launch without a machine from the launch', () => {
-  expect(
-    cloudAgentPhase({ ...launch, machine_id: null, sleeping: true, state: 'stopped' }, null, null)
-  ).toBe('sleeping');
-});
-
-describe('an agent its cloud machine’s controller runs', () => {
-  const controller: CloudControllerAgent = {
-    controllerId: 'cloud-controller',
-    desiredState: 'running',
-    process: 'running',
-    detail: null,
-  };
-
-  it.each(['queued', 'provisioning', 'error', 'stopping'])(
-    'is not held up by a launch left %s',
-    (state) => {
-      expect(cloudAgentPhase({ ...launch, state }, machine({}), controller)).toBeNull();
-    }
-  );
-
-  it('sleeps and wakes with its machine whatever its launch', () => {
-    const left = { ...launch, state: 'error', desired_state: 'stopped' as const };
-    expect(cloudAgentPhase(left, cloudMachineSchema.parse(idleSleeping), controller)).toBe(
-      'sleeping'
-    );
-    expect(cloudAgentPhase(left, machine({ state: 'provisioning' }), controller)).toBe('waking');
-  });
-
-  it('does not sleep or wake with its machine once its managed agent is stopped', () => {
-    const stoppedAgent = { ...controller, desiredState: 'stopped' as const };
-    expect(
-      cloudAgentPhase(launch, cloudMachineSchema.parse(idleSleeping), stoppedAgent)
-    ).toBeNull();
-    expect(cloudAgentPhase(launch, machine({ state: 'provisioning' }), stoppedAgent)).toBeNull();
-  });
-
-  it('reads its machine stopped or in error first', () => {
-    expect(cloudAgentPhase(launch, machine({ state: 'error' }), controller)).toBe('machine_error');
-    expect(
-      cloudAgentPhase(
-        launch,
-        machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'owner' }),
-        controller
-      )
-    ).toBe('machine_stopped');
-  });
+it('reads an agent whose machine is not listed as neither asleep nor waking', () => {
+  expect(cloudAgentPhase(null, controller)).toBeNull();
 });

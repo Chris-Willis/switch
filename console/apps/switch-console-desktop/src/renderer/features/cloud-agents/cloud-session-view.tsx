@@ -46,7 +46,7 @@ function CloudSessionTitlebar() {
   );
 }
 
-/** The launch's state over the transcript while its worker cannot be asked. */
+/** The agent's state over the transcript while it cannot be asked. */
 const CloudWorkerStatus = observer(function CloudWorkerStatus({
   agentKey,
   agent,
@@ -104,7 +104,7 @@ const CloudSessionPanel = observer(function CloudSessionPanel() {
         client={client}
         hostState={agent ? cloudAgentState(agent) : null}
         autoWake={{
-          phase: agent ? cloudAgentPhase(agent.launch, agent.machine, agent.controller) : null,
+          phase: agent ? cloudAgentPhase(agent.machine, agent.controller) : null,
           machineReady: agent ? cloudMachineReady(agent.machine) : false,
           blocked: agent ? cloudHoldBlocker(agent) : null,
           wake: () => wake.mutateAsync(params.agentKey),

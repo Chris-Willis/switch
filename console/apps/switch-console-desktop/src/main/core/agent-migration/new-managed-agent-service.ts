@@ -1,7 +1,7 @@
 import { type AdvancedConfig, advancedConfigProblem } from '@switch-console/plugins/agents';
 import type { NewAgentMachine } from '@shared/core/agent-migration/agent-migration';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
-import type { CloudRepositorySelection } from '@shared/core/switch-servers/cloud-launch';
+import type { CloudRepositorySelection } from '@shared/core/switch-servers/github-connection';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import type { MachineRef } from './agent-migration';
 import type { MigrationLog, TargetLookup } from './agent-migration-service';

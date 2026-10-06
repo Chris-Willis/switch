@@ -4,7 +4,6 @@ import { propagateServerApiUrl } from '@main/core/agents/propagate-server-api-ur
 import { appService } from '@main/core/app/service';
 import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
 import { isManagedServerRunning } from '@main/core/managed-switch-server/managed-server-status';
-import { getPlugin } from '@main/core/providers/plugin-registry';
 import type { TelemetryAuthMethod, TelemetrySignInFailure } from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { reconcileServerWorkspaces } from '@main/core/workspaces/reconcile-workspaces';
@@ -19,10 +18,6 @@ import {
   validateClaudeCredential,
   type ClaudeCredentialKind,
 } from '@shared/core/switch-servers/claude-credential';
-import type {
-  CloudConfigurationInput,
-  CloudLaunchInput,
-} from '@shared/core/switch-servers/cloud-launch';
 import {
   type InviteServer,
   SWITCH_CLOUD_NAME,
@@ -49,11 +44,7 @@ import { bundledChatSignInFor } from './bundled-chat-sign-in';
 import {
   getConnectionCatalog,
   getGitHubConnection,
-  createCloudLaunch,
   fetchAgentIconChoices,
-  cloudLifecycle,
-  getCloudLaunchConfiguration,
-  updateCloudLaunchConfiguration,
   cloudMachineLifecycle,
   ensureCloudMachine,
   getCloudProviderConnection,
@@ -204,19 +195,6 @@ async function registerSwitchCloud({ url }: SwitchCloudEndpoint): Promise<Switch
   return server;
 }
 
-/** The agent definition a cloud launch carries, rendered by its provider like a local one. */
-function renderCloudDefinition(input: CloudConfigurationInput): string {
-  const definitions = getPlugin(input.provider).behavior.repoAgents;
-  return definitions
-    ? definitions.renderDefinition({
-        ...input.definition_attributes,
-        name: input.name,
-        description: input.description,
-        instructions: input.instructions,
-      })
-    : '';
-}
-
 export const switchServersController = createRPCController({
   getLocalProviderSignIn,
   connectLocalProviderSignIn: async (serverId: string, provider: LocalSignInProvider) => {
@@ -247,35 +225,6 @@ export const switchServersController = createRPCController({
   agentIconChoices: (params: { serverId: string; name: string; page: number }) =>
     withReachableServerWorkspaceSession(params.serverId, (server) =>
       fetchAgentIconChoices(server, params.name, params.page)
-    ),
-  createCloudLaunch: (serverId: string, input: CloudLaunchInput) =>
-    withReachableServerWorkspaceSession(serverId, (server) =>
-      createCloudLaunch(server, { ...input, definition: renderCloudDefinition(input) })
-    ),
-  getCloudLaunchConfiguration: (serverId: string, requestId: string) =>
-    withReachableServerWorkspaceSession(serverId, (server) =>
-      getCloudLaunchConfiguration(server, requestId)
-    ),
-  updateCloudLaunchConfiguration: (
-    serverId: string,
-    requestId: string,
-    input: CloudConfigurationInput
-  ) =>
-    withReachableServerWorkspaceSession(serverId, (server) =>
-      updateCloudLaunchConfiguration(server, requestId, {
-        instructions: input.instructions,
-        definition_attributes: input.definition_attributes,
-        definition: renderCloudDefinition(input),
-      })
-    ),
-  cloudLifecycle: (
-    serverId: string,
-    requestId: string,
-    action: 'stop' | 'start' | 'restart' | 'remove' | 'retry',
-    revision: number
-  ) =>
-    withReachableServerWorkspaceSession(serverId, (server) =>
-      cloudLifecycle(server, requestId, action, revision)
     ),
   cloudMachineLifecycle: (
     serverId: string,

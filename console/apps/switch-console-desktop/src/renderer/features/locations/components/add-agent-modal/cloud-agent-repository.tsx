@@ -12,7 +12,7 @@ import {
   SelectValue,
 } from '@renderer/lib/ui/select';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import type { CloudRepositorySelection } from '@shared/core/switch-servers/cloud-launch';
+import type { CloudRepositorySelection } from '@shared/core/switch-servers/github-connection';
 
 /**
  * The GitHub repository a new Switch cloud agent works in, through the

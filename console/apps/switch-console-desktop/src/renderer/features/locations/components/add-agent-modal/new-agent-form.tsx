@@ -16,8 +16,8 @@ import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-
 import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-policy-editor';
 import { ManagedGitHubStep } from '@renderer/features/switch-servers/managed-github-step';
 import { ManagedProviderConnectionStep } from '@renderer/features/switch-servers/managed-provider-connection-step';
+import { isSwitchCloudServer } from '@renderer/features/switch-servers/switch-cloud-origin';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
-import { isSwitchCloudServer } from '@renderer/features/switch-servers/use-cloud-launches';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import { describeFailure, failureText } from '@renderer/lib/errors/describe-failure';
@@ -51,7 +51,7 @@ import {
   describeRemoteDirRefusal,
   isAbsoluteRemoteDir,
 } from '@shared/core/remote-hosts/remote-dir';
-import type { CloudRepositorySelection } from '@shared/core/switch-servers/cloud-launch';
+import type { CloudRepositorySelection } from '@shared/core/switch-servers/github-connection';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { AgentAdvancedConfig } from './agent-advanced-config';
 import { AgentTypePicker } from './agent-type-picker';

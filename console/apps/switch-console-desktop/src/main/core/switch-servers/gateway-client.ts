@@ -7,7 +7,7 @@ import {
   noteManagedServerUnanswered,
 } from '@main/core/managed-switch-server/managed-server-status';
 import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
-import { cloudLaunchSchema, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
+import { cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
 import type { AdvancedConfigField } from '@shared/core/managed-agents/managed-agents';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
@@ -16,10 +16,6 @@ import type {
   ClaudeCredentialKind,
   ClaudeConnection,
 } from '@shared/core/switch-servers/claude-credential';
-import type {
-  CloudLaunchConfiguration,
-  CloudLaunchInput,
-} from '@shared/core/switch-servers/cloud-launch';
 import { connectionCatalogSchema } from '@shared/core/switch-servers/connection-catalog';
 import {
   gitHubConnectionSchema,
@@ -2273,78 +2269,6 @@ export async function getClaudeConnection(server: SwitchServer): Promise<ClaudeC
     authenticated: true,
   });
   return readClaudeConnection(response);
-}
-
-export async function createCloudLaunch(
-  server: SwitchServer,
-  input: CloudLaunchInput & { definition: string }
-) {
-  if (new URL(server.gatewayUrl).protocol !== 'https:')
-    throw new Error('Cloud agents require an HTTPS Switch server.');
-  return cloudLaunchSchema.parse(
-    await (
-      await gatewayFetch(server, '/hosted-launches', {
-        authenticated: true,
-        method: 'POST',
-        body: input,
-      })
-    ).json()
-  );
-}
-
-const cloudConfigurationSchema = z.object({
-  description: z.string(),
-  instructions: z.string(),
-  definition_attributes: z.record(z.string(), z.unknown()),
-});
-
-export async function getCloudLaunchConfiguration(
-  server: SwitchServer,
-  requestId: string
-): Promise<CloudLaunchConfiguration> {
-  return cloudConfigurationSchema.parse(
-    await (
-      await gatewayFetch(
-        server,
-        `/hosted-launches/${encodeURIComponent(requestId)}/configuration`,
-        { authenticated: true }
-      )
-    ).json()
-  ) as CloudLaunchConfiguration;
-}
-
-/** Replace a launch's instructions and definition; Core applies them at the agent's next start. */
-export async function updateCloudLaunchConfiguration(
-  server: SwitchServer,
-  requestId: string,
-  body: Omit<CloudLaunchConfiguration, 'description'> & { definition: string }
-): Promise<CloudLaunchConfiguration> {
-  return cloudConfigurationSchema.parse(
-    await (
-      await gatewayFetch(
-        server,
-        `/hosted-launches/${encodeURIComponent(requestId)}/configuration`,
-        { authenticated: true, method: 'PUT', body }
-      )
-    ).json()
-  ) as CloudLaunchConfiguration;
-}
-
-export async function cloudLifecycle(
-  server: SwitchServer,
-  requestId: string,
-  action: 'stop' | 'start' | 'restart' | 'remove' | 'retry',
-  revision: number
-) {
-  return cloudLaunchSchema.extend({ access_warning: z.string().nullable().optional() }).parse(
-    await (
-      await gatewayFetch(server, `/hosted-launches/${encodeURIComponent(requestId)}/lifecycle`, {
-        authenticated: true,
-        method: 'POST',
-        body: { action, revision },
-      })
-    ).json()
-  );
 }
 
 export async function cloudMachineLifecycle(
