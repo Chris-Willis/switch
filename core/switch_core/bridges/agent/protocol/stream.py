@@ -141,7 +141,7 @@ def _connection_state(conn: AgentConnection, epoch: str) -> dict[str, Any]:
         "cursor": conn.cursor,
         # Which numbering `cursor` and every `id` on this stream belong to. The
         # client sends it back on reopen, which is how a restart is known
-        # rather than guessed from the cursor (revision 8).
+        # rather than guessed from the cursor (revision 9).
         "epoch": epoch,
         "protocol": PROTOCOL_VERSION,
         "heartbeat_interval_seconds": 2.0,

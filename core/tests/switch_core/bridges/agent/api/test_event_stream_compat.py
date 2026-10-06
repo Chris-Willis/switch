@@ -232,7 +232,7 @@ async def test_a_client_that_moves_to_the_socket_is_reported_on_the_socket() -> 
         delivery_filter="all",
         spawn_capable=False,
         cursor=0,
-        declaration=ClientDeclaration(speaks=8, accepts=1, artifact="agent-runtime"),
+        declaration=ClientDeclaration(speaks=9, accepts=1, artifact="agent-runtime"),
         expected_generation=None,
         transport="websocket",
     )
@@ -255,7 +255,7 @@ async def test_an_epoch_on_the_stream_is_honoured_like_on_the_socket() -> None:
                 protocol,
                 start_from="2",
                 epoch="an-earlier-process",
-                protocol_version=8,
+                protocol_version=9,
             )
         ).body_iterator
     )

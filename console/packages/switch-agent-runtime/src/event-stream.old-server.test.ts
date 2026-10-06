@@ -2222,7 +2222,7 @@ describe('choosing the transport', () => {
     await flush();
 
     const params = new URL(urlsFor(fetchMock, '/events')[0]!).searchParams;
-    expect(params.get('protocol')).toBe('8');
+    expect(params.get('protocol')).toBe('9');
     expect(Number(params.get('protocol_accepts'))).toBeLessThanOrEqual(6);
     abort.abort();
   });
@@ -2250,7 +2250,7 @@ describe('choosing the transport', () => {
   it('goes back to the socket once the server says it speaks a revision with one', async () => {
     vi.useFakeTimers();
     // The socket failed to open (a proxy, say) but the server is a new one.
-    const fetchMock = serving(() => announcingThenClose(8, 'epoch-1'));
+    const fetchMock = serving(() => announcingThenClose(9, 'epoch-1'));
     const { abort } = makeStream(fetchMock, { rooms: [] });
 
     await vi.advanceTimersByTimeAsync(2000);
