@@ -11,11 +11,16 @@ by nothing that changed what Switch does:
 - `agent_runtime_states`, the last runtime state each agent's session
   reported in a room. No client reports one any more; `!status` and the
   session-control commands read rows nothing wrote.
+- `message_exchange`, `pre_invocation_mediation`, `post_invocation_mediation`
+  and `event_reporting` in every stored integration profile. Nothing reads
+  them, and the mediation and reporting routes they described are gone.
 
 The downgrade puts every column back as `dad29005a7f7` created it: the
 settings empty, `admin_mode` off. It recreates every table empty, with the
 row-level security policy `265ed188ad6f` gave it, so a rollback lands on a
-schema the previous revision recognises. No value or row is restored.
+schema the previous revision recognises. No value or row is restored. It puts
+the four profile keys back with message exchange on and nothing mediated or
+reported, because the code before this revision requires them.
 
 Revision ID: 871623ec1ebf
 Revises: 7c26ad1a2d81
@@ -56,8 +61,23 @@ def upgrade() -> None:
     op.drop_column("rooms", "admin_mode")
     op.drop_table("agent_runtime_states")
 
+    op.execute(
+        "UPDATE agents SET integration_profile = integration_profile - "
+        "ARRAY['message_exchange', 'pre_invocation_mediation', "
+        "'post_invocation_mediation', 'event_reporting'] "
+        "WHERE integration_profile ?| "
+        "ARRAY['message_exchange', 'pre_invocation_mediation', "
+        "'post_invocation_mediation', 'event_reporting']"
+    )
+
 
 def downgrade() -> None:
+    op.execute(
+        "UPDATE agents SET integration_profile = "
+        """'{"message_exchange": true, "pre_invocation_mediation": [], """
+        """"post_invocation_mediation": [], "event_reporting": []}'::jsonb """
+        "|| integration_profile"
+    )
     op.create_table(
         "agent_runtime_states",
         sa.Column("id", sa.Text(), nullable=False),

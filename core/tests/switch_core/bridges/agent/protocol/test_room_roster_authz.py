@@ -28,10 +28,6 @@ from switch_core.keys import Keyring
 
 _PROFILE = IntegrationProfile(
     connection_model="session_passive",
-    message_exchange=True,
-    pre_invocation_mediation=[],
-    post_invocation_mediation=[],
-    event_reporting=[],
 )
 
 

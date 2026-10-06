@@ -116,8 +116,6 @@ export default function AgentDetailPage() {
 
       <Stack spacing={4}>
         <InfoSection agent={agent} />
-        <Divider />
-        <CapabilitiesSection agent={agent} />
         {agent.known_agent_type && (
           <>
             <Divider />
@@ -211,25 +209,6 @@ function InfoSection({ agent }: { agent: AgentDetail }) {
         value={agent.connection_model ? titleCase(agent.connection_model) : null}
       />
       <InfoLine label="Created" value={formatDateTime(agent.created_at)} />
-    </Stack>
-  );
-}
-
-function boolLabel(value: unknown): string {
-  return value ? "Yes" : "No";
-}
-
-function CapabilitiesSection({ agent }: { agent: AgentDetail }) {
-  const profile = agent.integration_profile;
-  return (
-    <Stack spacing={1}>
-      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
-        Capabilities
-      </Typography>
-      <InfoLine
-        label="Message exchange"
-        value={boolLabel(profile.message_exchange)}
-      />
     </Stack>
   );
 }

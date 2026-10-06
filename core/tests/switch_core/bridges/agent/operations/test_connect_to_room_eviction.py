@@ -46,10 +46,6 @@ ROOM = "room-1"
 
 _PROFILE = {
     "connection_model": "session_addressable",
-    "message_exchange": True,
-    "pre_invocation_mediation": [],
-    "post_invocation_mediation": [],
-    "event_reporting": [],
 }
 
 

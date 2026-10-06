@@ -228,10 +228,6 @@ def _build_config(
 
 _PROFILE = IntegrationProfile(
     connection_model="session_passive",
-    message_exchange=True,
-    pre_invocation_mediation=[],
-    post_invocation_mediation=[],
-    event_reporting=[],
 )
 
 

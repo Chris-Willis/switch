@@ -91,10 +91,6 @@ from tests.integration.conftest import (
 # delivery the whole measurement is built on.
 BENCH_PROFILE = IntegrationProfile(
     connection_model="always_on",
-    message_exchange=True,
-    pre_invocation_mediation=[],
-    post_invocation_mediation=[],
-    event_reporting=[],
 )
 
 

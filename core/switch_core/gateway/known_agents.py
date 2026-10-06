@@ -216,10 +216,6 @@ class ClaudeCodeKnownAgent(KnownAgent):
             connection_model = "session_addressable"
         return IntegrationProfile(
             connection_model=connection_model,
-            message_exchange=True,
-            pre_invocation_mediation=["tool_calls"],
-            post_invocation_mediation=[],
-            event_reporting=["tool_calls"],
             # Claude Code can reset / compact / interrupt only when a session is
             # driving it from Switch Console (which can inject keystrokes and
             # relaunch it). A standalone `claude` session can't be controlled,
@@ -399,10 +395,6 @@ class CodexKnownAgent(KnownAgent):
         )
         return IntegrationProfile(
             connection_model=connection_model,
-            message_exchange=True,
-            pre_invocation_mediation=[],
-            post_invocation_mediation=[],
-            event_reporting=[],
             # Same story as Claude Code: Codex is a TUI, so reset / compact /
             # interrupt only work when Switch Console is driving the session and can
             # inject keystrokes. A standalone `codex` can't be controlled, so all
@@ -524,15 +516,11 @@ class OpenCodeKnownAgent(KnownAgent):
             connection_model=(
                 "auto_session" if options.auto_session else "session_addressable"
             ),
-            message_exchange=True,
             # OpenCode's connector reports session and tool activity to Switch
             # Console over its local hook port, which drives the session's status
             # in the app. None of it reaches Switch as reported events, and
             # nothing mediates a tool call before it runs, so both stay empty —
             # the same position as Codex, and unlike Claude Code.
-            pre_invocation_mediation=[],
-            post_invocation_mediation=[],
-            event_reporting=[],
             # A TUI, so reset / compact / interrupt only work while Switch Console
             # is driving the session and can write to it. A standalone `opencode`
             # cannot be controlled, so all three depend on the session.
@@ -641,10 +629,6 @@ class AntigravityKnownAgent(KnownAgent):
             connection_model="auto_session"
             if options.auto_session
             else "session_addressable",
-            message_exchange=True,
-            pre_invocation_mediation=[],
-            post_invocation_mediation=[],
-            event_reporting=[],
             command_capabilities=CommandCapabilities(
                 reset="session_dependent",
                 compact="session_dependent",
@@ -701,10 +685,6 @@ class CursorKnownAgent(KnownAgent):
             connection_model="auto_session"
             if options.auto_session
             else "session_addressable",
-            message_exchange=True,
-            pre_invocation_mediation=[],
-            post_invocation_mediation=[],
-            event_reporting=[],
             command_capabilities=CommandCapabilities(
                 reset="session_dependent",
                 compact="session_dependent",

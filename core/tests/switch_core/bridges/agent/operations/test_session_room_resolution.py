@@ -367,10 +367,6 @@ def _protocol_for(registry: AgentConnectionRegistry, room_id: str) -> Any:
     room = SimpleNamespace(id=room_id, name="Room C", description="A room")
     profile = {
         "connection_model": "session_addressable",
-        "message_exchange": True,
-        "pre_invocation_mediation": [],
-        "post_invocation_mediation": [],
-        "event_reporting": [],
     }
 
     @asynccontextmanager

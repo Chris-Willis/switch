@@ -30,10 +30,6 @@ class IntegrationProfile(BaseModel):
     connection_model: Literal[
         "always_on", "session_addressable", "session_passive", "auto_session"
     ]
-    message_exchange: bool
-    pre_invocation_mediation: list[str]
-    post_invocation_mediation: list[str]
-    event_reporting: list[str]
     # Defaults to all-"unsupported" so integration profiles persisted before
     # this feature (which lack the key) re-validate cleanly and behave as
     # "no session-control support" until the agent is re-registered.

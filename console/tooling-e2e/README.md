@@ -168,11 +168,9 @@ with `@agent green`; the two-turn round trip is still proved, the relay is not.
 Every agent type defaults to `numbered` — both providers offer the tool — and
 `prose` is an explicit override for a provider or CLI version that does not.
 
-`approval` is the most tightly coupled to the new runtime. An OpenCode agent's
-registered profile declares **no `pre_invocation_mediation`**, so the prompt does
-not come from Switch mediating the call — it comes from the console relaying
-OpenCode's own permission request into the room. Run the session without
-auto-approve.
+`approval` is the most tightly coupled to the new runtime. Switch does not
+mediate tool calls, so the prompt comes from the console relaying OpenCode's own
+permission request into the room. Run the session without auto-approve.
 
 `interrupt` for OpenCode is `command_capabilities.interrupt = "session_dependent"`:
 it works only while Switch Console is driving the session and can write to it. A

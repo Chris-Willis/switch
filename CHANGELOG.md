@@ -140,6 +140,12 @@ version of their own to them without also giving them a release of their own.
   Code's own permission prompts instead of being allowed or denied by
   Switch. The tools and models an agent registers are still recorded and
   shown on the gateway's agent pages.
+- **Integration profile fields nothing read.** `message_exchange`,
+  `pre_invocation_mediation`, `post_invocation_mediation` and
+  `event_reporting` are no longer part of an integration profile (ones sent at
+  registration are ignored), and the gateway's agent page drops its
+  Capabilities section. Migration `871623ec1ebf` strips them from stored
+  profiles.
 
 ### [0.29.0] - 2026-09-29
 
