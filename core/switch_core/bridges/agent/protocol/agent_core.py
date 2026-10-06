@@ -24,7 +24,6 @@ from switch_core.attachments import parse_attachment_group
 from switch_core.authz import Action, Principal, require, require_manage
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
-from switch_core.bridges.agent.mediation import MediationService
 from switch_core.bridges.agent.protocol.agent_connections import (
     AgentConnectionRegistry,
     ClientDeclaration,
@@ -134,11 +133,6 @@ _VALID_NAME_RE = re.compile(r"\A[a-z0-9][a-z0-9._-]*\Z")
 # History comes from a single indexed query now, so the only thing this guards
 # is the size of the response.
 HISTORY_MAX_LIMIT = 500
-
-# The post-invocation hooks answer in a different vocabulary from the
-# pre-invocation ones: `ok` / `blocked` / `redacted` rather than `proceed` /
-# `blocked`. Nothing currently returns anything but this.
-POST_INVOCATION_OK = "ok"
 
 
 def _epoch_ms(when: Any) -> int | None:
@@ -294,9 +288,6 @@ class AgentCore:
         # connection set in two.
         self.connections = connections
         self.resource_service = resource_service
-        self.mediation = MediationService(
-            session_factory=session_factory, agent_store=agent_store
-        )
         self.api_key_store = api_key_store
         # Shared with the bearer-auth middleware for the same reason as
         # `connections`: a key this service rotates must stop authenticating
@@ -3654,18 +3645,3 @@ class AgentCore:
             )
             return
         await self._post_agent_notice(client, transport_room_id, body)
-
-    async def post_llm_response(
-        self,
-        agent_id: str,
-        room_id: str,
-        model: str,
-        response: Any,
-    ) -> dict[str, Any]:
-        """The hook point after a model answers. Nothing is decided here yet.
-
-        The counterpart to `post_tool_result`, and unconditional for the same
-        reason.
-        """
-        await self.require_room_member(agent_id, room_id)
-        return {"verdict": POST_INVOCATION_OK}

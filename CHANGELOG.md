@@ -134,6 +134,12 @@ version of their own to them without also giving them a release of their own.
   `com.switch.report.*` events it wrote are gone; nothing consumed them. The
   deprecated Claude Code plugin's hook still posts there and ignores the
   failure.
+- **Mediation.** The four `POST /agents/{id}/mediation/*` routes are gone.
+  Only the deprecated Claude Code plugin's hook called them; it lets a tool
+  call proceed when the check fails, so its tool calls now go through Claude
+  Code's own permission prompts instead of being allowed or denied by
+  Switch. The tools and models an agent registers are still recorded and
+  shown on the gateway's agent pages.
 
 ### [0.29.0] - 2026-09-29
 

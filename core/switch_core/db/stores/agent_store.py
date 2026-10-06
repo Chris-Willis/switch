@@ -175,9 +175,6 @@ class AgentStore:
         result = await session.execute(select(Tool).where(Tool.agent_id == agent_id))
         return list(result.scalars().all())
 
-    async def get_tool(self, session: AsyncSession, tool_id: str) -> Tool | None:
-        return await session.get(Tool, tool_id)
-
     async def remove_tool(self, session: AsyncSession, tool_id: str) -> None:
         tool = await session.get(Tool, tool_id)
         if tool:
@@ -193,9 +190,6 @@ class AgentStore:
     async def get_models(self, session: AsyncSession, agent_id: str) -> list[Model]:
         result = await session.execute(select(Model).where(Model.agent_id == agent_id))
         return list(result.scalars().all())
-
-    async def get_model(self, session: AsyncSession, model_id: str) -> Model | None:
-        return await session.get(Model, model_id)
 
     async def remove_model(self, session: AsyncSession, model_id: str) -> None:
         model = await session.get(Model, model_id)

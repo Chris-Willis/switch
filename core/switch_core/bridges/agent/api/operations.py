@@ -7,7 +7,7 @@ serves its agent — one vocabulary, so the runtime's translation is
 them, straight from the registry.
 
 What is deliberately NOT here: media upload/download (multipart and binary, so
-HTTP semantics matter), the event stream, connection lifecycle, mediation, and
+HTTP semantics matter), the event stream, connection lifecycle, and
 registration. Those are not agent tools.
 """
 
