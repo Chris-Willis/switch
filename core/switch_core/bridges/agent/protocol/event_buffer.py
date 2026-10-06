@@ -88,8 +88,8 @@ class CursorExpiredError(Exception):
 def is_notifiable(event: AgentEvent) -> bool:
     """Whether an event is addressed at the agent rather than ambient context.
 
-    Addressed messages, task events, and room_join events the agent is
-    configured to listen for. Excludes unaddressed chatter and admin command
+    Addressed messages, and room_join events the agent is configured to
+    listen for. Excludes unaddressed chatter and admin command
     events. This is the `addressed` delivery filter: a supervising connection
     watching every room wants only these, while a session in a single room
     wants everything.
@@ -98,10 +98,7 @@ def is_notifiable(event: AgentEvent) -> bool:
         return getattr(event.payload, "addressed", False)
     if event.type == "room_join":
         return getattr(event.payload, "listening", False)
-    if event.type == "command":
-        return False
-    # All task_* events are enqueued only for the directly-involved agent.
-    return event.type.startswith("task_")
+    return False
 
 
 @dataclass(frozen=True)

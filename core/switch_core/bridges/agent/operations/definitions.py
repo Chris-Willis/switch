@@ -241,7 +241,7 @@ async def connect_to_room(
             transport room id. Calling again switches the active room for this session.
         include_general_instructions: When true (default) the `instructions`
             field carries the full room-onboarding text (interaction modes,
-            task protocol, agent statuses, room setup) followed by any
+            agent statuses, room setup) followed by any
             room-specific instructions. Set false if your host already
             injects the general Switch usage instructions out-of-band (e.g.
             via a Claude Code skill); the general sections are then omitted
@@ -303,7 +303,6 @@ async def connect_to_room(
     instructions = build_room_instructions(
         agent,
         room_model,
-        profile,
         participants,
         bridge,
         include_general=include_general_instructions,
@@ -380,8 +379,6 @@ async def connect_to_room(
                 "name": p.name,
                 "type": p.type,
                 "agent_type": p.agent_type,
-                "can_delegate": p.can_delegate,
-                "can_accept": p.can_accept,
                 "status": p.status.value if p.status is not None else None,
                 "room_role": p.room_role,
                 "alias": p.alias,
@@ -786,9 +783,8 @@ async def send_targeted_message(
 
     Prepends `@name` for each name target and `@role` for each role target so
     they receive it as an addressed event. Other participants still see the
-    message as room context. Use when you need specific participants to act,
-    but the work is informal (a question, nudge, or handoff that doesn't need
-    task tracking).
+    message as room context. Use when you need specific participants to act
+    (a question, a nudge, or a handoff).
 
     Args:
         body: The message text. Plain string — do not pre-add `@` prefixes;
@@ -853,215 +849,6 @@ async def send_targeted_message(
         "event_id": result.event_id,
         "target_statuses": {n: s.value for n, s in result.target_statuses.items()},
     }
-
-
-# ── Task Protocol ───────────────────────────────────────────────────────────
-
-
-@operation
-async def delegate_task(
-    performer_agent_id: str, summary: str, description: str
-) -> dict[str, str]:
-    """Delegate a task to a performer agent. Requires can_delegate capability.
-
-    Args:
-        performer_agent_id: The id of the agent to assign the task to. Must
-            be a participant in the connected room. Use list_participants to
-            find ids (the `id` field, not `name`).
-        summary: Short one-line title for the task (shown in lists/headers).
-        description: Full instructions: what to do, inputs, expected output,
-            constraints. The performer reads this when accepting.
-
-    Returns:
-        {"task_id": "<id>", "status": "pending", "target_status": "<status>"}.
-        `target_status` reports the performer's reachability at delegation
-        time; for `no_session`/`disconnected` the performer won't see the
-        task until they reconnect.
-    """
-    agent_id = get_agent_id()
-    room_id = await require_connected_room()
-
-    protocol = get_protocol()
-    result = await protocol.delegate_task(
-        agent_id, room_id, performer_agent_id, summary, description
-    )
-    return {
-        "task_id": result.task_id,
-        "status": "pending",
-        "target_status": result.target_status.value,
-    }
-
-
-@operation
-async def accept_task(task_id: str) -> dict[str, Any]:
-    """Accept a delegated task. Requires can_accept capability.
-
-    Args:
-        task_id: The id of the task to accept (from the task_delegate event
-            or list_tasks). Caller must be the assigned performer.
-
-    Returns:
-        {"status": "ongoing", "accepted_at": "<iso timestamp>"}.
-    """
-    agent_id = get_agent_id()
-    await require_connected_room()
-
-    protocol = get_protocol()
-    await protocol.accept_task(agent_id, task_id)
-    task = await protocol.get_task(agent_id, task_id)
-    accepted_at = None
-    if task.accepted_at:
-        accepted_at = (
-            task.accepted_at.isoformat()
-            if hasattr(task.accepted_at, "isoformat")
-            else str(task.accepted_at)
-        )
-    return {
-        "status": task.status,
-        "accepted_at": accepted_at,
-    }
-
-
-@operation
-async def update_task(task_id: str, update: str) -> dict[str, Any]:
-    """Post a progress update on an assigned task. Requires can_accept capability.
-
-    Args:
-        task_id: The id of an ongoing task you have accepted.
-        update: One-string progress note (what you've done, what's next, any
-            blockers). Appended to the task's update log; does not finalise.
-
-    Returns:
-        {"status": "updated", "updates_count": <int>} with the new total.
-    """
-    agent_id = get_agent_id()
-    await require_connected_room()
-
-    protocol = get_protocol()
-    await protocol.update_task(agent_id, task_id, update)
-    task = await protocol.get_task(agent_id, task_id)
-    return {"status": "updated", "updates_count": len(task.updates)}
-
-
-@operation
-async def finalise_task(task_id: str, outcome: str) -> dict[str, Any]:
-    """Complete a task with final outcome. Requires can_accept capability.
-
-    Args:
-        task_id: The id of an ongoing task you have accepted.
-        outcome: One-string final result — describe success or failure and
-            any output/links the requester needs. After this call the task
-            moves to `finalised` and cannot be updated further.
-
-    Returns:
-        {"status": "finalised", "finalised_at": "<iso timestamp>"}.
-    """
-    agent_id = get_agent_id()
-    await require_connected_room()
-
-    protocol = get_protocol()
-    await protocol.finalise_task(agent_id, task_id, outcome)
-    task = await protocol.get_task(agent_id, task_id)
-    finalised_at = None
-    if task.finalised_at:
-        finalised_at = (
-            task.finalised_at.isoformat()
-            if hasattr(task.finalised_at, "isoformat")
-            else str(task.finalised_at)
-        )
-    return {
-        "status": task.status,
-        "finalised_at": finalised_at,
-    }
-
-
-@operation
-async def cancel_task(task_id: str, reason: str) -> dict[str, str]:
-    """Abandon a task you delegated. Only the requester can cancel.
-
-    Args:
-        task_id: The id of a task this agent delegated.
-        reason: Why the task is no longer needed. Recorded on the task and
-            posted to the room so the performer learns it has been dropped.
-
-    Returns:
-        {"status": "cancelled", "reason": "<reason>"}.
-    """
-    agent_id = get_agent_id()
-    await require_connected_room()
-
-    protocol = get_protocol()
-    await protocol.cancel_task(agent_id, task_id, reason)
-    return {"status": "cancelled", "reason": reason}
-
-
-@operation
-async def list_tasks(
-    role: str | None = None, status: str | None = None
-) -> list[dict[str, Any]]:
-    """List tasks for the connected agent in the connected room.
-
-    Args:
-        role: Perspective filter.
-            - "delegated": tasks this agent created as requester
-            - "assigned": tasks assigned to this agent as performer
-            - None: both
-        status: Lifecycle filter. One of "pending", "ongoing", "finalised",
-            "cancelled", or None for all.
-
-    Returns:
-        List of task dicts {id, summary, description, status,
-        requester_agent_id, performer_agent_id, updates, outcome,
-        created_at, accepted_at, finalised_at}. Timestamps are ISO-8601
-        strings or null.
-    """
-    agent_id = get_agent_id()
-    room_id = await require_connected_room()  # type: ignore[arg-type]
-
-    protocol = get_protocol()
-    tasks = await protocol.list_tasks(
-        agent_id, room_id=room_id, role=role, status=status
-    )
-
-    result = []
-    for t in tasks:
-        created_at = None
-        if t.created_at:
-            created_at = (
-                t.created_at.isoformat()
-                if hasattr(t.created_at, "isoformat")
-                else str(t.created_at)
-            )
-        accepted_at = None
-        if t.accepted_at:
-            accepted_at = (
-                t.accepted_at.isoformat()
-                if hasattr(t.accepted_at, "isoformat")
-                else str(t.accepted_at)
-            )
-        finalised_at = None
-        if t.finalised_at:
-            finalised_at = (
-                t.finalised_at.isoformat()
-                if hasattr(t.finalised_at, "isoformat")
-                else str(t.finalised_at)
-            )
-        result.append(
-            {
-                "id": t.id,
-                "summary": t.summary,
-                "description": t.description,
-                "status": t.status,
-                "requester_agent_id": t.requester_agent_id,
-                "performer_agent_id": t.performer_agent_id,
-                "updates": t.updates,
-                "outcome": t.outcome,
-                "created_at": created_at,
-                "accepted_at": accepted_at,
-                "finalised_at": finalised_at,
-            }
-        )
-    return result
 
 
 # ── Moderation ───────────────────────────────────────────────────────────────

@@ -298,11 +298,6 @@ class TestCodexKnownAgent:
         assert profile.pre_invocation_mediation == []
         assert profile.event_reporting == []
 
-    def test_can_delegate_and_accept_tasks(self) -> None:
-        profile = CodexKnownAgent.build_profile(CodexOptions())
-        assert profile.task_protocol.can_delegate is True
-        assert profile.task_protocol.can_accept is True
-
     def test_commands_are_session_dependent(self) -> None:
         # Codex is a TUI driven by Switch Console keystroke injection, same as Claude
         # Code — so reset/compact/interrupt depend on a live managed session.
@@ -456,11 +451,6 @@ class TestOpenCodeKnownAgent:
         assert profile.pre_invocation_mediation == []
         assert profile.post_invocation_mediation == []
         assert profile.event_reporting == []
-
-    def test_can_delegate_and_accept_tasks(self) -> None:
-        profile = OpenCodeKnownAgent.build_profile(OpenCodeOptions())
-        assert profile.task_protocol.can_delegate is True
-        assert profile.task_protocol.can_accept is True
 
     def test_commands_are_session_dependent(self) -> None:
         # Must stay in step with `BY_PROVIDER.opencode` in Switch Console's

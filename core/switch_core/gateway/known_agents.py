@@ -9,7 +9,6 @@ from switch_core.bridges.agent.protocol.types import (
     CommandCapabilities,
     IntegrationProfile,
     ModelSpec,
-    TaskProtocolConfig,
     ToolSpec,
 )
 
@@ -221,7 +220,6 @@ class ClaudeCodeKnownAgent(KnownAgent):
             pre_invocation_mediation=["tool_calls"],
             post_invocation_mediation=[],
             event_reporting=["tool_calls"],
-            task_protocol=TaskProtocolConfig(can_delegate=True, can_accept=True),
             # Claude Code can reset / compact / interrupt only when a session is
             # driving it from Switch Console (which can inject keystrokes and
             # relaunch it). A standalone `claude` session can't be controlled,
@@ -405,7 +403,6 @@ class CodexKnownAgent(KnownAgent):
             pre_invocation_mediation=[],
             post_invocation_mediation=[],
             event_reporting=[],
-            task_protocol=TaskProtocolConfig(can_delegate=True, can_accept=True),
             # Same story as Claude Code: Codex is a TUI, so reset / compact /
             # interrupt only work when Switch Console is driving the session and can
             # inject keystrokes. A standalone `codex` can't be controlled, so all
@@ -536,7 +533,6 @@ class OpenCodeKnownAgent(KnownAgent):
             pre_invocation_mediation=[],
             post_invocation_mediation=[],
             event_reporting=[],
-            task_protocol=TaskProtocolConfig(can_delegate=True, can_accept=True),
             # A TUI, so reset / compact / interrupt only work while Switch Console
             # is driving the session and can write to it. A standalone `opencode`
             # cannot be controlled, so all three resolve per live session via
@@ -650,7 +646,6 @@ class AntigravityKnownAgent(KnownAgent):
             pre_invocation_mediation=[],
             post_invocation_mediation=[],
             event_reporting=[],
-            task_protocol=TaskProtocolConfig(can_delegate=True, can_accept=True),
             command_capabilities=CommandCapabilities(
                 reset="session_dependent",
                 compact="session_dependent",
@@ -711,7 +706,6 @@ class CursorKnownAgent(KnownAgent):
             pre_invocation_mediation=[],
             post_invocation_mediation=[],
             event_reporting=[],
-            task_protocol=TaskProtocolConfig(can_delegate=True, can_accept=True),
             command_capabilities=CommandCapabilities(
                 reset="session_dependent",
                 compact="session_dependent",

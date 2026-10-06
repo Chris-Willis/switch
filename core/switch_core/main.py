@@ -126,7 +126,6 @@ from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
@@ -427,7 +426,6 @@ async def run(config: SwitchConfig) -> None:
     agent_session_store = AgentSessionStore()
     room_store = RoomStore()
     client_store = ClientStore()
-    task_store = TaskStore()
     bridge_store = CollaborationBridgeStore()
     external_user_store = ExternalUserStore()
     bridge_message_map_store = BridgeMessageMapStore()
@@ -635,7 +633,6 @@ async def run(config: SwitchConfig) -> None:
         client_lifecycle=client_lifecycle,
         collab_lifecycle=collab_lifecycle,
         event_buffer=event_buffer,
-        task_store=task_store,
         resource_service=resource_service,
         api_key_store=api_key_store,
         external_user_store=external_user_store,

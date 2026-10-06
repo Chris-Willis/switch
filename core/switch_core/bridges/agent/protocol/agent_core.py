@@ -41,7 +41,6 @@ from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     AgentStatus,
-    DelegateTaskResult,
     IntegrationProfile,
     LlmCallReport,
     ModelSpec,
@@ -78,7 +77,6 @@ from switch_core.db.models import (
     Room,
     RoomGroup,
     RoomRole,
-    Task,
     Tool,
     User,
     require_tenant_id,
@@ -138,7 +136,6 @@ if TYPE_CHECKING:
     )
     from switch_core.db.stores.external_user_store import ExternalUserStore
     from switch_core.db.stores.room_store import RoomStore
-    from switch_core.db.stores.task_store import TaskStore
     from switch_core.gateway.schemas import AgentDetail
     from switch_core.room_service import RoomCreateResult, RoomService
     from switch_core.rooms_yaml import RoomYamlService
@@ -281,7 +278,6 @@ class AgentCore:
         collab_lifecycle: CollaborationBridgeLifecycleService,
         event_buffer: EventBuffer,
         connections: AgentConnectionRegistry,
-        task_store: TaskStore,
         resource_service: ResourceService,
         api_key_store: ApiKeyStore,
         api_key_cache: ApiKeyCache,
@@ -316,7 +312,6 @@ class AgentCore:
         # visible to all of them. Owning a registry here would split the live
         # connection set in two.
         self.connections = connections
-        self.task_store = task_store
         self.resource_service = resource_service
         self.mediation = MediationService(
             session_factory=session_factory, agent_store=agent_store
@@ -1106,8 +1101,6 @@ class AgentCore:
             alias_by_agent = await self.room_store.list_aliases(session, room_id)
         result: list[ParticipantDescriptor] = []
         for agent in agents:
-            profile = agent.integration_profile or {}
-            task_protocol = profile.get("task_protocol", {})
             result.append(
                 ParticipantDescriptor(
                     id=agent.id,
@@ -1115,8 +1108,6 @@ class AgentCore:
                     type="agent",
                     agent_type=agent.agent_type,
                     display_name=agent.display_name,
-                    can_delegate=bool(task_protocol.get("can_delegate", False)),
-                    can_accept=bool(task_protocol.get("can_accept", False)),
                     status=statuses[agent.id],
                     room_role=room_role_by_agent.get(agent.id),
                     alias=alias_by_agent.get(agent.id),
@@ -1386,34 +1377,6 @@ class AgentCore:
             "attachments": posted,
         }
 
-    async def _require_can_address(
-        self,
-        session: AsyncSession,
-        target: Agent,
-        *,
-        room_id: str,
-        group_id: str | None,
-        sender_agent_id: str,
-    ) -> None:
-        """Raise unless `sender_agent_id` may address `target` in this room.
-
-        For delegation, which creates a row someone is expected to work. A
-        message the target can decline in the room is checked with
-        :meth:`_can_address` and reported instead.
-        """
-        if await self._can_address(
-            session,
-            target,
-            room_id=room_id,
-            group_id=group_id,
-            sender_agent_id=sender_agent_id,
-        ):
-            return
-        raise PermissionError(
-            f"Agent {sender_agent_id} is not permitted to address "
-            f"{target.name} in this room."
-        )
-
     async def _can_address(
         self,
         session: AsyncSession,
@@ -1564,8 +1527,6 @@ class AgentCore:
         # happens to an `@name` in a plain message. Refusing here would make
         # the same request succeed or fail depending on which tool sent it, and
         # would leave the sender's account of it the only one on record.
-        # Delegation is the exception, and raises: a task is a row someone is
-        # expected to work, not something a room can decline.
         async with self.session_factory() as session:
             room_row = await self.room_store.get(session, room_id)
         group_id = room_row.group_id if room_row is not None else None
@@ -2212,8 +2173,8 @@ class AgentCore:
     ) -> list[AgentEvent]:
         """Long-poll the agent's notification stream across all its rooms.
 
-        Returns only notifiable events (addressed messages, task events, and
-        room_join events the agent listens for) — see EventBuffer. Unlike
+        Returns only notifiable events (addressed messages and the room_join
+        events the agent listens for) — see EventBuffer. Unlike
         `poll_events`, this does NOT touch any heartbeat: an auto_session
         connector maintains its "watching" presence via the dedicated
         `touch_watch_heartbeat` path, decoupled from this long-poll. Consuming
@@ -2300,281 +2261,6 @@ class AgentCore:
                     "com.switch.report.llm_call",
                     llm_event.model_dump(exclude_none=True),
                 )
-
-    # ── Tasks ──────────────────────────────────────────────────────────────────
-
-    async def delegate_task(
-        self,
-        requester_id: str,
-        room_id: str,
-        performer_id: str,
-        summary: str,
-        description: str,
-    ) -> DelegateTaskResult:
-        """Delegate a task from one agent to another.
-
-        Returns task_id and the performer's reachability status at delegation time.
-        Raises ValueError if agents or room not found, or agents not in room,
-        and `BudgetExceeded` if either agent has reached a budget covering it.
-        """
-        room = await self.require_room_poster(requester_id, room_id)
-
-        async with self.session_factory() as session:
-            performer = await self.agent_store.get(session, performer_id)
-            room_row = await self.room_store.get(session, room.id)
-        if performer is None:
-            raise ValueError(f"Performer agent not found: {performer_id}")
-
-        await self.require_room_member(performer_id, room_id)
-
-        # Scoped addressing policy: delegating a task addresses the performer,
-        # so it is subject to the same allow-list as a message. Unlike the
-        # message path (which demotes to unaddressed) a task is explicit, so a
-        # denied delegation fails loud rather than silently vanishing.
-        async with self.session_factory() as session:
-            await self._require_can_address(
-                session,
-                performer,
-                room_id=room.id,
-                group_id=room_row.group_id if room_row is not None else None,
-                sender_agent_id=requester_id,
-            )
-            await self.budget_guard.require_within(
-                session, tenant_id=require_tenant_id(), agent_id=performer_id
-            )
-
-        async with self.session_factory() as session:
-            task = Task(
-                room_id=room.id,
-                requester_agent_id=requester_id,
-                performer_agent_id=performer_id,
-                summary=summary,
-                description=description,
-                status="pending",
-                updates=[],
-            )
-            await self.task_store.create(session, task)
-            await session.commit()
-            task_id = task.id
-
-        client = self.client_lifecycle.get_by_agent_id(requester_id)
-        if client and client.transport:
-            await client.send_event(
-                room.transport_room_id,
-                "com.switch.task.delegate",
-                {
-                    "task_id": task_id,
-                    "requester_agent_id": requester_id,
-                    "performer_agent_id": performer_id,
-                    "summary": summary,
-                    "description": description,
-                },
-            )
-
-        target_status = await self.get_agent_status(performer_id, room_id)
-        return DelegateTaskResult(task_id=task_id, target_status=target_status)
-
-    async def accept_task(self, agent_id: str, task_id: str) -> None:
-        """Accept a pending task (performer only)."""
-        async with self.session_factory() as session:
-            task = await self.task_store.get(session, task_id)
-        if task is None:
-            raise ValueError(f"Task not found: {task_id}")
-        if task.performer_agent_id != agent_id:
-            raise PermissionError("Only the performer can accept the task")
-        if task.status != "pending":
-            raise ValueError(f"Task not in pending state: {task.status}")
-
-        room = await self.get_room(task.room_id)
-        await self.require_room_member(agent_id, task.room_id)
-
-        async with self.session_factory() as session:
-            await self.task_store.accept(session, task_id)
-            await session.commit()
-
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client and client.transport:
-            await client.send_event(
-                room.transport_room_id,
-                "com.switch.task.accept",
-                {
-                    "task_id": task_id,
-                    "requester_agent_id": task.requester_agent_id,
-                    "performer_agent_id": agent_id,
-                },
-            )
-
-    async def update_task(
-        self,
-        agent_id: str,
-        task_id: str,
-        update: str,
-    ) -> None:
-        """Append a progress update to a task (performer only)."""
-        async with self.session_factory() as session:
-            task = await self.task_store.get(session, task_id)
-        if task is None:
-            raise ValueError(f"Task not found: {task_id}")
-        if task.performer_agent_id != agent_id:
-            raise PermissionError("Only the performer can update the task")
-
-        room = await self.get_room(task.room_id)
-        await self.require_room_member(agent_id, task.room_id)
-
-        async with self.session_factory() as session:
-            await self.task_store.append_update(session, task_id, update)
-            await session.commit()
-
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client and client.transport:
-            await client.send_event(
-                room.transport_room_id,
-                "com.switch.task.update",
-                {
-                    "task_id": task_id,
-                    "requester_agent_id": task.requester_agent_id,
-                    "performer_agent_id": agent_id,
-                    "update": update,
-                },
-            )
-
-    async def finalise_task(
-        self,
-        agent_id: str,
-        task_id: str,
-        outcome: str,
-    ) -> None:
-        """Finalise a task with an outcome (performer only)."""
-        async with self.session_factory() as session:
-            task = await self.task_store.get(session, task_id)
-        if task is None:
-            raise ValueError(f"Task not found: {task_id}")
-        if task.performer_agent_id != agent_id:
-            raise PermissionError("Only the performer can finalise the task")
-
-        room = await self.get_room(task.room_id)
-        await self.require_room_member(agent_id, task.room_id)
-
-        async with self.session_factory() as session:
-            await self.task_store.finalise(session, task_id, outcome)
-            await session.commit()
-
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client and client.transport:
-            await client.send_event(
-                room.transport_room_id,
-                "com.switch.task.finalise",
-                {
-                    "task_id": task_id,
-                    "requester_agent_id": task.requester_agent_id,
-                    "performer_agent_id": agent_id,
-                    "outcome": outcome,
-                },
-            )
-            await client.send_message(
-                room.transport_room_id, outcome, format="markdown", metered=True
-            )
-
-    async def cancel_task(self, agent_id: str, task_id: str, reason: str) -> None:
-        """Cancel a task (requester only)."""
-        async with self.session_factory() as session:
-            task = await self.task_store.get(session, task_id)
-        if task is None:
-            raise ValueError(f"Task not found: {task_id}")
-        if task.requester_agent_id != agent_id:
-            raise PermissionError("Only the requester can cancel the task")
-
-        room = await self.get_room(task.room_id)
-        await self.require_room_member(agent_id, task.room_id)
-
-        async with self.session_factory() as session:
-            await self.task_store.cancel(session, task_id, reason)
-            await session.commit()
-
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client and client.transport:
-            await client.send_event(
-                room.transport_room_id,
-                "com.switch.task.cancel",
-                {
-                    "task_id": task_id,
-                    "requester_agent_id": agent_id,
-                    "performer_agent_id": task.performer_agent_id,
-                    "reason": reason,
-                },
-            )
-
-    async def get_task(self, agent_id: str, task_id: str) -> Task:
-        """Get a task (requester or performer only)."""
-        async with self.session_factory() as session:
-            task = await self.task_store.get(session, task_id)
-        if task is None:
-            raise ValueError(f"Task not found: {task_id}")
-        if task.requester_agent_id != agent_id and task.performer_agent_id != agent_id:
-            raise PermissionError("Only the requester or performer can view the task")
-        return task
-
-    async def list_tasks(
-        self,
-        agent_id: str,
-        room_id: str | None = None,
-        role: str | None = None,
-        status: str | None = None,
-    ) -> list[Task]:
-        """List tasks for an agent. role: 'delegated' (requester) or 'assigned' (performer)."""
-        async with self.session_factory() as session:
-            if role == "delegated":
-                # Tasks the agent requested
-                query = await session.execute(
-                    select(Task).where(Task.requester_agent_id == agent_id)
-                )
-                tasks = list(query.scalars().all())
-            elif role == "assigned":
-                # Tasks assigned to the agent
-                query = await session.execute(
-                    select(Task).where(Task.performer_agent_id == agent_id)
-                )
-                tasks = list(query.scalars().all())
-            else:
-                # Both
-                tasks = await self.task_store.get_by_agent(session, agent_id)
-
-            if room_id:
-                tasks = [t for t in tasks if t.room_id == room_id]
-            if status:
-                tasks = [t for t in tasks if t.status == status]
-        return tasks
-
-    async def list_delegatable_agents(
-        self, agent_id: str, room_id: str
-    ) -> list[ParticipantDescriptor]:
-        """List the agents in a room (the candidates for task delegation)."""
-        await self.require_room_member(agent_id, room_id)
-        async with self.session_factory() as session:
-            agent_ids = await self.room_store.get_agent_ids(session, room_id)
-            agents: list[Agent] = []
-            for aid in agent_ids:
-                agent = await self.agent_store.get(session, aid)
-                if agent is not None:
-                    agents.append(agent)
-            statuses = await self._compute_statuses(session, agents, room_id)
-        result = []
-        for agent in agents:
-            profile = agent.integration_profile or {}
-            task_protocol = profile.get("task_protocol", {})
-            result.append(
-                ParticipantDescriptor(
-                    id=agent.id,
-                    name=agent.name,
-                    type="agent",
-                    agent_type=agent.agent_type,
-                    display_name=agent.display_name,
-                    can_delegate=bool(task_protocol.get("can_delegate", False)),
-                    can_accept=bool(task_protocol.get("can_accept", False)),
-                    status=statuses[agent.id],
-                )
-            )
-        return result
 
     # ── Moderation ────────────────────────────────────────────────────────────
 
@@ -2887,7 +2573,7 @@ class AgentCore:
         Changing WHO is in a room must not be granted by a public
         ``write_visibility``: that would let any agent add itself to any
         default-visibility room and unlock the member-gated operations (read
-        context, post, tasks). Confine roster changes to the room's owner, an
+        context, post). Confine roster changes to the room's owner, an
         admin, or an agent that is already a member.
         """
         _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(

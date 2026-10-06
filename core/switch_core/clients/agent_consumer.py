@@ -33,11 +33,6 @@ from switch_core.bridges.agent.protocol.types import (
     CommandPayload,
     MessagePayload,
     RoomJoinPayload,
-    TaskAcceptPayload,
-    TaskCancelPayload,
-    TaskDelegatePayload,
-    TaskFinalisePayload,
-    TaskUpdatePayload,
 )
 from switch_core.budgets import BudgetExceeded, BudgetGuard
 from switch_core.clients.actor import AgentActor
@@ -90,11 +85,6 @@ from switch_core.delivery.addressing import (
 )
 from switch_core.events import (
     CommandEvent,
-    TaskAccept,
-    TaskCancel,
-    TaskDelegate,
-    TaskFinalise,
-    TaskUpdate,
 )
 from switch_core.gateway.known_agents import known_agent_for
 from switch_core.transport import (
@@ -1454,140 +1444,6 @@ class AgentConsumer(Consumer[AgentActor]):
     async def _is_direct_room(self, transport_room_id: str) -> bool:
         meta = await self._resolve_room_meta(transport_room_id)
         return meta is not None and meta.channel_type == "direct"
-
-    # ── Task event forwarding ────────────────────────────────────────────────
-
-    async def on_task_delegate(self, room: RoomRef, event: TaskDelegate) -> None:
-        if event.performer_agent_id != self.agent.id:
-            return
-        async with tenant_session(self.session_factory, self.tenant_id) as session:
-            agent = await self._fresh_agent(session)
-        meta = await self._resolve_room_meta(room.room_id)
-        agent_event = (
-            None
-            if meta is None
-            else AgentEvent(
-                type="task_delegate",
-                room_id=meta.room_id,
-                bridge_id=meta.bridge_id,
-                channel_type=meta.channel_type,
-                payload=TaskDelegatePayload(
-                    task_id=event.task_id,
-                    requester_agent_id=event.requester_agent_id,
-                    performer_agent_id=event.performer_agent_id,
-                    summary=event.summary,
-                    description=event.description,
-                ),
-            )
-        )
-        hosted = await self._note_hosted_addressed(agent, agent_event)
-        launch = None if hosted is None else hosted.launch
-        machine = None if hosted is None else hosted.machine
-        if hosted is not None and hosted.refusal is not None:
-            reply = hosted.refusal
-        elif launch is not None and is_waking(launch, machine):
-            reply = _WAKING_MESSAGE
-        else:
-            reply = "Working on it."
-        await self.actor.send_message(
-            room.room_id, reply, format="markdown", metered=False
-        )
-        if meta is None or agent_event is None:
-            return
-        if hosted is not None and not hosted.deliver:
-            return
-        self._event_buffer.enqueue(self.agent.id, meta.room_id, agent_event)
-
-    async def on_task_accept(self, room: RoomRef, event: TaskAccept) -> None:
-        if event.requester_agent_id != self.agent.id:
-            return
-        meta = await self._resolve_room_meta(room.room_id)
-        if meta is None:
-            return
-        self._event_buffer.enqueue(
-            self.agent.id,
-            meta.room_id,
-            AgentEvent(
-                type="task_accept",
-                room_id=meta.room_id,
-                bridge_id=meta.bridge_id,
-                channel_type=meta.channel_type,
-                payload=TaskAcceptPayload(
-                    task_id=event.task_id,
-                    requester_agent_id=event.requester_agent_id,
-                    performer_agent_id=event.performer_agent_id,
-                ),
-            ),
-        )
-
-    async def on_task_update(self, room: RoomRef, event: TaskUpdate) -> None:
-        if event.requester_agent_id != self.agent.id:
-            return
-        meta = await self._resolve_room_meta(room.room_id)
-        if meta is None:
-            return
-        self._event_buffer.enqueue(
-            self.agent.id,
-            meta.room_id,
-            AgentEvent(
-                type="task_update",
-                room_id=meta.room_id,
-                bridge_id=meta.bridge_id,
-                channel_type=meta.channel_type,
-                payload=TaskUpdatePayload(
-                    task_id=event.task_id,
-                    requester_agent_id=event.requester_agent_id,
-                    performer_agent_id=event.performer_agent_id,
-                    update=event.update,
-                ),
-            ),
-        )
-
-    async def on_task_finalise(self, room: RoomRef, event: TaskFinalise) -> None:
-        if event.requester_agent_id != self.agent.id:
-            return
-        meta = await self._resolve_room_meta(room.room_id)
-        if meta is None:
-            return
-        self._event_buffer.enqueue(
-            self.agent.id,
-            meta.room_id,
-            AgentEvent(
-                type="task_finalise",
-                room_id=meta.room_id,
-                bridge_id=meta.bridge_id,
-                channel_type=meta.channel_type,
-                payload=TaskFinalisePayload(
-                    task_id=event.task_id,
-                    requester_agent_id=event.requester_agent_id,
-                    performer_agent_id=event.performer_agent_id,
-                    outcome=event.outcome,
-                ),
-            ),
-        )
-
-    async def on_task_cancel(self, room: RoomRef, event: TaskCancel) -> None:
-        if event.performer_agent_id != self.agent.id:
-            return
-        meta = await self._resolve_room_meta(room.room_id)
-        if meta is None:
-            return
-        self._event_buffer.enqueue(
-            self.agent.id,
-            meta.room_id,
-            AgentEvent(
-                type="task_cancel",
-                room_id=meta.room_id,
-                bridge_id=meta.bridge_id,
-                channel_type=meta.channel_type,
-                payload=TaskCancelPayload(
-                    task_id=event.task_id,
-                    requester_agent_id=event.requester_agent_id,
-                    performer_agent_id=event.performer_agent_id,
-                    reason=event.reason,
-                ),
-            ),
-        )
 
     # ── Mention detection ─────────────────────────────────────────────────────
 

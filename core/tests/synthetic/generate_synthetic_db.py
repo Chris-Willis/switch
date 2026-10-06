@@ -103,7 +103,6 @@ ATTACHMENT_SIZE_MEDIAN = 100_000
 ATTACHMENT_SIZE_MEAN = 400_000
 ATTACHMENT_SIZE_MAX = 20_000_000
 DOCUMENTS = 60
-TASKS = 80
 ROOM_ROLES = 50
 ROLE_LEASES = 20
 ROOM_LINKS = 700
@@ -309,7 +308,6 @@ async def generate(dsn: str, scale: float) -> None:
         media_blobs_n = _scaled(MEDIA_BLOBS, scale)
         message_attachments_n = _scaled(MESSAGE_ATTACHMENTS, scale)
         documents_n = _scaled(DOCUMENTS, scale)
-        tasks_n = _scaled(TASKS, scale)
         room_roles_n = _scaled(ROOM_ROLES, scale)
         role_leases_n = _scaled(ROLE_LEASES, scale)
         room_links_n = _scaled(ROOM_LINKS, scale)
@@ -790,33 +788,6 @@ async def generate(dsn: str, scale: float) -> None:
                     "public",
                 )
                 for i, did in enumerate(document_ids)
-            ],
-        )
-
-        # ── tasks ────────────────────────────────────────────────────────
-        await _copy(
-            conn,
-            "tasks",
-            [
-                "id",
-                "room_id",
-                "requester_agent_id",
-                "performer_agent_id",
-                "description",
-                "status",
-                "summary",
-            ],
-            [
-                (
-                    _rand_id("task", i),
-                    random.choice(room_ids),
-                    random.choice(agent_ids),
-                    random.choice(agent_ids),
-                    _lorem_text(200),
-                    random.choice(["open", "accepted", "finalised"]),
-                    _lorem_text(100),
-                )
-                for i in range(tasks_n)
             ],
         )
 

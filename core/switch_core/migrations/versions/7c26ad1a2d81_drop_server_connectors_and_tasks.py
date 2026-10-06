@@ -1,4 +1,6 @@
-"""remove server-side connectors
+"""remove server-side connectors and the task protocol
+
+Two designs Switch no longer has.
 
 Switch no longer dials out to agent hosts: every agent session is started by
 Switch Console or its sidecar and connects in. This drops what the server-side
@@ -13,9 +15,16 @@ connectors kept:
   `main.py` retires a stale bootstrap key, so nothing can register an agent
   with a credential that only a dropped table knew about.
 
-The downgrade recreates the table and the lookup empty, as `c3f1a9d27e46` left
-them, so a rollback lands on a schema that revision recognises. The rows and
-the keys' registration type are not restored.
+The task protocol (delegate, accept, update, finalise, cancel) was never put
+to use, and its `can_delegate` / `can_accept` capabilities were never
+enforced. This drops `tasks`, and strips `task_protocol` from every stored
+integration profile.
+
+The downgrade recreates both tables and the lookup empty, as `c3f1a9d27e46`
+left them, so a rollback lands on a schema that revision recognises, and puts
+a `task_protocol` with both capabilities off back on every profile, because
+the code before this revision requires the key. The rows, the capabilities
+an agent had, and the keys' registration type are not restored.
 
 The lookup DDL is frozen, like the rest of this chain: the text `9c41a7b0e5d8`
 ran, not whatever `db/tenant_lookup.py` would build today.
@@ -77,8 +86,67 @@ def upgrade() -> None:
     )
     op.drop_table("server_connectors")
 
+    op.drop_table("tasks")
+    op.execute(
+        "UPDATE agents SET integration_profile = integration_profile - 'task_protocol' "
+        "WHERE integration_profile ? 'task_protocol'"
+    )
+
 
 def downgrade() -> None:
+    op.execute(
+        "UPDATE agents SET integration_profile = integration_profile || "
+        """'{"task_protocol": {"can_delegate": false, "can_accept": false}}'::jsonb """
+        "WHERE NOT integration_profile ? 'task_protocol'"
+    )
+    op.create_table(
+        "tasks",
+        sa.Column("id", sa.Text(), nullable=False),
+        sa.Column("room_id", sa.Text(), nullable=False),
+        sa.Column("requester_agent_id", sa.Text(), nullable=False),
+        sa.Column("performer_agent_id", sa.Text(), nullable=False),
+        sa.Column("description", sa.Text(), nullable=False),
+        sa.Column("status", sa.Text(), nullable=False),
+        sa.Column("summary", sa.Text(), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updates",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'[]'::jsonb"),
+            nullable=False,
+        ),
+        sa.Column("outcome", sa.Text(), nullable=True),
+        sa.Column("accepted_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("finalised_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("tenant_id", sa.Text(), nullable=False),
+        sa.PrimaryKeyConstraint("id", name="tasks_pkey"),
+        sa.ForeignKeyConstraint(
+            ["tenant_id", "performer_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_tasks_performer_agent",
+            ondelete="CASCADE",
+        ),
+        sa.ForeignKeyConstraint(
+            ["tenant_id", "requester_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_tasks_requester_agent",
+            ondelete="CASCADE",
+        ),
+        sa.ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_tasks_room",
+        ),
+        sa.ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_tasks_tenant"),
+    )
+    op.create_index("ix_tasks_tenant_id", "tasks", ["tenant_id"])
+    _enable_rls("tasks")
+
     op.create_table(
         "server_connectors",
         sa.Column("id", sa.Text(), nullable=False),

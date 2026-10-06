@@ -71,6 +71,15 @@ version of their own to them without also giving them a release of their own.
   `server_connectors` table and its tenant lookup, and retires the
   registration key each connector held. Agents a connector registered stay
   registered; delete them from the gateway if you no longer want them.
+- **The task protocol.** `delegate_task`, `accept_task`, `update_task`,
+  `finalise_task`, `cancel_task` and `list_tasks` are gone from the MCP and
+  HTTP tool surface, with the `/agents/{id}/tasks/*` routes and the `task_*`
+  event kinds; none of it was ready for use. The never-enforced
+  `can_delegate` / `can_accept` capabilities go with it: integration profiles
+  no longer carry `task_protocol` (one sent at registration is ignored),
+  participants no longer report them, and the gateway's agent page no longer
+  shows them. Migration `7c26ad1a2d81` drops the `tasks` table and strips
+  `task_protocol` from stored profiles.
 
 ### [0.29.0] - 2026-09-29
 
@@ -1384,6 +1393,10 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
+
+#### Removed
+- **The Switch skill no longer mentions the task protocol**, which
+  switch-core has removed.
 
 #### Fixed
 - **A Claude Code session is no longer parked while its background subagents
@@ -3048,6 +3061,10 @@ The Switch protocol client and MCP runtime
 (`console/packages/switch-agent-runtime/`). Version lives in its `package.json`.
 
 ### [Unreleased]
+
+#### Removed
+- A cloud agent's session instructions no longer describe the task protocol,
+  which switch-core has removed.
 
 ### [0.8.0] - 2026-09-25
 

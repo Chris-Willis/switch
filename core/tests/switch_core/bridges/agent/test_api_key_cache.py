@@ -21,7 +21,6 @@ from switch_core.bridges.agent.protocol.agent_connections import HEARTBEAT_TTL_S
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
-    TaskProtocolConfig,
 )
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Agent, ApiKey, Client, User
@@ -35,7 +34,6 @@ _PROFILE = IntegrationProfile(
     pre_invocation_mediation=[],
     post_invocation_mediation=[],
     event_reporting=[],
-    task_protocol=TaskProtocolConfig(can_delegate=False, can_accept=False),
 )
 
 

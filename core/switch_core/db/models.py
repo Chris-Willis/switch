@@ -1339,52 +1339,6 @@ class RoomLink(TenantScoped, Base):
     )
 
 
-# ── Tasks ──────────────────────────────────────────────────────────────────────
-
-
-class Task(TenantScoped, Base):
-    __tablename__ = "tasks"
-    __table_args__ = (
-        Index("ix_tasks_tenant_id", "tenant_id"),
-        ForeignKeyConstraint(
-            ["tenant_id", "room_id"],
-            ["rooms.tenant_id", "rooms.id"],
-            name="fk_tasks_room",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "requester_agent_id"],
-            ["agents.tenant_id", "agents.id"],
-            name="fk_tasks_requester_agent",
-            ondelete="CASCADE",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "performer_agent_id"],
-            ["agents.tenant_id", "agents.id"],
-            name="fk_tasks_performer_agent",
-            ondelete="CASCADE",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    room_id: Mapped[str] = mapped_column(Text, nullable=False)
-    requester_agent_id: Mapped[str] = mapped_column(Text, nullable=False)
-    performer_agent_id: Mapped[str] = mapped_column(Text, nullable=False)
-    summary: Mapped[str] = mapped_column(Text, nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False)
-    updates: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
-    outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[str] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    accepted_at: Mapped[str | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    finalised_at: Mapped[str | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-
-
 # ── References & Documents ────────────────────────────────────────────────────
 
 

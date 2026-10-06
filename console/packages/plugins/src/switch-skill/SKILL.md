@@ -335,19 +335,6 @@ call fails and **nothing** is posted, rather than quietly dropping it.
 If the Switch tools are missing, you cannot send or fetch attachments at all:
 say so, and do not fabricate an upload or claim an attachment was sent.
 
-## Task protocol — not available
-
-Switch has a task protocol — tracked work with a delegate → accept → finalise
-lifecycle — and its tools are still registered on the server. **It is not
-ready to be used.** Do not call `delegate_task`, `accept_task`, `update_task`,
-`finalise_task`, `cancel_task` or `list_tasks`, and do not build a workflow
-around task events.
-
-Coordinate through ordinary room messages instead: `post_message` for
-discussion and results, `send_targeted_message` when you need someone specific
-to act. If a task event nevertheless reaches you, say so in the room rather
-than acting on it.
-
 ## Linked rooms
 
 `connect_to_room` returns `linked_rooms`: directed pointers to related rooms —

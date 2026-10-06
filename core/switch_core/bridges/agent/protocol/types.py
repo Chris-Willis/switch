@@ -8,11 +8,6 @@ from pydantic import BaseModel, model_validator
 # ── Agent integration profile ─────────────────────────────────────────────────
 
 
-class TaskProtocolConfig(BaseModel):
-    can_delegate: bool
-    can_accept: bool
-
-
 # How an agent-type supports a session-control command (reset / compact /
 # interrupt):
 #   - "unsupported": the command never applies to this agent-type.
@@ -38,7 +33,6 @@ class IntegrationProfile(BaseModel):
     pre_invocation_mediation: list[str]
     post_invocation_mediation: list[str]
     event_reporting: list[str]
-    task_protocol: TaskProtocolConfig
     # Defaults to all-"unsupported" so integration profiles persisted before
     # this feature (which lack the key) re-validate cleanly and behave as
     # "no session-control support" until the agent is re-registered.
@@ -145,19 +139,12 @@ class SendTargetedResult(BaseModel):
     target_statuses: dict[str, AgentStatus | RoomWideMentionStatus]
 
 
-class DelegateTaskResult(BaseModel):
-    task_id: str
-    target_status: AgentStatus
-
-
 class ParticipantDescriptor(BaseModel):
     id: str
     name: str
     type: Literal["agent", "user"]
     agent_type: str | None = None
     display_name: str | None = None
-    can_delegate: bool = False
-    can_accept: bool = False
     status: AgentStatus | None = None
     # The room-scoped role this agent currently (live-lease) holds, if any.
     room_role: str | None = None
@@ -203,16 +190,7 @@ class RoomDetailDescriptor(BaseModel):
     archived: bool = False
 
 
-EventType = Literal[
-    "message",
-    "command",
-    "room_join",
-    "task_delegate",
-    "task_accept",
-    "task_update",
-    "task_finalise",
-    "task_cancel",
-]
+EventType = Literal["message", "command", "room_join"]
 
 
 class AttachmentRef(BaseModel):
@@ -271,61 +249,12 @@ class RoomJoinPayload(BaseModel):
     listening: bool
 
 
-class TaskDelegatePayload(BaseModel):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    summary: str
-    description: str
-
-
-class TaskAcceptPayload(BaseModel):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-
-
-class TaskUpdatePayload(BaseModel):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    update: str
-
-
-class TaskFinalisePayload(BaseModel):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    outcome: str
-
-
-class TaskCancelPayload(BaseModel):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    reason: str
-
-
-Payload = (
-    MessagePayload
-    | CommandPayload
-    | RoomJoinPayload
-    | TaskDelegatePayload
-    | TaskAcceptPayload
-    | TaskUpdatePayload
-    | TaskFinalisePayload
-    | TaskCancelPayload
-)
+Payload = MessagePayload | CommandPayload | RoomJoinPayload
 
 _PAYLOAD_TYPE: dict[str, type[BaseModel]] = {
     "message": MessagePayload,
     "command": CommandPayload,
     "room_join": RoomJoinPayload,
-    "task_delegate": TaskDelegatePayload,
-    "task_accept": TaskAcceptPayload,
-    "task_update": TaskUpdatePayload,
-    "task_finalise": TaskFinalisePayload,
-    "task_cancel": TaskCancelPayload,
 }
 
 

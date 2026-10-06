@@ -56,7 +56,7 @@ from tests.conftest import RLSHarness
 _RLS_REVISION = "265ed188ad6f"
 
 # Scoped by the frozen inventories and dropped afterwards: the server-side
-# session tables by `b9e4d2a71c05`, the server-side connectors by
+# session tables by `b9e4d2a71c05`, the server-side connectors and tasks by
 # `7c26ad1a2d81`.
 _DROPPED_BY_LATER_REVISIONS = frozenset(
     {
@@ -64,6 +64,7 @@ _DROPPED_BY_LATER_REVISIONS = frozenset(
         "sdk_session_events",
         "sdk_session_commands",
         "server_connectors",
+        "tasks",
     }
 )
 

@@ -38,7 +38,6 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
-    TaskProtocolConfig,
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.actor import Actor, AgentActor, HumanActor
@@ -97,7 +96,6 @@ BENCH_PROFILE = IntegrationProfile(
     pre_invocation_mediation=[],
     post_invocation_mediation=[],
     event_reporting=[],
-    task_protocol=TaskProtocolConfig(can_delegate=False, can_accept=False),
 )
 
 
@@ -534,7 +532,6 @@ async def _serve(
         client_lifecycle=client_lifecycle,
         collab_lifecycle=collab_lifecycle,  # type: ignore[arg-type]
         event_buffer=event_buffer,
-        task_store=session_env.task_store,
         resource_service=resource_service,
         api_key_store=session_env.api_key_store,
         external_user_store=session_env.external_user_store,

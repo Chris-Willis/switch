@@ -222,7 +222,6 @@ function boolLabel(value: unknown): string {
 
 function CapabilitiesSection({ agent }: { agent: AgentDetail }) {
   const profile = agent.integration_profile;
-  const task = (profile.task_protocol ?? {}) as Record<string, unknown>;
   return (
     <Stack spacing={1}>
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
@@ -232,8 +231,6 @@ function CapabilitiesSection({ agent }: { agent: AgentDetail }) {
         label="Message exchange"
         value={boolLabel(profile.message_exchange)}
       />
-      <InfoLine label="Can delegate" value={boolLabel(task.can_delegate)} />
-      <InfoLine label="Can accept tasks" value={boolLabel(task.can_accept)} />
     </Stack>
   );
 }

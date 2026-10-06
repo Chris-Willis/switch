@@ -441,7 +441,7 @@ class TestSending:
     async def test_a_custom_event_is_stored_whole(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """A task event is not conversation, but it still has to reach its
+        """A run report is not conversation, but it still has to reach its
         handler, and here the row is the only way it can."""
         async with session_factory() as session:
             _, transport_room_id, client_id, user_id = await _make_room(session)
@@ -449,7 +449,7 @@ class TestSending:
 
         transport = _transport(session_factory, client_id=client_id, user_id=user_id)
         result = await transport.send_event(
-            transport_room_id, "com.switch.task.accept", {"task_id": "t-1"}
+            transport_room_id, "com.switch.report.tool_call", {"tool_id": "t-1"}
         )
 
         async with session_factory() as session:
@@ -458,8 +458,8 @@ class TestSending:
             )
 
         assert message is not None
-        assert message.event_type == "com.switch.task.accept"
-        assert message.content == {"task_id": "t-1"}
+        assert message.event_type == "com.switch.report.tool_call"
+        assert message.content == {"tool_id": "t-1"}
         assert message.body is None
 
     async def test_ephemeral_state_is_announced_and_not_stored(

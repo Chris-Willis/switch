@@ -13,7 +13,6 @@ from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     MessagePayload,
     RoomJoinPayload,
-    TaskDelegatePayload,
 )
 
 AGENT = "agent-1"
@@ -45,20 +44,6 @@ def _room_join(listening: bool) -> AgentEvent:
     )
 
 
-def _task_delegate() -> AgentEvent:
-    return AgentEvent(
-        type="task_delegate",
-        room_id=ROOM,
-        payload=TaskDelegatePayload(
-            task_id="t1",
-            requester_agent_id="r",
-            performer_agent_id=AGENT,
-            summary="s",
-            description="d",
-        ),
-    )
-
-
 async def test_addressed_message_fans_out_without_draining_room_queue() -> None:
     q = EventBuffer(sequence_base=0)
     q.enqueue(AGENT, ROOM, _message(addressed=True))
@@ -81,14 +66,6 @@ async def test_unaddressed_message_does_not_fan_out() -> None:
     # Still queued per-room (unaddressed chatter is delivered there, just not
     # surfaced as a notification).
     assert len(await q.poll_room(AGENT, ROOM, timeout=0)) == 1
-
-
-async def test_task_event_fans_out() -> None:
-    q = EventBuffer(sequence_base=0)
-    q.enqueue(AGENT, ROOM, _task_delegate())
-    notifs = await q.poll_notifications(AGENT, timeout=0, rooms={ROOM})
-    assert len(notifs) == 1
-    assert notifs[0].type == "task_delegate"
 
 
 async def test_room_join_fans_out_only_when_listening() -> None:
