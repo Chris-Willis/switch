@@ -187,7 +187,7 @@ async def list_rooms(include_archived: bool = False) -> list[dict[str, Any]]:
 @operation
 async def connect_to_room(
     room_id: str,
-    include_general_instructions: bool = True,
+    include_general_instructions: bool = False,
 ) -> dict[str, Any]:
     """Connect this session to a room. The agent must be assigned to the room.
 
@@ -195,14 +195,9 @@ async def connect_to_room(
         room_id: The Switch room id (UUID string) to connect to. Get valid
             ids from list_rooms. This is the Switch room id, not the
             transport room id. Calling again switches the active room for this session.
-        include_general_instructions: When true (default) the `instructions`
-            field carries the full room-onboarding text (interaction modes,
-            agent statuses, room setup) followed by any
-            room-specific instructions. Set false if your host already
-            injects the general Switch usage instructions out-of-band (e.g.
-            via a Claude Code skill); the general sections are then omitted
-            but room-specific instructions configured at room creation are
-            still returned.
+        include_general_instructions: Ignored, and accepted so that callers
+            which still pass it keep working. `instructions` carries only the
+            room-specific instructions configured at room creation.
 
     Returns:
         {agent_id, room_id, name, description, participants, instructions,
@@ -245,9 +240,6 @@ async def connect_to_room(
         room_model = await protocol.room_store.get(session, room.id)
         if agent is None or room_model is None:
             raise ValueError("Agent or room not found")
-        bridge: CollaborationBridge | None = None
-        if room_model.bridge_id:
-            bridge = await session.get(CollaborationBridge, room_model.bridge_id)
 
     if hosted_launch_of(agent.metadata_) is not None:
         key = session_key()

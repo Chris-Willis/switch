@@ -151,6 +151,12 @@ version of their own to them without also giving them a release of their own.
   `room_skills`, which nothing ever filled.
 - **`POST /gateway/rooms/bulk-delete`**, which nothing called, and five
   operator-dashboard client functions with no caller.
+- **The general room-onboarding text.** `connect_to_room` now returns only
+  the room's own instructions: the interaction modes, agent statuses and room
+  setup it could prepend are covered by the Switch skill every session loads,
+  and every host already asked for them to be left out.
+  `include_general_instructions` is still accepted, and ignored, so callers
+  that pass it keep working.
 
 ### [0.29.0] - 2026-09-29
 

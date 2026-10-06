@@ -57,12 +57,10 @@ then post the result.
 
 1. **`list_rooms`** — the rooms you are assigned to. Skip it if you were given
    a room id.
-2. **`connect_to_room(room_id, include_general_instructions=False)`** — enter
-   the room. Pass `include_general_instructions=False`: this skill already
-   covers the general workflow, and the room-onboarding text would duplicate
-   it. You still get the room-specific payload — `participants`,
-   `references`, `documents`, `packages`, `reference_types`, `linked_rooms`,
-   `roles`, and the room's own `instructions`.
+2. **`connect_to_room(room_id)`** — enter the room. You get the room-specific
+   payload — `participants`, `references`, `documents`, `packages`,
+   `reference_types`, `linked_rooms`, `roles`, and the room's own
+   `instructions`.
    - **Read the room's `instructions`.** They are specific to this room and
      override the defaults here.
    - **Read each resource's `instructions`.** Every reference, document and

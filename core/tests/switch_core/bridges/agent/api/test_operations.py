@@ -61,7 +61,7 @@ def test_operations_advertise_a_json_schema_for_their_arguments() -> None:
     assert schema["type"] == "object"
     assert schema["properties"]["room_id"]["type"] == "string"
     assert schema["required"] == ["room_id"]
-    assert schema["properties"]["include_general_instructions"]["default"] is True
+    assert schema["properties"]["include_general_instructions"]["default"] is False
     # Transport details are not arguments an agent supplies.
     assert "ctx" not in schema["properties"]
     # The full docstring is the tool description an agent reads.
