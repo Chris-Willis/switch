@@ -29,6 +29,8 @@ export class FakeRuntime implements AgentRuntime {
   probes = 0;
   /** Thrown from the next launch, once. */
   failNextLaunch: Error | null = null;
+  /** Agents whose observe() throws. */
+  readonly observeFailures = new Map<string, Error>();
   /** What the controller gave it to open each agent's event stream. */
   openStream: ((agentId: string) => OpenAgentStream) | null = null;
   closed = false;
@@ -53,6 +55,8 @@ export class FakeRuntime implements AgentRuntime {
   }
 
   async observe(agentId: string): Promise<AgentObservation> {
+    const failure = this.observeFailures.get(agentId);
+    if (failure) throw failure;
     return structuredClone(this.observation(agentId));
   }
 

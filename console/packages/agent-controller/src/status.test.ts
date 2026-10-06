@@ -317,6 +317,7 @@ describe('StatusCollector', () => {
       workspacesDir: join(dir, 'workspaces'),
       version: '0.1.0',
       now: () => clock,
+      log: silentLogger,
     });
     store.recordApplied('agent-1', 2, '2026-01-01T11:00:00Z');
     store.recordRestart('agent-1', NOW - 60_000);
@@ -387,6 +388,55 @@ describe('StatusCollector', () => {
     expect(unit.activity).toEqual([
       { agent_id: 'agent-1', busy: false, sessions: 2, last_activity_at: '2026-01-01T11:00:00Z' },
     ]);
+  });
+
+  it('reports one agent as failed when observe() throws, without blocking others', async () => {
+    const runtime = new FakeRuntime();
+    const providers = new ProviderStatuses({
+      locator: new FakeLocator(),
+      runtime,
+      probeCwd: dir,
+      now: () => NOW,
+      log: silentLogger,
+      onChange: () => {},
+    });
+    await providers.check('claude');
+    const collector = new StatusCollector({
+      store,
+      runtime,
+      providers,
+      attached: () => false,
+      dataDir: dir,
+      workspacesDir: join(dir, 'workspaces'),
+      version: '0.1.0',
+      now: () => NOW,
+      log: silentLogger,
+    });
+    store.recordApplied('agent-1', 1, '2026-01-01T11:00:00Z');
+    store.recordApplied('agent-2', 1, '2026-01-01T11:00:00Z');
+    runtime.agents.set('agent-1', observed({ alive: true, health: health('connected') }));
+    runtime.agents.set('agent-2', observed({ alive: true, health: health('connected') }));
+    runtime.observeFailures.set(
+      'agent-1',
+      new Error('health.json is a symbolic link; it is not followed.')
+    );
+    const assignment = {
+      revision: 1,
+      agents: [entry({ agent_id: 'agent-1' }), entry({ agent_id: 'agent-2' })],
+    };
+    const report = await collector.collect(assignment);
+    expect(report.agents).toHaveLength(2);
+    expect(report.agents[0]).toMatchObject({
+      agent_id: 'agent-1',
+      process: 'failed',
+      reason: 'internal',
+    });
+    expect(report.agents[0]!.detail).toContain('symbolic link');
+    expect(report.agents[1]).toMatchObject({
+      agent_id: 'agent-2',
+      process: 'running',
+      attached: false,
+    });
   });
 });
 

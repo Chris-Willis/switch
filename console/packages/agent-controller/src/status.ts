@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import type { ProviderReadiness } from '@switch-console/agent-providers';
 import { pluginRegistry } from '@switch-console/plugins/agents';
 import { errorMessage, type Logger } from './log';
-import type { AgentObservation, AgentRuntime } from './runtime';
+import { emptyObservation, type AgentObservation, type AgentRuntime } from './runtime';
 import {
   type AgentActivity,
   type AgentAssignment,
@@ -348,6 +348,7 @@ export class StatusCollector {
       workspacesDir: string;
       version: string;
       now: () => number;
+      log: Logger;
     }
   ) {}
 
@@ -362,7 +363,19 @@ export class StatusCollector {
     for (const entry of assignment?.agents ?? []) {
       seen.add(entry.agent_id);
       const row = this.deps.store.agent(entry.agent_id);
-      const observation = await this.deps.runtime.observe(entry.agent_id);
+      let observation: AgentObservation;
+      try {
+        observation = await this.deps.runtime.observe(entry.agent_id);
+      } catch (error) {
+        this.deps.log.warn('Could not observe agent state; reporting as failed', {
+          agentId: entry.agent_id,
+          error: errorMessage(error),
+        });
+        observation = {
+          ...emptyObservation(),
+          failure: errorMessage(error),
+        };
+      }
       const mapped = mapAgentProcess({
         assignment: entry,
         row,

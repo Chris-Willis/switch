@@ -323,6 +323,16 @@ describe('reconcile', () => {
     });
     expect(store.agent('agent-2')?.appliedRevision).toBe(1);
   });
+
+  it('observes and starts agent-2 when agent-1 observe() throws', async () => {
+    runtime.observeFailures.set(
+      'agent-1',
+      new Error('config.json is a symbolic link; it is not followed.')
+    );
+    await reconcile(assignment(agent(), agent({ agent_id: 'agent-2' }, { name: 'other' })), deps());
+    expect(runtime.launches('agent-2')).toHaveLength(1);
+    expect(store.agent('agent-2')?.appliedRevision).toBe(1);
+  });
 });
 
 describe('planReconcile', () => {

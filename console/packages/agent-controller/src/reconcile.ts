@@ -354,7 +354,18 @@ export async function reconcile(assignment: Assignment, deps: ReconcileDeps): Pr
       observations.set(entry.agent_id, emptyObservation());
       continue;
     }
-    observations.set(entry.agent_id, await deps.runtime.observe(entry.agent_id));
+    try {
+      observations.set(entry.agent_id, await deps.runtime.observe(entry.agent_id));
+    } catch (error) {
+      deps.log.warn('Could not observe agent state; treating as empty', {
+        agentId: entry.agent_id,
+        error: errorMessage(error),
+      });
+      observations.set(entry.agent_id, {
+        ...emptyObservation(),
+        failure: errorMessage(error),
+      });
+    }
     if (entry.desired_state !== 'running') continue;
     try {
       if (await deps.ensureCredentials(entry.agent_id)) credentialsChanged.add(entry.agent_id);

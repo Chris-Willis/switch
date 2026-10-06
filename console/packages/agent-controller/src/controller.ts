@@ -392,6 +392,7 @@ export async function runController(
     workspacesDir: workspaces,
     version: deps.version,
     now: deps.now,
+    log,
   });
   const reconcileDeps: ReconcileDeps = {
     store,
