@@ -1,21 +1,29 @@
-"""Shared agent-summary / agent-detail assembly and known-agent options updates.
+"""Shared agent-summary / agent-detail assembly, known-agent options updates,
+and the agent-profile changes an agent may make to an agent its owner owns.
 
 This lives in the protocol layer so both the gateway routes (`gateway/agents.py`)
 and the MCP-facing protocol methods can build the exact same `AgentSummary` /
-`AgentDetail` shapes and run the same options-validation path, rather than each
-re-deriving it. It imports `gateway.schemas` (pure pydantic leaf) and
+`AgentDetail` shapes and run the same validation, rather than each re-deriving
+it. It imports `gateway.schemas` (pure pydantic leaf) and
 `gateway.known_agents` (which only depends on `protocol.types`) — neither pulls
 in `gateway.agents`, so there is no import cycle.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.addressing import AddressingPolicy
+from switch_core.addressing import (
+    AddressingPolicy,
+    owner_and_owner_agents_policy,
+    owner_only_policy,
+)
+from switch_core.agent_display_name import normalise_display_name
+from switch_core.agent_icon import normalise_icon_url
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.db.models import Agent, AgentSession
@@ -215,6 +223,7 @@ async def assemble_agent_detail(
                 lifecycle=row.lifecycle,
                 state=session_state(row, now),
                 last_seen_at=str(row.last_seen_at),
+                controller_id=None,
             )
         )
 
@@ -245,8 +254,25 @@ async def assemble_agent_detail(
                     lifecycle="connection",
                     state="live",
                     last_seen_at=str(now),
+                    controller_id=None,
                 )
             )
+
+    # A controller-backed agent has no connection of its own, and Switch does
+    # not know where its sessions are: while it is connected it is one
+    # room-agnostic session.
+    binding = connections.controllers.binding(agent.id)
+    if binding is not None and connections.controllers.is_live(agent.id):
+        sessions.append(
+            AgentSessionDetail(
+                room_id=None,
+                room_name=None,
+                lifecycle="controller",
+                state="live",
+                last_seen_at=str(now),
+                controller_id=binding.controller_id,
+            )
+        )
 
     child_agents = await agent_store.get_children(session, [agent.id])
     children = [
@@ -259,6 +285,7 @@ async def assemble_agent_detail(
     return AgentDetail(
         **summary.model_dump(),
         agent_type=agent.agent_type,
+        can_manage_agents=agent.can_manage_agents,
         integration_profile=agent.integration_profile
         if isinstance(agent.integration_profile, dict)
         else {},
@@ -277,21 +304,15 @@ async def apply_agent_options(
     agent_store: AgentStore,
     agent: Agent,
     options_payload: dict[str, Any],
-    *,
-    merge: bool,
 ) -> None:
-    """Validate and persist a known-agent's options.
+    """Validate and persist a known-agent's options, replacing the stored ones.
 
-    With `merge=False` the payload fully replaces the stored options (the
-    gateway PATCH behaviour). With `merge=True` the payload is layered over the
-    current options before validation, so callers can send only the fields they
-    want to change. Either way the merged options are validated against the
-    spec's `options_schema`, and the agent's `integration_profile` is rebuilt
-    from them and persisted alongside — keeping the two in sync the same way
-    registration does.
+    The options are validated against the spec's `options_schema`, and the
+    agent's `integration_profile` is rebuilt from them and persisted alongside
+    — keeping the two in sync the same way registration does.
 
     Raises `AgentOptionsNotEditable` if the agent has no known-agent type, and
-    `pydantic.ValidationError` if the resulting options fail schema validation.
+    `pydantic.ValidationError` if the options fail schema validation.
     """
     md = dict(agent.metadata_) if isinstance(agent.metadata_, dict) else {}
     raw_agent_type = md.get("known_agent_type")
@@ -302,14 +323,7 @@ async def apply_agent_options(
             "This agent has no known-agent type; options are not editable."
         )
 
-    if merge:
-        current = md.get("known_agent_options")
-        merged = dict(current) if isinstance(current, dict) else {}
-        merged.update(options_payload)
-    else:
-        merged = options_payload
-
-    options = spec.parse_options(merged)
+    options = spec.parse_options(options_payload)
     integration_profile = spec.build_profile(options)
     md["known_agent_options"] = options.model_dump()
 
@@ -321,38 +335,54 @@ async def apply_agent_options(
     )
 
 
-async def reparent_agent(
-    session: AsyncSession,
-    agent_store: AgentStore,
-    agent: Agent,
-    new_parent_id: str | None,
-) -> None:
-    """Set (or clear, with `new_parent_id=None`) an agent's parent.
+ADDRESSING_CHOICES = ("owner_only", "owner_and_owner_agents", "anyone")
 
-    Validates that the new parent exists and that the move does not make the
-    agent its own ancestor (which would create a cycle in the subagent tree).
-    Raises `ValueError` on any of those violations.
-    """
-    if new_parent_id is None:
-        await agent_store.update(session, agent.id, parent_agent_id=None)
-        return
 
-    if new_parent_id == agent.id:
-        raise ValueError("An agent cannot be its own parent")
-    if await agent_store.get(session, new_parent_id) is None:
-        raise ValueError(f"Parent agent not found: {new_parent_id}")
+def addressing_policy_for(choice: str) -> dict[str, Any] | None:
+    """The stored addressing policy for one of `ADDRESSING_CHOICES`, the
+    choices Switch Console offers: the owner alone, the owner and the agents
+    the owner runs, or anyone (no policy, which is open)."""
+    if choice == "owner_only":
+        return owner_only_policy([]).model_dump()
+    if choice == "owner_and_owner_agents":
+        return owner_and_owner_agents_policy().model_dump()
+    if choice == "anyone":
+        return None
+    raise ValueError(
+        f"addressing must be one of {', '.join(ADDRESSING_CHOICES)}, not {choice!r}"
+    )
 
-    # Walk up from the proposed parent; if we reach `agent.id`, the new parent
-    # is a descendant of this agent, so the move would create a cycle.
-    cursor: str | None = new_parent_id
-    seen: set[str] = set()
-    while cursor is not None and cursor not in seen:
-        if cursor == agent.id:
-            raise ValueError(
-                "Cannot reparent an agent under one of its own descendants"
-            )
-        seen.add(cursor)
-        ancestor = await agent_store.get(session, cursor)
-        cursor = ancestor.parent_agent_id if ancestor else None
 
-    await agent_store.update(session, agent.id, parent_agent_id=new_parent_id)
+@dataclass(frozen=True)
+class AgentProfileUpdate:
+    """Validated changes to an agent's own row: the columns to write.
+
+    Built with `parse`, before anything is written, so a bad value refuses the
+    whole update."""
+
+    columns: dict[str, Any]
+
+    @classmethod
+    def parse(
+        cls,
+        *,
+        description: str | None,
+        display_name: str | None,
+        icon_url: str | None,
+        addressing: str | None,
+    ) -> AgentProfileUpdate:
+        """None leaves a field as it is; an empty `display_name` or `icon_url`
+        clears it. Raises ValueError (InvalidIconUrl, InvalidDisplayName) for
+        a value that cannot be stored."""
+        columns: dict[str, Any] = {}
+        if description is not None:
+            if not description.strip():
+                raise ValueError("description must not be blank")
+            columns["description"] = description.strip()
+        if display_name is not None:
+            columns["display_name"] = normalise_display_name(display_name)
+        if icon_url is not None:
+            columns["icon_url"] = normalise_icon_url(icon_url)
+        if addressing is not None:
+            columns["addressing_policy"] = addressing_policy_for(addressing)
+        return cls(columns=columns)

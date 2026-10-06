@@ -1,14 +1,31 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readdir, readFile, rm } from 'node:fs/promises';
+import * as nodeFs from 'node:fs';
+import { mkdir, readdir, readFile, rm, stat } from 'node:fs/promises';
+import * as nodePath from 'node:path';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
   EVICTION_HEARTBEAT_LAPSED,
+  EVICTION_LAUNCH_SUPERSEDED,
   EVICTION_TAKEN_OVER,
   SwitchEventStream,
+  type SwitchEventStreamDeps,
+  WORKER_CAPABILITY_OBSOLETE,
 } from '@sandboxaq/switch-agent-runtime';
 import type { SwitchIdentity } from '@sandboxaq/switch-agent-runtime/hosted';
 import { z } from 'zod';
+import { WorkerObsoleteError } from './exit-codes';
 import type { Handoff } from './handoff';
+import {
+  type CancelReason,
+  FAILED_HOLD_MS,
+  type HostedPort,
+  type HostedWorker,
+  type IdleReason,
+  type MailboxAck,
+  OperationRefusedError,
+  type SessionCounts,
+} from './hosted-worker';
 import { Journal } from './journal';
 import {
   ensureSharedProcess,
@@ -17,18 +34,22 @@ import {
   sharedSessionsBase,
   type Supervision,
 } from './launch';
-import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
+import { releaseOwner, replaceOwner, withOwnershipLockOutlasting } from './ownership-lock';
 import { SessionPlacements } from './placements';
-import { roomInputId } from './room-inbox';
+import { roomInboxHolds, roomInputId } from './room-inbox';
 import {
   SessionHostFailedError,
   type SessionRequest,
   SessionUnavailableError,
 } from './session-channel';
+import { hostInboxRecordSchema } from './session-host';
+import { readHostSessions } from './session-list';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
+import { hostParked } from './shared-state';
 import { readTakenOver, recordTakenOver } from './taken-over';
-import { awaitWatchChange, readWatchFlags } from './watch-flags';
+import { awaitWatchChange, onConfigReplaced, readWatchFlags } from './watch-flags';
 import {
+  announceSessionStart,
   announceStartFailure,
   type PlaceOutcome,
   sessionToolAnswerer,
@@ -41,7 +62,16 @@ const assignmentSchema = z.strictObject({
   roomId: z.string().min(1),
   messageId: z.string().min(1),
   config: sharedConfigSchema,
+  // Made for a mailbox delivery: its sequence is no position in the stream's numbering.
+  wake: z.literal(true).optional(),
 });
+
+/**
+ * The sequence a mailbox delivery is handed on. A wake is not numbered in the
+ * stream; the journal marks it so, and everything after it knows the delivery
+ * by room and message.
+ */
+const WAKE_SEQUENCE = 1;
 
 /** Marks where the server's sequence numbering restarted. */
 const restartSchema = z.strictObject({ restarted: z.literal(true), at: z.string().min(1) });
@@ -66,6 +96,9 @@ const parkedSchema = z.strictObject({
   // The event as the stream delivered it, kept because nothing else keeps it:
   // the session's prompt is built from this copy when the room gets an owner.
   event: z.unknown().optional(),
+  // Offered from Switch's mailbox rather than the stream: its sequence is no
+  // position in the stream's numbering.
+  wake: z.literal(true).optional(),
 });
 
 /**
@@ -78,19 +111,32 @@ const releasedSchema = z.strictObject({
   released: z.strictObject({
     roomId: z.string().min(1),
     messageId: z.string().min(1),
+    // Why it was dealt with without reaching a session; absent when a session took it.
+    reason: z.string().min(1).optional(),
   }),
 });
-const recordSchema = z.union([
+const mailboxAckSchema = z.strictObject({
+  roomId: z.string().min(1),
+  messageId: z.string().min(1),
+  outcome: z.enum(['journaled', 'admitted', 'duplicate', 'refused', 'held', 'cancelled']),
+  reason: z.string().min(1).optional(),
+});
+/** A hosted worker's mailbox ack, owed to Switch until it is confirmed. */
+const ackOwedSchema = z.strictObject({ mailboxAck: mailboxAckSchema });
+const ackConfirmedSchema = z.strictObject({ mailboxAcked: mailboxAckSchema });
+export const assignmentRecordSchema = z.union([
   assignmentSchema,
   restartSchema,
   handledSchema,
   parkedSchema,
   releasedSchema,
+  ackOwedSchema,
+  ackConfirmedSchema,
 ]);
 
 type Assignment = z.infer<typeof assignmentSchema>;
 type Held = Handoff & { spawning: boolean };
-type WatchRecord = z.infer<typeof recordSchema>;
+type WatchRecord = z.infer<typeof assignmentRecordSchema>;
 
 function restarted(record: WatchRecord): record is z.infer<typeof restartSchema> {
   return 'restarted' in record;
@@ -109,8 +155,11 @@ function isReleased(record: WatchRecord): record is z.infer<typeof releasedSchem
 }
 
 function isAssignment(record: WatchRecord): record is Assignment {
-  return !restarted(record) && !isHandled(record) && !isParked(record) && !isReleased(record);
+  return 'config' in record;
 }
+
+const ackKey = (ack: MailboxAck): string =>
+  JSON.stringify([ack.roomId, ack.messageId, ack.outcome]);
 
 const delivery = (event: { roomId: string; messageId: string }): string =>
   JSON.stringify([event.roomId, event.messageId]);
@@ -138,6 +187,18 @@ function threadOf(event: unknown): string | null {
     .object({ payload: z.object({ thread_id: z.string().min(1).nullish() }) })
     .safeParse(event);
   return parsed.success ? (parsed.data.payload.thread_id ?? null) : null;
+}
+
+/** A new session of the agent `template` configures, called `sessionId`. */
+function sessionFrom(template: SharedHostConfig, sessionId: string): SharedHostConfig {
+  const config = structuredClone(template);
+  config.session = { ...config.session, sessionId, hostId: randomUUID(), epoch: randomUUID() };
+  config.start.input.sessionId = sessionId;
+  if (config.start.input.env.SWITCHDASH_SESSION_ID !== undefined)
+    config.start.input.env.SWITCHDASH_SESSION_ID = sessionId;
+  delete config.start.input.resume;
+  delete config.grant;
+  return config;
 }
 
 function sessionIdFor(agentId: string, roomId: string, messageId: string): string {
@@ -168,6 +229,48 @@ async function stopped(sessionId: string): Promise<boolean> {
 }
 
 /**
+ * Whether any of this agent's session hosts has a durable record of taking
+ * this room message: in its room inbox, or as a command in its inbox. A record
+ * that cannot be read throws, since it may be the one that says the message
+ * ran.
+ */
+async function hostTook(
+  agentId: string,
+  event: { roomId: string; messageId: string }
+): Promise<boolean> {
+  for (const listed of readHostSessions(nodeFs, nodePath, agentId, sharedSessionsBase())) {
+    const { sessionId } = z.object({ sessionId: z.string().min(1) }).parse(listed.session);
+    const sessionRoot = sharedSessionRoot(sessionId);
+    try {
+      if (await roomInboxHolds(sessionRoot, event)) return true;
+      let text: string;
+      try {
+        text = await readFile(join(sessionRoot, 'inbox.jsonl'), 'utf8');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
+      if (text && !text.endsWith('\n')) throw new Error('inbox.jsonl has an incomplete record.');
+      for (const line of text.split('\n').filter(Boolean)) {
+        const record = hostInboxRecordSchema.parse(JSON.parse(line));
+        if (
+          record.type === 'accepted' &&
+          record.command.origin.roomId === event.roomId &&
+          record.command.origin.messageId === event.messageId
+        )
+          return true;
+      }
+    } catch (error) {
+      throw new Error(
+        `Cannot tell whether session ${sessionId} took message ${event.messageId} in room ${event.roomId}, so its cancel stays unanswered: ${(error as Error).message}`,
+        { cause: error }
+      );
+    }
+  }
+  return false;
+}
+
+/**
  * The same session, reachable over the connection this controller holds.
  *
  * A config saved before an agent had one inbound connection names the
@@ -189,6 +292,9 @@ function reachableBy(config: SharedHostConfig, connectionId: string): SharedHost
  * with a live supervisor counts — one that is not running was not left behind
  * by an upgrade, and starting it would reopen a session its owner had closed.
  */
+/** Session directories whose config this process has already said it cannot read. */
+const unreadableSessionRoots = new Set<string>();
+
 export async function supersededSessions(
   agentId: string,
   supervision: Supervision
@@ -217,11 +323,16 @@ export async function supersededSessions(
       // has, used to abort the whole call and take auto-sessions down for an
       // agent that had nothing to do with it. One unreadable neighbour is not a
       // reason to stop; it is a reason to say so and carry on.
-      console.warn(
-        `Skipping session state at ${root}: its config could not be read (${
-          error instanceof Error ? error.message : String(error)
-        }). It will not be restarted.`
-      );
+      // Said once per directory in a process: every agent host sweeps every
+      // session on the machine, so it would otherwise repeat for each agent.
+      if (!unreadableSessionRoots.has(root)) {
+        unreadableSessionRoots.add(root);
+        console.warn(
+          `Skipping session state at ${root}: its config could not be read (${
+            error instanceof Error ? error.message : String(error)
+          }). It will not be restarted.`
+        );
+      }
       continue;
     }
     if (config.session.agentId !== agentId) continue;
@@ -250,6 +361,111 @@ export async function stopSupersededSessions(
 }
 
 /**
+ * `config` with what its agent's definition decides — the model, the approval
+ * mode, the instructions and skill the provider is given, and what the
+ * agent's advanced configuration becomes: the agent definition Claude Code
+ * runs as and the Codex profile — and the credentials and provider binary of
+ * whoever runs the watcher, taken from the watcher's `template` as it stands
+ * now. Everything else stays the session's own: its identity,
+ * directory and native conversation, so a session started after its agent was
+ * edited resumes its conversation under the edit instead of under what the
+ * agent was when the session was first created.
+ *
+ * A session that runs as a definition file on the host's disk
+ * (`execution.agentDefinition`, a subagent watched under its parent) keeps the
+ * agent it runs as: the template's definition is its parent's.
+ */
+export function withDefinitionOf(
+  config: SharedHostConfig,
+  template: SharedHostConfig
+): SharedHostConfig {
+  const next = structuredClone(config);
+  const model = template.start.input.model;
+  if (model) next.start.input.model = structuredClone(model);
+  else delete next.start.input.model;
+  next.start.input.runtimeMode = template.start.input.runtimeMode;
+  if (!next.execution?.agentDefinition) {
+    const { agentName, agentDefinition } = template.start.input;
+    if (agentName) next.start.input.agentName = agentName;
+    else delete next.start.input.agentName;
+    if (agentDefinition) next.start.input.agentDefinition = structuredClone(agentDefinition);
+    else delete next.start.input.agentDefinition;
+  }
+  if (next.execution && template.execution) {
+    // Whoever runs the watcher now is who the session reaches Switch as: the
+    // same room can be served by Console's watcher one day and a controller's
+    // the next, each with credentials of its own.
+    next.execution.credentialsPath = template.execution.credentialsPath;
+    if (template.execution.binaryPath === undefined) delete next.execution.binaryPath;
+    else next.execution.binaryPath = template.execution.binaryPath;
+    next.execution.context = template.execution.context;
+    if (template.execution.instructions === undefined) delete next.execution.instructions;
+    else next.execution.instructions = template.execution.instructions;
+    next.execution.skill = template.execution.skill;
+    next.execution.codexConfig = template.execution.codexConfig;
+  }
+  return next;
+}
+
+/** Whether `config` was saved under a definition other than the one `template` carries. */
+export function definitionChanged(config: SharedHostConfig, template: SharedHostConfig): boolean {
+  return !isDeepStrictEqual(withDefinitionOf(config, template), config);
+}
+
+/** The config saved at a session root; null when the session has not written one. */
+async function sessionConfigAt(sessionRoot: string): Promise<SharedHostConfig | null> {
+  try {
+    return sharedConfigSchema.parse(
+      JSON.parse(await readFile(join(sessionRoot, 'config.json'), 'utf8'))
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+/**
+ * The live sessions among `sessionIds` saved under an earlier definition of
+ * their agent than `template`'s. A running host keeps the model and
+ * instructions it was started with, through a reset too, so these would go on
+ * answering as the agent was before it was edited.
+ */
+export async function redefinedSessions(
+  sessionIds: string[],
+  template: SharedHostConfig
+): Promise<{ root: string; config: SharedHostConfig }[]> {
+  const found: { root: string; config: SharedHostConfig }[] = [];
+  for (const sessionId of new Set(sessionIds)) {
+    const root = sharedSessionRoot(sessionId);
+    const config = await sessionConfigAt(root);
+    if (!config) continue;
+    if (config.session.agentId !== template.session.agentId) continue;
+    if (!definitionChanged(config, template)) continue;
+    if (!(await liveSupervisor(root))) continue;
+    found.push({ root, config });
+  }
+  return found;
+}
+
+/**
+ * Stops each session running under an earlier definition. Like a superseded
+ * build, it is started again when it is next needed, and then resumes its
+ * conversation under the current definition (`withDefinitionOf`). A turn it
+ * was in the middle of is reported as interrupted by the host.
+ */
+export async function stopRedefinedSessions(
+  redefined: { root: string; config: SharedHostConfig }[],
+  supervision: Supervision
+): Promise<void> {
+  for (const { root, config } of redefined) {
+    console.warn(
+      `Session ${config.session.sessionId} runs under an earlier definition of its agent (model, instructions, advanced configuration or approval mode); stopping it so it resumes under the current one when it is next needed.`
+    );
+    await supervision.stop(root);
+  }
+}
+
+/**
  * Which session serves which room, and how far the watcher has got. Both the
  * assignment and the routing that follows it are on disk before the stream is
  * allowed past the event.
@@ -259,7 +475,9 @@ export class AgentHostAssignments {
 
   static async open(root: string): Promise<AgentHostAssignments> {
     return new AgentHostAssignments(
-      await Journal.load(join(root, 'assignments.jsonl'), (value) => recordSchema.parse(value))
+      await Journal.load(join(root, 'assignments.jsonl'), (value) =>
+        assignmentRecordSchema.parse(value)
+      )
     );
   }
 
@@ -302,11 +520,13 @@ export class AgentHostAssignments {
     const released = this.settled;
     for (const record of this.current) {
       if (isHandled(record)) complete = Math.max(complete, record.handled);
-      else if (isParked(record)) parked.set(record.parked, delivery(record));
+      else if (isParked(record)) {
+        if (!record.wake) parked.set(record.parked, delivery(record));
+      }
       // A held delivery's assignment is not a position. It can be made under a
       // numbering the sequence it names does not belong to, and the release
       // that closes it says where it got to.
-      else if (isAssignment(record) && !released.has(delivery(record))) {
+      else if (isAssignment(record) && !record.wake && !released.has(delivery(record))) {
         // An assignment is only made once the one before it has been routed, so
         // a journal written before routing was recorded still resumes at its
         // last complete event instead of from the beginning.
@@ -366,22 +586,77 @@ export class AgentHostAssignments {
     await this.journal.append({ handled: sequence });
   }
 
-  /** Records that a held event has been routed, or decided not to be. */
-  async released(event: { roomId: string; messageId: string }): Promise<void> {
+  /**
+   * Records that a held event has been routed, or, with a `reason`, decided
+   * not to be.
+   */
+  async released(
+    event: { roomId: string; messageId: string },
+    reason: string | null
+  ): Promise<void> {
     await this.journal.append({
-      released: { roomId: event.roomId, messageId: event.messageId },
+      released: {
+        roomId: event.roomId,
+        messageId: event.messageId,
+        ...(reason === null ? {} : { reason }),
+      },
     });
   }
 
   /** Records that the event is waiting for its room's owner to be decided. */
-  async park(event: Handoff, spawning: boolean): Promise<void> {
+  async park(event: Handoff, spawning: boolean, wake: boolean): Promise<void> {
     await this.journal.append({
       parked: event.sequence,
       roomId: event.roomId,
       messageId: event.messageId,
       spawning,
       ...(event.event === undefined ? {} : { event: event.event }),
+      ...(wake ? { wake: true as const } : {}),
     });
+  }
+
+  /** Whether this delivery was already journaled here, whatever came of it. */
+  known(event: { roomId: string; messageId: string }): boolean {
+    const identity = delivery(event);
+    return this.journal.records.some(
+      (record) =>
+        (isParked(record) && delivery(record) === identity) ||
+        (isReleased(record) && delivery(record.released) === identity)
+    );
+  }
+
+  /**
+   * What became of a delivery: still journaled and waiting, released (to a
+   * session when `reason` is null), or unknown here.
+   */
+  deliveryState(event: {
+    roomId: string;
+    messageId: string;
+  }): { state: 'journaled' } | { state: 'released'; reason: string | null } | { state: 'unknown' } {
+    const identity = delivery(event);
+    const released = this.journal.records.find(
+      (record) => isReleased(record) && delivery(record.released) === identity
+    );
+    if (released && isReleased(released))
+      return { state: 'released', reason: released.released.reason ?? null };
+    return this.known(event) ? { state: 'journaled' } : { state: 'unknown' };
+  }
+
+  async recordAck(ack: MailboxAck): Promise<void> {
+    await this.journal.append({ mailboxAck: ack });
+  }
+
+  /** Acks owed to Switch that it has not confirmed, oldest first. */
+  unconfirmedAcks(): MailboxAck[] {
+    const owed = new Map<string, MailboxAck>();
+    for (const record of this.journal.records)
+      if ('mailboxAck' in record) owed.set(ackKey(record.mailboxAck), record.mailboxAck);
+      else if ('mailboxAcked' in record) owed.delete(ackKey(record.mailboxAcked));
+    return [...owed.values()];
+  }
+
+  async confirmAcks(acks: MailboxAck[]): Promise<void> {
+    for (const ack of acks) await this.journal.append({ mailboxAcked: ack });
   }
 
   /**
@@ -405,11 +680,19 @@ export class AgentHostAssignments {
     // A held delivery is recognised by the room and message it names. The
     // sequence it arrived on may belong to a numbering the server has since
     // restarted, where it now stands for somebody else's message.
+    // A mailbox delivery has no stream position at all, so it is only ever
+    // recognised that way, under whichever numbering it was first assigned.
+    const identity = delivery(event);
+    const wake = this.journal.records.some(
+      (record) => isParked(record) && record.wake === true && delivery(record) === identity
+    );
     const waiting = new Set(this.pending().map(delivery));
     const assignments = this.current.filter(isAssignment);
-    const duplicate = waiting.has(delivery(event))
-      ? assignments.find((record) => delivery(record) === delivery(event))
-      : assignments.find((record) => record.sequence === event.sequence);
+    const duplicate = wake
+      ? this.every.find((record) => delivery(record) === identity)
+      : waiting.has(identity)
+        ? assignments.find((record) => delivery(record) === identity)
+        : assignments.find((record) => !record.wake && record.sequence === event.sequence);
     if (duplicate) {
       if (duplicate.roomId !== event.roomId || duplicate.messageId !== event.messageId)
         throw new Error('Watcher sequence changed message identity.');
@@ -417,20 +700,15 @@ export class AgentHostAssignments {
     }
     if (!template.roomConnection?.connectionId)
       throw new Error('A watcher assignment needs the connection its agent is reached over.');
-    const config = structuredClone(template);
     const sessionId = sessionIdFor(template.session.agentId, event.roomId, event.messageId);
-    config.session = { ...config.session, sessionId, hostId: randomUUID(), epoch: randomUUID() };
-    config.start.input.sessionId = sessionId;
-    if (config.start.input.env.SWITCHDASH_SESSION_ID !== undefined)
-      config.start.input.env.SWITCHDASH_SESSION_ID = sessionId;
-    delete config.start.input.resume;
-    delete config.grant;
+    const config = sessionFrom(template, sessionId);
     await mkdir(sharedSessionRoot(sessionId), { recursive: true });
     await this.journal.append({
       sequence: event.sequence,
       roomId: event.roomId,
       messageId: event.messageId,
       config,
+      ...(wake ? { wake: true as const } : {}),
     });
     return config;
   }
@@ -452,27 +730,57 @@ export class AgentHostAssignments {
   }
 }
 
+/**
+ * What a watcher hears its agent's events on, and tells Switch where its
+ * sessions are through: its own connection to Switch (`openSwitchStream`), or
+ * whatever hosts the watcher and holds the agent's connection for it, as an
+ * agents controller does for every agent on its machine.
+ */
+export type AgentEventStream = {
+  /** The agent host, not Switch, tells a room when it starts a session for it. */
+  readonly announcesSessionStarts: boolean;
+  start(): void;
+  setSpawnCapable(capable: boolean): void;
+  replacePlacements(placements: Record<string, string>): Promise<void>;
+  /** For a hosted worker's calls; a stream that is not a worker's refuses them. */
+  workerCall(path: string, body: Record<string, unknown>): Promise<unknown>;
+};
+
+export type OpenAgentStream = (deps: SwitchEventStreamDeps) => AgentEventStream;
+
+/** The watcher's own connection to Switch, with the agent's credentials. */
+export const openSwitchStream: OpenAgentStream = (deps) => new SwitchEventStream(deps);
+
 export async function runAgentHost(
   root: string,
   template: SharedHostConfig,
   signal: AbortSignal,
   supervision: Supervision,
-  control: WatcherControl
+  control: WatcherControl,
+  hosted: HostedWorker | null,
+  openStream: OpenAgentStream
 ): Promise<void> {
   const ownerPath = join(root, 'shared-owner.lock');
   const owner = { pid: process.pid, token: randomUUID() };
-  await withOwnershipLock(root, async () => {
-    try {
-      const { pid } = z
-        .object({ pid: z.number().int().positive() })
-        .parse(JSON.parse(await readFile(ownerPath, 'utf8')));
-      process.kill(pid, 0);
-      throw new Error('The shared SDK watcher is already running.');
-    } catch (error) {
-      if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
-    }
-    await replaceOwner(ownerPath, owner);
-  });
+  // Outlasting: a Console restarting starts this while the one it replaces
+  // may still be shutting down, holding the lock.
+  const owned = await withOwnershipLockOutlasting(
+    root,
+    async () => {
+      try {
+        const { pid } = z
+          .object({ pid: z.number().int().positive() })
+          .parse(JSON.parse(await readFile(ownerPath, 'utf8')));
+        process.kill(pid, 0);
+        throw new Error('The shared SDK watcher is already running.');
+      } catch (error) {
+        if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      }
+      await replaceOwner(ownerPath, owner);
+    },
+    signal
+  );
+  if (!owned) return;
   const stop = new AbortController();
   const abort = () => stop.abort(signal.reason);
   signal.addEventListener('abort', abort, { once: true });
@@ -532,7 +840,7 @@ export async function runAgentHost(
     const placements = await SessionPlacements.open(root, () => assignments.placements());
     control.report({ state: 'connecting', detail: null, placements: placements.snapshot() });
     unbind.push(placements.onChange((map) => control.report({ placements: map })));
-    let stream: SwitchEventStream | null = null;
+    let stream: AgentEventStream | null = null;
     let publishing: Promise<void> = Promise.resolve();
     /**
      * Tells Switch where every session is, replacing what it held: after each
@@ -588,6 +896,7 @@ export async function runAgentHost(
             `Session ${sessionId} is running again; handing it the ${entry.queue.length} room message(s) that waited for it.`
           );
           entry.failed = null;
+          entry.failedAt = null;
           entry.restarts = 0;
           pump(entry.config);
         }
@@ -608,6 +917,9 @@ export async function runAgentHost(
         void pending.catch((error: Error) => fail(error));
       })
     );
+    /** The watcher's template as it stands now, which admitting a room reads too. */
+    const currentTemplate = async (): Promise<SharedHostConfig> =>
+      sharedConfigSchema.parse(JSON.parse(await readFile(join(root, 'config.json'), 'utf8')));
     const launch = async (config: SharedHostConfig) => {
       // Both flags are re-read here rather than taken from whoever asked for the
       // launch. Everything that reaches this point was admitted earlier and may
@@ -618,7 +930,7 @@ export async function runAgentHost(
       if (!now.enabled || !now.spawn || (await stopped(config.session.sessionId))) return;
       await ensureSharedProcess({
         root: sharedSessionRoot(config.session.sessionId),
-        config: reachableBy(config, connectionId),
+        config: reachableBy(withDefinitionOf(config, await currentTemplate()), connectionId),
         resuming: false,
         watcher: false,
         restart: false,
@@ -630,6 +942,16 @@ export async function runAgentHost(
     };
     const superseded = await supersededSessions(template.session.agentId, supervision);
     await stopSupersededSessions(superseded, supervision);
+    const stoppedRoots = new Set(superseded.map((entry) => entry.root));
+    await stopRedefinedSessions(
+      (
+        await redefinedSessions(
+          assignments.sessions().map((config) => config.session.sessionId),
+          template
+        )
+      ).filter((entry) => !stoppedRoots.has(entry.root)),
+      supervision
+    );
     /**
      * Rooms with no session able to take their messages yet, and the events
      * waiting in the order they arrived. Only the room in question waits; the
@@ -657,12 +979,45 @@ export async function runAgentHost(
      * that runs into it is answered once, however often the host is retried.
      */
     const announced = new Set<string>();
+    /** Says in the room that a session is starting for its message, once per message. */
+    const startingNoticed = new Set<string>();
+    const tellStarting = async (config: SharedHostConfig, event: Handoff) => {
+      const key = `${event.roomId}:${event.messageId}`;
+      if (startingNoticed.has(key)) return;
+      startingNoticed.add(key);
+      try {
+        await publish();
+        await announceSessionStart({
+          identity,
+          connectionId,
+          session: config.session,
+          root: sharedSessionRoot(config.session.sessionId),
+          cwd: config.start.input.cwd,
+          threadId: threadOf(event.event),
+        });
+      } catch (error) {
+        console.error(
+          `Could not tell room ${event.roomId} a session is starting for message ${event.messageId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      }
+    };
     const announce = async (config: SharedHostConfig, event: Handoff, failure: string) => {
       const sessionId = config.session.sessionId;
       const key = `${sessionId}:${event.roomId}:${event.messageId}`;
       if (announced.has(key)) return;
       announced.add(key);
       try {
+        if (hosted) {
+          await hosted.notice({
+            roomId: event.roomId,
+            messageId: event.messageId,
+            threadId: threadOf(event.event),
+            reason: 'startup',
+          });
+          return;
+        }
         // Switch answers the call from where it holds the session placed.
         await publish();
         await announceStartFailure({
@@ -695,16 +1050,43 @@ export async function runAgentHost(
      * somebody started it from Console. `restarts` counts the starts in a row
      * that did not get the first queued message taken.
      */
-    const pumps = new Map<
-      string,
-      {
-        queue: Handoff[];
-        running: boolean;
-        failed: string | null;
-        restarts: number;
-        config: SharedHostConfig;
-      }
-    >();
+    type Pump = {
+      queue: Handoff[];
+      running: boolean;
+      failed: string | null;
+      restarts: number;
+      /** When a hosted worker posted the failure, which starts its bounded hold. */
+      failedAt: number | null;
+      /** The queued messages already acked `held` to Switch. */
+      heldAcked: Set<string>;
+      config: SharedHostConfig;
+    };
+    const pumps = new Map<string, Pump>();
+    const ack = async (
+      event: { roomId: string; messageId: string },
+      outcome: MailboxAck['outcome'],
+      reason: string | null
+    ) => {
+      await hosted?.ack({
+        roomId: event.roomId,
+        messageId: event.messageId,
+        outcome,
+        ...(reason === null ? {} : { reason }),
+      });
+    };
+    /** When a failed host's hold ends, Switch stops counting its queued messages. */
+    const endHold = (entry: Pump, failedAt: number) => {
+      pending = pending.then(async () => {
+        if (entry.failedAt !== failedAt) return;
+        for (const event of entry.queue) {
+          if (entry.heldAcked.has(event.messageId)) continue;
+          entry.heldAcked.add(event.messageId);
+          await ack(event, 'held', null);
+        }
+        hosted?.changed();
+      });
+      void pending.catch((error: Error) => fail(error));
+    };
     const pump = (config: SharedHostConfig) => {
       const sessionId = config.session.sessionId;
       const entry = pumps.get(sessionId)!;
@@ -722,8 +1104,13 @@ export async function runAgentHost(
             );
             entry.queue.shift();
             entry.restarts = 0;
-            pending = pending.then(() => assignments.released(event));
+            entry.heldAcked.delete(event.messageId);
+            pending = pending.then(async () => {
+              await assignments.released(event, null);
+              await ack(event, 'admitted', null);
+            });
             await pending;
+            hosted?.changed();
           } catch (error) {
             if (error instanceof SessionHostFailedError) {
               entry.failed = error.failure;
@@ -731,7 +1118,14 @@ export async function runAgentHost(
                 `Session ${sessionId} could not start: ${error.failure} Its ${entry.queue.length} room message(s) stay queued; it is started again when the room next addresses the agent or the session is restarted from Console.`
               );
               // Answer the newest message: it is the one somebody just sent.
-              void announce(config, entry.queue.at(-1) ?? event, error.failure);
+              const announcing = announce(config, entry.queue.at(-1) ?? event, error.failure);
+              if (hosted)
+                void announcing.then(() => {
+                  const failedAt = Date.now();
+                  entry.failedAt = failedAt;
+                  hosted.changed();
+                  setTimeout(() => endHold(entry, failedAt), FAILED_HOLD_MS).unref();
+                });
               break;
             }
             if (!(error instanceof SessionUnavailableError)) throw error;
@@ -740,7 +1134,14 @@ export async function runAgentHost(
               console.error(
                 `Session ${sessionId}: ${entry.failed} Its ${entry.queue.length} room message(s) stay queued; it is started again when the room next addresses the agent or the session is restarted from Console.`
               );
-              void announce(config, entry.queue.at(-1) ?? event, entry.failed);
+              const announcing = announce(config, entry.queue.at(-1) ?? event, entry.failed);
+              if (hosted)
+                void announcing.then(() => {
+                  const failedAt = Date.now();
+                  entry.failedAt = failedAt;
+                  hosted.changed();
+                  setTimeout(() => endHold(entry, failedAt), FAILED_HOLD_MS).unref();
+                });
               break;
             }
             entry.restarts++;
@@ -768,12 +1169,14 @@ export async function runAgentHost(
     ): Promise<boolean> => {
       const sessionId = config.session.sessionId;
       const sessionRoot = sharedSessionRoot(sessionId);
-      if (!waiting) await assignments.park(event, false);
+      if (!waiting) await assignments.park(event, false, false);
       const entry = pumps.get(sessionId) ?? {
         queue: [],
         running: false,
         failed: null,
         restarts: 0,
+        failedAt: null,
+        heldAcked: new Set<string>(),
         config,
       };
       pumps.set(sessionId, entry);
@@ -788,6 +1191,7 @@ export async function runAgentHost(
           `Room ${event.roomId} addressed the agent again; starting session ${sessionId} again after it failed (${entry.failed}).`
         );
         entry.failed = null;
+        entry.failedAt = null;
         entry.restarts = 0;
       }
       if (!links.ready(sessionRoot)) await launch(config);
@@ -804,7 +1208,22 @@ export async function runAgentHost(
      * force when it is finally admitted: a room that was promised a session
      * when it was addressed should still get one.
      */
+    /** A hosted worker's answer to a message it will not act on. */
+    const refuse = async (event: Handoff, reason: 'capacity' | 'revoked' | 'auto_start_off') => {
+      await assignments.released(event, reason);
+      await ack(event, 'refused', reason);
+      await hosted?.notice({
+        roomId: event.roomId,
+        messageId: event.messageId,
+        threadId: threadOf(event.event),
+        reason,
+      });
+    };
     const admit = async (event: Handoff, spawning: boolean, waiting: boolean): Promise<boolean> => {
+      if (hosted?.revoked) {
+        await refuse(event, 'revoked');
+        return true;
+      }
       const placed = placements.sessionIn(event.roomId);
       if (placed) {
         const owner = await sessionConfig(placed);
@@ -818,19 +1237,39 @@ export async function runAgentHost(
           `Session ${placed} ${owner ? 'was stopped' : 'is not one of this agent’s sessions here'}, so room ${event.roomId} has no session attending it now.`
         );
       }
-      if (!spawning) return false;
+      if (!spawning) {
+        // A hosted room with no session and no permission to start one would
+        // hold its worker awake for good.
+        if (!hosted) return false;
+        await refuse(event, 'auto_start_off');
+        return true;
+      }
+      if (hosted) {
+        const limit = hosted.limit;
+        if (limit === null)
+          throw new Error('A hosted watcher admitted a message before it attached.');
+        const existing = sessionIdFor(agentId, event.roomId, event.messageId);
+        if (!(await sessionConfig(existing)) && (await sessionCounts()).active >= limit) {
+          console.warn(
+            `Room ${event.roomId} addressed the agent, but it already has ${limit} active session(s); refusing message ${event.messageId}.`
+          );
+          await refuse(event, 'capacity');
+          return true;
+        }
+      }
       const config = await assignments.assign(
         sharedConfigSchema.parse(JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))),
         event
       );
       await placements.place(config.session.sessionId, event.roomId);
       publishQuietly();
+      if (stream?.announcesSessionStarts) await tellStarting(config, event);
       await deliver(config, event, waiting);
       return true;
     };
     const queued = (roomId: string, messageId: string): boolean =>
       held.get(roomId)?.events.some((entry) => entry.messageId === messageId) === true;
-    const hold = async (event: Handoff, spawning: boolean) => {
+    const hold = async (event: Handoff, spawning: boolean, parked: boolean) => {
       // The stream serves a held event again whenever it reopens behind it, and
       // this journal holds its own copy; neither is a second message.
       if (queued(event.roomId, event.messageId)) return;
@@ -842,7 +1281,41 @@ export async function runAgentHost(
           `No session of this agent can take room ${event.roomId}'s messages yet, and starting one is off; holding them until one can.`
         );
       }
-      await assignments.park(event, spawning);
+      if (!parked) await assignments.park(event, spawning, false);
+    };
+    /**
+     * A hosted delivery, from the stream or the mailbox alike: journaled and
+     * acknowledged before it is routed, and recognised by room and message
+     * when it comes again.
+     */
+    const accept = async (event: Handoff, spawning: boolean, wake: boolean) => {
+      if (assignments.known(event)) {
+        await ack(event, 'duplicate', null);
+        return;
+      }
+      await assignments.park(event, spawning, wake);
+      await ack(event, 'journaled', null);
+      if (held.size) await resolveHeld();
+      if (held.has(event.roomId) || !(await admit(event, spawning, true)))
+        await hold(event, spawning, true);
+      hosted?.changed();
+    };
+    /** This agent's sessions here, as the idle report and the session limit count them. */
+    const sessionCounts = async (): Promise<SessionCounts> => {
+      const running = new Set(links.live());
+      const counts = { total: 0, live: 0, parked: 0, failed: 0, active: 0 };
+      for (const listed of readHostSessions(nodeFs, nodePath, agentId, sharedSessionsBase())) {
+        const { sessionId } = z.object({ sessionId: z.string().min(1) }).parse(listed.session);
+        const sessionRoot = sharedSessionRoot(sessionId);
+        const alive = listed.alive || running.has(sessionRoot);
+        const parked = !alive && !listed.stopped && (await hostParked(sessionRoot));
+        counts.total += 1;
+        if (alive && !listed.stopped) counts.live += 1;
+        if (parked) counts.parked += 1;
+        if (links.failure(sessionRoot) !== null) counts.failed += 1;
+        if (!listed.stopped && (alive || parked)) counts.active += 1;
+      }
+      return counts;
     };
     /** Looks at each held room again, and answers the ones that can now be. */
     const resolveHeld = async () => {
@@ -877,14 +1350,187 @@ export async function runAgentHost(
         );
       }
     }
-    if (held.size) await resolveHeld();
-    stream = new SwitchEventStream({
+    // A hosted watcher admits nothing from its journal until it has heard
+    // which of those deliveries Switch cancelled while it was away.
+    const admitting = () => hosted === null || hosted.reconciled;
+    if (held.size && admitting()) await resolveHeld();
+    const port: HostedPort = {
+      serial: <T>(work: () => Promise<T>): Promise<T> => {
+        const run = pending.then(work);
+        pending = run.then(
+          () => {},
+          () => {}
+        );
+        return run;
+      },
+      reasons: (): IdleReason[] => {
+        const reasons: IdleReason[] = [];
+        const now = Date.now();
+        for (const [sessionId, entry] of pumps) {
+          if (!entry.queue.length) continue;
+          if (entry.failed === null)
+            reasons.push({
+              kind: 'room_pending',
+              session_id: sessionId,
+              count: entry.queue.length,
+            });
+          else if (entry.failedAt === null || now - entry.failedAt < FAILED_HOLD_MS)
+            reasons.push({
+              kind: 'failed_holding',
+              session_id: sessionId,
+              count: entry.queue.length,
+            });
+        }
+        for (const waiting of held.values())
+          reasons.push({ kind: 'room_pending', session_id: null, count: waiting.events.length });
+        return reasons;
+      },
+      sessions: sessionCounts,
+      wake: async (entry) => {
+        const event = z
+          .object({ type: z.string(), payload: z.unknown(), missed: z.unknown().optional() })
+          .parse(entry.event);
+        await accept(
+          {
+            sequence: WAKE_SEQUENCE,
+            roomId: entry.room_id,
+            messageId: entry.message_id,
+            event: {
+              type: event.type,
+              payload: event.payload,
+              missed: event.missed ?? null,
+              ...(entry.origin === 'cutover' ? { cutover: true } : {}),
+            },
+          },
+          spawn,
+          true
+        );
+      },
+      cancel: async (entries: { roomId: string; messageId: string; reason: CancelReason }[]) => {
+        for (const entry of entries) {
+          const known = assignments.deliveryState(entry);
+          if (known.state === 'released') {
+            if (known.reason === null) await ack(entry, 'admitted', null);
+            else await ack(entry, 'cancelled', entry.reason);
+            continue;
+          }
+          if (known.state === 'journaled') {
+            const inFlight = [...pumps.values()].some(
+              (pumpEntry) => pumpEntry.running && pumpEntry.queue[0]?.messageId === entry.messageId
+            );
+            // Already on its way to the host: the host's answer settles it.
+            if (inFlight) continue;
+            const took = await hostTook(agentId, entry);
+            const waiting = held.get(entry.roomId);
+            if (waiting) {
+              waiting.events = waiting.events.filter(
+                (event) => event.messageId !== entry.messageId
+              );
+              if (!waiting.events.length) held.delete(entry.roomId);
+            }
+            for (const pumpEntry of pumps.values())
+              pumpEntry.queue = pumpEntry.queue.filter(
+                (event) => event.roomId !== entry.roomId || event.messageId !== entry.messageId
+              );
+            await assignments.released(entry, took ? null : entry.reason);
+            if (took) {
+              await ack(entry, 'admitted', null);
+              continue;
+            }
+          }
+          await ack(entry, 'cancelled', entry.reason);
+        }
+        if (held.size) await resolveHeld();
+        hosted?.changed();
+      },
+      operate: async (operation, limit) => {
+        const sessionRoot = sharedSessionRoot(operation.sessionId);
+        if (operation.action === 'start') {
+          try {
+            await stat(sessionRoot);
+            throw new OperationRefusedError('already exists');
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          }
+          if ((await sessionCounts()).active >= limit)
+            throw new OperationRefusedError('session limit');
+          const config = sessionFrom(
+            sharedConfigSchema.parse(JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))),
+            operation.sessionId
+          );
+          await ensureSharedProcess({
+            root: sessionRoot,
+            config: reachableBy(config, connectionId),
+            resuming: false,
+            watcher: false,
+            restart: false,
+            supervision,
+            // A start operation is a session someone asked Switch for.
+            startSource: 'user',
+          });
+          return;
+        }
+        let saved: SharedHostConfig;
+        try {
+          saved = sharedConfigSchema.parse(
+            JSON.parse(await readFile(join(sessionRoot, 'config.json'), 'utf8'))
+          );
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+            throw new OperationRefusedError('not found');
+          throw error;
+        }
+        if (saved.session.agentId !== agentId) throw new OperationRefusedError('not found');
+        if ((await stopped(operation.sessionId)) && (await sessionCounts()).active >= limit)
+          throw new OperationRefusedError('session limit');
+        await ensureSharedProcess({
+          root: sessionRoot,
+          config: reachableBy(withDefinitionOf(saved, await currentTemplate()), connectionId),
+          resuming: true,
+          watcher: false,
+          restart: true,
+          supervision,
+          startSource: null,
+        });
+      },
+      revoke: async () => {
+        for (const sessionRoot of links.live()) await supervision.stop(sessionRoot);
+      },
+      restart: (sessionRoot) =>
+        port.serial(async () => {
+          const saved = sharedConfigSchema.parse(
+            JSON.parse(await readFile(join(sessionRoot, 'config.json'), 'utf8'))
+          );
+          await ensureSharedProcess({
+            root: sessionRoot,
+            config: reachableBy(withDefinitionOf(saved, await currentTemplate()), connectionId),
+            resuming: true,
+            watcher: false,
+            restart: true,
+            supervision,
+            startSource: null,
+          });
+        }),
+      acks: assignments,
+      fail,
+    };
+    stream = openStream({
       creds: {
         agentId: credentials.SWITCH_AGENT_ID,
         apiEndpoint: credentials.SWITCH_API_ENDPOINT,
         token: credentials.SWITCH_API_TOKEN,
       },
       connectionId,
+      worker: hosted?.identity ?? null,
+      ...(hosted
+        ? {
+            onWorkerFrame: (name, data) =>
+              hosted.frame(name, data).catch((error: unknown) => {
+                fail(error instanceof Error ? error : new Error(String(error)));
+                throw error;
+              }),
+          }
+        : {}),
       scope: 'all',
       filter: 'addressed',
       spawnCapable: spawn,
@@ -919,9 +1565,18 @@ export async function runAgentHost(
       // A room control (!reset, !interrupt) typed in one of the agent's rooms,
       // which only Switch sees. Handed to the session's host like any other.
       onSessionCommand: async (relayed) => {
-        const { requesterName, ...command } = relayed;
+        const { requesterName, roomId, ...rest } = relayed;
+        const sessionId =
+          rest.sessionId ?? (typeof roomId === 'string' ? placements.sessionIn(roomId) : null);
+        if (!sessionId) {
+          console.warn(
+            `Dropped command ${rest.commandId}: no session of this agent works in room ${String(roomId)}.`
+          );
+          return;
+        }
+        const command = { ...rest, sessionId };
         const taken = await askSession(
-          command.sessionId,
+          sessionId,
           {
             type: 'command',
             command,
@@ -931,7 +1586,7 @@ export async function runAgentHost(
         );
         if (!taken)
           console.warn(
-            `Dropped command ${command.commandId}: session ${command.sessionId} is not running here.`
+            `Dropped command ${command.commandId}: session ${sessionId} is not running here.`
           );
       },
       onEvent: (event) => {
@@ -959,9 +1614,10 @@ export async function runAgentHost(
           // Asked again here as well as on the timer: the answer a held room is
           // waiting for is written by a session that is doing other work, and
           // an event arriving is the cheapest evidence that time has passed.
+          if (hosted) return accept(assignment, spawning, false);
           if (held.size) await resolveHeld();
-          if (held.has(assignment.roomId)) return hold(assignment, spawning);
-          if (!(await admit(assignment, spawning, false))) await hold(assignment, spawning);
+          if (held.has(assignment.roomId)) return hold(assignment, spawning, false);
+          if (!(await admit(assignment, spawning, false))) await hold(assignment, spawning, false);
         });
         return pending.catch((error: Error) => {
           fail(error);
@@ -1011,10 +1667,15 @@ export async function runAgentHost(
           );
           return;
         }
+        if (code === EVICTION_LAUNCH_SUPERSEDED || code === WORKER_CAPABILITY_OBSOLETE) {
+          fail(new WorkerObsoleteError(reason));
+          return;
+        }
         fail(new Error(`Shared SDK watcher was evicted: ${reason}`));
       },
     });
     const started = stream;
+    if (hosted) unbind.push(hosted.bind(started, port));
     started.start();
     unbind.push(
       control.bind({
@@ -1061,11 +1722,87 @@ export async function runAgentHost(
     // takes is the same one the handler takes, and two of them at once could
     // start a session for a room the other has just found an owner for.
     retry = setInterval(() => {
-      if (!held.size) return;
+      if (!held.size || !admitting()) return;
       pending = pending.then(resolveHeld);
       void pending.catch((error: Error) => fail(error));
     }, OWNERSHIP_RETRY_MS);
     retry.unref();
+    /**
+     * Brings this watcher's live sessions in step with its agent's definition, as
+     * whoever runs the watcher last wrote it to `config.json` (the agents
+     * controller on a new revision, Console when the agent's settings are
+     * saved). Each session saved under an earlier definition is restarted on
+     * its own conversation under the current one (`withDefinitionOf`) once it
+     * is idle, so no turn is cut short: one in the middle of a turn waits in
+     * `redefinitionDue` until its host says it is done. One saved under another
+     * provider or directory belongs to an earlier identity of the agent and is
+     * left alone.
+     */
+    const redefinitionDue = new Set<string>();
+    let redefining = false;
+    const applyDefinition = async () => {
+      const current = await currentTemplate();
+      redefinitionDue.clear();
+      const ours = new Set(
+        assignments.sessions().map((config) => sharedSessionRoot(config.session.sessionId))
+      );
+      const idle: { root: string; saved: SharedHostConfig }[] = [];
+      for (const sessionRoot of links.live()) {
+        if (!ours.has(sessionRoot) || !links.ready(sessionRoot)) continue;
+        const saved = await sessionConfigAt(sessionRoot);
+        if (
+          !saved ||
+          saved.session.agentId !== agentId ||
+          saved.start.provider !== current.start.provider ||
+          saved.start.input.cwd !== current.start.input.cwd ||
+          !definitionChanged(saved, current)
+        )
+          continue;
+        if (links.busy(sessionRoot)?.busy !== false) redefinitionDue.add(sessionRoot);
+        else idle.push({ root: sessionRoot, saved });
+      }
+      if (idle.length === 0 && redefinitionDue.size === 0) return;
+      console.warn(
+        `Agent ${agentId}'s definition changed: restarting ${idle.length} idle session(s) under it now; ${redefinitionDue.size} more once their turn ends.`
+      );
+      for (const { root: sessionRoot, saved } of idle) {
+        console.warn(
+          `Session ${saved.session.sessionId} runs under an earlier definition of its agent (model, instructions, advanced configuration or approval mode); restarting it on the same conversation under the current one.`
+        );
+        try {
+          await ensureSharedProcess({
+            root: sessionRoot,
+            config: reachableBy(withDefinitionOf(saved, current), connectionId),
+            resuming: true,
+            watcher: false,
+            restart: true,
+            supervision,
+            startSource: null,
+          });
+        } catch (error) {
+          console.warn(
+            `Could not restart session ${saved.session.sessionId} under its agent's current definition: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+    };
+    const redefine = () => {
+      if (redefining) return;
+      redefining = true;
+      pending = pending.then(applyDefinition).finally(() => {
+        redefining = false;
+      });
+      void pending.catch((error: Error) => fail(error));
+    };
+    unbind.push(
+      onConfigReplaced(root, stop.signal, redefine),
+      links.onBusy((busyRoot) => {
+        if (redefinitionDue.has(busyRoot) && links.busy(busyRoot)?.busy === false) redefine();
+      }),
+      links.onExit((exitedRoot) => {
+        redefinitionDue.delete(exitedRoot);
+      })
+    );
     while (!stop.signal.aborted) {
       const changed = await awaitWatchChange(root, flags, stop.signal);
       if (!changed) break;
@@ -1078,7 +1815,7 @@ export async function runAgentHost(
       started.setSpawnCapable(spawn);
       // What waited for permission to start a session is answered now rather
       // than on the next retry.
-      if (spawn) {
+      if (spawn && admitting()) {
         pending = pending.then(resolveHeld);
         await pending;
       }

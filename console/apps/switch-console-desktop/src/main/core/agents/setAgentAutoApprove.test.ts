@@ -30,7 +30,10 @@ vi.mock('./agent-location', () => ({ getRemoteAgentLocation }));
 vi.mock('@main/core/switch-rooms/auto-session-store', () => ({
   listStoppedControllerAgentIds,
 }));
-vi.mock('./remote-watcher', () => ({ pushRemoteAutoApprove }));
+const refreshLocalWatcher = vi.hoisted(() =>
+  vi.fn(async (_id: string) => void calls.push('refresh'))
+);
+vi.mock('./remote-watcher', () => ({ pushRemoteAutoApprove, refreshLocalWatcher }));
 vi.mock('@main/core/sdk-host/agent-host', () => ({
   keepAutoApproveChoice,
   recordAutoApproveOnHost,
@@ -47,12 +50,12 @@ describe('setAgentAutoApprove', () => {
     listStoppedControllerAgentIds.mockResolvedValue([]);
   });
 
-  it('writes the row and nothing else for a local agent (read fresh at spawn)', async () => {
+  it('writes the row for a local agent, then hands its running watcher the new setting', async () => {
     getRemoteAgentLocation.mockResolvedValue(null);
 
     await setAgentAutoApprove({ agentId: 'agent-1', enabled: true });
 
-    expect(calls).toEqual(['row true']);
+    expect(calls).toEqual(['row true', 'refresh']);
   });
 
   it('keeps the choice on the host, then the row, then rewrites a watcher that starts sessions', async () => {

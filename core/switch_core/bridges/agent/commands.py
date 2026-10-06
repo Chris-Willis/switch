@@ -13,6 +13,7 @@ from switch_core.aliases import (
     check_alias_collisions,
     validate_alias_format,
 )
+from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
@@ -20,8 +21,10 @@ from switch_core.bridges.agent.protocol.types import (
     CommandPayload,
 )
 from switch_core.clients.mentions import mention_tokens as _mention_tokens
-from switch_core.db.models import CollaborationBridge, Room
+from switch_core.db.models import CollaborationBridge, HostedLaunch, HostedMachine, Room
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
+from switch_core.db.stores.hosted_machine_store import idle_sleeping
 from switch_core.events import CommandEvent
 from switch_core.gateway.known_agents import known_agent_for
 from switch_core.transport import RoomRef
@@ -251,7 +254,7 @@ _CONTROL_BODIES: dict[str, dict[str, str]] = {
 def room_control_frame(
     *,
     agent_id: str,
-    session_id: str,
+    session_id: str | None,
     room_id: str,
     action: str,
     actor_id: str,
@@ -264,6 +267,8 @@ def room_control_frame(
 
     Beside the contract command it names who asked, as the room knows them,
     so the session can answer that person once the control has applied.
+    `session_id` is None for a controller-backed agent, whose controller
+    picks the session from the room.
     """
     body = _CONTROL_BODIES.get(action)
     if body is None:
@@ -325,7 +330,7 @@ def stop_control_frame(
 def _control_frame(
     *,
     command_id: str,
-    session_id: str,
+    session_id: str | None,
     room_id: str,
     actor_id: str,
     message_id: str | None,
@@ -396,6 +401,62 @@ async def _cmd_help(
     await _reply(client, room, event, "\n".join(lines))
 
 
+async def _reply_hosted_asleep(
+    client: AgentConsumer,
+    room: RoomRef,
+    event: CommandEvent,
+    agent: Agent,
+    launch_id: str,
+    command: str,
+) -> bool:
+    """Answer an undelivered room control for a hosted agent that is asleep.
+
+    A sleeping worker holds no placement, so this is decided from the launch,
+    not from whether a session was placed. `!reset` wakes the worker but is
+    not queued: a destructive command is never run later than it was asked.
+    A machine in error is never woken; the room is told of the error instead.
+    Returns False when the worker is awake, so the ordinary reply applies.
+    """
+    async with tenant_session(client.session_factory, client.tenant_id) as session:
+        launch = await session.get(HostedLaunch, (agent.tenant_id, launch_id))
+        machine = (
+            None
+            if launch is None or launch.machine_id is None
+            else await session.get(HostedMachine, (agent.tenant_id, launch.machine_id))
+        )
+    if launch is None or machine is None or launch.desired_state != "running":
+        return False
+    if machine.state == "error":
+        await _reply(
+            client,
+            room,
+            event,
+            f"@{agent.name}'s cloud machine has a problem, so the {command} was not sent. Its owner can check it in Switch Console.",
+        )
+        return True
+    if not idle_sleeping(machine):
+        return False
+    if command == "reset":
+        hosted = await client._note_hosted_addressed(agent, None)
+        if hosted is not None and hosted.refusal is not None:
+            await _reply(client, room, event, hosted.refusal)
+            return True
+        await _reply(
+            client,
+            room,
+            event,
+            f"The cloud worker is waking up. The reset was not queued. Wait until the agent is back (usually about a minute), then send !reset @{agent.name} again to start a fresh conversation.",
+        )
+        return True
+    await _reply(
+        client,
+        room,
+        event,
+        f"@{agent.name} is asleep, so nothing is running. The {command} was not sent.",
+    )
+    return True
+
+
 async def _dispatch_control_command(
     client: AgentConsumer,
     room: RoomRef,
@@ -427,8 +488,13 @@ async def _dispatch_control_command(
     # A session that connected to this room takes the command itself, over
     # its agent's controller. Nothing is queued: with no controller to relay
     # it to, the room is told so.
+    # A controller-backed agent's sessions are placed with its controller,
+    # which routes the command to the one working in this room. Switch does not
+    # know which session that is, so the frame names none.
+    controller_backed = client._connections.controllers.is_bound(agent.id)
     placed = client._connections.session_in_room(agent.id, meta.room_id)
-    if placed is not None:
+    launch_id = hosted_launch_of(agent.metadata_)
+    if placed is not None or controller_backed:
         if not event.message_id:
             await _reply(
                 client,
@@ -448,20 +514,23 @@ async def _dispatch_control_command(
             surface=await _room_surface(client, meta.room_id),
             requester_name=event.user_name,
         )
-        if client._connections.relay_session_command(agent.id, frame):
-            await _reply(
-                client,
-                room,
-                event,
-                ack,
-            )
-        else:
-            await _reply(
-                client,
-                room,
-                event,
-                f"Could not send {command}: the agent's controller is not connected to Switch.",
-            )
+        delivered = client._connections.relay_session_command(
+            agent.id, frame, worker_only=launch_id is not None
+        )
+        if delivered:
+            await _reply(client, room, event, ack)
+            return
+    if launch_id is not None and await _reply_hosted_asleep(
+        client, room, event, agent, launch_id, command
+    ):
+        return
+    if placed is not None or controller_backed:
+        await _reply(
+            client,
+            room,
+            event,
+            f"Could not send {command}: the agent's controller is not connected to Switch.",
+        )
         return
     profile = agent.integration_profile or {}
     level = (profile.get("command_capabilities") or {}).get(command, "unsupported")

@@ -120,6 +120,12 @@ describe('buildEnvFile', () => {
       'DISCORD_APP_CLIENT_SECRET',
       'DISCORD_APP_BOT_TOKEN',
       'DISCORD_APP_APPLICATION_ID',
+      // Agent management is off unless a server opts in, and the compose file
+      // defaults it off. A managed stack does not opt in yet: the pinned
+      // switch-core release predates it, and turning it on also needs a
+      // controller token secret generated for the stack.
+      'AGENT_MANAGEMENT_ENABLED',
+      'CONTROLLER_TOKEN_SECRET',
       // Private hosts Switch may reach at a tenant- or agent-supplied URL. The
       // compose file always allows the bundled Mattermost; a managed stack
       // allows nothing more until its operator says so.

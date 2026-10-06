@@ -5,7 +5,7 @@ import logging
 import re
 import secrets
 import uuid
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -30,12 +30,12 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.agent_detail import (
-    apply_agent_options,
+    AgentProfileUpdate,
     assemble_agent_detail,
     list_agent_summaries,
-    reparent_agent,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.bridges.agent.protocol.presence import rooms_occupied
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
@@ -69,6 +69,7 @@ from switch_core.db.models import (
     Agent,
     AgentRuntimeState,
     ApiKey,
+    HostedLaunch,
     Message,
     MessageAttachment,
     Model,
@@ -90,6 +91,7 @@ from switch_core.db.stores.agent_runtime_state_store import (
     AgentRuntimeStateStore,
 )
 from switch_core.db.stores.budget_store import BudgetStore
+from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
@@ -263,6 +265,10 @@ class AgentCore:
     # None only for the minimal instances tests assemble; the server always
     # supplies it, and a stream without it simply carries no approval outcomes.
     approval_outcomes: ApprovalOutcomes | None = None
+    # Told (tenant_id, agent_id) just before an agent is deleted, while its row
+    # still exists. Set by the process wiring when something outside Core keeps
+    # state about agents that a cascade alone would drop without telling anyone.
+    _agent_removal_listener: Callable[[str, str], Awaitable[None]] | None = None
 
     def __init__(
         self,
@@ -346,6 +352,7 @@ class AgentCore:
         addressable_by_agent_ids: list[str] | None = None,
         owner_only: bool = True,
         registration_path: str = "other",
+        reserved_agent_id: str | None = None,
     ) -> RegistrationResult:
         """Register or re-register an agent.
 
@@ -422,7 +429,22 @@ class AgentCore:
         newly_registered = False
 
         async with self.session_factory() as session:
+            await self.agent_store.lock_name(session, name)
+            reservation = await session.scalar(
+                select(HostedLaunch).where(
+                    HostedLaunch.tenant_id == tenant_id,
+                    HostedLaunch.name == name,
+                )
+            )
+            if reservation is not None and reservation.agent_id != reserved_agent_id:
+                raise AgentExistsError(
+                    "A cloud launch already reserves this agent name."
+                )
             existing = await self.agent_store.get_by_name(session, name)
+            if reserved_agent_id is not None and existing is not None:
+                raise AgentExistsError(
+                    "The reserved cloud identity cannot overwrite an agent."
+                )
             if existing and not overwrite:
                 raise AgentExistsError(
                     f"Agent already exists: {name!r}. "
@@ -469,6 +491,7 @@ class AgentCore:
                 reject_reserved_mention_name(name, kind="Agent name")
                 agent_id = await self._create_agent(
                     session=session,
+                    reserved_agent_id=reserved_agent_id,
                     name=name,
                     description=description,
                     icon_url=validated_icon_url,
@@ -609,6 +632,7 @@ class AgentCore:
         self,
         *,
         session: AsyncSession,
+        reserved_agent_id: str | None,
         name: str,
         description: str,
         icon_url: str | None,
@@ -646,6 +670,7 @@ class AgentCore:
         )
 
         agent = Agent(
+            **({"id": reserved_agent_id} if reserved_agent_id is not None else {}),
             name=name,
             description=description,
             icon_url=icon_url,
@@ -774,6 +799,11 @@ class AgentCore:
         await session.commit()
         self.api_key_cache.invalidate_agent(existing.id)
         return existing.id
+
+    def set_agent_removal_listener(
+        self, listener: Callable[[str, str], Awaitable[None]]
+    ) -> None:
+        self._agent_removal_listener = listener
 
     async def _create_bridge_identities(
         self, tenant_id: str, agent_name: str, description: str
@@ -961,6 +991,8 @@ class AgentCore:
             "had_parent": agent.parent_agent_id is not None,
         }
         removed["room_count"] = await self._room_count_for(resolved_id)
+        if self._agent_removal_listener is not None:
+            await self._agent_removal_listener(tenant_id, resolved_id)
         await self.client_lifecycle.stop(client_id)
         self.event_buffer.remove(resolved_id)
 
@@ -2976,7 +3008,16 @@ class AgentCore:
             would be a guess. A seat taken without a session falls back to its
             connection, and to the binding row for callers predating
             connections.
+
+            A controller-backed holder is here while it is connected and a
+            member of this room. Switch does not know where its sessions are,
+            so anywhere else it cannot be told.
             """
+            controllers = self.connections.controllers
+            if controllers.is_bound(lease.agent_id):
+                if controllers.live_in_room(lease.agent_id, room_id):
+                    return room_id
+                return None
             if lease.session_id is not None:
                 return self.connections.session_room(lease.agent_id, lease.session_id)
             if lease.transport_session_id is None:
@@ -3567,26 +3608,11 @@ class AgentCore:
                 connections=self.connections,
             )
 
-    async def update_agent_detail(
-        self,
-        agent_id: str,
-        target_agent_id: str,
-        options: dict[str, Any] | None,
-        parent_agent_id: str | None,
-        clear_parent: bool,
-    ) -> AgentDetail:
-        """Update a known-agent's editable fields and return its fresh detail.
+    async def require_same_owner(self, agent_id: str, target_agent_id: str) -> None:
+        """Refuse unless the calling agent's owner owns `target_agent_id`.
 
-        Mirrors the gateway PATCH /agents/{id}/options, with two differences:
-        `options` is a PARTIAL payload merged over the agent's current options
-        (only the keys provided are changed), and the agent's parent can be
-        changed (`parent_agent_id`) or cleared (`clear_parent`).
-
-        Authorization is owner-only: the calling agent's owner must match the
-        target agent's owner. Raises ValueError if either agent is missing or
-        for an invalid reparent; PermissionError if not the owner;
-        AgentOptionsNotEditable if the agent has no known-agent type; and
-        pydantic ValidationError if the merged options fail schema validation.
+        Raises ValueError if either agent is missing, PermissionError if the
+        owners differ.
         """
         async with self.session_factory() as session:
             requester = await self.agent_store.get(session, agent_id)
@@ -3595,22 +3621,37 @@ class AgentCore:
             target = await self.agent_store.get(session, target_agent_id)
             if target is None:
                 raise ValueError(f"Agent not found: {target_agent_id}")
-
             require_manage(Principal(requester.owner_id, False), target.owner_id)
 
-            if options is not None:
-                await apply_agent_options(
-                    session, self.agent_store, target, options, merge=True
-                )
-            if clear_parent:
-                await reparent_agent(session, self.agent_store, target, None)
-            elif parent_agent_id is not None:
-                await reparent_agent(session, self.agent_store, target, parent_agent_id)
+    async def update_agent_detail(
+        self, agent_id: str, target_agent_id: str, update: AgentProfileUpdate
+    ) -> AgentDetail:
+        """Write a validated profile update to an agent and return its fresh
+        detail.
 
-            await session.commit()
+        Owner-only, as `require_same_owner`. A cloud agent's launch spec, which
+        registers it again, is kept on the same values, as the gateway routes
+        for each field do.
+        """
+        await self.require_same_owner(agent_id, target_agent_id)
+        async with self.session_factory() as session:
+            target = await self.agent_store.get(session, target_agent_id)
+            if target is None:
+                raise ValueError(f"Agent not found: {target_agent_id}")
+            if update.columns:
+                await self.agent_store.update(
+                    session, target_agent_id, **update.columns
+                )
+                launch_id = hosted_launch_of(target.metadata_)
+                if launch_id is not None:
+                    await HostedLaunchStore().merge_spec(
+                        session, launch_id, update.columns
+                    )
+                await session.commit()
 
             refreshed = await self.agent_store.get(session, target_agent_id)
             assert refreshed is not None
+            await session.refresh(refreshed)
             return await assemble_agent_detail(
                 session,
                 agent=refreshed,

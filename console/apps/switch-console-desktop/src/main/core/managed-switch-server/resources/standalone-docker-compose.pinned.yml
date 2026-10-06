@@ -229,6 +229,8 @@ services:
       # The bundled Mattermost is on the compose network, a private address,
       # so it is always allowed; .env adds to it rather than replacing it.
       OUTBOUND_ALLOWED_PRIVATE_HOSTS: mattermost,${OUTBOUND_ALLOWED_PRIVATE_HOSTS:-}
+      AGENT_MANAGEMENT_ENABLED: ${AGENT_MANAGEMENT_ENABLED:-false}
+      CONTROLLER_TOKEN_SECRET: ${CONTROLLER_TOKEN_SECRET:-}
       GATEWAY_ADMIN_EMAIL: ${GATEWAY_ADMIN_EMAIL}
       GATEWAY_ADMIN_PASSWORD: ${GATEWAY_ADMIN_PASSWORD}
       FRONTEND_BASE_URL: ${FRONTEND_BASE_URL}

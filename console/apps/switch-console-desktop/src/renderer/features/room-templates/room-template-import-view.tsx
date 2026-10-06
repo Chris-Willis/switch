@@ -347,6 +347,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
       access === editingTemplate.access;
     return (
       <ServerPage
+        width={896}
         title={`Edit ${editingTemplate.name}`}
         description="The change reaches the workspace as soon as it is saved."
       >
@@ -409,6 +410,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
 
   return (
     <ServerPage
+      width={896}
       title="Import a template"
       description="Paste an agent, room or group template, or pick a YAML file. The document says which it is."
       footer={

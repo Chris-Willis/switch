@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { CircleAlert, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect, useId, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import { InfoTooltip } from '@renderer/features/settings/components/InfoTooltip';
 import { AddressingPolicyControl } from '@renderer/features/switch-servers/addressing-policy-control';
 import type { OptionItem } from '@renderer/features/switch-servers/addressing-policy-editor';
@@ -33,11 +33,14 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
   workspaceId,
   onAddServer,
   onOpenMessagingApps,
+  children,
 }: {
   form: ConfigureAgentFormState;
   workspaceId: string | null;
   onAddServer: () => void;
   onOpenMessagingApps: () => void;
+  /** Further settings for this kind of agent, after the common ones. */
+  children: ReactNode;
 }) {
   // Sessions, permissions and addressing are set once and rarely revisited, so
   // they start folded — the identity fields above are what the dialog is for.
@@ -193,6 +196,7 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
                 inlineLabel={null}
               />
             </Field>
+            {children}
           </FieldGroup>
         )}
       </div>
@@ -208,9 +212,15 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
  * agents — so the two halves can sit in different places in the dialog without
  * the identity fields waiting on four queries they do not use.
  */
-export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState }) {
+export function AgentIdentityFields({
+  form,
+  serverId,
+}: {
+  form: ConfigureAgentFormState;
+  /** The Switch server whose generated icons are offered. */
+  serverId: string | null;
+}) {
   const nameId = useId();
-  const displayNameId = useId();
   const descriptionId = useId();
   const instructionsId = useId();
   const nameRef = useRef<HTMLInputElement>(null);
@@ -221,6 +231,7 @@ export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState })
           recognised by. */}
       <div className="flex flex-col items-center gap-1.5 pb-1">
         <AgentIconPicker
+          serverId={serverId}
           name={form.agentName}
           iconUrl={form.iconUrl}
           onChange={form.setIconUrl}
@@ -287,22 +298,6 @@ export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState })
       </Field>
 
       <Field>
-        <FieldLabel htmlFor={displayNameId}>
-          Display name <span className="text-foreground-muted">(optional)</span>
-        </FieldLabel>
-        <Input
-          id={displayNameId}
-          placeholder={form.agentName.length > 0 ? form.agentName : 'How to show this agent'}
-          value={form.displayName}
-          onChange={(e) => form.setDisplayName(e.target.value)}
-        />
-        <span className="text-xs text-foreground-muted">
-          The name this agent is shown under on Slack, Discord and other chat platforms. Leave it
-          empty and it shows up under its identifier.
-        </span>
-      </Field>
-
-      <Field>
         <FieldLabel htmlFor={descriptionId}>Description</FieldLabel>
         <Input
           id={descriptionId}
@@ -310,9 +305,6 @@ export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState })
           value={form.description}
           onChange={(e) => form.setDescription(e.target.value)}
         />
-        <span className="text-xs text-foreground-muted">
-          Helps other people and agents understand what this agent is for.
-        </span>
       </Field>
 
       <Field>

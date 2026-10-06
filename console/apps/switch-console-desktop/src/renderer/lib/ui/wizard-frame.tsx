@@ -105,7 +105,7 @@ export function WizardFrame({
         </div>
       )}
       <div className="flex min-h-0 flex-1 flex-col overflow-auto">
-        <div className="mx-auto flex w-full max-w-xl flex-1 flex-col justify-center gap-6 px-8 py-10 [-webkit-app-region:no-drag]">
+        <div className="mx-auto flex w-full max-w-[620px] flex-1 flex-col justify-center gap-6 px-8 py-10 [-webkit-app-region:no-drag]">
           <div className="flex flex-col items-center gap-2 text-center">
             <h1 className="text-2xl font-semibold">{title}</h1>
             {subtitle && <p className="text-sm text-foreground-muted">{subtitle}</p>}

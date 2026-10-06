@@ -19,6 +19,7 @@ import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-
 import { WorkspaceAvatar } from '@renderer/features/workspaces/workspace-avatar';
 import { workspaceTitle } from '@renderer/features/workspaces/workspace-title';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -50,7 +51,12 @@ import {
 } from './server-presentation';
 import { ServerResetSection } from './server-reset-section';
 import { ServerSectionTitlebar } from './server-section-titlebar';
-import { ServerSignInFields, useServerSignIn } from './server-sign-in';
+import {
+  machineUnavailableReason,
+  type SignedIn,
+  ServerSignInFields,
+  useServerSignIn,
+} from './server-sign-in';
 import { ServerStatTiles } from './server-stat-tiles';
 import { useSharedActionConfirm } from './shared-action-confirm';
 import { SharedConsolesSection } from './shared-consoles-section';
@@ -58,6 +64,8 @@ import { isSwitchCloudServer } from './switch-cloud-store';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
 import { TelemetryConsentNotice } from './TelemetryConsentNotice';
+import { ThisComputerMachineCard } from './this-computer-machine-card';
+import { loadSwitchCloudOrigin, managedCloudServerId } from './use-cloud-launches';
 import { myIdentitiesQueryKey } from './use-my-identities';
 import { VersionDriftNotice } from './VersionDriftNotice';
 
@@ -211,7 +219,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
 
   return (
     <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-auto bg-background">
-      <div className="mx-auto w-full max-w-4xl space-y-6 p-6">
+      <div className="mx-auto w-full max-w-[880px] space-y-6 p-6">
         <header className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
             <WorkspaceAvatar name={title} size="lg" active />
@@ -367,6 +375,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
 
             {connected && <ServerStatTiles serverId={serverId} />}
             {connected && <MessagingAppsCard serverId={serverId} />}
+            <ThisComputerMachineCard serverId={serverId} signedIn={connected} />
           </>
         )}
 
@@ -539,6 +548,13 @@ function StatusDot({ connected }: { connected: boolean }) {
 
 const LoginPanel = observer(function LoginPanel({ serverId }: { serverId: string }) {
   const signIn = useServerSignIn(serverId);
+  const onSignedIn = (signedIn: SignedIn) => {
+    void loadSwitchCloudOrigin().then(() => {
+      if (serverId !== managedCloudServerId()) return;
+      const reason = machineUnavailableReason(signedIn);
+      if (reason) toast({ title: 'Your cloud machine is not starting', description: reason });
+    });
+  };
 
   return (
     <div className={`${card} space-y-4`}>
@@ -546,15 +562,17 @@ const LoginPanel = observer(function LoginPanel({ serverId }: { serverId: string
       <ServerSignInFields
         signIn={signIn}
         idPrefix="switch-login"
-        onSignedIn={() => {}}
+        onSignedIn={onSignedIn}
         passwordSubmit={
           <Button
             size="sm"
             className="self-start"
-            disabled={signIn.submitting || !signIn.canSubmitPassword}
-            onClick={() => void signIn.signInWithPassword()}
+            disabled={!signIn.canSubmitForm}
+            onClick={() =>
+              void signIn.submitForm().then((signedIn) => signedIn && onSignedIn(signedIn))
+            }
           >
-            {signIn.submitting ? 'Signing in…' : 'Sign in'}
+            {signIn.submitLabel}
           </Button>
         }
       />

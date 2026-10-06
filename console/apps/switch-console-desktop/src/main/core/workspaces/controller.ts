@@ -13,6 +13,7 @@ import {
   deleteTemplate,
   exportRoomYaml,
   fetchAddressingPolicy,
+  fetchAgentManagementAccess,
   fetchAgentRooms,
   fetchAgents,
   fetchAllExternalUsers,
@@ -40,6 +41,9 @@ import {
   type TemplateRun,
   type TemplateVisibility,
   updateAddressingPolicy,
+  updateCanManageAgents,
+  updateAgentDescription,
+  updateAgentDisplayName,
   updateAgentIcon,
   updateRoom,
   updateTemplate,
@@ -646,6 +650,26 @@ export const workspacesController = createRPCController({
       updateAddressingPolicy(server, params.agentId, params.policy)
     ),
 
+  /** The agent's "can manage agents" capability, and whether the server runs
+   * agent management, where alone it does anything. */
+  getAgentManagementAccess: (params: {
+    workspaceId: string;
+    agentId: string;
+  }): Promise<{ available: boolean; canManageAgents: boolean }> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchAgentManagementAccess(server, params.agentId)
+    ),
+
+  /** Turn the agent's "can manage agents" capability on or off; owner only. */
+  updateCanManageAgents: (params: {
+    workspaceId: string;
+    agentId: string;
+    enabled: boolean;
+  }): Promise<void> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      updateCanManageAgents(server, params.agentId, params.enabled)
+    ),
+
   /** Give this user's icon-less agents the avatar their name generates. Runs
    * once per workspace per app run; reports what happened so the caller can say
    * when the icons did not reach the server. */
@@ -662,6 +686,26 @@ export const workspacesController = createRPCController({
   }): Promise<RemoteAgentSummary> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       updateAgentIcon(server, params.agentId, params.iconUrl)
+    ),
+
+  /** Change an agent's description. Returns the agent as the server now holds it. */
+  updateAgentDescription: (params: {
+    workspaceId: string;
+    agentId: string;
+    description: string;
+  }): Promise<RemoteAgentSummary> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      updateAgentDescription(server, params.agentId, params.description)
+    ),
+
+  /** Set or clear an agent's display name. Returns the agent as the server now holds it. */
+  updateAgentDisplayName: (params: {
+    workspaceId: string;
+    agentId: string;
+    displayName: string | null;
+  }): Promise<RemoteAgentSummary> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      updateAgentDisplayName(server, params.agentId, params.displayName)
     ),
 
   verifyAgent: (params: { workspaceId: string; agentId: string }): Promise<AgentVerifyResult> =>

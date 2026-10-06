@@ -163,6 +163,24 @@ class SwitchConfig(BaseSettings):
     gateway_oidc_require_email_verified: bool = True
     # Lets the password login path be disabled (OIDC-only) without code changes.
     gateway_password_login_enabled: bool = True
+    # Open self sign-up with email and password: anyone who can reach the
+    # gateway can create an account in tenant zero. Only takes effect while
+    # password login is enabled and gateway_signup_mode is "default_tenant",
+    # the one mode that lands a new account in tenant zero.
+    gateway_signup_enabled: bool = False
+    # Counts every user created in the last hour (sign-up, admin-created and
+    # OIDC first sign-in alike), read from the users table so it holds across
+    # replicas. Sign-up is refused once the count reaches this.
+    gateway_signup_max_per_hour: int = Field(default=20, ge=1)
+    hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
+    hosted_sessions_per_agent: int = Field(default=8, ge=1, le=100)
+    hosted_agents_per_owner: int = Field(default=3, ge=1, le=100)
+    hosted_idle_stop_minutes: int = Field(default=30, ge=0, le=1440)
+    hosted_disk_retention_days: int = Field(default=7, ge=1, le=90)
+    hosted_controller_config_path: str | None = None
+    hosted_github_config_path: str | None = None
+    hosted_provider_verification_enabled: bool = False
+    hosted_claude_verifier_path: str | None = None
     # Sets the Secure flag on the gateway's cookies (the switch_auth session
     # and the OIDC sign-in cookie), so they are never sent over plain HTTP.
     # Only a local stack served over http:// should turn it off.
@@ -345,7 +363,9 @@ class SwitchConfig(BaseSettings):
     # `switchdash://` deeplink HTTP redirect (`/deeplink/session`, served on the
     # agent-bridge app) so the "Open in Switch Console" link is clickable on platforms
     # that only linkify http(s) (Discord, and any future http-only bridge). When
-    # unset, the raw `switchdash://` deeplink is posted as-is.
+    # unset, the raw `switchdash://` deeplink is posted as-is. Also the
+    # `--server` an agents controller enrolls against, which the gateway's Add
+    # machine dialog shows; unset, it shows no enrollment command.
     gateway_public_url: str | None = None
 
     # Credentials of the distributed Slack app *we* registered — the one a
@@ -448,11 +468,28 @@ class SwitchConfig(BaseSettings):
     # the entry immediately rather than waiting for it to expire. This is the
     # window in which an already-issued credential outlives its revocation, so
     # it is deliberately shorter than the agent heartbeat TTL. Set to 0 to
-    # disable the cache and read the database on every request.
+    # disable the cache and read the database on every request. With agent
+    # management on, the same TTL and bound apply to the separate cache of a
+    # controller access token's reads (its controller row, and the agent row
+    # it acts as), which a revocation or binding change also drops at once.
     agent_auth_cache_ttl_seconds: float = 5.0
     # Bound on the memo. One entry per distinct live token; the oldest is
     # evicted past this, so a flood of tokens cannot grow the process.
     agent_auth_cache_max_entries: int = 4096
+
+    # Agent management: managed agent definitions, the agent controllers that
+    # run them, and the controller-facing routes under /v1/management and
+    # /v1/controllers. Off by default; with it off none of those routes are
+    # mounted and the bearer middleware never treats a token as a controller's.
+    agent_management_enabled: bool = False
+    # Signs controller access tokens. Required (at least 32 characters) when
+    # agent management is on, and deliberately separate from SECRET_KEYS so
+    # rotating one never invalidates the other.
+    controller_token_secret: str | None = None
+    # How often a controller must report status. Sent to controllers as
+    # `report_within_s`; a controller that has not reported for three of these
+    # is shown as unknown and refused new placements.
+    controller_status_interval_seconds: int = 60
 
     # Postgres terminates a connection that sits inside an open transaction
     # without executing anything for longer than this (a Postgres interval such
@@ -524,6 +561,27 @@ class SwitchConfig(BaseSettings):
             raise ValueError(
                 "AGENT_AUTH_CACHE_MAX_ENTRIES must be at least 1, got "
                 f"{self.agent_auth_cache_max_entries!r}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_agent_management(self) -> "SwitchConfig":
+        if self.controller_status_interval_seconds < 1:
+            raise ValueError(
+                "CONTROLLER_STATUS_INTERVAL_SECONDS must be at least 1, got "
+                f"{self.controller_status_interval_seconds!r}."
+            )
+        if not self.agent_management_enabled:
+            return self
+        if not self.controller_token_secret:
+            raise ValueError(
+                "CONTROLLER_TOKEN_SECRET is required when AGENT_MANAGEMENT_ENABLED "
+                "is true: it signs the access tokens agent controllers use."
+            )
+        if len(self.controller_token_secret) < 32:
+            raise ValueError(
+                "CONTROLLER_TOKEN_SECRET must be at least 32 characters, got "
+                f"{len(self.controller_token_secret)}."
             )
         return self
 
@@ -992,6 +1050,17 @@ class SwitchConfig(BaseSettings):
         )
 
     @property
+    def gateway_signup_open(self) -> bool:
+        # Sign-up does not verify email ownership and an OIDC login links to an
+        # existing user by email, so a signed-up account could pre-claim one.
+        return (
+            self.gateway_signup_enabled
+            and self.gateway_password_login_enabled
+            and not self.gateway_oidc_enabled
+            and self.gateway_signup_mode == "default_tenant"
+        )
+
+    @property
     def gateway_oidc_metadata_url(self) -> str:
         if self.gateway_oidc_issuer_url is None:
             raise ValueError("gateway_oidc_issuer_url is not set")
@@ -1046,6 +1115,14 @@ class SwitchConfig(BaseSettings):
         # additionally proves it was issued for the host we asked for.
         context.check_hostname = self.db_ssl_mode == "verify-full"
         return {"ssl": context}
+
+
+def hosted_configured(config: SwitchConfig) -> bool:
+    """Whether this server runs cloud agents: it has a hosted controller or launch capacity."""
+    return (
+        config.hosted_controller_config_path is not None
+        or config.hosted_launch_capacity > 0
+    )
 
 
 def deprecated_env_names() -> list[str]:

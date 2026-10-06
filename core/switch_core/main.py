@@ -8,6 +8,7 @@ import signal
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
 
 import httpx
@@ -25,6 +26,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.agent.app import create_agent_bridge_app
+from switch_core.bridges.agent.hosted_mailbox import mailbox_upkeep
 from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_TTL_SECONDS,
     AgentConnectionRegistry,
@@ -99,6 +101,7 @@ from switch_core.db.models import (
     TENANT_ZERO_ID,
     ApiKey,
     User,
+    agent_event_boot_sequence,
 )
 from switch_core.db.runtime_role import (
     RuntimeRoleError,
@@ -116,6 +119,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.db.stores.media_store import MediaStore
@@ -140,6 +144,7 @@ from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
 from switch_core.gateway.invite_mail import SmtpInviteMailer
 from switch_core.logging_config import configure_logging
+from switch_core.management.wiring import create_management
 from switch_core.messages.notify import MessageListener
 from switch_core.observability.bootstrap import (
     Observability,
@@ -234,6 +239,14 @@ async def _connection_sweep_loop(protocol: AgentCore, lag: EventLoopLag) -> None
                     conn.id,
                     conn.agent_id,
                     conn.beats,
+                )
+            for controller_conn in protocol.connections.controllers.sweep():
+                logger.info(
+                    "Controller connection %s for controller %s expired (beat "
+                    "lapsed, %d beats received)",
+                    controller_conn.id,
+                    controller_conn.controller_id,
+                    controller_conn.beats,
                 )
         except Exception:
             logger.exception("AgentConnection sweep failed")
@@ -455,13 +468,15 @@ async def run(config: SwitchConfig) -> None:
     # `_seed_agent_registration_bootstrap_key`'s docstring), so only a
     # session-level lock, held for the whole span, actually serialises it.
     async with boot_lock(config):
+        async with engine.begin() as connection:
+            event_boot = await connection.scalar(agent_event_boot_sequence.next_value())
         await _seed_admin_user(session_factory, user_store, config)
         await _seed_agent_registration_bootstrap_key(
             session_factory, user_store, api_key_store, agent_store, config
         )
 
     # ── Event queue + request trackers ───────────────────────────────────────
-    event_buffer = EventBuffer()
+    event_buffer = EventBuffer(sequence_base=event_boot << 32)
     connector_store = ServerConnectorStore()
 
     # ── Product telemetry ────────────────────────────────────────────────────
@@ -542,6 +557,7 @@ async def run(config: SwitchConfig) -> None:
         agent_session_store=agent_session_store,
         room_role_store=room_role_store,
         external_user_store=external_user_store,
+        hosted_launch_store=HostedLaunchStore(),
         connections=connections,
         frontend_base_url=config.frontend_base_url,
     )
@@ -613,6 +629,12 @@ async def run(config: SwitchConfig) -> None:
         frontend_base_url=config.frontend_base_url,
     )
 
+    # ── Agent management (off unless AGENT_MANAGEMENT_ENABLED) ───────────────
+    # Built before the agent bridge app because its authenticator is the bearer
+    # middleware's controller branch; its routes are installed once both apps
+    # exist, below.
+    management = create_management(config, session_factory, connections.controllers)
+
     # ── FastAPI apps ─────────────────────────────────────────────────────────
     agent_bridge_app, protocol = create_agent_bridge_app(
         agent_store=agent_store,
@@ -632,6 +654,7 @@ async def run(config: SwitchConfig) -> None:
         approval_outcomes=ApprovalOutcomes(
             session_activity_listener, AgentSessionActivityService(session_factory)
         ),
+        controller_auth=management.authenticator if management is not None else None,
         connections=connections,
         telemetry=telemetry,
     )
@@ -770,6 +793,16 @@ async def run(config: SwitchConfig) -> None:
             tags=["messaging-installs"],
         )
 
+    if management is not None:
+        management.install(
+            agent_bridge_app=agent_bridge_app,
+            gateway_app=gateway_app,
+            protocol=protocol,
+        )
+        # Before the bridge serves: until Core knows which agents a controller
+        # runs, their own keys would be let in and their presence misread.
+        await management.load_bindings()
+
     agent_bridge_app.mount("/gateway", gateway_app)
 
     # ── Ensure system clients exist ─────────────────────────────────────────
@@ -812,7 +845,9 @@ async def run(config: SwitchConfig) -> None:
             asyncio.create_task(connector_lifecycle.start_all())
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
             session_activity_task = asyncio.create_task(
-                session_activity_maintenance_loop(session_factory)
+                session_activity_maintenance_loop(
+                    session_factory, partial(mailbox_upkeep, protocol)
+                )
             )
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol, observability.lag)

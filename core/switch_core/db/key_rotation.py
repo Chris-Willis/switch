@@ -22,7 +22,12 @@ from switch_core.db.encrypted_json import reencrypt_stale_values
 from switch_core.db.models import (
     ApiKey,
     CollaborationBridge,
+    GitHubIssuedToken,
+    HostedLaunch,
+    HostedMachine,
     MessagingInstall,
+    ProviderConnection,
+    ProviderVerification,
     ServerConnector,
 )
 from switch_core.db.session_scope import tenant_session
@@ -37,6 +42,12 @@ _ENCRYPTED_JSON_COLUMNS: tuple[tuple[type[Any], str], ...] = (
 _ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (ApiKey, "encrypted_key"),
     (MessagingInstall, "encrypted_bot_token"),
+    (ProviderConnection, "encrypted_credential"),
+    (ProviderVerification, "encrypted_credential"),
+    (ProviderVerification, "encrypted_token"),
+    (GitHubIssuedToken, "encrypted_token"),
+    (HostedMachine, "machine_capability_encrypted"),
+    (HostedLaunch, "worker_capability_encrypted"),
 )
 
 
@@ -50,17 +61,24 @@ async def reencrypt_stale_text(
     read while reporting the rotation done.
     """
     stored = model.__table__.c[column]
+    # Rows are named by their primary key, which is not always a single `id`.
+    keys = list(model.__table__.primary_key.columns)
     rows = await session.execute(
-        select(model.id, stored).where(
+        select(*keys, stored).where(
             stored.is_not(None),
             ~stored.startswith(keyring.current_prefix(), autoescape=True),
         )
     )
     count = 0
-    for row_id, value in rows.all():
+    for *key_values, value in rows.all():
         await session.execute(
             update(model)
-            .where(model.id == row_id)
+            .where(
+                *(
+                    key == key_value
+                    for key, key_value in zip(keys, key_values, strict=True)
+                )
+            )
             .values({column: keyring.encrypt(keyring.decrypt(value))})
         )
         count += 1

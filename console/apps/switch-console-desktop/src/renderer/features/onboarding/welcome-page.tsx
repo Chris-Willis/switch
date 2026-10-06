@@ -74,7 +74,7 @@ export function WelcomePage({
         {/* Everything the page shows opts out of the drag region: a scroll
             inside one is swallowed by the window move. What stays draggable is
             the margin around it. */}
-        <div className="mx-auto flex w-full max-w-xl flex-1 flex-col justify-center gap-8 px-8 py-10 [-webkit-app-region:no-drag]">
+        <div className="mx-auto flex w-full max-w-[620px] flex-1 flex-col justify-center gap-8 px-8 py-10 [-webkit-app-region:no-drag]">
           <div className="flex flex-col items-center gap-4">
             <SwitchConsoleAppIcon size={64} className="rounded-2xl" />
             <h1 className="text-3xl font-semibold">Welcome to Switch</h1>

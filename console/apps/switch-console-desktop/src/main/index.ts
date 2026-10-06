@@ -8,7 +8,7 @@ import { PRODUCT_NAME } from '@shared/app-identity';
 import { registerRPCRouter } from '@shared/lib/ipc/rpc';
 import { flushPendingDeeplink, setupDeeplinks } from './app/deeplinks';
 import { setupApplicationMenu } from './app/menu';
-import { registerAppScheme, setupAppProtocol } from './app/protocol';
+import { APP_ORIGIN, registerAppScheme, setupAppProtocol } from './app/protocol';
 import { createMainWindow, getMainWindow } from './app/window';
 import { bridgeAgentEventsToRenderer } from './core/agents/agent-events-renderer-bridge';
 import { setAgentStorageMigrationReady } from './core/agents/agent-storage-migration-ready';
@@ -17,6 +17,7 @@ import { initializeRemoteDiscovery, initializeRemoteWatchers } from './core/agen
 import { appService } from './core/app/service';
 import { controlService } from './core/control-api/control-service';
 import { localDependencyManager } from './core/dependencies/dependency-managers';
+import { embeddedControllerService } from './core/embedded-controller/embedded-controllers';
 import { locationManager } from './core/locations/location-manager';
 import { locationSettingsService } from './core/locations/settings/location-settings-service';
 import { localServerService } from './core/managed-switch-server/local-server-service';
@@ -157,7 +158,21 @@ void app.whenReady().then(async () => {
     log.error('Failed to start control API service:', e);
   });
 
-  registerRPCRouter(rpcRouter, ipcMain, withRPCLogContext);
+  const rendererURL = new URL(
+    import.meta.env.DEV ? process.env.ELECTRON_RENDERER_URL! : APP_ORIGIN
+  );
+  registerRPCRouter(
+    rpcRouter,
+    ipcMain,
+    (event) => {
+      const contents = getMainWindow()?.webContents;
+      if (!contents || event.sender !== contents || event.senderFrame !== contents.mainFrame)
+        return false;
+      const senderURL = new URL(event.senderFrame.url);
+      return senderURL.protocol === rendererURL.protocol && senderURL.host === rendererURL.host;
+    },
+    withRPCLogContext
+  );
 
   void reconcileResourceSampler();
 
@@ -225,6 +240,14 @@ void app.whenReady().then(async () => {
     } catch (e) {
       log.error('Failed to initialise remote watchers at startup:', e);
     }
+    // The managed agents this computer runs for a server, through the embedded
+    // agents controller. After the dependency probe, like the watchers above:
+    // the controller resolves provider CLIs from the same environment.
+    try {
+      await embeddedControllerService.initialize();
+    } catch (e) {
+      log.error('Failed to start the embedded agents controllers at startup:', e);
+    }
   });
 
   // A laptop waking from sleep usually has stale (frozen) SSH sockets to remote
@@ -266,14 +289,20 @@ app.on('before-quit', (event) => {
   void (async () => {
     // Locally hosted watchers and sessions are Console's own children. Stop them
     // before exiting, bounded so a stuck host cannot keep Console from quitting.
-    await Promise.race([
-      autoSessionWatcher.dispose(),
-      delay(LOCAL_HOST_SHUTDOWN_MS).then(() =>
-        log.warn('Local SDK hosts did not stop in time; they may outlive Console.')
-      ),
-    ]).catch((e) => {
-      log.error('Failed to stop local SDK hosts:', e);
-    });
+    await Promise.all([
+      Promise.race([
+        autoSessionWatcher.dispose(),
+        delay(LOCAL_HOST_SHUTDOWN_MS).then(() =>
+          log.warn('Local SDK hosts did not stop in time; they may outlive Console.')
+        ),
+      ]).catch((e) => {
+        log.error('Failed to stop local SDK hosts:', e);
+      }),
+      // The embedded agents controllers stop, and their agents and sessions with them.
+      embeddedControllerService.dispose().catch((e) => {
+        log.error('Failed to stop the embedded agents controllers:', e);
+      }),
+    ]);
     await locationManager.dispose().catch((e) => {
       log.error('Failed to shutdown location manager:', e);
     });

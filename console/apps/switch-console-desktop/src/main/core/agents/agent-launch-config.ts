@@ -1,8 +1,5 @@
-import type {
-  PluginFs,
-  RepoAgentLaunchDefinition,
-  SwitchLaunchSpecialization,
-} from '@switch-console/core/agents/plugins';
+import type { PluginFs } from '@switch-console/core/agents/plugins';
+import { type AgentLaunchSources, agentLaunchSources } from '@switch-console/plugins/agents';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentConfigFile } from './agent-config-file';
@@ -76,53 +73,19 @@ export async function readRequiredAgentConfig(
  * - `definition`, for a provider that runs a session as a named agent, the
  *   definition it runs as.
  */
-export type AgentLaunchConfig = {
-  specialization: SwitchLaunchSpecialization | undefined;
-  definition: RepoAgentLaunchDefinition | undefined;
-};
+export type AgentLaunchConfig = AgentLaunchSources;
 
 export async function agentLaunchConfig(agentId: string): Promise<AgentLaunchConfig> {
   return withAgentWorkdir(agentId, async (agent, fs) => {
     const config = await readRequiredAgentConfig(agent, fs);
-    const repoAgents = getPlugin(agent.providerId).behavior.repoAgents;
-    return {
-      specialization: launchSpecialization(config),
-      definition:
-        repoAgents && definesAgent(config)
-          ? repoAgents.launchDefinition({
-              ...config.settings,
-              name: agent.name,
-              description: config.description || agent.name,
-              instructions: config.instructions ?? '',
-            })
-          : undefined,
-    };
+    return agentLaunchSources({
+      provider: agent.providerId,
+      name: agent.name,
+      description: config.description ?? '',
+      settings: config.settings ?? {},
+      instructions: config.instructions ?? '',
+    });
   });
-}
-
-/**
- * Whether the config says anything a definition would carry. One that says
- * nothing runs the provider as it is, as an agent with no definition file on
- * disk always did, rather than as a definition whose prompt is its own name.
- */
-function definesAgent(config: AgentConfigFile): boolean {
-  return (
-    !!config.description || !!config.instructions || Object.keys(config.settings ?? {}).length > 0
-  );
-}
-
-function launchSpecialization(config: AgentConfigFile): SwitchLaunchSpecialization | undefined {
-  const specialization: SwitchLaunchSpecialization = {};
-
-  for (const [key, value] of Object.entries(config.settings ?? {})) {
-    if (value === null || value === undefined) continue;
-    const text = Array.isArray(value) ? value.join(',') : String(value);
-    if (text.trim() === '') continue;
-    specialization[key] = text;
-  }
-  if (config.instructions) specialization.instructions = config.instructions;
-
-  return Object.keys(specialization).length > 0 ? specialization : undefined;
 }
 
 /** Run `run` against the agent's working directory, local or over SFTP. */

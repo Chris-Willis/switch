@@ -44,6 +44,19 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+- **The Helm chart's Ingress now routes every agent API path to switch-core.**
+  `/agent-sessions` (session starts, turn activity, approval requests and their
+  answers), `/version` and `/deeplink` were missing from
+  `ingress.agentApiPaths` and from the sample Ingress, and so is `/v1`, where
+  agents controllers enroll and connect. Behind a path-routed
+  ingress they reached the gateway, which answered with its web page. Agent
+  sessions then failed mid-turn with `Unexpected token '<'`, and activity and
+  approval cards never reached messaging platforms. An install that overrides
+  `ingress.agentApiPaths`, or routes with its own Ingress, must add these paths
+  itself. A test now fails when the agent bridge serves a path the chart does
+  not route.
+
 ### [0.29.0] - 2026-09-29
 
 #### Added
@@ -3021,6 +3034,15 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
+### [0.8.0] - 2026-09-25
+
+#### Added
+- Attaches as a hosted worker on agent-protocol 7: the event stream opens with
+  the worker capability and host identity, hands the protocol-7 frames to the
+  worker, stops for good on a terminal worker refusal or a superseded launch,
+  and fences hosted up-calls by the connection and incarnation it holds.
+- States a retained volume's layout version on open and uploads its cutover
+  manifest until Switch confirms it.
 ### [0.7.2] - 2026-10-01
 
 #### Fixed

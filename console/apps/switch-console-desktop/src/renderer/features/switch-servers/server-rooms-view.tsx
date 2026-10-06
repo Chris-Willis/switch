@@ -55,6 +55,7 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
 
   return (
     <ServerPage
+      width={880}
       title="Your Rooms"
       description={`Rooms on ${server?.name ?? 'this server'}. Create one, see who is in it, and where it is bridged.`}
       action={

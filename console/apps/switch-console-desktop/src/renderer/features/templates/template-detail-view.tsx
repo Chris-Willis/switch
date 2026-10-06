@@ -313,7 +313,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
 
   return (
     <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-auto bg-background">
-      <div className="mx-auto w-full max-w-4xl space-y-7 px-8 pb-10">
+      <div className="mx-auto w-full max-w-[820px] space-y-7 px-8 pb-10">
         <PageHeader
           sticky
           title={loaded.name}

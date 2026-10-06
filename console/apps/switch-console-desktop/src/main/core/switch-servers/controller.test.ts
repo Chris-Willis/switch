@@ -10,6 +10,7 @@ const trackEvent = vi.hoisted(() => vi.fn());
 const addServer = vi.hoisted(() => vi.fn());
 const findServerByGatewayUrl = vi.hoisted(() => vi.fn());
 const passwordLogin = vi.hoisted(() => vi.fn());
+const signup = vi.hoisted(() => vi.fn());
 const reconcileServerWorkspaces = vi.hoisted(() => vi.fn());
 const listWorkspacesForServer = vi.hoisted(() => vi.fn());
 const createTenant = vi.hoisted(() => vi.fn());
@@ -17,16 +18,23 @@ const acceptInvitation = vi.hoisted(() => vi.fn());
 // Stubbed rather than reimplemented: what the tests below assert is that the
 // kind reaches the event, not how a row is read as one.
 const serverKindOf = vi.hoisted(() => vi.fn(() => 'remote_managed'));
+const updateServer = vi.hoisted(() => vi.fn());
+const propagateServerApiUrl = vi.hoisted(() => vi.fn());
+const followServerApiUrl = vi.hoisted(() => vi.fn());
 
 // Stub the modules the controller imports that would otherwise pull electron /
 // ssh / agent side effects at load.
 vi.mock('@main/core/agents/agent-defaults', () => ({ suggestAgentDefaults: vi.fn() }));
-vi.mock('@main/core/agents/propagate-server-api-url', () => ({ propagateServerApiUrl: vi.fn() }));
+vi.mock('@main/core/agents/propagate-server-api-url', () => ({ propagateServerApiUrl }));
 vi.mock('@main/core/agents/write-remote-switch-settings', () => ({
   writeRemoteSwitchSettings: vi.fn(),
 }));
 vi.mock('@main/core/agents/write-switch-settings', () => ({ writeSwitchSettings: vi.fn() }));
 vi.mock('@main/core/app/service', () => ({ appService: { openExternal: vi.fn() } }));
+// Holds the embedded agents controllers, and through them electron and the secrets store.
+vi.mock('@main/core/embedded-controller/embedded-controllers', () => ({
+  embeddedControllerService: { forgetServer: vi.fn(), followServerApiUrl },
+}));
 vi.mock('@main/core/fs/impl/ssh-fs', () => ({ SshFileSystem: vi.fn() }));
 vi.mock('@main/core/locations/location-transport', () => ({ sshConnectionIdForHost: vi.fn() }));
 vi.mock('@main/core/ssh/connect/connect-agent-ssh', () => ({ ensureSshConnected: vi.fn() }));
@@ -44,11 +52,17 @@ vi.mock('@main/core/workspaces/workspaces-store', () => ({ listWorkspacesForServ
 vi.mock('@main/lib/logger', () => ({
   log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
-vi.mock('./auth', () => ({ oidcLogin: vi.fn(), passwordLogin }));
+vi.mock('./local-provider-sign-in', () => ({
+  getLocalProviderSignIn: vi.fn(),
+  localProviderAuthPath: vi.fn(),
+  readLocalProviderSignIn: vi.fn(),
+}));
+vi.mock('./auth', () => ({ oidcLogin: vi.fn(), passwordLogin, signup }));
 // Reads this install's own agent rows, and through them the database client.
 vi.mock('./backfill-agent-icons', () => ({ backfillAgentIcons: vi.fn() }));
 // Reaches the encrypted secrets store, and through it the database client.
 vi.mock('./bundled-chat-sign-in', () => ({ bundledChatSignInFor: vi.fn() }));
+vi.mock('./managed-claude-credential', () => ({ deleteManagedClaudeCredential: vi.fn() }));
 vi.mock('./gateway-web', () => ({ openAuthenticatedGatewayPage: vi.fn() }));
 vi.mock('./gateway-client', () => ({
   fetchMe,
@@ -74,7 +88,7 @@ vi.mock('./servers-store', () => ({
   renameServer: vi.fn(),
   serverKindOf,
   setActiveServerId: vi.fn(),
-  updateServer: vi.fn(),
+  updateServer,
 }));
 
 const { switchServersController } = await import('./controller');
@@ -206,6 +220,90 @@ describe('an action a server whose host has gone down cannot take', () => {
       failure_reason: 'invalid_credentials',
     });
   });
+
+  it('reports the sign-up that never left this machine', async () => {
+    await expect(
+      switchServersController.signup({
+        serverId: 'srv',
+        email: 'dev@example.com',
+        password: 'hunter2',
+      })
+    ).rejects.toBeInstanceOf(HostUnreachableError);
+
+    expect(signup).not.toHaveBeenCalled();
+    expect(trackEvent).toHaveBeenCalledWith('server_sign_in', {
+      auth_method: 'signup',
+      server_kind: 'remote_managed',
+      outcome: 'failure',
+      failure_reason: 'unreachable',
+    });
+  });
+
+  it('reports a sign-up by its own reason while the host is up', async () => {
+    managedServerHostBlocked.mockReturnValue(null);
+    signup.mockResolvedValue({
+      success: false,
+      error: { kind: 'email_taken', message: 'That email is already registered.' },
+    });
+
+    await switchServersController.signup({
+      serverId: 'srv',
+      email: 'dev@example.com',
+      password: 'hunter2',
+    });
+
+    expect(trackEvent).toHaveBeenCalledWith('server_sign_in', {
+      auth_method: 'signup',
+      server_kind: 'remote_managed',
+      outcome: 'failure',
+      failure_reason: 'email_taken',
+    });
+  });
+
+  it('reports a sign-up refused by the server’s hourly cap as rate limited', async () => {
+    managedServerHostBlocked.mockReturnValue(null);
+    signup.mockResolvedValue({
+      success: false,
+      error: {
+        kind: 'rate_limited',
+        message: 'Too many sign-ups on this server in the last hour. Try again later.',
+      },
+    });
+
+    await switchServersController.signup({
+      serverId: 'srv',
+      email: 'dev@example.com',
+      password: 'hunter2',
+    });
+
+    expect(trackEvent).toHaveBeenCalledWith('server_sign_in', {
+      auth_method: 'signup',
+      server_kind: 'remote_managed',
+      outcome: 'failure',
+      failure_reason: 'rate_limited',
+    });
+  });
+
+  it('reports a sign-up that worked', async () => {
+    managedServerHostBlocked.mockReturnValue(null);
+    signup.mockResolvedValue({
+      success: true,
+      data: { user: {}, machine: { status: 'starting', reason: null } },
+    });
+
+    await switchServersController.signup({
+      serverId: 'srv',
+      email: 'dev@example.com',
+      password: 'hunter2',
+    });
+
+    expect(trackEvent).toHaveBeenCalledWith('server_sign_in', {
+      auth_method: 'signup',
+      server_kind: 'remote_managed',
+      outcome: 'success',
+      failure_reason: 'none',
+    });
+  });
 });
 
 /**
@@ -242,6 +340,21 @@ describe('reading the account’s workspaces once it is signed in', () => {
     });
 
     expect(reconcileServerWorkspaces).not.toHaveBeenCalled();
+  });
+
+  it('matches the workspaces after a sign-up, which leaves the account signed in', async () => {
+    signup.mockResolvedValue({
+      success: true,
+      data: { user: { id: 'u1' }, machine: { status: 'starting', reason: null } },
+    });
+
+    await switchServersController.signup({
+      serverId: 'srv',
+      email: 'dev@example.com',
+      password: 'hunter2',
+    });
+
+    expect(reconcileServerWorkspaces).toHaveBeenCalledWith('srv');
   });
 
   // The sign-in itself worked; reporting it as a failure would send the user
@@ -439,6 +552,53 @@ describe('acceptInvitation', () => {
       switchServersController.acceptInvitation({ serverId: 'srv', token: 'tok' })
     ).rejects.toThrow('This invitation has expired');
     expect(reconcileServerWorkspaces).not.toHaveBeenCalled();
+  });
+});
+
+describe('editing a server', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    propagateServerApiUrl.mockResolvedValue([]);
+  });
+
+  it('moves this computer’s controller to a new API URL, after the agents', async () => {
+    const order: string[] = [];
+    propagateServerApiUrl.mockImplementation(async () => {
+      order.push('agents');
+      return [];
+    });
+    followServerApiUrl.mockImplementation(async () => {
+      order.push('controller');
+    });
+    getServer.mockResolvedValue(server({ apiUrl: 'http://localhost:8000' }));
+    updateServer.mockResolvedValue(server({ apiUrl: 'https://switch.example.com' }));
+
+    const result = await switchServersController.updateServer({
+      id: 'srv',
+      name: 'S',
+      gatewayUrl: 'http://localhost:3300',
+      apiUrl: 'https://switch.example.com',
+    });
+
+    expect(result.propagation.apiUrlChanged).toBe(true);
+    expect(propagateServerApiUrl).toHaveBeenCalledWith('srv', 'https://switch.example.com');
+    expect(followServerApiUrl).toHaveBeenCalledExactlyOnceWith('srv');
+    expect(order).toEqual(['agents', 'controller']);
+  });
+
+  it('leaves the controller alone when the API URL did not change', async () => {
+    getServer.mockResolvedValue(server({}));
+    updateServer.mockResolvedValue(server({ gatewayUrl: 'http://localhost:3301' }));
+
+    await switchServersController.updateServer({
+      id: 'srv',
+      name: 'S',
+      gatewayUrl: 'http://localhost:3301',
+      apiUrl: 'http://localhost:8000',
+    });
+
+    expect(followServerApiUrl).not.toHaveBeenCalled();
+    expect(propagateServerApiUrl).not.toHaveBeenCalled();
   });
 });
 

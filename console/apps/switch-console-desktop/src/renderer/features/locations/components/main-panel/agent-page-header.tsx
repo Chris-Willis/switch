@@ -75,10 +75,11 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
   const editableIcon = workspaceId !== null && switchAgentId !== null;
 
   return (
-    <header className="flex shrink-0 items-start gap-5 pt-10">
-      <span className="flex size-[88px] shrink-0 items-center justify-center">
-        {editableIcon ? (
+    <AgentHeaderLayout
+      avatar={
+        editableIcon ? (
           <AgentIconPicker
+            serverId={agent?.serverId ?? null}
             name={title}
             iconUrl={remote?.iconUrl ?? null}
             onChange={changeIcon}
@@ -88,26 +89,20 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
           // Not registered on a server yet, so there is nothing to change the
           // icon on — shown, but not offered as editable.
           <AgentAvatar name={title} iconUrl={null} size={88} />
-        )}
-      </span>
-      <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <h1 className="truncate text-3xl font-semibold tracking-tight text-foreground">
-            {title}
-          </h1>
-          {provider && (
-            <Badge variant="secondary" className="h-5 shrink-0 px-2 text-[11px]">
-              {provider}
-            </Badge>
-          )}
-        </div>
-        {showMachineName && (
-          <p className="text-sm text-foreground-muted">
-            Machine name: <span className="font-mono">{agentMachineName}</span>
-          </p>
-        )}
-        {description && <p className="text-sm text-foreground-muted">{description}</p>}
-        <div className="mt-2 flex flex-wrap items-center gap-2">
+        )
+      }
+      title={title}
+      badges={
+        provider && (
+          <Badge variant="secondary" className="h-5 shrink-0 px-2 text-[11px]">
+            {provider}
+          </Badge>
+        )
+      }
+      machineName={showMachineName ? agentMachineName : null}
+      description={description}
+      actions={
+        <>
           <Button
             onClick={() =>
               showCreateSessionModal({ locationId, agentName, entryPoint: 'agent_page' })
@@ -129,8 +124,52 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
               Add to room
             </Button>
           )}
+        </>
+      }
+    />
+  );
+});
+
+/**
+ * The header's arrangement, whatever agent it is about: the mark on the left,
+ * then the title with its badges (which wrap under a title too long to share
+ * its line, rather than shortening it), the agent's own name when the title is a
+ * display name, its description, and the page's actions.
+ */
+export function AgentHeaderLayout({
+  avatar,
+  title,
+  badges,
+  machineName,
+  description,
+  actions,
+}: {
+  avatar: React.ReactNode;
+  title: React.ReactNode;
+  badges: React.ReactNode;
+  /** The agent's name, shown under a display name that differs from it; null to leave it out. */
+  machineName: string | null;
+  description: React.ReactNode;
+  actions: React.ReactNode;
+}) {
+  return (
+    <header className="flex shrink-0 items-start gap-5 pt-10">
+      <span className="flex size-[88px] shrink-0 items-center justify-center">{avatar}</span>
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1.5">
+          <h1 className="max-w-full shrink-0 text-3xl font-semibold tracking-tight [overflow-wrap:anywhere] text-foreground">
+            {title}
+          </h1>
+          {badges}
         </div>
+        {machineName !== null && (
+          <p className="text-sm text-foreground-muted">
+            Machine name: <span className="font-mono">{machineName}</span>
+          </p>
+        )}
+        {description && <p className="text-sm text-foreground-muted">{description}</p>}
+        <div className="mt-2 flex flex-wrap items-center gap-2">{actions}</div>
       </div>
     </header>
   );
-});
+}

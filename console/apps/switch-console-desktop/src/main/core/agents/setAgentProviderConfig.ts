@@ -1,7 +1,7 @@
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import { getAgentLocation, getRemoteAgentLocation } from './agent-location';
 import { getAgentById } from './getAgentById';
-import { ensureRemoteWatcher } from './remote-watcher';
+import { ensureRemoteWatcher, refreshLocalWatcher } from './remote-watcher';
 import { removeAgentLaunchProfile } from './remove-launch-profile';
 import { updateAgent } from './updateAgent';
 
@@ -49,6 +49,9 @@ export async function setAgentProviderConfig(params: AgentProviderConfigParams):
     await removeAgentLaunchProfile(agent, location, agent.name ?? agent.id);
   }
 
-  if ((await getRemoteAgentLocation(agent)) === null) return;
+  if ((await getRemoteAgentLocation(agent)) === null) {
+    await refreshLocalWatcher(agent.id);
+    return;
+  }
   await ensureRemoteWatcher(agent.id);
 }

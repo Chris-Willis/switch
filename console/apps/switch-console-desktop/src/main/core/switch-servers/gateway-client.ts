@@ -1,3 +1,5 @@
+import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
+import { z } from 'zod';
 import type { KnownAgentType } from '@main/core/agents/known-agent-type';
 import {
   managedServerHostBlocked,
@@ -5,9 +7,26 @@ import {
   noteManagedServerUnanswered,
 } from '@main/core/managed-switch-server/managed-server-status';
 import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
+import { cloudLaunchSchema, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
+import type { AdvancedConfigField } from '@shared/core/managed-agents/managed-agents';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
+import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
+import type {
+  ClaudeCredentialKind,
+  ClaudeConnection,
+} from '@shared/core/switch-servers/claude-credential';
+import type {
+  CloudLaunchConfiguration,
+  CloudLaunchInput,
+} from '@shared/core/switch-servers/cloud-launch';
+import { connectionCatalogSchema } from '@shared/core/switch-servers/connection-catalog';
+import {
+  gitHubConnectionSchema,
+  gitHubFlowSchema,
+} from '@shared/core/switch-servers/github-connection';
 import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
+import { cloudProviderConnectionSchema } from '@shared/core/switch-servers/provider-credential';
 import type {
   AddressingPolicy,
   BridgeConfigField,
@@ -131,7 +150,14 @@ export class GatewayError extends Error {
      * envelope. Present only when the body carried one. Prefer this over
      * `message` when showing a failure to the user: `message` is prefixed with
      * the raw status line, which reads as noise in a form. */
-    readonly detail?: string
+    readonly detail?: string,
+    /** The refusal's machine-readable name, from a body such as
+     * `{"detail": …, "code": "worker_waking"}`. Present only when the body
+     * carried one. */
+    readonly code?: string,
+    /** The response body as it came, for a caller that reads an envelope other
+     * than FastAPI's (agent management answers `{"error": {...}}`). */
+    readonly body?: string
   ) {
     super(message);
     this.name = 'GatewayError';
@@ -149,6 +175,17 @@ function parseErrorDetail(body: string): string | undefined {
   try {
     const parsed = JSON.parse(body) as { detail?: unknown };
     return typeof parsed.detail === 'string' ? parsed.detail : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The `code` beside `detail` in a coded refusal, or undefined without one. */
+function parseErrorCode(body: string): string | undefined {
+  if (!body) return undefined;
+  try {
+    const parsed = JSON.parse(body) as { code?: unknown };
+    return typeof parsed.code === 'string' ? parsed.code : undefined;
   } catch {
     return undefined;
   }
@@ -210,10 +247,15 @@ async function silentLogin(server: SwitchServer): Promise<string | null> {
   return (await getSessionCookie(server.id)) ?? minted;
 }
 
-async function gatewayFetch(
+/**
+ * One authenticated call to the gateway, answered with whatever it returned:
+ * a refusal is the caller's to read, and a streaming body is left open. Only
+ * a rejected session is raised, as for every gateway call.
+ */
+export async function gatewayRequest(
   server: SwitchServer,
   path: string,
-  options: FetchOptions
+  options: FetchOptions & { signal: AbortSignal }
 ): Promise<Response> {
   // A remote-managed server's gateway is only reachable through the SSH forward.
   // Once the host is known unreachable the forward is dead, so a fetch can only
@@ -247,7 +289,7 @@ async function gatewayFetch(
         body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
         // We attach the cookie explicitly; don't let the runtime manage a jar.
         redirect: 'manual',
-        signal: AbortSignal.timeout(30_000),
+        signal: options.signal,
       });
     } catch (cause) {
       noteManagedServerUnanswered(server);
@@ -275,13 +317,27 @@ async function gatewayFetch(
   if (response.status === 401) {
     throw new GatewayError('unauthorized', 'Switch session expired — please sign in again.', 401);
   }
+  return response;
+}
+
+export async function gatewayFetch(
+  server: SwitchServer,
+  path: string,
+  options: FetchOptions
+): Promise<Response> {
+  const response = await gatewayRequest(server, path, {
+    ...options,
+    signal: AbortSignal.timeout(30_000),
+  });
   if (!response.ok) {
     const body = await response.text().catch(() => '');
     throw new GatewayError(
       'http',
       `Switch gateway returned ${response.status}${body ? `: ${body}` : ''}`,
       response.status,
-      parseErrorDetail(body)
+      parseErrorDetail(body),
+      parseErrorCode(body),
+      body
     );
   }
   return response;
@@ -293,11 +349,13 @@ export async function fetchAuthConfig(server: SwitchServer): Promise<SwitchAuthC
     password_login_enabled: boolean;
     oidc_enabled: boolean;
     oidc_provider_label: string | null;
+    signup_enabled?: boolean;
   };
   return {
     passwordLoginEnabled: json.password_login_enabled,
     oidcEnabled: json.oidc_enabled,
     oidcProviderLabel: json.oidc_provider_label,
+    signupEnabled: json.signup_enabled === true,
   };
 }
 
@@ -956,6 +1014,64 @@ export async function updateAddressingPolicy(
 }
 
 /**
+ * An agent's "can manage agents" capability, and whether the server runs agent
+ * management at all (with it off the capability does nothing, and is not worth
+ * showing). The capability lets the agent list its owner's machines and managed
+ * agents and create managed agents on them.
+ */
+export async function fetchAgentManagementAccess(
+  server: SwitchServer,
+  agentId: string
+): Promise<{ available: boolean; canManageAgents: boolean }> {
+  const res = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}`, {
+    authenticated: true,
+  });
+  const json = (await res.json()) as { can_manage_agents?: boolean };
+  let available = true;
+  try {
+    await managementFetch(server, '/controllers', { authenticated: true });
+  } catch (error) {
+    if (!(error instanceof AgentManagementUnavailableError)) throw error;
+    available = false;
+  }
+  return { available, canManageAgents: json.can_manage_agents === true };
+}
+
+/**
+ * Turn an agent's "can manage agents" capability on or off
+ * (`PUT /agents/{id}/can-manage-agents`). Only the agent's owner may; anyone
+ * else's request surfaces as a `GatewayError`.
+ */
+export async function updateCanManageAgents(
+  server: SwitchServer,
+  agentId: string,
+  enabled: boolean
+): Promise<void> {
+  await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}/can-manage-agents`, {
+    authenticated: true,
+    method: 'PUT',
+    body: { enabled },
+  });
+}
+
+/**
+ * One page of the icons the server generates for an agent called `name`
+ * (`GET /agents/icon-choices`): page 0 leads with the one an agent of that
+ * name gets when nobody picks an icon.
+ */
+export async function fetchAgentIconChoices(
+  server: SwitchServer,
+  name: string,
+  page: number
+): Promise<string[]> {
+  const query = new URLSearchParams({ name, page: String(page) });
+  const res = await gatewayFetch(server, `/agents/icon-choices?${query.toString()}`, {
+    authenticated: true,
+  });
+  return ((await res.json()) as { choices: string[] }).choices;
+}
+
+/**
  * Set (or clear, with `iconUrl = null`) an agent's icon (`PUT /agents/{id}/icon`).
  * Only the agent's owner (or an admin) may change it; a non-owner request
  * surfaces as a `GatewayError`, as does a URL the gateway rejects — it accepts
@@ -973,6 +1089,38 @@ export async function updateAgentIcon(
     authenticated: true,
     method: 'PUT',
     body: { icon_url: iconUrl },
+  });
+  return toRemoteAgentSummary((await res.json()) as AgentSummaryJson);
+}
+
+/** Change an agent's description (`PUT /gateway/agents/{id}/description`). Returns the agent as the server now holds it. */
+export async function updateAgentDescription(
+  server: SwitchServer,
+  agentId: string,
+  description: string
+): Promise<RemoteAgentSummary> {
+  const res = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}/description`, {
+    authenticated: true,
+    method: 'PUT',
+    body: { description },
+  });
+  return toRemoteAgentSummary((await res.json()) as AgentSummaryJson);
+}
+
+/**
+ * Set (or clear, with `displayName = null`) an agent's display name
+ * (`PUT /agents/{id}/display-name`). Only the agent's owner (or an admin) may
+ * change it; a refusal surfaces as a `GatewayError`.
+ */
+export async function updateAgentDisplayName(
+  server: SwitchServer,
+  agentId: string,
+  displayName: string | null
+): Promise<RemoteAgentSummary> {
+  const res = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}/display-name`, {
+    authenticated: true,
+    method: 'PUT',
+    body: { display_name: displayName },
   });
   return toRemoteAgentSummary((await res.json()) as AgentSummaryJson);
 }
@@ -2100,4 +2248,834 @@ export async function createRoom(
     },
   });
   return mapRoomSummary((await res.json()) as RoomSummaryJson);
+}
+
+async function readClaudeConnection(response: Response): Promise<ClaudeConnection> {
+  const value: unknown = await response.json();
+  if (typeof value === 'object' && value !== null && 'status' in value) {
+    if (value.status === 'not_connected') return { status: 'not_connected' };
+    if (
+      value.status === 'connected' &&
+      'kind' in value &&
+      (value.kind === 'api-key' || value.kind === 'setup-token') &&
+      'verified_at' in value &&
+      typeof value.verified_at === 'string' &&
+      Number.isFinite(Date.parse(value.verified_at))
+    ) {
+      return { status: 'connected', kind: value.kind, verified_at: value.verified_at };
+    }
+  }
+  throw new GatewayError('http', 'The server returned an invalid Claude connection status.');
+}
+
+export async function getClaudeConnection(server: SwitchServer): Promise<ClaudeConnection> {
+  const response = await gatewayFetch(server, '/provider-connections/claude', {
+    authenticated: true,
+  });
+  return readClaudeConnection(response);
+}
+
+export async function createCloudLaunch(
+  server: SwitchServer,
+  input: CloudLaunchInput & { definition: string }
+) {
+  if (new URL(server.gatewayUrl).protocol !== 'https:')
+    throw new Error('Cloud agents require an HTTPS Switch server.');
+  return cloudLaunchSchema.parse(
+    await (
+      await gatewayFetch(server, '/hosted-launches', {
+        authenticated: true,
+        method: 'POST',
+        body: input,
+      })
+    ).json()
+  );
+}
+
+const cloudConfigurationSchema = z.object({
+  description: z.string(),
+  instructions: z.string(),
+  definition_attributes: z.record(z.string(), z.unknown()),
+});
+
+export async function getCloudLaunchConfiguration(
+  server: SwitchServer,
+  requestId: string
+): Promise<CloudLaunchConfiguration> {
+  return cloudConfigurationSchema.parse(
+    await (
+      await gatewayFetch(
+        server,
+        `/hosted-launches/${encodeURIComponent(requestId)}/configuration`,
+        { authenticated: true }
+      )
+    ).json()
+  ) as CloudLaunchConfiguration;
+}
+
+/** Replace a launch's instructions and definition; Core applies them at the agent's next start. */
+export async function updateCloudLaunchConfiguration(
+  server: SwitchServer,
+  requestId: string,
+  body: Omit<CloudLaunchConfiguration, 'description'> & { definition: string }
+): Promise<CloudLaunchConfiguration> {
+  return cloudConfigurationSchema.parse(
+    await (
+      await gatewayFetch(
+        server,
+        `/hosted-launches/${encodeURIComponent(requestId)}/configuration`,
+        { authenticated: true, method: 'PUT', body }
+      )
+    ).json()
+  ) as CloudLaunchConfiguration;
+}
+
+export async function cloudLifecycle(
+  server: SwitchServer,
+  requestId: string,
+  action: 'stop' | 'start' | 'restart' | 'remove' | 'retry',
+  revision: number
+) {
+  return cloudLaunchSchema.extend({ access_warning: z.string().nullable().optional() }).parse(
+    await (
+      await gatewayFetch(server, `/hosted-launches/${encodeURIComponent(requestId)}/lifecycle`, {
+        authenticated: true,
+        method: 'POST',
+        body: { action, revision },
+      })
+    ).json()
+  );
+}
+
+export async function cloudMachineLifecycle(
+  server: SwitchServer,
+  machineId: string,
+  action: 'stop' | 'start' | 'retry',
+  revision: number
+) {
+  return z.object({ machine: cloudMachineSchema }).parse(
+    await (
+      await gatewayFetch(server, `/hosted-machines/${encodeURIComponent(machineId)}/lifecycle`, {
+        authenticated: true,
+        method: 'POST',
+        body: { action, revision },
+      })
+    ).json()
+  ).machine;
+}
+
+/**
+ * Claim and start the signed-in user's cloud machine so it is warm before an
+ * agent needs it. Idempotent on the server. A refusal (409 none free, 503 not
+ * offered) is raised with the server's own explanation.
+ */
+export async function ensureCloudMachine(server: SwitchServer) {
+  let response: Response;
+  try {
+    response = await gatewayFetch(server, '/hosted-machines/ensure', {
+      authenticated: true,
+      method: 'POST',
+    });
+  } catch (error) {
+    if (error instanceof GatewayError && error.detail) throw new Error(error.detail);
+    throw error;
+  }
+  return cloudMachineSchema.parse(await response.json());
+}
+
+export async function connectClaude(
+  server: SwitchServer,
+  kind: ClaudeCredentialKind,
+  credential: string
+): Promise<ClaudeConnection> {
+  if (new URL(server.gatewayUrl).protocol !== 'https:') {
+    throw new GatewayError('http', 'Claude credentials require an HTTPS Switch server.');
+  }
+  const response = await gatewayFetch(server, '/provider-connections/claude', {
+    authenticated: true,
+    method: 'PUT',
+    body: { kind, credential },
+  });
+  return readClaudeConnection(response);
+}
+
+export async function disconnectClaude(server: SwitchServer): Promise<void> {
+  await gatewayFetch(server, '/provider-connections/claude', {
+    authenticated: true,
+    method: 'DELETE',
+  });
+}
+
+export async function getConnectionCatalog(server: SwitchServer) {
+  return connectionCatalogSchema.parse(
+    await (
+      await gatewayFetch(server, '/provider-connections/catalog', { authenticated: true })
+    ).json()
+  ).connections;
+}
+export async function getGitHubConnection(server: SwitchServer) {
+  return gitHubConnectionSchema.parse(
+    await (
+      await gatewayFetch(server, '/provider-connections/github', { authenticated: true })
+    ).json()
+  );
+}
+export async function startGitHubConnection(
+  server: SwitchServer,
+  input: { port: number; state: string; completion_secret: string }
+) {
+  if (new URL(server.gatewayUrl).protocol !== 'https:')
+    throw new Error('GitHub connections require HTTPS.');
+  const value = z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{43}$/), url: z.string() }).parse(
+    await (
+      await gatewayFetch(server, '/provider-connections/github/flows', {
+        authenticated: true,
+        method: 'POST',
+        body: input,
+      })
+    ).json()
+  );
+  const url = new URL(value.url);
+  if (
+    url.origin !== new URL(server.gatewayUrl).origin ||
+    url.pathname !== '/gateway/provider-connections/github/authorize' ||
+    url.searchParams.get('state') !== value.id ||
+    url.username ||
+    url.password
+  )
+    throw new Error('The server returned an invalid GitHub authorization URL.');
+  return value;
+}
+export async function getGitHubFlow(server: SwitchServer, id: string) {
+  return gitHubFlowSchema.parse(
+    await (
+      await gatewayFetch(server, `/provider-connections/github/flows/${encodeURIComponent(id)}`, {
+        authenticated: true,
+      })
+    ).json()
+  );
+}
+export async function confirmGitHubConnection(
+  server: SwitchServer,
+  id: string,
+  completionSecret: string
+) {
+  const response = await gatewayFetch(
+    server,
+    `/provider-connections/github/flows/${encodeURIComponent(id)}/confirm`,
+    {
+      authenticated: true,
+      method: 'POST',
+      body: { completion_secret: completionSecret },
+    }
+  );
+  if (response.status === 204) return { warning: null };
+  return z.object({ warning: z.string().nullable() }).parse(await response.json());
+}
+export async function completeGitHubConnection(
+  server: SwitchServer,
+  id: string,
+  code: string,
+  completionSecret: string
+) {
+  await gatewayFetch(
+    server,
+    `/provider-connections/github/flows/${encodeURIComponent(id)}/complete`,
+    {
+      authenticated: true,
+      method: 'POST',
+      body: { code, completion_secret: completionSecret },
+    }
+  );
+}
+export async function cancelGitHubConnection(server: SwitchServer, id: string) {
+  await gatewayFetch(server, `/provider-connections/github/flows/${encodeURIComponent(id)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
+}
+export async function disconnectGitHub(server: SwitchServer) {
+  const response = await gatewayFetch(server, '/provider-connections/github', {
+    authenticated: true,
+    method: 'DELETE',
+  });
+  if (response.status === 204) return { warning: null };
+  return z.object({ warning: z.string().nullable() }).parse(await response.json());
+}
+
+export async function getCloudProviderConnection(server: SwitchServer, provider: AgentProviderId) {
+  return cloudProviderConnectionSchema.parse(
+    await (
+      await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
+        authenticated: true,
+      })
+    ).json()
+  );
+}
+export async function connectCloudProvider(
+  server: SwitchServer,
+  provider: Exclude<AgentProviderId, 'claude'>,
+  kind: 'api-key' | 'auth-json',
+  credential: string
+) {
+  if (new URL(server.gatewayUrl).protocol !== 'https:')
+    throw new Error('Provider credentials require HTTPS.');
+  return cloudProviderConnectionSchema.parse(
+    await (
+      await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
+        authenticated: true,
+        method: 'PUT',
+        body: { kind, credential },
+      })
+    ).json()
+  );
+}
+export async function disconnectCloudProvider(
+  server: SwitchServer,
+  provider: Exclude<AgentProviderId, 'claude'>
+) {
+  await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
+}
+
+// ── Agent management: controllers and the agents placed on them ─────────────
+
+/**
+ * The server does not run agent management: its `/gateway/management` routes
+ * are not mounted (`AGENT_MANAGEMENT_ENABLED` is off), so they answer a bare
+ * 404 rather than one in the management error envelope.
+ */
+export class AgentManagementUnavailableError extends Error {
+  constructor(server: SwitchServer) {
+    super(`${server.name} does not have agent management turned on.`);
+    this.name = 'AgentManagementUnavailableError';
+  }
+}
+
+type ManagementErrorEnvelope = { error: { code: string; message: string } };
+
+function managementEnvelope(body: string | undefined): ManagementErrorEnvelope['error'] | null {
+  if (!body) return null;
+  try {
+    const parsed = JSON.parse(body) as Partial<ManagementErrorEnvelope>;
+    const error = parsed.error;
+    return error && typeof error.code === 'string' && typeof error.message === 'string'
+      ? { code: error.code, message: error.message }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The management reason code a failed call carried, or null when it carried none. */
+export function managementErrorCode(error: unknown): string | null {
+  return error instanceof GatewayError ? (managementEnvelope(error.body)?.code ?? null) : null;
+}
+
+/** A failed management call, said the way the server explained it where it did. */
+export function managementErrorMessage(error: unknown): string {
+  if (error instanceof GatewayError) {
+    const envelope = managementEnvelope(error.body);
+    if (envelope) return envelope.message;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function managementFetch(
+  server: SwitchServer,
+  path: string,
+  options: FetchOptions
+): Promise<Response> {
+  try {
+    return await gatewayFetch(server, `/management${path}`, options);
+  } catch (error) {
+    if (
+      error instanceof GatewayError &&
+      error.status === 404 &&
+      managementEnvelope(error.body) === null
+    )
+      throw new AgentManagementUnavailableError(server);
+    throw error;
+  }
+}
+
+export type ControllerPlatform = { os: string; arch: string; os_version: string };
+
+/** A controller as the owner's list shows it. */
+export type ManagementController = {
+  id: string;
+  name: string;
+  /** What its owner says the machine is for; null when none was given. */
+  description: string | null;
+  kind: string;
+  state: 'online' | 'unknown' | 'revoked';
+  lastSeenAt: string | null;
+  revokedAt: string | null;
+  /** Each provider as the controller last reported it; empty before it has reported. */
+  providers: ControllerProviderReport[];
+  /**
+   * The absolute directory the controller makes agents' workspaces in, as it
+   * last reported; null before it has, or when it or the server predates it.
+   */
+  workspacesDir: string | null;
+};
+
+/** A provider as a controller reports it: installed, and whether its login works. */
+export type ControllerProviderReport = {
+  /** The Switch definition provider id (`claude`, `codex`, …). */
+  provider: string;
+  installed: boolean;
+  auth: 'ok' | 'expired' | 'missing' | 'unknown';
+};
+
+/** A managed agent as the owner's list shows it. */
+export type ManagedAgent = {
+  agentId: string;
+  name: string;
+  displayName: string | null;
+  iconUrl: string | null;
+  description: string;
+  controllerId: string | null;
+  desiredState: 'running' | 'stopped';
+  revision: number;
+  provider: string;
+  model: string | null;
+  /** The provider's advanced configuration, keyed by its field keys; unset fields are absent. */
+  advancedConfig: Record<string, AdvancedConfigValue>;
+  instructions: string;
+  isolation: 'shared' | 'isolated';
+  /**
+   * The working directory on its machine. The server fills in the machine's
+   * workspace for the agent; null only when the machine has not said where that is.
+   */
+  directory: string | null;
+  autoApprove: boolean;
+  status: {
+    process: string;
+    attached: boolean;
+    reason: string | null;
+    detail: string | null;
+    /** The absolute working directory it runs in; null until the machine resolved one. */
+    directory: string | null;
+  } | null;
+};
+
+type ManagementControllerJson = {
+  id: string;
+  name: string;
+  description: string | null;
+  kind: string;
+  state: 'online' | 'unknown' | 'revoked';
+  last_seen_at: string | null;
+  revoked_at: string | null;
+  status?: unknown;
+  workspaces_dir?: string | null;
+};
+
+type ManagedAgentJson = {
+  agent_id: string;
+  name: string;
+  display_name: string | null;
+  icon_url?: string | null;
+  controller_id: string | null;
+  desired_state: 'running' | 'stopped';
+  description?: string;
+  revision?: number;
+  definition: {
+    provider?: unknown;
+    model?: unknown;
+    advanced_config?: unknown;
+    instructions?: unknown;
+    directory?: unknown;
+    auto_approve?: unknown;
+    isolation?: unknown;
+  } | null;
+  status: {
+    process: string;
+    attached: boolean;
+    reason?: string | null;
+    detail?: string | null;
+    directory?: string | null;
+  } | null;
+};
+
+/**
+ * Enroll this Console as a controller of kind `console`, owned by the
+ * signed-in user (`POST /gateway/management/controllers`). The credential is a
+ * secret: keep it in the main process and in the encrypted secrets store.
+ */
+export async function enrollConsoleController(
+  server: SwitchServer,
+  body: { name: string; platform: ControllerPlatform; version: string }
+): Promise<{ controllerId: string; credential: string }> {
+  const res = await managementFetch(server, '/controllers', {
+    authenticated: true,
+    method: 'POST',
+    body: { name: body.name, kind: 'console', platform: body.platform, version: body.version },
+  });
+  const json = (await res.json()) as { controller_id: string; credential: string };
+  return { controllerId: json.controller_id, credential: json.credential };
+}
+
+/**
+ * A one-time code a headless controller enrolls with
+ * (`POST /gateway/management/enrollment-codes`): single use, valid for ten
+ * minutes. A secret until it is spent.
+ */
+export async function issueEnrollmentCode(server: SwitchServer): Promise<string> {
+  const res = await managementFetch(server, '/enrollment-codes', {
+    authenticated: true,
+    method: 'POST',
+  });
+  return ((await res.json()) as { code: string }).code;
+}
+
+/** The signed-in user's controllers (`GET /gateway/management/controllers`). */
+export async function fetchManagementControllers(
+  server: SwitchServer
+): Promise<ManagementController[]> {
+  const res = await managementFetch(server, '/controllers', { authenticated: true });
+  return ((await res.json()) as ManagementControllerJson[]).map((json) => ({
+    id: json.id,
+    name: json.name,
+    description: json.description ?? null,
+    kind: json.kind,
+    state: json.state,
+    lastSeenAt: json.last_seen_at,
+    revokedAt: json.revoked_at,
+    providers: providerReports(json.status),
+    workspacesDir: json.workspaces_dir ?? null,
+  }));
+}
+
+const PROVIDER_AUTH_STATES: readonly ControllerProviderReport['auth'][] = [
+  'ok',
+  'expired',
+  'missing',
+  'unknown',
+];
+
+/**
+ * The providers in a controller's last status report. An entry that does not
+ * say which provider it is, or whether it is installed, is left out; a login
+ * state this build does not know reads as `unknown`, never as working.
+ */
+function providerReports(status: unknown): ControllerProviderReport[] {
+  if (!status || typeof status !== 'object') return [];
+  const providers = (status as { providers?: unknown }).providers;
+  if (!Array.isArray(providers)) return [];
+  return providers.flatMap((entry: unknown): ControllerProviderReport[] => {
+    if (!entry || typeof entry !== 'object') return [];
+    const { provider, installed, auth } = entry as Record<string, unknown>;
+    if (typeof provider !== 'string' || typeof installed !== 'boolean') return [];
+    const known = PROVIDER_AUTH_STATES.find((state) => state === auth);
+    return [{ provider, installed, auth: known ?? 'unknown' }];
+  });
+}
+
+export type { AdvancedConfigValue };
+
+const advancedConfigSchema = z.record(
+  z.string(),
+  z.union([z.string(), z.number(), z.boolean(), z.array(z.string())])
+);
+
+/**
+ * A definition's advanced configuration as the server holds it. Absent reads
+ * as none set; a value of a shape no field takes is refused rather than
+ * dropped, since saving the definition back would lose it.
+ */
+function advancedConfigOf(agentId: string, value: unknown): Record<string, AdvancedConfigValue> {
+  if (value === undefined || value === null) return {};
+  const parsed = advancedConfigSchema.safeParse(value);
+  if (parsed.success) return parsed.data;
+  throw new Error(
+    `The server sent an advanced configuration for managed agent ${agentId} that Console cannot read: ${parsed.error.message}`
+  );
+}
+
+function toManagedAgent(json: ManagedAgentJson): ManagedAgent {
+  return {
+    agentId: json.agent_id,
+    name: json.name,
+    displayName: json.display_name,
+    iconUrl: json.icon_url ?? null,
+    description: json.description ?? '',
+    controllerId: json.controller_id,
+    desiredState: json.desired_state,
+    revision: json.revision ?? 0,
+    provider: typeof json.definition?.provider === 'string' ? json.definition.provider : 'unknown',
+    model: typeof json.definition?.model === 'string' ? json.definition.model : null,
+    advancedConfig: advancedConfigOf(json.agent_id, json.definition?.advanced_config),
+    instructions:
+      typeof json.definition?.instructions === 'string' ? json.definition.instructions : '',
+    isolation: json.definition?.isolation === 'isolated' ? 'isolated' : 'shared',
+    directory: typeof json.definition?.directory === 'string' ? json.definition.directory : null,
+    autoApprove: json.definition?.auto_approve === true,
+    status: json.status
+      ? {
+          process: json.status.process,
+          attached: json.status.attached,
+          reason: json.status.reason ?? null,
+          detail: json.status.detail ?? null,
+          directory: json.status.directory ?? null,
+        }
+      : null,
+  };
+}
+
+/** The signed-in user's managed agents (`GET /gateway/management/agents`). */
+export async function fetchManagedAgents(server: SwitchServer): Promise<ManagedAgent[]> {
+  const res = await managementFetch(server, '/agents', { authenticated: true });
+  return ((await res.json()) as ManagedAgentJson[]).map(toManagedAgent);
+}
+
+/** One managed agent (`GET /gateway/management/agents/{id}`), or null when it is not managed. */
+export async function fetchManagedAgent(
+  server: SwitchServer,
+  agentId: string
+): Promise<ManagedAgent | null> {
+  try {
+    const res = await managementFetch(server, `/agents/${encodeURIComponent(agentId)}`, {
+      authenticated: true,
+    });
+    return toManagedAgent((await res.json()) as ManagedAgentJson);
+  } catch (error) {
+    if (managementErrorCode(error) === 'not_found') return null;
+    throw error;
+  }
+}
+
+/**
+ * Change a managed agent's settings (`PATCH /gateway/management/agents/{id}`):
+ * the definition fields given replace those on the server, the rest stay as the
+ * server holds them, including fields this build does not know. Switch checks
+ * the result against its machine and refuses it whole.
+ */
+export async function updateManagedAgent(
+  server: SwitchServer,
+  agentId: string,
+  changes: {
+    definition: Record<string, unknown> | null;
+    /** Absent leaves the machine as it is. */
+    controllerId?: string;
+  }
+): Promise<void> {
+  const path = `/agents/${encodeURIComponent(agentId)}`;
+  const body: Record<string, unknown> = {};
+  if (changes.definition !== null) {
+    const res = await managementFetch(server, path, { authenticated: true });
+    const current = ((await res.json()) as { definition: Record<string, unknown> | null })
+      .definition;
+    if (!current) throw new Error(`The server holds no definition for managed agent ${agentId}.`);
+    body.definition = { ...current, ...changes.definition };
+  }
+  if (changes.controllerId !== undefined) body.controller_id = changes.controllerId;
+  if (Object.keys(body).length === 0) return;
+  await managementFetch(server, path, { authenticated: true, method: 'PATCH', body });
+}
+
+const advancedConfigFieldSchema = z.object({
+  key: z.string().min(1),
+  label: z.string(),
+  type: z.enum(['text', 'textarea', 'select', 'list', 'number', 'boolean']),
+  help: z.string().nullable(),
+  placeholder: z.string().nullable(),
+  options: z.array(z.object({ value: z.string(), label: z.string() })).nullable(),
+  catalogue: z
+    .discriminatedUnion('kind', [
+      z.object({ kind: z.literal('model') }),
+      z.object({ kind: z.literal('model-variant'), model_field: z.string().min(1) }),
+    ])
+    .nullable(),
+});
+
+const advancedConfigSchemaResponse = z.object({
+  providers: z.record(z.string(), z.object({ fields: z.array(advancedConfigFieldSchema) })),
+});
+
+/**
+ * Each provider's advanced configuration fields, keyed by provider
+ * (`GET /gateway/management/advanced-config`): what a managed agent's
+ * `advanced_config` is checked against.
+ */
+export async function fetchAdvancedConfigSchema(
+  server: SwitchServer
+): Promise<Record<string, AdvancedConfigField[]>> {
+  const res = await managementFetch(server, '/advanced-config', { authenticated: true });
+  const { providers } = advancedConfigSchemaResponse.parse(await res.json());
+  return Object.fromEntries(
+    Object.entries(providers).map(([provider, { fields }]) => [
+      provider,
+      fields.map(
+        (field): AdvancedConfigField => ({
+          key: field.key,
+          label: field.label,
+          type: field.type,
+          ...(field.help !== null ? { help: field.help } : {}),
+          ...(field.placeholder !== null ? { placeholder: field.placeholder } : {}),
+          ...(field.options !== null ? { options: field.options } : {}),
+          ...(field.catalogue === null
+            ? {}
+            : field.catalogue.kind === 'model'
+              ? { catalogue: { kind: 'model' } }
+              : { catalogue: { kind: 'model-variant', modelField: field.catalogue.model_field } }),
+        })
+      ),
+    ])
+  );
+}
+
+/** The v1 managed agent definition, as `PUT`/`PATCH …/management/agents/{id}` take it. */
+export type ManagedAgentDefinitionBody = {
+  provider: string;
+  model: string | null;
+  /** Keyed by the provider's advanced configuration fields; unset fields are absent. */
+  advanced_config: Record<string, AdvancedConfigValue>;
+  instructions: string;
+  auto_approve: boolean;
+  directory: string | null;
+};
+
+/**
+ * Adopt an agent the signed-in user owns onto a controller, or replace its
+ * definition and placement (`PUT /gateway/management/agents/{id}`).
+ */
+export async function putManagedAgent(
+  server: SwitchServer,
+  agentId: string,
+  body: {
+    controller_id: string | null;
+    desired_state: 'running' | 'stopped';
+    definition: ManagedAgentDefinitionBody;
+  }
+): Promise<void> {
+  await managementFetch(server, `/agents/${encodeURIComponent(agentId)}`, {
+    authenticated: true,
+    method: 'PUT',
+    body,
+  });
+}
+
+/**
+ * Register a new agent for the signed-in user and place it on one of their
+ * controllers (`POST /gateway/management/agents`). Switch checks the placement
+ * before registering anything, so a refusal leaves no agent behind. Returns the
+ * new agent's Switch id.
+ */
+export async function createManagedAgent(
+  server: SwitchServer,
+  body: {
+    name: string;
+    description: string;
+    display_name: string | null;
+    /** Null for the icon the server generates from the name. */
+    icon_url: string | null;
+    controller_id: string;
+    desired_state: 'running' | 'stopped';
+    definition: ManagedAgentDefinitionBody;
+  }
+): Promise<string> {
+  const res = await managementFetch(server, '/agents', {
+    authenticated: true,
+    method: 'POST',
+    body,
+  });
+  return ((await res.json()) as ManagedAgentJson).agent_id;
+}
+
+/** Change only a managed agent's desired state (`PATCH /gateway/management/agents/{id}`). */
+export async function setManagedAgentDesiredState(
+  server: SwitchServer,
+  agentId: string,
+  desiredState: 'running' | 'stopped'
+): Promise<void> {
+  await managementFetch(server, `/agents/${encodeURIComponent(agentId)}`, {
+    authenticated: true,
+    method: 'PATCH',
+    body: { desired_state: desiredState },
+  });
+}
+
+/**
+ * Stop managing an agent (`DELETE /gateway/management/agents/{id}`): its
+ * controller stops it, and the agent itself stays. `already_gone` when it was
+ * not managed.
+ */
+export async function deleteManagedAgent(
+  server: SwitchServer,
+  agentId: string
+): Promise<'released' | 'already_gone'> {
+  try {
+    await managementFetch(server, `/agents/${encodeURIComponent(agentId)}`, {
+      authenticated: true,
+      method: 'DELETE',
+    });
+    return 'released';
+  } catch (error) {
+    if (managementErrorCode(error) === 'not_found') return 'already_gone';
+    throw error;
+  }
+}
+
+type ApiKeyJson = { id: string; label: string; type: string };
+
+/**
+ * An agent's own API key, revealed through the owner's session
+ * (`GET /gateway/api-keys`, then `…/{id}/reveal`). An agent's key is labelled
+ * with the agent's name; exactly one key of type `agent` must carry it, since
+ * revealing the wrong one would hand this agent another's identity.
+ */
+export async function revealAgentApiKey(server: SwitchServer, agentName: string): Promise<string> {
+  const res = await gatewayFetch(server, '/api-keys', { authenticated: true });
+  const matches = ((await res.json()) as ApiKeyJson[]).filter(
+    (key) => key.type === 'agent' && key.label === agentName
+  );
+  if (matches.length !== 1)
+    throw new Error(
+      matches.length === 0
+        ? `Switch lists no API key for agent ${agentName} that you can reveal.`
+        : `Switch lists ${matches.length} API keys labelled ${agentName}, so which one is this agent's cannot be told.`
+    );
+  const revealed = await gatewayFetch(
+    server,
+    `/api-keys/${encodeURIComponent(matches[0]!.id)}/reveal`,
+    {
+      authenticated: true,
+    }
+  );
+  return ((await revealed.json()) as { key: string }).key;
+}
+
+/**
+ * Rename a controller and/or change its description
+ * (`PATCH /gateway/management/controllers/{id}`). A key left out is left as it
+ * is; `description: null` clears it.
+ */
+export async function updateManagementController(
+  server: SwitchServer,
+  controllerId: string,
+  changes: { name?: string; description?: string | null }
+): Promise<void> {
+  await managementFetch(server, `/controllers/${encodeURIComponent(controllerId)}`, {
+    authenticated: true,
+    method: 'PATCH',
+    body: changes,
+  });
+}
+
+/**
+ * Revoke a controller (`DELETE /gateway/management/controllers/{id}`): the
+ * server deletes its credential and tells it so on its stream.
+ */
+export async function revokeManagementController(
+  server: SwitchServer,
+  controllerId: string
+): Promise<void> {
+  await managementFetch(server, `/controllers/${encodeURIComponent(controllerId)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
 }

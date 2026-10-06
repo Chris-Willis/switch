@@ -118,6 +118,7 @@ export function SettingsPage({
 
   return (
     <PageLayout
+      width={880}
       sidebar={
         <PageSidebarMenu
           items={tabs}

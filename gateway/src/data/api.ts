@@ -75,9 +75,13 @@ export interface AgentRoomMembership {
 export interface AgentSessionDetail {
   room_id: string | null;
   room_name: string | null;
+  // `heartbeat` / `explicit` (a session row), `connection` (the agent's own
+  // connection) or `controller` (run by the agents controller it is placed on).
   lifecycle: string;
   state: string;
   last_seen_at: string;
+  // The agents controller running it, for a `controller` session; else null.
+  controller_id: string | null;
 }
 
 export interface AgentDetail extends AgentSummary {
@@ -89,6 +93,12 @@ export interface AgentDetail extends AgentSummary {
   sessions: AgentSessionDetail[];
   children: AgentSummary[];
   addressing_policy: AddressingPolicy | null;
+  /**
+   * Whether the agent may act on its owner's agent management: list the
+   * owner's machines and managed agents, and create managed agents on them.
+   * Only the owner changes it.
+   */
+  can_manage_agents: boolean;
 }
 
 // Scoped agent-addressing permissions (CHOO-1585). Each dimension is "*" (any)
@@ -598,6 +608,17 @@ export async function updateAgentAddressingPolicy(
     `/agents/${agentId}/addressing-policy`,
     "PUT",
     { policy },
+  );
+}
+
+export async function updateAgentCanManageAgents(
+  agentId: string,
+  enabled: boolean,
+): Promise<AgentDetail> {
+  return jsonRequest<AgentDetail>(
+    `/agents/${agentId}/can-manage-agents`,
+    "PUT",
+    { enabled },
   );
 }
 

@@ -7,16 +7,19 @@ import { cn } from '@renderer/utils/utils';
  * title or resize the content under you.
  */
 export function ServerPage({
+  width,
   title,
   description,
   action,
   footer,
   children,
 }: {
+  /** The column's maximum width, in pixels. */
+  width: number;
   title: string;
   description: string;
-  /** Header-level action, where the page has one. Agents has none: its add
-   * affordance is the first tile of its grid. */
+  /** Header-level action, where the page has one. Agents' add affordance is
+   * not one: it is the first tile of its grid. */
   action?: ReactNode;
   /** A bar pinned under the page, outside the scrolling content — a pager for
    * the pages that are one step of a flow. */
@@ -26,7 +29,7 @@ export function ServerPage({
   return (
     <div className="relative z-10 flex min-h-0 flex-1 flex-col bg-background">
       <div className="flex min-h-0 flex-1 flex-col overflow-auto">
-        <div className="mx-auto w-full max-w-4xl space-y-6 p-6">
+        <div className="mx-auto w-full space-y-6 p-6" style={{ maxWidth: width }}>
           <header className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <h2 className="truncate text-2xl font-semibold text-foreground">{title}</h2>

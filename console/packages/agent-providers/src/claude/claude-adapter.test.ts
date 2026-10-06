@@ -136,6 +136,7 @@ describe('ClaudeAdapter session lifecycle', () => {
     expect(options.systemPrompt).toEqual({
       type: 'preset',
       preset: 'claude_code',
+      snapshot: false,
       append: 'Switch context',
     });
     expect(options.mcpServers).toEqual({
@@ -176,12 +177,18 @@ describe('ClaudeAdapter session lifecycle', () => {
     const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
     await adapter.startSession(
       startInput({
+        env: {
+          PATH: '/usr/bin',
+          HOME: '/home/agent',
+          SWITCH_API_TOKEN: 'synthetic-switch-token',
+        },
         mcpServers: {
           switch: {
             transport: 'stdio',
             command: 'npx',
             args: ['-y', 'runtime'],
-            envVars: ['HOME', 'SWITCH_ABSENT'],
+            env: { HOME: '/explicit/home' },
+            envVars: ['HOME', 'SWITCH_API_TOKEN', 'SWITCH_ABSENT'],
           },
         },
       })
@@ -191,7 +198,10 @@ describe('ClaudeAdapter session lifecycle', () => {
         type: 'stdio',
         command: 'npx',
         args: ['-y', 'runtime'],
-        env: { HOME: '/home/agent' },
+        env: {
+          HOME: '/explicit/home',
+          SWITCH_API_TOKEN: '${SWITCH_API_TOKEN}',
+        },
       },
     });
   });
@@ -329,6 +339,28 @@ describe('ClaudeAdapter session lifecycle', () => {
     expect(sdk.options().resume).toBe('earlier');
     expect(sdk.options().sessionId).toBeUndefined();
     expect(session.nativeSessionId).toBe('earlier');
+  });
+
+  it('resumes a conversation under the model and instructions it is started with now', async () => {
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({
+      query: sdk.query,
+      claudeExecutablePath: '/bin/claude',
+      savedConversationExists: async (id) => id === 'earlier',
+    });
+    await adapter.startSession(
+      startInput({
+        resume: { nativeSessionId: 'earlier' },
+        model: { id: 'claude-sonnet-4-6' },
+        systemContext: 'Answer in one word.',
+      })
+    );
+    expect(sdk.options()).toMatchObject({
+      resume: 'earlier',
+      model: 'claude-sonnet-4-6',
+      // Not recorded, so a resumed conversation takes the instructions given now.
+      systemPrompt: { append: 'Answer in one word.', snapshot: false },
+    });
   });
 
   it('stops the session, closes the query and forgets it', async () => {

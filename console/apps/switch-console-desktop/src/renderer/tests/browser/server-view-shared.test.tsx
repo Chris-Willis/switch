@@ -37,6 +37,10 @@ vi.mock('@tanstack/react-query', async (importOriginal) => ({
   ...(await importOriginal<typeof ReactQuery>()),
   useQueryClient: () => ({ invalidateQueries: () => Promise.resolve() }),
 }));
+// This computer as a machine has its own tests; here it is only a card on the page.
+vi.mock('@renderer/features/switch-servers/this-computer-machine-card', () => ({
+  ThisComputerMachineCard: () => null,
+}));
 vi.mock('@renderer/features/settings/use-app-settings-key', () => ({
   useAppSettingsKey: () => ({ value: { enabled: state.consent } }),
 }));
@@ -120,6 +124,7 @@ vi.mock('@renderer/features/switch-servers/server-stat-tiles', () => ({
 vi.mock('@renderer/features/switch-servers/server-sign-in', () => ({
   ServerSignInFields: () => null,
   useServerSignIn: () => ({}),
+  machineUnavailableReason: () => null,
 }));
 
 import { serverView } from '@renderer/features/switch-servers/view';

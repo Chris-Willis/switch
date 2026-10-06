@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from switch_core.addressing import AddressingPolicy
 from switch_core.bridges.collaboration.models import BridgeInstallLink
@@ -295,6 +302,11 @@ class AgentSessionDetail(BaseModel):
     A session_addressable agent is only meaningfully attending a room while its
     session is `live`; a `stale` row is a left-over binding, not a live presence.
     `room_id`/`room_name` are null for an always_on agent's room-agnostic row.
+
+    `lifecycle` is `heartbeat` or `explicit` for an `agent_sessions` row,
+    `connection` for an agent's own live connection, and `controller` for a
+    controller-backed agent's session, which its agents controller (a machine)
+    runs; `controller_id` names that controller, and is null otherwise.
     """
 
     room_id: str | None
@@ -302,10 +314,15 @@ class AgentSessionDetail(BaseModel):
     lifecycle: str
     state: str
     last_seen_at: str
+    controller_id: str | None
 
 
 class AgentDetail(AgentSummary):
     agent_type: str
+    # Whether the agent may act on its owner's agent management (list the
+    # owner's machines and managed agents, create managed agents on them).
+    # Only the owner changes it; it matters only where agent management runs.
+    can_manage_agents: bool
     integration_profile: dict[str, Any]
     tools: list[AgentToolSummary]
     models: list[AgentModelSummary]
@@ -322,6 +339,14 @@ class UpdateAddressingPolicyRequest(BaseModel):
     policy: AddressingPolicy | None = None
 
 
+class UpdateAgentCanManageAgentsRequest(BaseModel):
+    """Turn an agent's "can manage agents" capability on or off."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+
+
 class UpdateAgentIconRequest(BaseModel):
     """Set (or clear) an agent's icon.
 
@@ -331,6 +356,13 @@ class UpdateAgentIconRequest(BaseModel):
     forgot to send."""
 
     icon_url: str | None
+
+
+class UpdateAgentDescriptionRequest(BaseModel):
+    """Change what an agent is for. A description is required, so a blank one
+    is refused rather than stored."""
+
+    description: str
 
 
 class UpdateAgentDisplayNameRequest(BaseModel):
@@ -670,9 +702,44 @@ class CreateUserRequest(BaseModel):
     role: str = "user"
 
 
+PASSWORD_MIN_LENGTH = 8
+
+
 class ChangePasswordRequest(BaseModel):
     current_password: str
-    new_password: str = Field(min_length=8)
+    new_password: str = Field(min_length=PASSWORD_MIN_LENGTH)
+
+
+class SignupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: Annotated[
+        str,
+        StringConstraints(
+            strip_whitespace=True,
+            to_lower=True,
+            max_length=320,
+            pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+        ),
+    ]
+    password: str = Field(min_length=PASSWORD_MIN_LENGTH)
+    display_name: (
+        Annotated[
+            str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
+        ]
+        | None
+    ) = None
+
+    @field_validator("password")
+    @classmethod
+    def bcrypt_sized(cls, password: str) -> str:
+        if len(password.encode()) > 72:
+            raise ValueError("Password must be at most 72 bytes.")
+        return password
+
+
+class SignupMachine(BaseModel):
+    status: Literal["starting", "unavailable"]
+    reason: str | None
 
 
 class TenantMembershipResponse(BaseModel):
@@ -905,6 +972,7 @@ class AuthConfigResponse(BaseModel):
     # response served without a session, and version disclosure is
     # authenticated everywhere (CHOO-1865).
     password_login_enabled: bool
+    signup_enabled: bool
     oidc_enabled: bool
     oidc_provider_label: str | None
     # Where a first sign-in lands (`SwitchConfig.gateway_signup_mode`), so the
@@ -942,6 +1010,10 @@ class SessionUserResponse(UserResponse):
     """
 
     server: ServerDeclaration
+
+
+class SignupResponse(SessionUserResponse):
+    machine: SignupMachine
 
 
 # ── References ──────────────────────────────────────────────────────────────

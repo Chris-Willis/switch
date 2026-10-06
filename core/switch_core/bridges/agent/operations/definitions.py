@@ -20,6 +20,11 @@ from switch_core.agent_refusals import AgentRefused, record_refusal
 from switch_core.agent_template_ops import ActingFor, AgentTemplates
 from switch_core.agent_templates import room_document
 from switch_core.bridges.agent.api.handlers import parse_timestamp_ms
+from switch_core.bridges.agent.operations.agent_management import (
+    management_permission,
+    management_port,
+    permitted_to_manage,
+)
 from switch_core.bridges.agent.operations.context import (
     bound_rooms,
     caller_session,
@@ -37,6 +42,13 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     evicted_session_warning,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.protocol.agent_detail import AgentProfileUpdate
+from switch_core.bridges.agent.protocol.agent_management import ManagedAgentChanges
+from switch_core.bridges.agent.protocol.hosted_workers import (
+    HOSTED_WORKER_ONLY_MESSAGE,
+    CodedPermissionError,
+    hosted_launch_of,
+)
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
 from switch_core.db.models import CollaborationBridge, User
@@ -281,6 +293,12 @@ async def connect_to_room(
         if room_model.bridge_id:
             bridge = await session.get(CollaborationBridge, room_model.bridge_id)
 
+    if hosted_launch_of(agent.metadata_) is not None:
+        key = session_key()
+        caller_connection = protocol.connections.get(key) if key else None
+        if caller_connection is None or caller_connection.worker is None:
+            raise CodedPermissionError("hosted_worker_only", HOSTED_WORKER_ONLY_MESSAGE)
+
     profile = IntegrationProfile(**agent.integration_profile)
     instructions = build_room_instructions(
         agent,
@@ -300,6 +318,10 @@ async def connect_to_room(
     if not key:
         raise ValueError("MCP session has no session id; cannot connect to room")
 
+    # A controller-backed agent's sessions are placed by its controller, which
+    # tracks the room locally and names it on later calls: connecting checks
+    # membership (above) and returns the room's context, and claims nothing.
+    controller_backed = protocol.connections.controllers.is_bound(agent_id)
     # Where a session is recorded and where its events are routed are one
     # move, so they are made under one hold of the agent's connection slots.
     # Reconciling the connection after the bind has already committed leaves a
@@ -311,39 +333,41 @@ async def connect_to_room(
     # is the order every other holder of both takes them in.
     caller = caller_session()
     displaced_session_id = None
-    async with protocol.connections.slots(agent_id):
-        # Routing is where events actually go, so moving it on a bind that
-        # then fails would send them somewhere the session is not — and the
-        # rooms to vacate are the caller's own, read under the bind's lock
-        # rather than from what it believed on arrival.
-        if caller is not None:
-            previous, displaced_session_id = protocol.connections.place_session(
-                agent_id, caller.id, room.id, key
+    evicted_connection_id = None
+    if not controller_backed:
+        async with protocol.connections.slots(agent_id):
+            # Routing is where events actually go, so moving it on a bind that
+            # then fails would send them somewhere the session is not — and the
+            # rooms to vacate are the caller's own, read under the bind's lock
+            # rather than from what it believed on arrival.
+            if caller is not None:
+                previous, displaced_session_id = protocol.connections.place_session(
+                    agent_id, caller.id, room.id, key
+                )
+            else:
+                previous = rooms_on_caller_connection(protocol, agent_id, key)
+
+            evicted_connection_id = claim_room_on_caller_connection(
+                protocol, agent_id, key, room.id
             )
-        else:
-            previous = rooms_on_caller_connection(protocol, agent_id, key)
+            for departed in previous - {room.id}:
+                release_room_on_caller_connection(protocol, agent_id, key, departed)
 
-        evicted_connection_id = claim_room_on_caller_connection(
-            protocol, agent_id, key, room.id
-        )
-        for departed in previous - {room.id}:
-            release_room_on_caller_connection(protocol, agent_id, key, departed)
+            # Connecting is how an agent's occupancy of a room changes hands, and
+            # the occupant is the one whose reading clears that room's unread
+            # count. The connection underneath cannot stand in for it: sessions of
+            # one agent share it, and each of them is in a room of its own.
+            reader = counting_reader()
+            if reader is not None:
+                protocol.event_buffer.hand_counting_to(agent_id, reader, room.id)
 
-        # Connecting is how an agent's occupancy of a room changes hands, and
-        # the occupant is the one whose reading clears that room's unread
-        # count. The connection underneath cannot stand in for it: sessions of
-        # one agent share it, and each of them is in a room of its own.
-        reader = counting_reader()
-        if reader is not None:
-            protocol.event_buffer.hand_counting_to(agent_id, reader, room.id)
-
-        await bind_room_for_connectionless_caller(
-            protocol,
-            agent_id=agent_id,
-            connection_id=key,
-            room_id=room.id,
-            connection_model=profile.connection_model,
-        )
+            await bind_room_for_connectionless_caller(
+                protocol,
+                agent_id=agent_id,
+                connection_id=key,
+                room_id=room.id,
+                connection_model=profile.connection_model,
+            )
 
     return {
         "agent_id": agent_id,
@@ -2108,11 +2132,13 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
         {id, name, description, icon_url, display_name, connector_type,
         connection_model, tool_count, model_count, owner_id, owner_name,
         oauth_client_id, created_at, parent_agent_id, known_agent_type,
-        known_agent_options, agent_type, integration_profile, tools, models,
-        rooms, sessions, children}.
+        known_agent_options, agent_type, can_manage_agents,
+        integration_profile, tools, models, rooms, sessions, children}.
         `icon_url` is null when the agent has no icon set. `display_name` is
         null when the agent has no display name set; fall back to `name`.
         Address agents by `name`; `display_name` routes nothing.
+        `can_manage_agents` is whether the agent's owner lets it list their
+        machines and create agents on them, where agent management runs.
     """
     caller_id = get_agent_id()
     protocol = get_protocol()
@@ -2123,38 +2149,103 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
 @operation
 async def update_agent_detail(
     agent_id: str,
-    options: dict[str, Any] | None = None,
-    parent_agent_id: str | None = None,
-    clear_parent: bool = False,
+    description: str | None = None,
+    display_name: str | None = None,
+    icon_url: str | None = None,
+    addressing: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    advanced_config: dict[str, Any] | None = None,
+    instructions: str | None = None,
+    auto_approve: bool | None = None,
+    directory: str | None = None,
+    isolation: str | None = None,
+    machine: str | None = None,
+    desired_state: str | None = None,
 ) -> dict[str, Any]:
-    """Update an agent's editable settings and return its fresh detail.
+    """Change an agent your owner owns, and return its fresh detail.
 
-    Owner-only: you may only update an agent whose owner is the same as your
-    own owner (the call fails with a permission error otherwise). Only agents
-    registered with a known-agent type (e.g. "claude-code") have editable
-    options.
+    Owner-only: the agent's owner must be your own owner (a permission error
+    otherwise). Omit a field to leave it unchanged. An agent cannot be renamed.
 
-    Editable fields:
-        - `options`: a PARTIAL map of the agent's known-agent options to
-          change — only the keys you pass are updated; the rest are left as-is.
-          For a claude-code agent the options are `repo_dir` (the working
-          directory), `channels_enabled`, and `subagent_name`.
-          The merged options are validated against the agent type's schema and
-          its integration profile is rebuilt to match.
-        - `parent_agent_id`: set the agent's parent (e.g. to make it a subagent
-          of another agent). Validated against self-parenting and cycles.
-        - `clear_parent`: pass True to detach the agent from its parent (make it
-          top-level). Mutually exclusive with `parent_agent_id`.
+    Any agent:
+        description: What the agent is for.
+        display_name: Human label shown next to its name; "" clears it.
+        icon_url: An https link to its icon; "" clears it.
+        addressing: Who can address it: "owner_only" (your owner alone, not
+            even their other agents, you included), "owner_and_owner_agents"
+            (your owner and any agent they own) or "anyone".
 
-    Omit a field to leave it unchanged. Returns the same shape as
-    `get_agent_detail`.
+    A managed agent (one `list_managed_agents` shows) only, and only with the
+    "can manage agents" capability:
+        provider: "claude", "codex", "opencode", "antigravity" or "cursor".
+        model: The model to run; "" for the provider's default.
+        advanced_config: The provider's advanced settings, replacing the
+            current ones whole, keyed by the fields `get_advanced_config`
+            lists, e.g. {"effort": "high"}; {} clears them. When changing
+            `provider`, pass the new provider's settings (or {}) too.
+        instructions: Its system prompt (at most 32 KiB).
+        auto_approve: Bypass mode: run tools without asking for approval.
+        directory: Working directory on its machine; "" for the machine's
+            own workspace for the agent, whose path Switch fills in.
+        isolation: "shared" (inside the machine's controller) or "isolated"
+            (a process of its own).
+        machine: Move it to this machine (`id` or exact `name` from
+            `list_machines`).
+        desired_state: "running" or "stopped".
+    The machine must be online with the provider installed and logged in;
+    otherwise nothing is changed and the error gives a reason code to relay.
+    Changes reach the agent's running sessions on their own, with no reset:
+    a session mid-turn picks them up when the turn ends, and a running
+    conversation is told its new instructions.
+
+    Returns:
+        The `get_agent_detail` shape plus `managed`: for a managed agent, the
+        entry `list_managed_agents` shows for it (provider, model,
+        advanced_config, machine, desired_state, actual, revision); null when
+        the agent is not managed or you cannot manage agents.
     """
     caller_id = get_agent_id()
     protocol = get_protocol()
-    detail = await protocol.update_agent_detail(
-        caller_id, agent_id, options, parent_agent_id, clear_parent
+    await protocol.require_same_owner(caller_id, agent_id)
+    profile = AgentProfileUpdate.parse(
+        description=description,
+        display_name=display_name,
+        icon_url=icon_url,
+        addressing=addressing,
     )
-    return detail.model_dump()
+    changes = ManagedAgentChanges(
+        provider=provider,
+        model=model,
+        advanced_config=advanced_config,
+        instructions=instructions,
+        auto_approve=auto_approve,
+        directory=directory,
+        isolation=isolation,
+        machine=machine,
+        desired_state=desired_state,
+    )
+    port = management_port()
+    managed: dict[str, Any] | None = None
+    if not changes.is_empty():
+        if port is None:
+            raise ValueError(
+                "Nothing was changed: agent management is not enabled on this "
+                "Switch server, so no agent has a provider, model, machine or "
+                "run state Switch can set."
+            )
+        permitted = await permitted_to_manage()
+        managed = await port.update_managed_agent(
+            permitted.tenant_id, permitted.owner.id, agent_id, changes, protocol
+        )
+    elif port is not None:
+        permission = await management_permission()
+        if not isinstance(permission, str):
+            managed = await port.managed_agent(
+                permission.tenant_id, permission.owner.id, agent_id
+            )
+    detail = await protocol.update_agent_detail(caller_id, agent_id, profile)
+    return {**detail.model_dump(), "managed": managed}
 
 
 @operation

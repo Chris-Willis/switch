@@ -51,7 +51,16 @@ async def compute_agent_statuses(
 
     Shared by AgentCore (room detail / participants) and the in-room
     ``!status`` command so both report presence identically.
+
+    A controller-backed agent is answered from its controller alone
+    (`controller_statuses`), and none of the three sources above is asked
+    about it.
     """
+    controllers = connections.controllers
+    backed = [agent for agent in agents if controllers.is_bound(agent.id)]
+    statuses = controller_statuses(backed, connections)
+    agents = [agent for agent in agents if not controllers.is_bound(agent.id)]
+
     always_on_ids: list[str] = []
     addressable_ids: list[str] = []
     auto_session_ids: list[str] = []
@@ -124,7 +133,6 @@ async def compute_agent_statuses(
         if aid not in live_addressable and connections.can_spawn_for(aid, room_id)
     }
 
-    statuses: dict[str, AgentStatus] = {}
     for agent in agents:
         model = model_by_id[agent.id]
         if model == "always_on":
@@ -151,4 +159,30 @@ async def compute_agent_statuses(
                 statuses[agent.id] = AgentStatus.DISCONNECTED
         else:
             statuses[agent.id] = AgentStatus.AWAITING_MANUAL_POLL
+    return statuses
+
+
+def controller_statuses(
+    agents: list[Agent], connections: AgentConnectionRegistry
+) -> dict[str, AgentStatus]:
+    """Presence for agents run by an agents controller.
+
+    Switch knows only whether such an agent is connected, not where its
+    sessions are: whatever its `connection_model`, it is LIVE while its
+    controller is live, it is set to running and the controller is not
+    revoked, and DISCONNECTED otherwise. A `session_passive` agent is
+    AWAITING_MANUAL_POLL, as any other.
+    """
+    controllers = connections.controllers
+    statuses: dict[str, AgentStatus] = {}
+    for agent in agents:
+        model = (agent.integration_profile or {}).get(
+            "connection_model", "session_passive"
+        )
+        if model == "session_passive":
+            statuses[agent.id] = AgentStatus.AWAITING_MANUAL_POLL
+        elif controllers.is_live(agent.id):
+            statuses[agent.id] = AgentStatus.LIVE
+        else:
+            statuses[agent.id] = AgentStatus.DISCONNECTED
     return statuses

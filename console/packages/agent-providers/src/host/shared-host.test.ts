@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Command, Session } from '@switch-console/shared/session-v1';
+import type { Command, Session, Snapshot } from '@switch-console/shared/session-v1';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   ProviderConversationUnavailableError,
@@ -13,7 +13,7 @@ import {
 import type { ProviderRuntimeEvent } from '../events';
 import { stubSwitchFetch } from '../testing/agent-sessions-server';
 import { connectParent } from './session-channel';
-import { parkAfterMs, runSharedHost } from './shared-host';
+import { parkAfterMs, RESET_HOLD_MS, runSharedHost, sessionBusy } from './shared-host';
 import { hostParked } from './shared-state';
 
 const roots: string[] = [];
@@ -115,6 +115,12 @@ async function start(
     base?: string;
     /** The provider has lost the conversation this host would resume. */
     conversationLost?: boolean;
+    /** The provider cannot resume the saved conversation, however often it is asked. */
+    unresumable?: boolean;
+    /** The agent's instructions as its definition stands; null when the configuration has none apart. */
+    instructions?: string | null;
+    /** The provider takes developer messages mid-conversation; each one is recorded here. */
+    developerMessages?: string[];
   } = {}
 ): Promise<Harness> {
   const parent = fakeParent();
@@ -149,7 +155,13 @@ async function start(
       userInput: true,
       modelSwitchInSession: false,
     },
-    startSession: vi.fn(async () => {
+    startSession: vi.fn(async (input) => {
+      if (opts.unresumable && input.resume)
+        throw new ProviderConversationUnavailableError(
+          'claude',
+          'session',
+          'No saved conversation'
+        );
       live = true;
       emit({ type: 'session.state.changed', status: 'ready' });
       return { provider: 'claude', sessionId: 'session', nativeSessionId: 'native' };
@@ -201,6 +213,13 @@ async function start(
     ...(opts.backgroundWork
       ? { hasBackgroundWork: () => live && opts.backgroundWork!.running }
       : {}),
+    ...(opts.developerMessages
+      ? {
+          addDeveloperMessage: async (_sessionId: string, text: string) => {
+            opts.developerMessages!.push(text);
+          },
+        }
+      : {}),
     subscribe: (fn) => {
       listener = fn;
       return () => {
@@ -249,6 +268,7 @@ async function start(
       ...(opts.rooms ? { roomConnection: { connectionId: 'controller' } } : {}),
       parent: connectParent(parent.port),
       parkAfterMs: opts.parkAfterMs ?? null,
+      instructions: opts.instructions ?? null,
     },
     adapter,
     stop.signal
@@ -400,6 +420,78 @@ it('turns a room message it was handed into a fenced prompt, once', async () => 
     expect(await host.stop()).toBeNull();
   }
 });
+
+it('tells a running conversation once that its instructions changed, across restarts', async () => {
+  // Each host is its own process, whose exit frees its ownership for the next.
+  const restart = async (host: Harness, instructions: string): Promise<Harness> => {
+    expect(await host.stop()).toBeNull();
+    await rm(join(host.root, 'shared-owner.lock'));
+    return start({ rooms: true, base: host.base, instructions });
+  };
+  const answer = async (host: Harness, sequence: number, body: string): Promise<string> => {
+    const before = host.turns.length;
+    expect(
+      await host.parent.ask({ type: 'room', handoff: roomMessage(sequence, body) })
+    ).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(host.turns).toHaveLength(before + 1), { timeout: 5000 });
+    const turn = host.turns.at(-1)!;
+    host.emit({ type: 'turn.completed', turnId: turn.turnId, outcome: 'completed', usage: [] });
+    return turn.text;
+  };
+
+  const first = await start({ rooms: true, instructions: 'Speak like Yoda.' });
+  expect(await answer(first, 1, 'hi')).not.toContain('instructions were changed');
+
+  const edited = await restart(first, 'Speak plainly.');
+  expect(await answer(edited, 2, 'and now?')).toMatch(
+    /^\[Switch\] Your agent instructions were changed by your owner\.[\s\S]*BEGIN AGENT INSTRUCTIONS\nSpeak plainly\.\nEND AGENT INSTRUCTIONS\n\n\[Switch\] A Person addressed you/
+  );
+  expect(await answer(edited, 3, 'again')).not.toContain('instructions were changed');
+
+  const again = await restart(edited, 'Speak plainly.');
+  try {
+    expect(await answer(again, 4, 'still?')).not.toContain('instructions were changed');
+  } finally {
+    expect(await again.stop()).toBeNull();
+  }
+}, 30_000);
+
+it('gives a provider that takes developer messages its changed instructions as one', async () => {
+  const first = await start({ rooms: true, instructions: 'Speak like Yoda.' });
+  expect(await first.parent.ask({ type: 'room', handoff: roomMessage(1, 'hi') })).toMatchObject({
+    ok: true,
+  });
+  await vi.waitFor(() => expect(first.turns).toHaveLength(1), { timeout: 5000 });
+  first.emit({
+    type: 'turn.completed',
+    turnId: first.turns[0]!.turnId,
+    outcome: 'completed',
+    usage: [],
+  });
+  expect(await first.stop()).toBeNull();
+  await rm(join(first.root, 'shared-owner.lock'));
+
+  const developerMessages: string[] = [];
+  const edited = await start({
+    rooms: true,
+    base: first.base,
+    instructions: 'Speak plainly.',
+    developerMessages,
+  });
+  try {
+    expect(developerMessages).toHaveLength(1);
+    expect(developerMessages[0]).toContain(
+      'BEGIN AGENT INSTRUCTIONS\nSpeak plainly.\nEND AGENT INSTRUCTIONS'
+    );
+    expect(
+      await edited.parent.ask({ type: 'room', handoff: roomMessage(2, 'and now?') })
+    ).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(edited.turns).toHaveLength(1), { timeout: 5000 });
+    expect(edited.turns[0]!.text).not.toContain('instructions were changed');
+  } finally {
+    expect(await edited.stop()).toBeNull();
+  }
+}, 30_000);
 
 it('fetches a room attachment from the room, and says which ones it could not take', async () => {
   const host = await start({ rooms: true });
@@ -835,6 +927,108 @@ it('tells the session to rejoin its room once a reset asked for there has applie
     expect(await host.stop()).toBeNull();
   }
 }, 20000);
+
+it('says a session is busy for each thing that keeps it from parking, and idle otherwise', () => {
+  const snapshot = (session: Partial<Session>, turns: string[], requests: string[]) =>
+    ({
+      session: { ...SESSION, ...session },
+      turns: turns.map((status) => ({ status })),
+      requests: requests.map((state) => ({ state })),
+    }) as unknown as Snapshot;
+  expect(
+    sessionBusy(snapshot({ status: 'ready' }, ['completed'], ['answered']), 'none', 0, false)
+  ).toEqual({
+    busy: false,
+    reasons: [],
+  });
+  expect(
+    sessionBusy(
+      snapshot({ status: 'running' }, ['running', 'running'], ['open']),
+      'holding',
+      3,
+      false
+    )
+  ).toEqual({
+    busy: true,
+    reasons: [
+      { kind: 'turn_running', count: 2 },
+      { kind: 'approval_open', count: 1 },
+      { kind: 'reset_waiting', count: 1 },
+      { kind: 'room_pending', count: 3 },
+    ],
+  });
+  expect(sessionBusy(snapshot({ status: 'starting' }, [], []), 'none', 0, false).reasons).toEqual([
+    { kind: 'turn_starting', count: 1 },
+  ]);
+  expect(sessionBusy(snapshot({ status: 'error' }, [], []), 'ended', 2, false)).toEqual({
+    busy: false,
+    reasons: [],
+  });
+  // Subagents still at work after the turn ended keep it from parking, and its worker awake.
+  expect(sessionBusy(snapshot({ status: 'ready' }, ['completed'], []), 'none', 0, true)).toEqual({
+    busy: true,
+    reasons: [{ kind: 'turn_running', count: 1 }],
+  });
+});
+
+it('stops holding its worker awake for a reset decision after the bound, and keeps the decision', async () => {
+  const lastBusy = (host: Harness) =>
+    host.parent.sent.filter((m) => m.kind === 'busy').at(-1) as unknown as
+      | { busy: boolean; reasons: { kind: string; count: number }[] }
+      | undefined;
+  const first = await start({ rooms: true });
+  await first.parent.ask({ type: 'room', handoff: roomMessage(1, 'Answer once') });
+  await vi.waitFor(() => expect(first.turns).toHaveLength(1), { timeout: 5000 });
+  first.emit({
+    type: 'turn.completed',
+    turnId: first.turns[0]!.turnId,
+    outcome: 'completed',
+    usage: [],
+  });
+  await vi.waitFor(() => expect(lastBusy(first)?.busy).toBe(false), { timeout: 5000 });
+  expect(await first.stop()).toBeNull();
+  // Each host is its own process, whose exit frees its ownership for the next.
+  const exited = () => rm(join(first.root, 'shared-owner.lock'));
+  await exited();
+
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    // No room message is handed over: one would start a fresh conversation
+    // itself rather than wait on the decision.
+    const waiting = await start({ rooms: true, base: first.base, unresumable: true });
+    const held = { busy: true, reasons: [{ kind: 'reset_waiting', count: 1 }] };
+    await vi.waitFor(() => expect(lastBusy(waiting)).toMatchObject(held), { timeout: 5000 });
+
+    vi.setSystemTime(Date.now() + RESET_HOLD_MS - 1000);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(lastBusy(waiting)).toMatchObject(held);
+
+    vi.setSystemTime(Date.now() + 2000);
+    await vi.waitFor(() => expect(lastBusy(waiting)).toMatchObject({ busy: false, reasons: [] }), {
+      timeout: 5000,
+    });
+    expect(await waiting.stop()).toBeNull();
+    await exited();
+
+    const woken = await start({ rooms: true, base: first.base, unresumable: true });
+    try {
+      await vi.waitFor(() => expect(lastBusy(woken)).toMatchObject(held), { timeout: 5000 });
+      const reset = await woken.parent.ask({
+        type: 'command',
+        requesterName: null,
+        command: relayed('current', 'fresh', { type: 'session.reset' }),
+      });
+      expect(reset).toMatchObject({ ok: true, value: { commandId: 'fresh', status: 'applied' } });
+      await vi.waitFor(() => expect(lastBusy(woken)).toMatchObject({ busy: false, reasons: [] }), {
+        timeout: 5000,
+      });
+    } finally {
+      expect(await woken.stop()).toBeNull();
+    }
+  } finally {
+    vi.useRealTimers();
+  }
+}, 30000);
 
 it('starts a fresh conversation for a room message the lost one could not take, and runs it', async () => {
   const first = await start({ rooms: true, resettable: true });
