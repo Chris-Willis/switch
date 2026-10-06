@@ -612,7 +612,7 @@ describe('forwarding to Switch', () => {
     expect(forwarded.headers.authorization).toMatch(/^Bearer access-token-/);
     expect(forwarded.headers['x-switch-agent-id']).toBe(AGENT);
     expect(forwarded.headers['x-switch-room-id']).toBeUndefined();
-    expect(forwarded.headers['switch-controller-protocol']).toBe('1');
+    expect(forwarded.headers['switch-controller-protocol']).toBe('2');
     expect(forwarded.body).toEqual({ row: 1 });
   });
 

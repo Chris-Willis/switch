@@ -69,6 +69,7 @@ function deps(server = core.url): ControllerDeps {
     runtime: runtime.build,
     locator: new FakeLocator(),
     fetch,
+    openWebSocket: core.openWebSocket,
     log: silentLogger,
     dataDir: dir,
     workspacesFor: () => join(dir, 'workspaces'),

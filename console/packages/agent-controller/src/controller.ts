@@ -1,6 +1,6 @@
 import type { OpenAgentStream } from '@switch-console/agent-providers';
 import { AgentHub } from './agent-hub';
-import { AccessTokens, ControllerClient, type Fetch, isRevoked } from './api';
+import { AccessTokens, ControllerClient, type Fetch, isRevoked, type OpenWebSocket } from './api';
 import { ConfigurationError } from './errors';
 import { errorMessage, type Logger } from './log';
 import { processPendingOperations } from './operations';
@@ -51,8 +51,8 @@ export const DEFAULT_TIMING: ControllerTiming = {
   statusPollMs: 5_000,
   statusMinGapMs: 1_000,
   defaultReportWithinS: 60,
-  // Three missed 15 s keepalives.
-  streamIdleMs: 45_000,
+  // Five missed pings, at the 2 s Switch sends them.
+  streamIdleMs: 10_000,
   streamInitialBackoffMs: 1_000,
   streamMaxBackoffMs: 8_000,
   relay: DEFAULT_RELAY_TIMING,
@@ -69,6 +69,8 @@ export type ControllerDeps = {
   runtime: (openStream: (agentId: string) => OpenAgentStream, workspaces: string) => AgentRuntime;
   locator: ProviderLocator;
   fetch: Fetch;
+  /** Opens the controller's connection to Switch. */
+  openWebSocket: OpenWebSocket;
   log: Logger;
   /** Where disk space is measured and provider checks run. */
   dataDir: string;
@@ -195,6 +197,7 @@ export async function runController(
     controllerId: identity.controllerId,
     version: deps.version,
     tokens,
+    openWebSocket: deps.openWebSocket,
   });
   const queue = new SerialQueue();
   const cached = store.cachedAssignment();
@@ -258,6 +261,9 @@ export async function runController(
       const wanted = entry.definition.isolation === 'isolated';
       if (placed.has(agentId) && wanted === isolated.has(agentId)) continue;
       placed.add(agentId);
+      // Core may have attached the agent before this placement, to the
+      // delivery it is leaving: the one it moves to takes the attachment over.
+      const attachment = delivery(agentId).attachment(agentId);
       if (wanted) {
         isolated.add(agentId);
         hub.forget(agentId);
@@ -267,6 +273,7 @@ export async function runController(
       }
       const cursor = cursors.get(agentId);
       if (cursor !== undefined) delivery(agentId).setCursor(agentId, cursor);
+      if (attachment) delivery(agentId).attach(agentId, attachment.fromSeq, attachment.rooms);
     }
   };
   if (assignment) placeAgents(assignment);

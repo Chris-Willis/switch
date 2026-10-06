@@ -20,7 +20,7 @@ the per-agent agent protocol (its own event stream, heartbeat and placements), a
 is not stopped when the controller exits: it reconnects when the controller is back.
 Changing an agent's isolation restarts it the other way.
 
-The controller holds **one** event stream to Switch for all of its agents and hands
+The controller holds **one** connection to Switch, a WebSocket, for all of its agents and hands
 each shared agent's events to its agent host directly. Each agent host makes its calls to Switch
 through a **local relay** on a loopback port, which adds the controller's
 credentials. No agent holds a Switch credential: each is given a token that only the
@@ -158,24 +158,25 @@ session hosts it launches with `process.execPath` run as Node too.
 ### The controller stream
 
 - Opens a connection (`POST /v1/controllers/{id}/connection`) with each agent's
-  cursor (the last sequence its agent host confirmed, or `"head"`), then attaches the
-  stream (`GET /v1/controllers/{id}/events`). The stream carries every bound agent's
+  cursor (the last sequence its agent host confirmed, or `"head"`), then attaches a
+  WebSocket to it (`/v1/controllers/{id}/connection/ws`). It carries every bound agent's
   events (`agent.event`, `agent.gap`, `agent.session_command`,
   `agent.approval_outcome`), its attachment and room membership (`agent.attached`,
   `agent.detached`, `agent.rooms`), and the management nudges (`assignment.changed`,
   `operation.pending`, `credential.revoked`).
-- Beats the connection (`POST .../connection/beat`) every `heartbeat_interval_s`
-  (2 s) while the stream is attached, with each agent's confirmed cursor.
+- Answers every `ping` Switch sends on the socket (each `heartbeat_interval_s`, 2 s)
+  with a `pong` naming each agent's confirmed cursor: that pong is its heartbeat.
 - The open and every beat also carry `placements`: for each agent whose running
   agent host has a session placed in a room, those rooms. It is the
   whole current map each time (Switch replaces what it held), and agents with no
   placement are left out, so a placement the agent host makes reaches Switch on the
   next beat.
-- A dropped stream is reattached to the same connection. A connection Switch no
+- A dropped socket is reattached to the same connection. A connection Switch no
   longer knows (`unknown_connection`, `stale_generation`, or any `evicted` but
   `taken_over`) is opened afresh, from the cursors as they stand. Reconnects back
-  off with jitter, and a stream silent for 45 s (Switch writes a keepalive every
-  15 s) counts as dropped.
+  off with jitter, except after close code 1012 (Switch restarting), which is
+  retried within a second. A socket silent for 10 s (Switch pings every 2 s)
+  counts as dropped.
 - `taken_over`, as a frame or a refusal, means another instance of this controller
   opened the stream. This one stops its agents and exits with code `4`.
 - Each agent's events are handed to its agent host one at a time, in order, and only

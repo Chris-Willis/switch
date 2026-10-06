@@ -360,6 +360,16 @@ export class LocalRelay {
     return cursors;
   }
 
+  /**
+   * Where Core attached the agent on the controller stream, while it is
+   * attached: what another delivery takes over when the agent moves.
+   */
+  attachment(agentId: string): { fromSeq: number; rooms: string[] } | null {
+    const agent = this.agents.get(agentId);
+    if (!agent?.attached || agent.head === null) return null;
+    return { fromSeq: agent.head, rooms: [...(agent.rooms ?? [])] };
+  }
+
   /** The agent's events flow on the controller stream and its watcher is connected here. */
   attached(agentId: string): boolean {
     const agent = this.agents.get(agentId);
