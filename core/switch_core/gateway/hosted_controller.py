@@ -33,6 +33,7 @@ from switch_core.gateway.dependencies import (
     get_protocol,
     get_session_factory,
 )
+from switch_core.gateway.hosted_controller_activity import controller_idle_evidence
 from switch_core.gateway.hosted_launches import controller_settings, finish_removal
 from switch_core.providers.github_revocations import revoke_pending
 from switch_core.providers.hosted import HostedControllerSettings
@@ -145,22 +146,12 @@ def _needs_sweep(machine: HostedMachine, now: datetime, idle_minutes: int) -> bo
     )
 
 
-async def controller_idle_evidence(
-    session: AsyncSession, machine: HostedMachine
-) -> bool:
-    """Whether a machine on the agent controller is provably idle.
-
-    Not measured yet, so never: such a machine is not put to sleep for
-    idleness.
-    """
-    return False
-
-
 async def _should_sleep(
     session: AsyncSession,
     machine: HostedMachine,
     protocol: AgentCore,
     idle_after: timedelta,
+    report_within: timedelta,
     now: datetime,
 ) -> bool:
     """Whether every counted agent on the machine is provably idle.
@@ -169,7 +160,21 @@ async def _should_sleep(
     renews its own activity, so it keeps the machine awake for another window.
     """
     if machine.runtime == "controller":
-        return await controller_idle_evidence(session, machine)
+        controller_evidence = await controller_idle_evidence(
+            session,
+            machine,
+            pending_relays=cloud_controllers().pending_control_relays,
+            report_within=report_within,
+            idle_after=idle_after,
+            now=now,
+        )
+        if not controller_evidence.idle:
+            logger.debug(
+                "Cloud machine %s stays awake: %s",
+                machine.id,
+                ", ".join(controller_evidence.reasons),
+            )
+        return controller_evidence.idle
     idle = True
     for candidate in await HostedMachineStore().launches(session, machine.id):
         await lock_launch(session, candidate.id)
@@ -237,6 +242,7 @@ async def _sweep(
     protocol: AgentCore,
     idle_minutes: int,
     retention_days: int,
+    report_within: timedelta,
     now: datetime,
 ) -> None:
     store = HostedMachineStore()
@@ -273,7 +279,12 @@ async def _sweep(
         and machine.state == "ready"
         and machine.desired_state == "running"
         and await _should_sleep(
-            session, machine, protocol, timedelta(minutes=idle_minutes), now
+            session,
+            machine,
+            protocol,
+            timedelta(minutes=idle_minutes),
+            report_within,
+            now,
         )
     ):
         if not await store.release_if_empty(
@@ -365,6 +376,7 @@ async def machines(
                 protocol,
                 config.hosted_idle_stop_minutes,
                 config.hosted_disk_retention_days,
+                timedelta(seconds=config.controller_status_interval_seconds),
                 now,
             )
         await session.commit()

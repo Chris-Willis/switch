@@ -32,6 +32,8 @@ class CloudControllers(Protocol):
         self, controller_id: str, provider: str, revision: int
     ) -> None: ...
 
+    def pending_control_relays(self, controller_id: str) -> int: ...
+
 
 _cloud_controllers: CloudControllers | None = None
 

@@ -187,6 +187,7 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
     service.event_buffer = SimpleNamespace(boot=1, remove=Mock())
     service.config.hosted_idle_stop_minutes = 0
     service.config.hosted_disk_retention_days = 7
+    service.config.controller_status_interval_seconds = 60
     agent_id = await register_hosted_agent(
         service, owner=owner, request_id=request_id, name="cloud-helper", spec=SPEC
     )
@@ -1985,6 +1986,7 @@ async def _interrupted_removal(controller_app, updated_at: datetime) -> None:
     service.client_lifecycle.stop = AsyncMock()
     service.client_lifecycle.delete_record = AsyncMock(side_effect=ClientStore().delete)
     service.config.hosted_disk_retention_days = 7
+    service.config.controller_status_interval_seconds = 60
     async with factory() as session:
         agent = await session.get(Agent, agent_id)
         launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))

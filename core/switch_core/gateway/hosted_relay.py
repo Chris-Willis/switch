@@ -88,6 +88,8 @@ def relay_error(error: RelayError, worker: dict[str, Any] | None) -> JSONRespons
     }
     if error.code == "worker_sleeping":
         body["wake_available"] = True
+    if error.code == "machine_asleep":
+        body["retryable"] = True
     return JSONResponse(status_code=error.status, content=body)
 
 

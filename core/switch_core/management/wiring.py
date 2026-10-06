@@ -125,6 +125,7 @@ def build_management(
         api_keys=ApiKeyStore(),
         agents=AgentStore(),
         presence=presence,
+        control_relays=control_relays,
         clock=clock,
     )
     authenticator = ManagementAuthenticator(

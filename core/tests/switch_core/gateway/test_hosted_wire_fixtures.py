@@ -134,6 +134,7 @@ async def wire(session_factory, monkeypatch, tmp_path):
     service.config.hosted_agents_per_owner = 3
     service.config.hosted_sessions_per_agent = 8
     service.config.hosted_disk_retention_days = 7
+    service.config.controller_status_interval_seconds = 60
     service.config.hosted_idle_stop_minutes = IDLE_STOP_MINUTES
     service.config.hosted_controller_config_path = str(settings_path)
     monkeypatch.setattr(

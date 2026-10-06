@@ -4,6 +4,9 @@ Delivery is always mark offered, then send: a row is leased to one worker
 stream in a committed transaction before its `wake` frame is queued, so a
 stream that dies or a Core that restarts leaves a lease that reclaim returns
 to `pending`, never an event nobody holds.
+
+An agent on a cloud machine's controller has no worker: its rows are handed
+to the live event stream once its controller is connected again.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from switch_core.bridges.agent.protocol.hosted_workers import (
     frame_size,
     offer_key,
 )
+from switch_core.bridges.agent.protocol.types import AgentEvent
 from switch_core.config import hosted_configured
 from switch_core.db.models import HostedLaunch, HostedWakeMailbox, require_tenant_id
 from switch_core.db.session_scope import tenant_session
@@ -126,6 +130,48 @@ async def deliver_on_attach(
     )
 
 
+def controller_event(row: HostedWakeMailbox) -> AgentEvent:
+    """The live event a mailbox row of a controller's agent was written from."""
+    return AgentEvent.model_validate(
+        {
+            "type": row.event["type"],
+            "room_id": row.room_id,
+            "bridge_id": row.event.get("bridge_id"),
+            "channel_type": row.event.get("channel_type"),
+            "payload": row.event["payload"],
+        }
+    )
+
+
+async def deliver_to_controllers(protocol: AgentCore, agent_ids: list[str]) -> int:
+    """Hand each live controller-backed agent its `pending` rows on the live
+    event stream, which its controller reads from where it attached.
+
+    Admitted and committed before they are queued, so a row is handed over
+    once. Returns how many rows were handed over.
+    """
+    presence = protocol.connections.controllers
+    delivered = 0
+    for agent_id in agent_ids:
+        if not presence.is_live(agent_id):
+            continue
+        async with tenant_session(
+            protocol.session_factory, require_tenant_id()
+        ) as session:
+            rows = await HostedMailboxStore().admit_pending(session, agent_id)
+            await session.commit()
+        for row in rows:
+            protocol.event_buffer.enqueue(agent_id, row.room_id, controller_event(row))
+        if rows:
+            logger.info(
+                "Wake mailbox handed %d event(s) to agent %s on its controller",
+                len(rows),
+                agent_id,
+            )
+        delivered += len(rows)
+    return delivered
+
+
 async def retains_hosted_work(session: AsyncSession) -> bool:
     """Whether the bound tenant has a hosted launch, a wake mailbox row or an owed cutover notice."""
     tenant_id = require_tenant_id()
@@ -221,4 +267,5 @@ async def mailbox_upkeep(protocol: AgentCore, since: datetime) -> None:
             current = await HostedLaunchStore().locked(session, launch_id)
             if current is not None:
                 await offer_pending(session, registry, boot, current)
+    await deliver_to_controllers(protocol, waiting)
     await post_owed_cutover_notices(protocol)

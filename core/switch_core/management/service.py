@@ -37,6 +37,7 @@ from switch_core.agent_icon import (
 )
 from switch_core.bridges.agent.auth import ControllerPrincipal
 from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
+from switch_core.bridges.agent.protocol.control_relay import ControlRelays
 from switch_core.bridges.agent.protocol.controller_presence import (
     DETACH_DELETED,
     DETACH_UNASSIGNED,
@@ -65,6 +66,10 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.hosted_machine_store import (
     HostedMachineStore,
     accepts_controller_exchange,
+)
+from switch_core.gateway.hosted_controller_activity import (
+    record_controller_heartbeat,
+    wake_controller_machine,
 )
 from switch_core.gateway.known_agents import KNOWN_AGENTS, KnownAgent
 from switch_core.management import reason_codes, tokens
@@ -135,9 +140,11 @@ class ManagementService:
         api_keys: ApiKeyStore,
         agents: AgentStore,
         presence: ControllerPresence,
+        control_relays: ControlRelays,
         clock: Callable[[], datetime],
     ) -> None:
         self.settings = settings
+        self.control_relays = control_relays
         self.notifier = notifier
         self.presence = presence
         self.controllers = controllers
@@ -473,6 +480,9 @@ class ManagementService:
     ) -> None:
         self.notifier.provider_credential_changed(controller_id, provider, revision)
 
+    def pending_control_relays(self, controller_id: str) -> int:
+        return self.control_relays.pending_control_relays(controller_id)
+
     async def cloud_credential(
         self,
         session: AsyncSession,
@@ -566,6 +576,11 @@ class ManagementService:
         controller = await self._principal_controller(session, principal)
         revision = controller.assignment_revision
         await session.commit()
+        if stored and controller.kind == CLOUD_CONTROLLER_KIND:
+            await record_controller_heartbeat(
+                session, controller.id, report.model_dump(mode="json"), self.now()
+            )
+            await session.commit()
         return {
             "assignment_revision": revision,
             "report_within_s": self.settings.status_interval_seconds,
@@ -1245,6 +1260,8 @@ class ManagementService:
                     "provider.recheck takes no agent_id and params.provider naming "
                     f"one of {', '.join(sorted(PROVIDER_KNOWN_AGENT_TYPES))}.",
                 )
+        if controller.kind == CLOUD_CONTROLLER_KIND:
+            await wake_controller_machine(session, controller_id, self.now())
         operation = await self.operations.create(
             session,
             controller_id=controller_id,
