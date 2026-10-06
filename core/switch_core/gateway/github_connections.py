@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 import secrets
@@ -18,8 +17,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from switch_core.config import SwitchConfig
 from switch_core.db.engine import create_session_factory
 from switch_core.db.models import (
-    GitHubIssuedToken,
-    HostedLaunch,
     ProviderConnection,
     Tenant,
     User,
@@ -34,17 +31,7 @@ from switch_core.providers.github import (
     GitHubError,
     GitHubFlow,
     repository_writable,
-)
-from switch_core.providers.github_installation import (
-    GitHubInstallationCredentials,
-    RepositoryCredential,
-)
-from switch_core.providers.github_revocations import (
-    ACCESS_WARNING,
-    queue_revocation,
-    remember_repository_token,
     revoke_oauth,
-    revoke_pending,
 )
 from switch_core.providers.github_tasks import finish_shielded
 
@@ -353,7 +340,6 @@ async def confirm(
     previous_token = (
         github_identity(previous, config)["access_token"] if previous else None
     )
-    await queue_revocation(session, (GitHubIssuedToken.owner_id == user.id,))
     encrypted = config.keyring.encrypt(json.dumps(flow.credentials))
     now = datetime.now(UTC)
     if previous is None:
@@ -384,15 +370,7 @@ async def confirm(
         if previous_token and previous_token != flow.credentials["access_token"]
         else None
     )
-    remaining = await revoke_pending(
-        session, config, (GitHubIssuedToken.owner_id == user.id,)
-    )
-    messages = [
-        message
-        for message in (warning, ACCESS_WARNING if remaining else None)
-        if message
-    ]
-    return JSONResponse({"warning": " ".join(messages) or None})
+    return JSONResponse({"warning": warning})
 
 
 @router.get("")
@@ -549,76 +527,10 @@ async def disconnect(
     await lock(session, user.id)
     row = await session.scalar(select(ProviderConnection).where(*conditions(user.id)))
     token = github_identity(row, config)["access_token"] if row else None
-    await queue_revocation(session, (GitHubIssuedToken.owner_id == user.id,))
     await session.execute(delete(ProviderConnection).where(*conditions(user.id)))
     await session.commit()
     for key, flow in list(github.flows.items()):
         if (flow.tenant_id, flow.user_id) == (require_tenant_id(), user.id):
             del github.flows[key]
     warning = await revoke_oauth(github, token) if token else None
-    remaining = await revoke_pending(
-        session, config, (GitHubIssuedToken.owner_id == user.id,)
-    )
-    messages = [
-        message
-        for message in (warning, ACCESS_WARNING if remaining else None)
-        if message
-    ]
-    return JSONResponse({"warning": " ".join(messages) or None})
-
-
-async def discard_github_credential(
-    session: AsyncSession,
-    signer: GitHubInstallationCredentials,
-    credential: RepositoryCredential,
-    config: SwitchConfig,
-    launch_id: str,
-    original: BaseException,
-) -> None:
-    async def cleanup() -> None:
-        try:
-            await session.rollback()
-        except Exception:
-            logger.error(
-                "Rollback failed while discarding a GitHub token; original failure: %r",
-                original,
-                exc_info=True,
-            )
-        try:
-            await signer.revoke(credential.token)
-        except Exception:
-            logger.error(
-                "GitHub token revocation failed; original failure: %r",
-                original,
-                exc_info=True,
-            )
-            try:
-                engine = session.bind
-                assert isinstance(engine, AsyncEngine)
-                async with tenant_session(
-                    create_session_factory(engine), require_tenant_id()
-                ) as cleanup_session:
-                    launch = await cleanup_session.get(
-                        HostedLaunch, (require_tenant_id(), launch_id)
-                    )
-                    if launch is None:
-                        raise RuntimeError("The token's cloud launch is missing")
-                    record = remember_repository_token(
-                        cleanup_session, launch, credential, config
-                    )
-                    record.revoke_requested = True
-                    await cleanup_session.commit()
-            except Exception as queue_error:
-                logger.error(
-                    "Failed GitHub token revocation could not be queued: error_type=%s",
-                    type(queue_error).__name__,
-                )
-
-    try:
-        await finish_shielded(cleanup())
-    except asyncio.CancelledError:
-        logger.warning(
-            "GitHub token cleanup finished after another caller cancellation; original failure: %r",
-            original,
-        )
-        raise
+    return JSONResponse({"warning": warning})

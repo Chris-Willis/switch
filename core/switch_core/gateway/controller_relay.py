@@ -1,10 +1,8 @@
 """Console ⇄ agents controller relay: one request answered by the agent's
 controller, and live views of its sessions.
 
-The same requests, limits and answers as the hosted worker relay
-(`hosted_relay.py`), for an agent whose definition places it on a controller,
-except that `ensure` (start or restart a session) is relayed too.
-The request goes out on that controller's stream as `agent.control` and the
+For an agent whose definition places it on a controller; `ensure` (start or
+restart a session) is relayed too. The request goes out on that controller's stream as `agent.control` and the
 controller answers it over the management routes (`ControlRelays`).
 
 Owner only: an agent that is not the caller's reads as not found, so its
@@ -15,6 +13,7 @@ log.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -22,15 +21,16 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.control_relay import (
     HEALTH_SUBSCRIPTION,
     RELAY_REQUEST_LIMIT_BYTES,
+    RELAY_TIMEOUT_LIMIT_MS,
     ConsoleView,
     ControllerRelay,
     ControlRelays,
@@ -47,17 +47,47 @@ from switch_core.db.stores.hosted_machine_store import owner_stopped
 from switch_core.gateway.auth import get_current_user, get_current_user_in_transaction
 from switch_core.gateway.dependencies import get_protocol, get_session
 from switch_core.gateway.hosted_controller_activity import wake_controller_machine
-from switch_core.gateway.hosted_launches import machine_error_detail
-from switch_core.gateway.hosted_relay import (
-    MAX_STREAM_SUBSCRIPTIONS,
-    SUBSCRIPTION_RELAY_TIMEOUT_MS,
-    RelayRequest,
-    relay_error,
-    request_body,
-    stream_frame,
-)
+from switch_core.gateway.hosted_settings import machine_error_detail
 
 logger = logging.getLogger(__name__)
+
+#: A subscription the stream asks the controller for itself waits this long.
+SUBSCRIPTION_RELAY_TIMEOUT_MS = 30_000
+MAX_STREAM_SUBSCRIPTIONS = 32
+
+
+class RelayRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    message: dict[str, Any]
+    timeout_ms: int = Field(gt=0, le=RELAY_TIMEOUT_LIMIT_MS)
+
+
+def relay_error(error: RelayError, worker: dict[str, Any] | None) -> JSONResponse:
+    body: dict[str, Any] = {
+        "ok": False,
+        "error": {"code": error.code, "message": str(error)},
+        "worker": worker,
+    }
+    if error.code == "machine_asleep":
+        body["retryable"] = True
+    return JSONResponse(status_code=error.status, content=body)
+
+
+async def request_body(request: Request) -> bytes:
+    """The body, read ahead of the caller's user.
+
+    The relay takes the user with its transaction left open, so the body has
+    to be in hand before that transaction starts: from the user read to the
+    rollback nothing waits on the client.
+    """
+    return await request.body()
+
+
+def stream_frame(event: str, data: dict[str, Any]) -> bytes:
+    return (
+        f"event: {event}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n".encode()
+    )
+
 
 EC2_CONTROLLER = "ec2"
 

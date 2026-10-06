@@ -30,8 +30,8 @@ from switch_core.gateway.dependencies import (
     get_system_session,
     get_user_store,
 )
-from switch_core.gateway.hosted_launches import LAUNCH_DISABLED
 from switch_core.gateway.hosted_machines import router as machine_router
+from switch_core.gateway.hosted_settings import LAUNCH_DISABLED
 from switch_core.keys import Keyring
 from switch_core.tenant_context import tenant_scope
 from tests.switch_core.hosted_machine_helpers import LinkingControllers

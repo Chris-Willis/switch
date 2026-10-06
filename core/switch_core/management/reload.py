@@ -1,9 +1,8 @@
 """Following placements and sealed logins changed outside this process.
 
 The management routes tell Core and the controllers of each change in-process
-as they commit it. `switch-migrate-hosted-to-controller` writes the same rows
-from a process of its own, which nothing in here hears of, so Core reads them
-back every `RELOAD_SECONDS`: an agent placed, moved, set running or stopped,
+as they commit it. A change committed by another process is not heard of in
+here, so Core reads the rows back every `RELOAD_SECONDS`: an agent placed, moved, set running or stopped,
 or removed is bound or unbound and its controller told its assignment changed,
 and a login sealed at a revision its controller was not told of is announced
 through `ManagementService.provider_credential_changed`, as the routes do.

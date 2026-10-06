@@ -173,13 +173,10 @@ class SwitchConfig(BaseSettings):
     # replicas. Sign-up is refused once the count reaches this.
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
     hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
-    hosted_sessions_per_agent: int = Field(default=8, ge=1, le=100)
-    hosted_agents_per_owner: int = Field(default=3, ge=1, le=100)
     hosted_idle_stop_minutes: int = Field(default=30, ge=0, le=1440)
     hosted_disk_retention_days: int = Field(default=7, ge=1, le=90)
     hosted_controller_config_path: str | None = None
     hosted_github_config_path: str | None = None
-    hosted_provider_verification_enabled: bool = False
     hosted_claude_verifier_path: str | None = None
     # The KMS key provider logins are sealed under for cloud machines that run
     # the agent controller, and its region. Required as soon as any machine

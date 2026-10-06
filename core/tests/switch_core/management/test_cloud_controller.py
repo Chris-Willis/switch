@@ -120,7 +120,7 @@ class Cloud:
             headers=headers,
         )
 
-    async def machine(self, owner: User, *, runtime: str = "controller") -> str:
+    async def machine(self, owner: User) -> str:
         async with self.factory() as session:
             machine = await seed_machine(
                 session,
@@ -132,7 +132,6 @@ class Cloud:
                 revision=1,
                 generation=1,
             )
-            machine.runtime = runtime
             machine.instance_id = INSTANCE
             await session.commit()
             return machine.id
@@ -200,7 +199,6 @@ async def cloud(
         gateway_tenant_choice_enabled=False,
         hosted_login_kms_key_arn=KEY_ARN,
         hosted_login_kms_region="us-east-1",
-        hosted_provider_verification_enabled=False,
         hosted_launch_capacity=2,
         hosted_controller_config_path=str(settings_path),
         hosted_github_config_path="/tmp/synthetic-github.json",
@@ -456,14 +454,6 @@ class TestPrepare:
         prepared = await cloud.prepare(await cloud.machine(owner))
 
         assert prepared.json()["controller"]["id"] != console.controller_id
-
-    async def test_a_worker_machine_is_prepared_as_before(self, cloud: Cloud) -> None:
-        owner = await add_member(cloud.factory, "ada")
-        prepared = await cloud.prepare(await cloud.machine(owner, runtime="worker"))
-
-        assert prepared.status_code == 200, prepared.text
-        assert "controller" not in prepared.json()
-        assert "machine_capability" in prepared.json()
 
     async def test_an_unconfigured_kms_key_fails_loudly(self, cloud: Cloud) -> None:
         cloud.config.hosted_login_kms_key_arn = None
@@ -790,27 +780,6 @@ class TestSealedLogins:
         assert revoked == [
             ("provider.credential_changed", {"provider": "cursor", "revision": 2})
         ]
-
-    async def test_an_owner_on_the_worker_keeps_a_keyring_copy(
-        self, cloud: Cloud
-    ) -> None:
-        owner = await add_member(cloud.factory, "ada")
-        await cloud.prepare(await cloud.machine(owner, runtime="worker"))
-
-        connected = await _connect(cloud, owner, "cursor", "api-key", "PLACEHOLDER-1")
-
-        assert connected.status_code == 200, connected.text
-        connection = await _connection(cloud, owner, "cursor")
-        assert KEYRING.decrypt(connection.encrypted_credential) == "PLACEHOLDER-1"
-        async with cloud.factory() as session:
-            assert (
-                await session.scalar(
-                    select(SealedProviderCredential).where(
-                        SealedProviderCredential.owner_id == owner.id
-                    )
-                )
-                is None
-            )
 
 
 async def _status(cloud: Cloud, owner: User, provider_name: str) -> str:

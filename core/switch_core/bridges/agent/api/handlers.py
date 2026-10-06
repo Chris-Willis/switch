@@ -19,10 +19,6 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response, StreamingResponse
 
-from switch_core.bridges.agent.api.hosted_worker_routes import (
-    admit_worker,
-    hosted_worker_only,
-)
 from switch_core.bridges.agent.api.schemas import (
     AcceptTaskRequest,
     AgentInfo,
@@ -80,13 +76,10 @@ from switch_core.bridges.agent.auth import (
 )
 from switch_core.bridges.agent.dependencies import (
     get_api_key_store,
-    get_config,
     get_protocol,
     get_session,
 )
-from switch_core.bridges.agent.hosted_mailbox import deliver_on_attach
 from switch_core.bridges.agent.protocol.agent_connections import (
-    TAKEN_OVER,
     AgentConnection,
     ClientDeclaration,
     Closure,
@@ -106,7 +99,6 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
 from switch_core.bridges.agent.protocol.event_buffer import Reader
-from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.bridges.agent.protocol.stream import event_stream
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_KEY_TYPE,
@@ -114,9 +106,7 @@ from switch_core.bridges.agent.registration_bootstrap import (
     resolve_registration_owner_id,
 )
 from switch_core.budgets import BudgetExceeded
-from switch_core.config import SwitchConfig
-from switch_core.db.models import Agent, HostedLaunch, Task, require_tenant_id
-from switch_core.db.session_scope import tenant_session
+from switch_core.db.models import Agent, Task
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.feature_flag_store import FeatureFlagStore
 from switch_core.feature_flags import is_known_flag
@@ -451,12 +441,6 @@ async def delete_agent(
 ) -> dict[str, bool]:
     if agent.id != agent_id:
         raise HTTPException(status_code=403, detail="Not authorized for this agent")
-    if hosted_launch_of(agent.metadata_) is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="This is a cloud agent. Remove it from Switch Console's cloud agents instead.",
-        )
-
     try:
         await protocol.delete_agent(agent_id=agent_id)
     except ValueError as e:
@@ -719,7 +703,6 @@ async def poll_events(
     agent_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
-    config: Annotated[SwitchConfig, Depends(get_config)],
     timeout: Annotated[float, Query()] = 10,
     accept: Annotated[str | None, Header()] = None,
     connection_id: Annotated[str | None, Query()] = None,
@@ -734,16 +717,6 @@ async def poll_events(
     client_version: Annotated[str | None, Query()] = None,
     rooms: Annotated[str | None, Query()] = None,
     last_event_id: Annotated[str | None, Header(alias="last-event-id")] = None,
-    worker_capability: Annotated[
-        str | None, Header(alias="x-switch-worker-capability")
-    ] = None,
-    host_boot_id: Annotated[str | None, Header(alias="x-switch-host-boot-id")] = None,
-    host_instance_id: Annotated[
-        str | None, Header(alias="x-switch-host-instance-id")
-    ] = None,
-    worker_state_version: Annotated[
-        int | None, Header(alias="x-switch-worker-state-version")
-    ] = None,
 ) -> EventResponse | Response:
     """Deliver the agent's events, as a push stream or a long poll.
 
@@ -762,7 +735,6 @@ async def poll_events(
         return await _open_event_stream(
             agent=agent,
             protocol=protocol,
-            config=config,
             connection_id=connection_id,
             scope=scope,
             event_filter=event_filter,
@@ -777,14 +749,8 @@ async def poll_events(
             rooms=rooms,
             last_event_id=last_event_id,
             expected_generation=expected_generation,
-            worker_capability=worker_capability,
-            host_boot_id=host_boot_id,
-            host_instance_id=host_instance_id,
-            worker_state_version=worker_state_version,
         )
 
-    if hosted_launch_of(agent.metadata_) is not None:
-        raise hosted_worker_only()
     events = await protocol.poll_events(agent.id, timeout=timeout)
     if not events:
         return Response(status_code=204)
@@ -873,7 +839,6 @@ async def _open_event_stream(
     *,
     agent: Agent,
     protocol: AgentCore,
-    config: SwitchConfig,
     connection_id: str | None,
     scope: str,
     event_filter: str,
@@ -883,10 +848,6 @@ async def _open_event_stream(
     rooms: str | None,
     last_event_id: str | None,
     expected_generation: int | None,
-    worker_capability: str | None,
-    host_boot_id: str | None,
-    host_instance_id: str | None,
-    worker_state_version: int | None,
 ) -> StreamingResponse:
     if not connection_id:
         raise HTTPException(
@@ -920,33 +881,7 @@ async def _open_event_stream(
             expected_generation=expected_generation,
         )
 
-    launch_id = hosted_launch_of(agent.metadata_)
-    if launch_id is None:
-        conn = open_connection()
-    else:
-        # Admission, the open and the binding all happen under the launch
-        # lock, so no revision bump lands between the check and the bind.
-        async with tenant_session(protocol.session_factory, require_tenant_id()) as db:
-            attach = await admit_worker(
-                session=db,
-                registry=protocol.connections,
-                config=config,
-                agent=agent,
-                launch_id=launch_id,
-                connection_id=connection_id,
-                declaration=declaration,
-                capability=worker_capability,
-                boot_id=host_boot_id,
-                instance_id=host_instance_id,
-                state_version=worker_state_version,
-            )
-            conn = open_connection()
-            if attach.takes_over is not None and attach.takes_over.id != conn.id:
-                protocol.connections.close(attach.takes_over.id, TAKEN_OVER)
-            protocol.connections.bind_worker(conn, attach.binding, attach.attached)
-            launch = await db.get(HostedLaunch, (require_tenant_id(), launch_id))
-            assert launch is not None
-            await deliver_on_attach(db, protocol, launch)
+    conn = open_connection()
 
     # Built before anything below can yield, so it holds the generation this
     # open produced; a reconnect during the bookkeeping supersedes it rather
@@ -1087,10 +1022,6 @@ def _current_connection(
     the client on it. Asked again after any wait, because what a caller was
     admitted on is not what it is still holding.
     """
-    if hosted_launch_of(agent.metadata_) is not None:
-        named = protocol.connections.get(req.connection_id)
-        if named is None or named.agent_id != agent.id or named.worker is None:
-            raise hosted_worker_only()
     try:
         return protocol.connections.require_current(
             agent.id, req.connection_id, generation=req.generation

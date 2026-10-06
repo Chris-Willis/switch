@@ -8,7 +8,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import AgentController, HostedLaunch, HostedMachine
+from switch_core.db.models import AgentController, HostedMachine
 
 
 async def seed_machine(
@@ -39,38 +39,6 @@ async def seed_machine(
     session.add(machine)
     await session.flush()
     return machine
-
-
-async def seed_launch(
-    session: AsyncSession,
-    *,
-    machine: HostedMachine,
-    request_id: str,
-    name: str,
-    state: str,
-    desired_state: str,
-    revision: int,
-    agent_id: str | None,
-    spec: dict,
-) -> HostedLaunch:
-    now = datetime.now(UTC)
-    launch = HostedLaunch(
-        id=request_id,
-        owner_id=machine.owner_id,
-        machine_id=machine.id,
-        name=name,
-        spec=spec,
-        state=state,
-        desired_state=desired_state,
-        revision=revision,
-        agent_id=agent_id,
-        active_at=now,
-        created_at=now,
-        updated_at=now,
-    )
-    session.add(launch)
-    await session.flush()
-    return launch
 
 
 class LinkingControllers:

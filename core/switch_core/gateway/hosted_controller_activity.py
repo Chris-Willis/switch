@@ -22,7 +22,6 @@ from switch_core.db.models import (
     AgentController,
     AgentControllerOperation,
     AgentDefinition,
-    HostedLaunch,
     HostedMachine,
     HostedWakeMailbox,
     require_tenant_id,
@@ -123,17 +122,6 @@ async def controller_idle_evidence(
                     at = _parsed(last)
                     if at is None or now - at < idle_after:
                         reasons.append("agent_recently_active")
-    if any(
-        now - active_at < idle_after
-        for active_at in await session.scalars(
-            select(HostedLaunch.active_at).where(
-                HostedLaunch.tenant_id == require_tenant_id(),
-                HostedLaunch.machine_id == machine.id,
-                HostedLaunch.desired_state == "running",
-            )
-        )
-    ):
-        reasons.append("recently_addressed")
     if pending_relays(controller_id) > 0:
         reasons.append("relay_pending")
     if await session.scalar(

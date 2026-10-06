@@ -258,9 +258,7 @@ class TestIdleEvidence:
             await HostedMailboxStore().write(
                 session,
                 agent_id=placed.agent_id,
-                launch_id=None,
                 entry=entry,
-                offered_to=None,
             )
             await session.commit()
 
@@ -279,7 +277,6 @@ class TestIdleEvidence:
             idle = await _should_sleep(
                 session,
                 machine,
-                cloud.harness.protocol,
                 IDLE_AFTER,
                 REPORT_WITHIN,
                 cloud.harness.clock(),
@@ -385,14 +382,14 @@ async def _machine(cloud: Cloud, placed: Placed) -> HostedMachine:  # noqa: F811
     return machine
 
 
-async def _mailbox(cloud: Cloud, placed: Placed) -> list[tuple[str, str, str | None]]:  # noqa: F811
+async def _mailbox(cloud: Cloud, placed: Placed) -> list[tuple[str, str]]:  # noqa: F811
     async with cloud.factory() as session:
         rows = await session.scalars(
             select(HostedWakeMailbox).where(
                 HostedWakeMailbox.agent_id == placed.agent_id
             )
         )
-        return [(row.message_id, row.state, row.launch_id) for row in rows]
+        return [(row.message_id, row.state) for row in rows]
 
 
 class TestWakeOnAddress:
@@ -417,7 +414,7 @@ class TestWakeOnAddress:
             None,
             8,
         )
-        assert await _mailbox(cloud, placed) == [("$m1", "pending", None)]
+        assert await _mailbox(cloud, placed) == [("$m1", "pending")]
 
     async def test_a_machine_its_owner_stopped_takes_no_mail(
         self,
@@ -463,7 +460,7 @@ class TestWakeOnAddress:
         assert frame["agent_id"] == placed.agent_id
         assert frame["event"]["room_id"] == room_id
         assert frame["event"]["payload"]["message_id"] == "$m1"
-        assert await _mailbox(cloud, placed) == [("$m1", "admitted", None)]
+        assert await _mailbox(cloud, placed) == [("$m1", "admitted")]
 
     async def test_a_live_controller_gets_the_event_on_its_stream(
         self,

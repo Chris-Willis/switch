@@ -1,13 +1,10 @@
 """Console relays: the message vocabulary, live views, and controller relays.
 
-A Console request for a cloud agent is relayed through Core to whatever runs
-the agent and answered from there. Two kinds of host answer: a hosted worker,
-which attaches over its own protocol 7 stream (`hosted_workers.py`), and an
-agents controller, which is sent `agent.control` frames on its one stream and
-replies over management routes. Both answer the same control vocabulary
-(`classify_message`; a controller also takes `ensure`, see
-`classify_control_message`) within the same limits, and both feed Console views
-(`ConsoleView`, `RelayViews`) the same frames.
+A Console request for an agent is relayed through Core to the agents
+controller that runs it, which is sent `agent.control` frames on its one stream
+and replies over management routes. It answers the host control vocabulary
+(`classify_message`, plus `ensure`; see `classify_control_message`) within the
+limits here, and its pushes feed Console views (`ConsoleView`, `RelayViews`).
 
 Everything here is memory only and per Core boot. A relay lost to a restart
 fails for its caller as a timeout, never as delivered.
@@ -121,7 +118,7 @@ def classify_control_message(message: dict[str, Any]) -> MessageKind:
     """`classify_message` for a relay to an agent's controller.
 
     A controller starts and restarts its agents' sessions on Console's
-    request, so `ensure` passes here where a hosted worker refuses it.
+    request, so `ensure` passes here where `classify_message` refuses it.
     """
     if isinstance(message, dict) and set(message) == {CONTROL_START_MESSAGE}:
         return "mutating"
@@ -130,23 +127,6 @@ def classify_control_message(message: dict[str, Any]) -> MessageKind:
 
 def frame_size(data: dict[str, Any]) -> int:
     return len(json.dumps(data, separators=(",", ":")).encode())
-
-
-@dataclass
-class PendingRelay:
-    id: str
-    tenant_id: str
-    agent_id: str
-    launch_id: str
-    launch_revision: int
-    relay_seq: int | None
-    core_boot: int
-    connection_id: str
-    generation: int
-    boot_id: str
-    deadline: float
-    future: asyncio.Future[dict[str, Any]] = field(repr=False)
-    timer: asyncio.TimerHandle | None = field(default=None, repr=False)
 
 
 class ConsoleView:
@@ -200,7 +180,7 @@ def subscribe_message(subscription: str, on: bool) -> dict[str, Any]:
 
 
 class RelayViews:
-    """Console live views of hosted workers, one worker subscription each.
+    """Console live views of controller-run agents, one host subscription each.
 
     A worker subscription is held once per (agent, session) however many
     Console streams watch it, and released with the last of them.
