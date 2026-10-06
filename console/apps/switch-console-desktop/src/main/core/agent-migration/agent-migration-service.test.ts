@@ -57,6 +57,9 @@ type World = {
   roomsMidTurn: string[];
   untellable: string[];
   lookup: TargetLookup;
+  /** What the machine looks like once `enable` has turned it on; null leaves it as it was. */
+  lookupAfterEnable: TargetLookup | null;
+  enableFails: boolean;
   eligibility: { management: boolean; owner: string | null; ownedByMe: boolean };
   stoppedByHand: boolean;
   controllerRunning: boolean[];
@@ -81,7 +84,14 @@ function deps(): AgentMigrationDeps {
     definitions: {
       build: async () => BUILT,
     },
-    targets: { resolve: async () => world.lookup },
+    targets: {
+      resolve: async () => world.lookup,
+      enable: async (agent) => {
+        world.calls.push(`enable ${agent.sshHost ?? 'this computer'}`);
+        if (world.enableFails) throw new Error('ssh: connect to host gpu-1: Connection refused');
+        world.lookup = world.lookupAfterEnable ?? world.lookup;
+      },
+    },
     management: {
       eligibility: async () => world.eligibility,
       adopt: async (workspaceId, switchAgentId, body) => {
@@ -180,6 +190,7 @@ function deps(): AgentMigrationDeps {
     },
     pollMs: 1_000,
     controllerStopWaitMs: 8_000,
+    machineReadyWaitMs: 5_000,
   };
 }
 
@@ -197,6 +208,8 @@ beforeEach(() => {
       canEnable: false,
       controller: { controllerId: CONTROLLER, state: 'running' },
     },
+    lookupAfterEnable: null,
+    enableFails: false,
     eligibility: { management: true, owner: 'Ada', ownedByMe: true },
     stoppedByHand: false,
     controllerRunning: [false],
@@ -293,6 +306,7 @@ describe('moving an agent onto its controller', () => {
     const service = new AgentMigrationService({
       ...deps(),
       targets: {
+        ...deps().targets,
         resolve: async () => {
           throw new Error('ssh: connect to host build-box port 22: Connection refused');
         },
@@ -639,32 +653,78 @@ describe('moving every agent of a workspace', () => {
     });
   const scope = { kind: 'workspace', serverId: 'server-1', workspaceId: WORKSPACE } as const;
 
-  it('takes the agents on SSH hosts too, not another workspace’s, and says when it is complete', async () => {
+  it('takes the agents on SSH hosts too, not another workspace’s, and counts them per machine', async () => {
     const migration = service();
-    expect(await migration.moveAllProgress(scope)).toEqual({
-      managed: [],
-      remaining: [
-        { name: 'builder', reason: null },
-        { name: 'trainer', reason: null },
-      ],
-    });
+    const before = await migration.moveAllProgress(scope);
+    expect(before.machines.map((m) => [m.name, m.managed, m.total])).toEqual([
+      ['This computer', 0, 1],
+      ['gpu-1', 0, 1],
+    ]);
     const moved = await migration.moveAll(scope);
     expect(moved.moved.map((agent) => agent.name)).toEqual(['builder', 'trainer']);
-    expect(await migration.moveAllProgress(scope)).toEqual({
-      managed: ['builder', 'trainer'],
-      remaining: [],
-    });
+    const after = await migration.moveAllProgress(scope);
+    expect(after.machines.every((m) => m.managed === m.total)).toBe(true);
     const back = await migration.stopManagingAll(scope);
     expect(back.moved.map((agent) => agent.name)).toEqual(['builder', 'trainer']);
   });
 
-  it('counts an agent that cannot move as remaining, with the reason', async () => {
+  it('names the commonest reason a machine’s agents cannot move, once per machine', async () => {
     world.eligibility = { management: true, owner: 'Grace', ownedByMe: false };
     const progress = await service().moveAllProgress(scope);
-    expect(progress.managed).toEqual([]);
-    expect(progress.remaining[0]).toMatchObject({
-      name: 'builder',
+    expect(progress.machines[0]).toMatchObject({
+      name: 'This computer',
+      managed: 0,
+      blocked: 1,
       reason: expect.stringMatching(/owner/),
+      setUpOnMove: false,
     });
+  });
+
+  it('sets up a host that is not a machine yet, then moves its agents', async () => {
+    const ready = world.lookup;
+    world.lookup = {
+      ...ready,
+      target: null,
+      blocker: 'Make gpu-1 a machine first.',
+      canEnable: true,
+    };
+    world.lookupAfterEnable = ready;
+    const migration = service();
+    expect((await migration.moveAllProgress(scope)).machines.map((m) => m.setUpOnMove)).toEqual([
+      true,
+      true,
+    ]);
+    const moved = await migration.moveAll(scope);
+    expect(world.calls.filter((call) => call.startsWith('enable'))).toEqual([
+      'enable this computer',
+    ]);
+    expect(moved.moved.map((agent) => agent.name)).toEqual(['builder', 'trainer']);
+  });
+
+  it('reports a host that cannot be set up once for its agents, and moves the rest', async () => {
+    world.lookup = {
+      ...world.lookup,
+      target: null,
+      blocker: 'Make it a machine first.',
+      canEnable: true,
+    };
+    world.enableFails = true;
+    const moved = await service().moveAll(scope);
+    expect(moved.moved).toEqual([]);
+    expect(moved.skipped.map((agent) => agent.reason)).toEqual([
+      expect.stringMatching(/^this computer could not be made a machine: ssh: connect/),
+      expect.stringMatching(/^gpu-1 could not be made a machine: ssh: connect/),
+    ]);
+  });
+
+  it('gives up waiting for a machine that never becomes ready, saying so', async () => {
+    world.lookup = {
+      ...world.lookup,
+      target: null,
+      blocker: 'Not reached Switch yet.',
+      canEnable: true,
+    };
+    const moved = await service().moveAll(scope);
+    expect(moved.skipped[0]?.reason).toMatch(/is not ready for agents yet: Not reached Switch yet/);
   });
 });

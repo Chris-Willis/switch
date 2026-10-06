@@ -94,9 +94,9 @@ ingress:
 #      AGENT_REGISTRATION_TOKEN, SECRET_KEYS, GATEWAY_ADMIN_EMAIL,
 #      GATEWAY_ADMIN_PASSWORD,
 #      JWT_SECRET_KEY (optional, legacy — see secrets.jwtSecretKey),
+#      CONTROLLER_TOKEN_SECRET (if switchCore.agentManagement.enabled),
 #      MATTERMOST_ADMIN_PASSWORD + MATTERMOST_USER_PASSWORD (if mattermost.enabled),
-#      GATEWAY_OIDC_CLIENT_SECRET (if switchCore.oidc.enabled),
-#      CONTROLLER_TOKEN_SECRET (if switchCore.agentManagementEnabled).
+#      GATEWAY_OIDC_CLIENT_SECRET (if switchCore.oidc.enabled).
 secrets:
   # Name of a pre-existing Secret to read all of the above from. Empty = the
   # chart manages its own Secret from the values below.
@@ -121,15 +121,15 @@ secrets:
   # credentials keep working; the first boot re-encrypts stored credentials
   # under secretKeys. Remove it afterwards.
   jwtSecretKey: ""
-  # Signs the access tokens agent controllers use. Required (at least 32
-  # characters) when switchCore.agentManagementEnabled is true. Kept separate
-  # from secretKeys so rotating one never invalidates the other. Generate one
-  # with: openssl rand -hex 32
-  controllerTokenSecret: ""
   gatewayAdminEmail: ""
   gatewayAdminPassword: ""
   mattermostAdminPassword: ""
   mattermostUserPassword: ""
+  # Signs agent controllers' access tokens (required when
+  # switchCore.agentManagement.enabled), at least 32 characters. Kept apart from
+  # secretKeys so rotating either never invalidates the other. Generate one
+  # with: openssl rand -hex 32
+  controllerTokenSecret: ""
   # Gateway OIDC client secret (required when switchCore.oidc.enabled).
   gatewayOidcClientSecret: ""
   # SMTP relay password for invitation e-mails (required when
@@ -246,6 +246,13 @@ switchCore:
     endpoint: https://telemetry.flintai.dev
     # How often the usage snapshot is collected and sent.
     snapshotIntervalHours: 24
+    # Which Amplitude project the usage lands in: prod, staging, dev or local.
+    # Leave it at prod unless this is one of Flint's own non-production
+    # deployments; anything else is refused at startup.
+    environment: prod
+    # Whether this is one of Flint's own deployments, so staff usage can be
+    # told from adoption. Leave it false on any other deployment.
+    internal: false
 
   # Public base URL the gateway is served on (used for links / OIDC redirects).
   frontendBaseUrl: ""
@@ -265,9 +272,6 @@ switchCore:
   signupEnabled: false
   # Most users created per rolling hour, counting every way a user is created.
   signupMaxPerHour: 20
-  # Agent management: controllers that run agents for this deployment. Off by
-  # default. When enabled, secrets.controllerTokenSecret is required.
-  agentManagementEnabled: false
   # Gateway OIDC login (bring-your-own IdP, e.g. Okta). Disabled by default;
   # set enabled=true and supply issuerUrl/clientId (plus
   # secrets.gatewayOidcClientSecret) to gate the gateway behind OIDC. Provider
@@ -305,6 +309,15 @@ switchCore:
   # lists them, rather than a 403. The gateway UI does not need it; turn it on
   # once every API client authenticating against this deployment handles it.
   tenantChoiceEnabled: false
+  # Agent management: managed agents, and the agent controllers (Switch Console,
+  # or switch-agent-controller on a user's own machine) that run them. Needs
+  # secrets.controllerTokenSecret, and `/v1` routed to switch-core
+  # (ingress.agentApiPaths does by default).
+  agentManagement:
+    enabled: false
+    # How often a controller must report; one silent for three of these is
+    # shown as unknown and gets no new placements.
+    statusIntervalSeconds: 60
   # Private hosts switch-core may reach at a URL a tenant or agent supplied —
   # a Mattermost server, an OpenCode server, an agent icon. Hostnames or CIDRs.
   # Anything else that is not a public address is refused, and link-local and

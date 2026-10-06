@@ -28,7 +28,12 @@ import type {
  * `AgentHub` instead; the room of its calls comes from there too.
  */
 
-/** The agent-protocol revisions the relay serves, as switch-core declares its own. */
+/**
+ * The agent-protocol revisions the relay serves: switch-core's, up to the
+ * socket. Revision 8 moved the connection onto a WebSocket, which the relay
+ * does not serve; it serves the event stream and its beat, which the runtime
+ * falls back to against a server that speaks 7 or older.
+ */
 export const RELAY_AGENT_PROTOCOL = { speaks: 7, accepts: 1 } as const;
 /** From this revision a client names its connection incarnation on every beat and room request. */
 const FENCED_PROTOCOL_REVISION = 2;
