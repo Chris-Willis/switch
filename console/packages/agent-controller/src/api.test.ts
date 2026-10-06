@@ -71,6 +71,7 @@ const assignment: Assignment = {
         auto_approve: false,
         directory: null,
         isolation: 'shared',
+        skills: [],
       },
     },
   ],

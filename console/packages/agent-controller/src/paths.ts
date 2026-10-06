@@ -108,7 +108,8 @@ function safeSegment(value: string, what: string): string {
 export const AGENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 export function requireAgentId(agentId: string): string {
-  if (!AGENT_ID.test(agentId)) throw new Error(`The agent id '${agentId}' is not a valid unit instance.`);
+  if (!AGENT_ID.test(agentId))
+    throw new Error(`The agent id '${agentId}' is not a valid unit instance.`);
   return agentId;
 }
 

@@ -11,6 +11,7 @@ import {
   clearTakenOver,
   ensureSharedProcess,
   ensureThroughWatcher,
+  type HostedWorkspace,
   inProcessSupervision,
   type OpenAgentStream,
   type ProviderReadiness,
@@ -84,6 +85,8 @@ export type LaunchOptions = {
   replaceIdentity: boolean;
   /** Someone asked for this agent host on purpose: a standing-down marker is cleared. */
   clearTakenOver: boolean;
+  /** The connection skills an isolated agent's unit installs for its provider. */
+  skills: HostedWorkspace['skills'];
 };
 
 /** What an agent host reads to reach Switch: the controller's relay, and a token for it. */

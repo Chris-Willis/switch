@@ -29,6 +29,7 @@ function agent(overrides: Partial<AgentAssignment> = {}, definition = {}): Agent
       auto_approve: false,
       directory: null,
       isolation: 'shared',
+      skills: [],
       ...definition,
     },
   };
@@ -92,6 +93,7 @@ describe('reconcile', () => {
       restart: false,
       replaceIdentity: false,
       clearTakenOver: true,
+      skills: [],
     });
     expect(launch!.template.start.input.cwd).toBe('/data/workspaces/scout');
     expect(launch!.template.execution!.credentialsPath).toBe(
@@ -265,6 +267,22 @@ describe('reconcile', () => {
     expect(store.agent('agent-1')?.failure).toMatchObject({
       reason: 'definition_invalid',
       detail: expect.stringContaining('maxTurns'),
+    });
+    expect(runtime.calls).toEqual([]);
+  });
+
+  it('hands an isolated agent its skills to install', async () => {
+    const skills = [{ slug: 'github', files: { 'SKILL.md': '# GitHub' } }];
+    await reconcile(assignment(agent({}, { isolation: 'isolated', skills })), deps());
+    expect(runtime.launches()[0]!.options).toMatchObject({ isolation: 'isolated', skills });
+  });
+
+  it('records skills it cannot install as invalid', async () => {
+    const skills = [{ slug: 'github', files: { 'README.md': 'no SKILL.md' } }];
+    await reconcile(assignment(agent({}, { isolation: 'isolated', skills })), deps());
+    expect(store.agent('agent-1')?.failure).toMatchObject({
+      reason: 'definition_invalid',
+      detail: expect.stringContaining('SKILL.md'),
     });
     expect(runtime.calls).toEqual([]);
   });

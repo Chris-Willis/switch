@@ -109,6 +109,7 @@ const START: LaunchOptions = {
   restart: false,
   replaceIdentity: false,
   clearTakenOver: false,
+  skills: [],
 };
 
 function template(agentId = 'agent-1', cwd = join(dir, 'data', 'worktrees', agentId, 'scout')) {
@@ -168,6 +169,15 @@ describe('SystemdRuntime', () => {
       instructions: '',
     });
     expect(systemctl.calls.every((args) => !args.join(' ').includes(';'))).toBe(true);
+  });
+
+  it('writes the agent’s skills for its unit to install', async () => {
+    const skills = [{ slug: 'github', files: { 'SKILL.md': '# GitHub' } }];
+    await runtime.launch('agent-1', template(), { ...START, skills });
+    const workspace = JSON.parse(
+      readFileSync(join(layout.agentRoot('agent-1'), 'workspace.json'), 'utf8')
+    );
+    expect(workspace.skills).toEqual(skills);
   });
 
   it('refuses a working directory outside the agent’s own, and a linked agent root', async () => {

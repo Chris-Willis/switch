@@ -134,6 +134,15 @@ export const agentDefinitionSchema = z.object({
   directory: z.string().nullable(),
   /** `shared`: the agent host runs in this controller's process; `isolated`: in a process of its own. */
   isolation: receivedEnum(['shared', 'isolated']),
+  /**
+   * The connection skills the provider is given (GitHub's for an agent that
+   * works in a repository), installed by an isolated agent's unit. Checked
+   * only as loosely here, so a bad set fails its own agent
+   * (`definitionProblem`); absent from a Core that sends none.
+   */
+  skills: z
+    .array(z.object({ slug: z.string(), files: z.record(z.string(), z.string()) }))
+    .default([]),
 });
 export type Isolation = 'shared' | 'isolated';
 export type AgentDefinition = z.infer<typeof agentDefinitionSchema>;

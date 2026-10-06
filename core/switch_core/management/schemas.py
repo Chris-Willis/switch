@@ -19,6 +19,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from switch_core.connections.loader import CATALOG, SKILL_PROVIDERS, deployment_skills
 from switch_core.db.models import Agent, AgentController, AgentControllerOperation
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.management import reason_codes
@@ -509,8 +510,11 @@ def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
     The definition is the v1 shape, `directory` included, rather than the
     target contract's (which nests it as `local.directory` and adds fields v1
     does not have); `agent-controllers-v1.md` defines it this way.
-    `repository` is present only for a definition that names one."""
+    `repository` is present only for a definition that names one. `skills`
+    are the connection skills its provider is given: GitHub's for an agent
+    that works in a repository, as a cloud worker gives its agents."""
     definition = row.definition
+    provider = definition["provider"]
     return {
         "agent_id": row.agent_id,
         "revision": row.revision,
@@ -519,7 +523,7 @@ def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
             "name": agent.name,
             "display_name": agent.display_name,
             "icon_url": agent.icon_url,
-            "provider": definition["provider"],
+            "provider": provider,
             "model": definition.get("model"),
             "advanced_config": definition.get("advanced_config", {}),
             "instructions": definition.get("instructions", ""),
@@ -531,6 +535,9 @@ def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
                 if definition.get("repository") is not None
                 else {}
             ),
+            "skills": deployment_skills(CATALOG, ["github"])
+            if definition.get("repository") is not None and provider in SKILL_PROVIDERS
+            else [],
         },
     }
 

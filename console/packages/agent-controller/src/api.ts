@@ -281,7 +281,8 @@ export class AccessTokens {
       } catch (error) {
         if (!isInstanceMismatch(error)) throw error;
         const retryAfter = (error as ControllerApiError).retryAfterS;
-        const waitMs = retryAfter === null ? wait : Math.min(retryAfter * 1000, MISMATCH_MAX_WAIT_MS);
+        const waitMs =
+          retryAfter === null ? wait : Math.min(retryAfter * 1000, MISMATCH_MAX_WAIT_MS);
         this.deps.log.warn(
           'The server does not recognise this instance as the machine’s yet; retrying the token exchange.',
           { waitMs, message: (error as ControllerApiError).message }

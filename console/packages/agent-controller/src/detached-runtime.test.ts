@@ -89,6 +89,7 @@ describe('DetachedRuntime', () => {
       restart: false,
       replaceIdentity: false,
       clearTakenOver: false,
+      skills: [],
     });
     const root = join(dir, 'data', 'watchers', 'agent-1');
     expect(JSON.parse(readFileSync(join(root, 'watch.json'), 'utf8'))).toEqual({
@@ -121,6 +122,7 @@ describe('DetachedRuntime', () => {
         restart: false,
         replaceIdentity: false,
         clearTakenOver: false,
+        skills: [],
       })
     ).rejects.toThrow(/exit 4\): cannot launch/);
   });
@@ -132,6 +134,7 @@ describe('DetachedRuntime', () => {
       restart: false,
       replaceIdentity: false,
       clearTakenOver: false,
+      skills: [],
     });
     const watcher = await fakeWatcher(root);
     mkdirSync(join(root, 'supervisor'), { recursive: true });
@@ -146,6 +149,7 @@ describe('DetachedRuntime', () => {
       restart: true,
       replaceIdentity: true,
       clearTakenOver: true,
+      skills: [],
     });
     expect(watcher.exitCode).toBe(0);
     const observation = await runtime.observe('agent-1');

@@ -269,7 +269,7 @@ export class SystemdRuntime implements AgentRuntime {
       repository: null,
       mirrorPath: null,
       workspacePath: cwd,
-      skills: [],
+      skills: options.skills,
       instructions: '',
     });
     await this.writeShared(join(agentRoot, HOSTED_WORKSPACE_FILE), JSON.stringify(workspace));

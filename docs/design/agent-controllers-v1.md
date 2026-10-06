@@ -208,6 +208,11 @@ about settings; they apply what they are given.
   `provider` needs an `advanced_config` the new provider takes.
 
 The assignment entry adds the agent's `name`, `display_name` and `icon_url`, read from the agents row.
+It also carries `skills`, the connection skills the agent's provider is given, as
+`[{slug, files}]`: GitHub's for a definition with a `repository` whose provider takes skills
+(Claude, Codex, OpenCode), the rule a cloud worker applies to its agents, and `[]` otherwise.
+Core derives them as it serves the assignment; nothing stores them. An isolated agent's unit
+installs them; a shared agent host does not, and its controller logs that.
 
 ### Reason codes
 These are the codes from the contract, plus `forbidden`, `invalid_credential`, `enrollment_code_invalid`,
