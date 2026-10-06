@@ -281,7 +281,7 @@ export class SystemdRuntime implements AgentRuntime {
     };
     const workspace = hostedWorkspaceSchema.parse({
       repository,
-      mirrorPath: repository === null ? null : this.mirrorPath(repository),
+      mirrorPath: repository === null ? null : this.mirrorPath(agentId, repository),
       workspacePath: cwd,
       skills: options.skills,
       instructions: '',
@@ -305,10 +305,10 @@ export class SystemdRuntime implements AgentRuntime {
     }
   }
 
-  /** Where the worker kept the repository's mirror: `<repos>/<owner>/<name>.git`, lowercased. */
-  private mirrorPath(repository: string): string {
+  /** The agent's own mirror of the repository: `<agent>/repos/<owner>/<name>.git`, lowercased. */
+  private mirrorPath(agentId: string, repository: string): string {
     const [owner, name] = repository.toLowerCase().split('/');
-    return join(this.deps.layout.reposRoot, owner!, `${name}.git`);
+    return join(this.deps.layout.reposRoot(agentId), owner!, `${name}.git`);
   }
 
   async stop(agentId: string, options: { wait: boolean }): Promise<void> {

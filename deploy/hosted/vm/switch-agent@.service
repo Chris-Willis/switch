@@ -33,7 +33,10 @@ StandardInput=null
 StandardOutput=journal
 StandardError=journal
 TemporaryFileSystem=/data/agents:ro /data/worktrees:ro
-BindPaths=/data/agents/%i /data/worktrees/%i /data/repos
+BindPaths=/data/agents/%i /data/worktrees/%i
+# Each agent keeps its repository mirrors under its own root. The shared one
+# predates that and is read only to move an existing worktree off it.
+BindReadOnlyPaths=/data/repos
 InaccessiblePaths=/data/.switch-controller /data/.switch-hosted /run/switch-controller /run/switch-machine /etc/switch-hosted
 IPAddressDeny=169.254.169.254/32 fd00:ec2::254/128
 Restart=on-failure

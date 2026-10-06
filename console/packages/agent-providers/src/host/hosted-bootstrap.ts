@@ -95,7 +95,7 @@ export const hostedDeploymentSpecSchema = z
         credentialPath: absolutePath,
         repository: repositoryName.optional(),
         refresh: z.literal(true).optional(),
-        /** The bare mirror the workspace is a worktree of, shared by every agent on the repository. */
+        /** The bare mirror the workspace is a worktree of. */
         mirrorPath: absolutePath,
       })
       .optional(),
@@ -715,7 +715,7 @@ export async function runHostedBootstrap(
 export const hostedWorkspaceSchema = z
   .strictObject({
     repository: repositoryName.nullable(),
-    /** The bare mirror the workspace is a worktree of, shared by every agent on the repository. */
+    /** The bare mirror the workspace is a worktree of. */
     mirrorPath: absolutePath.nullable(),
     workspacePath: absolutePath,
     skills: z.union([z.tuple([]), hostedSkillsSchema]),

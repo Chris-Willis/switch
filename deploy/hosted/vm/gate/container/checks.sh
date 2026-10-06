@@ -178,6 +178,7 @@ EOF
   denied "agent unit cannot list another agent's root" in_a1 ls "/data/agents/$A2"
   denied "agent unit cannot read another agent's notes" in_a1 cat "/data/agents/$A2/home/notes.txt"
   denied "agent unit cannot list another agent's worktree" in_a1 ls "/data/worktrees/$A2"
+  denied "agent unit cannot write the shared repository mirror" in_a1 touch /data/repos/acme/widgets.git/hooks/planted
   denied "switch-agent outside a unit cannot read another agent's notes" as_agent cat "/data/agents/$A2/home/notes.txt"
   # Both agents run as the one switch-agent uid, so ProtectProc=invisible
   # (which hides other users' processes) does not separate them; each agent's
@@ -213,6 +214,7 @@ ExecStart=
 ExecStart=/bin/sleep infinity
 TemporaryFileSystem=
 BindPaths=
+BindReadOnlyPaths=
 WorkingDirectory=/
 Restart=no
 EOF

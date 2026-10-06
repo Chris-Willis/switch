@@ -191,7 +191,7 @@ describe('SystemdRuntime', () => {
     expect(workspace.skills).toEqual(skills);
   });
 
-  it('names the repository and its shared mirror for the unit to make the workspace a worktree of', async () => {
+  it('names the repository and the agent’s own mirror for the unit to make the workspace a worktree of', async () => {
     const cwd = join(layout.worktreeRoot('agent-1'), 'example-org', 'example.repo');
     await runtime.launch('agent-1', template('agent-1', cwd), { ...START, repository: REPOSITORY });
     expect(repositoryLookups).toEqual(['agent-1']);
@@ -200,7 +200,7 @@ describe('SystemdRuntime', () => {
     );
     expect(workspace).toMatchObject({
       repository: 'Example-Org/Example.Repo',
-      mirrorPath: join(dir, 'data', 'repos', 'example-org', 'example.repo.git'),
+      mirrorPath: join(layout.agentRoot('agent-1'), 'repos', 'example-org', 'example.repo.git'),
       workspacePath: cwd,
     });
     const config = JSON.parse(

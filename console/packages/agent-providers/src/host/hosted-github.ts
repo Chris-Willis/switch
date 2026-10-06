@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
-import { mkdir, open, readFile, readdir, realpath } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { copyFile, mkdir, open, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -227,9 +227,12 @@ export async function runGitHubCli(args: string[]): Promise<void> {
 class RepositoryStepError extends Error {}
 
 /**
- * Makes `workspace` a worktree on `switch/<agentId>` over the bare mirror every
- * agent on the machine shares for `repository`. Every git command that changes
- * the mirror holds `<mirror>.lock`, so concurrent agents take turns.
+ * Makes `workspace` a worktree on `switch/<agentId>` over the bare mirror of
+ * `repository`. Every git command that changes the mirror holds
+ * `<mirror>.lock`, so agents sharing one take turns. A workspace that is a
+ * worktree of another mirror of the same repository is moved onto this one:
+ * its branch is fetched across, its files and index are kept, and the other
+ * mirror is only read.
  */
 export async function ensureHostedRepository(input: {
   workspace: string;
@@ -289,11 +292,93 @@ export async function ensureHostedRepository(input: {
       '--auto',
     ]);
     const common = await probe(['-C', workspace, 'rev-parse', '--git-common-dir']);
+    const commonPath =
+      common === null ? null : await realpath(resolve(workspace, common)).catch(() => null);
+    if (commonPath !== null && commonPath === (await realpath(mirror))) return;
     if (
-      common !== null &&
-      (await realpath(resolve(workspace, common)).catch(() => null)) === (await realpath(mirror))
-    )
+      commonPath !== null &&
+      (await probe(['-C', workspace, 'rev-parse', '--show-toplevel'])) ===
+        (await realpath(workspace)) &&
+      (
+        await probe(['--git-dir', commonPath, 'config', '--get', 'remote.origin.url'])
+      )?.toLowerCase() === url.toLowerCase()
+    ) {
+      const gitDir = await probe(['-C', workspace, 'rev-parse', '--absolute-git-dir']);
+      const admin = gitDir === null ? null : await realpath(gitDir).catch(() => null);
+      if (admin === null || dirname(admin) !== join(commonPath, 'worktrees'))
+        throw new RepositoryStepError('the workspace is not a linked worktree');
+      let head: string;
+      try {
+        head = (await readFile(join(admin, 'HEAD'), 'utf8')).trim();
+      } catch {
+        throw new RepositoryStepError('read the workspace branch');
+      }
+      const branch = /^ref: (refs\/heads\/\S+)$/.exec(head)?.[1];
+      if (branch === undefined && !/^[0-9a-f]{40,64}$/.test(head))
+        throw new RepositoryStepError('read the workspace branch');
+      await locked('move the workspace branch to the mirror', [
+        '-C',
+        mirror,
+        'fetch',
+        '--no-tags',
+        '--',
+        commonPath,
+        branch === undefined ? head : `+${branch}:${branch}`,
+      ]);
+      const moved = join(mirror, 'worktrees', basename(admin));
+      try {
+        await mkdir(moved, { recursive: true, mode: 0o700 });
+        await writeFile(join(moved, 'HEAD'), `${head}\n`);
+        await writeFile(join(moved, 'commondir'), '../..\n');
+        await writeFile(join(moved, 'gitdir'), `${join(workspace, '.git')}\n`);
+        await copyFile(join(admin, 'index'), join(moved, 'index')).catch((error) => {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        });
+      } catch {
+        throw new RepositoryStepError('move the worktree to the mirror');
+      }
+      let missing: string[];
+      try {
+        const staged = (
+          await exec('git', ['--git-dir', moved, 'ls-files', '-s', '-z'], {
+            env,
+            timeout: 120_000,
+            maxBuffer: 256 * 1024 * 1024,
+          })
+        ).stdout
+          .split('\0')
+          .filter((entry) => entry !== '' && !entry.startsWith('160000 '))
+          .map((entry) => entry.split(' ')[1]!);
+        const check = exec('git', ['--git-dir', mirror, 'cat-file', '--batch-check'], {
+          env,
+          timeout: 120_000,
+          maxBuffer: 256 * 1024 * 1024,
+        });
+        check.child.stdin!.end([...new Set(staged)].map((sha) => `${sha}\n`).join(''));
+        missing = (await check).stdout
+          .split('\n')
+          .filter((line) => line.endsWith(' missing'))
+          .map((line) => line.split(' ')[0]!);
+      } catch {
+        throw new RepositoryStepError('read the workspace index');
+      }
+      if (missing.length > 0)
+        await locked('move the staged changes to the mirror', [
+          '-C',
+          mirror,
+          'fetch',
+          '--no-tags',
+          '--',
+          commonPath,
+          ...missing,
+        ]);
+      try {
+        await writeFile(join(workspace, '.git'), `gitdir: ${moved}\n`);
+      } catch {
+        throw new RepositoryStepError('move the worktree to the mirror');
+      }
       return;
+    }
     let entries: string[];
     try {
       entries = await readdir(workspace);

@@ -841,6 +841,11 @@ class UnitFileTests(unittest.TestCase):
         self.assertNotIn("--watch-supervise", unit)
         self.assertIn("IPAddressDeny=169.254.169.254/32 fd00:ec2::254/128", unit)
 
+    def test_agent_unit_mounts_the_shared_repository_mirror_read_only(self) -> None:
+        unit = self.unit("switch-agent@.service")
+        self.assertIn("BindPaths=/data/agents/%i /data/worktrees/%i\n", unit)
+        self.assertIn("BindReadOnlyPaths=/data/repos\n", unit)
+
     def test_polkit_rule_admits_only_agent_units(self) -> None:
         rule = self.unit("50-switch-controller.rules")
         self.assertIn('subject.user !== "switch-controller"', rule)

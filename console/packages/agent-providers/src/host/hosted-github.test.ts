@@ -97,7 +97,10 @@ it("renews over plain HTTP only through an agents controller's relay on this mac
     writeFile(
       credentials,
       JSON.stringify({
-        env: { SWITCH_API_ENDPOINT: value, SWITCH_API_TOKEN: 'synthetic-relay-credential' },
+        env: {
+          SWITCH_API_ENDPOINT: value,
+          SWITCH_API_TOKEN: 'synthetic-relay-credential',
+        },
       })
     );
   await endpoint('http://127.0.0.1:47100');
@@ -210,7 +213,9 @@ it('authenticates real Git credential requests without writing credentials or co
   await git('reject', `protocol=https\nhost=github.com\n\n`);
   await expect(readFile(marker)).rejects.toMatchObject({ code: 'ENOENT' });
   expect(await readFile(config, 'utf8')).not.toContain(token);
-  await expect(readFile(join(root, '.git-credentials'))).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(readFile(join(root, '.git-credentials'))).rejects.toMatchObject({
+    code: 'ENOENT',
+  });
 });
 
 it('validates installation tokens against the selected repository instead of a user identity', async () => {
@@ -322,10 +327,10 @@ describe('ensureHostedRepository', () => {
     };
     const mirror = join(root, 'repos', 'example', 'project.git');
     const workspace = (agentId: string) => join(root, 'worktrees', agentId, 'example', 'project');
-    const ensure = (agentId: string, repository = 'example/project') =>
+    const ensure = (agentId: string, repository = 'example/project', at = mirror) =>
       ensureHostedRepository({
         workspace: workspace(agentId),
-        mirror,
+        mirror: at,
         repository,
         agentId,
         env,
@@ -424,6 +429,59 @@ describe('ensureHostedRepository', () => {
     await expect(readFile(join(workspace(AGENT), 'README.md'))).rejects.toMatchObject({
       code: 'ENOENT',
     });
+  });
+
+  it('moves a worktree of a shared mirror onto its own without writing the shared one', async () => {
+    const { root, git, commit, mirror: shared, workspace, ensure } = await repositories();
+    const own = join(root, 'agents', AGENT, 'repos', 'example', 'project.git');
+    const marker = join(root, 'hook-ran');
+    await commit('first');
+    await ensure(AGENT, 'example/project', shared);
+    await ensure(OTHER, 'example/project', shared);
+    const ws = workspace(AGENT);
+    await writeFile(join(ws, 'WORK.md'), 'committed\n');
+    await git('-C', ws, 'add', 'WORK.md');
+    await git('-C', ws, 'commit', '-q', '-m', 'Work');
+    const work = await git('-C', ws, 'rev-parse', 'HEAD');
+    await writeFile(join(ws, 'staged.txt'), 'staged\n');
+    await git('-C', ws, 'add', 'staged.txt');
+    await writeFile(join(ws, 'untracked.txt'), 'untracked\n');
+    await mkdir(join(shared, 'planted'));
+    await writeFile(join(shared, 'planted', 'pre-commit'), `#!/bin/sh\ntouch ${marker}\n`);
+    await chmod(join(shared, 'planted', 'pre-commit'), 0o755);
+    await git('--git-dir', shared, 'config', 'core.hooksPath', join(shared, 'planted'));
+    await exec('chmod', ['-R', 'a-w', shared]);
+    try {
+      await ensure(AGENT, 'example/project', own);
+      await ensure(AGENT, 'example/project', own);
+    } finally {
+      await exec('chmod', ['-R', 'u+w', shared]);
+    }
+    const common = await git('-C', ws, 'rev-parse', '--git-common-dir');
+    expect(await realpath(resolve(ws, common))).toBe(own);
+    expect(await git('-C', ws, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe(`switch/${AGENT}`);
+    expect(await git('-C', ws, 'rev-parse', 'HEAD')).toBe(work);
+    expect(await git('-C', ws, 'diff', '--cached', '--name-only')).toBe('staged.txt');
+    expect(await readFile(join(ws, 'untracked.txt'), 'utf8')).toBe('untracked\n');
+    expect(await git('--git-dir', own, 'worktree', 'list', '--porcelain')).toContain(
+      `worktree ${ws}`
+    );
+    expect(await git('--git-dir', own, 'for-each-ref', '--format=%(refname)', 'refs/heads')).toBe(
+      `refs/heads/switch/${AGENT}`
+    );
+    await git('-C', ws, 'commit', '-q', '-m', 'Staged');
+    await expect(readFile(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+    await git('-C', ws, 'push', '-q', 'origin', `switch/${AGENT}`);
+    expect(
+      await git(
+        '--git-dir',
+        join(root, 'upstream', 'example', 'project.git'),
+        'rev-parse',
+        `switch/${AGENT}`
+      )
+    ).toBe(await git('-C', ws, 'rev-parse', 'HEAD'));
+    expect(await git('--git-dir', shared, 'rev-parse', `switch/${AGENT}`)).toBe(work);
+    expect(await git('-C', workspace(OTHER), 'rev-parse', '--git-common-dir')).toBe(shared);
   });
 
   it('waits for the mirror lock before touching the mirror', async () => {

@@ -117,12 +117,12 @@ export type Ec2Layout = {
   dataRoot: string;
   agentsRoot: string;
   worktreesRoot: string;
-  /** The bare repository mirrors every agent on a repository shares, `<owner>/<name>.git`. */
-  reposRoot: string;
   runDir: string;
   agentRoot: (agentId: string) => string;
   watcherRoot: (agentId: string) => string;
   worktreeRoot: (agentId: string) => string;
+  /** The agent's own bare repository mirrors, `<owner>/<name>.git`, inside its root. */
+  reposRoot: (agentId: string) => string;
   credentialsFile: (agentId: string) => string;
   providerFile: (agentId: string) => string;
   envFile: (agentId: string) => string;
@@ -144,11 +144,11 @@ export function ec2Layout(input: { dataRoot: string; runRoot: string }): Ec2Layo
     dataRoot: input.dataRoot,
     agentsRoot,
     worktreesRoot,
-    reposRoot: join(input.dataRoot, 'repos'),
     runDir,
     agentRoot: (agentId) => join(agentsRoot, requireAgentId(agentId)),
     watcherRoot: (agentId) => join(agentsRoot, requireAgentId(agentId), 'watcher'),
     worktreeRoot: (agentId) => join(worktreesRoot, requireAgentId(agentId)),
+    reposRoot: (agentId) => join(agentsRoot, requireAgentId(agentId), 'repos'),
     credentialsFile: (agentId) => join(runDir, `${requireAgentId(agentId)}.credentials.json`),
     providerFile: (agentId) => join(runDir, `${requireAgentId(agentId)}.provider.json`),
     envFile: (agentId) => join(runDir, `${requireAgentId(agentId)}.env`),
