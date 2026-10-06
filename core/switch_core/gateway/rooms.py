@@ -153,7 +153,6 @@ async def _build_room_detail(
         name=name,
         description=room.description,
         channel_type=room.channel_type,
-        admin_mode=room.admin_mode,
         agent_count=len(agent_ids),
         connected_user_count=len(connected_names),
         connected_user_names=connected_names,
@@ -304,7 +303,6 @@ async def list_rooms(
                 name=name,
                 description=room.description,
                 channel_type=room.channel_type,
-                admin_mode=room.admin_mode,
                 agent_count=len(agent_ids),
                 connected_user_count=len(connected_names),
                 connected_user_names=connected_names,
@@ -532,7 +530,6 @@ async def patch_room(
             name=req.name,
             description=req.description,
             instructions=req.instructions,
-            admin_mode=req.admin_mode,
             read_visibility=req.read_visibility,
             write_visibility=req.write_visibility,
         )

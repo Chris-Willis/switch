@@ -21,7 +21,6 @@ export interface RoomSummary {
   name: string;
   description: string;
   channel_type: string | null;
-  admin_mode: boolean;
   agent_count: number;
   connected_user_count: number;
   connected_user_names: string[];
@@ -212,7 +211,6 @@ export interface UpdateRoomInput {
   name?: string;
   description?: string;
   instructions?: string | null;
-  admin_mode?: boolean;
   read_visibility?: "public" | "private";
   write_visibility?: "public" | "private";
 }

@@ -813,7 +813,6 @@ async def create_room(
     channel_type: str | None = None,
     bridge_id: str | None = None,
     internal_only: bool = False,
-    admin_mode: bool = False,
     instructions: str | None = None,
     reference_ids: list[str] | None = None,
     package_ids: list[str] | None = None,
@@ -856,7 +855,6 @@ async def create_room(
             Omit to use the instance's default bridge.
         internal_only: Create a room with no external channel, opting out of
             the default bridge. Ignored when `bridge_id` is set.
-        admin_mode: When true, the room is created in administrative mode.
         instructions: Room-specific system prompt / guidance shown to agents
             when they connect.
         reference_ids: References to attach at creation. Authorization is
@@ -914,7 +912,6 @@ async def create_room(
             channel_type=channel_type,
             bridge_id=bridge_id,
             internal_only=internal_only,
-            admin_mode=admin_mode,
             instructions=instructions,
             reference_ids=reference_ids,
             package_ids=package_ids,
@@ -1993,10 +1990,10 @@ async def get_room_detail(room_id: str) -> dict[str, Any]:
         room_id: The Switch room id (UUID string).
 
     Returns:
-        {id, name, description, channel_type, admin_mode, instructions,
-        matrix_room_id, created_at, bridge_id, bridge_display_name,
-        external_channel_id, group_id, group_name, group_path (the group's
-        root-first ancestry, e.g. "Parent / Child"; null when standalone),
+        {id, name, description, channel_type, instructions, matrix_room_id,
+        created_at, bridge_id, bridge_display_name, external_channel_id,
+        group_id, group_name, group_path (the group's root-first ancestry,
+        e.g. "Parent / Child"; null when standalone),
         agent_names, agent_statuses (keyed by agent name), connected_user_names,
         aliases (per-room agent aliases, keyed by agent name → alias),
         roles (the room's assumable roles, mirroring list_roles: each entry has
@@ -2015,7 +2012,6 @@ async def update_room(
     name: str | None = None,
     description: str | None = None,
     instructions: str | None = None,
-    admin_mode: bool | None = None,
     join_event_listeners: dict[str, bool] | None = None,
     bridge_id: str | None = None,
     channel_type: str | None = None,
@@ -2034,7 +2030,6 @@ async def update_room(
         description: New room description, or None to leave unchanged.
         instructions: New room-specific instructions, or None to leave
             unchanged.
-        admin_mode: New admin-mode flag, or None to leave unchanged.
         join_event_listeners: Partial map of agent name → whether that agent
             should receive `room_join` events in this room. Only the named
             agents change; omit to leave all memberships unchanged. Each named
@@ -2080,7 +2075,6 @@ async def update_room(
         name=name,
         description=description,
         instructions=instructions,
-        admin_mode=admin_mode,
         join_event_listeners=join_event_listeners,
         bridge_id=bridge_id,
         channel_type=channel_type,

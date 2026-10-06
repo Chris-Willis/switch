@@ -55,7 +55,6 @@ class RoomSummary(BaseModel):
     name: str
     description: str
     channel_type: str | None
-    admin_mode: bool
     agent_count: int
     connected_user_count: int
     connected_user_names: list[str]
@@ -127,7 +126,6 @@ class RoomUpdateRequest(BaseModel):
     name: str | None = None
     description: str | None = None
     instructions: str | None = None
-    admin_mode: bool | None = None
     read_visibility: str | None = None
     write_visibility: str | None = None
 

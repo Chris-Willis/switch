@@ -118,6 +118,11 @@ version of their own to them without also giving them a release of their own.
   `security_config`. They were stored for protection checks and an observe
   pipeline that were never built, and nothing read them. Migration
   `871623ec1ebf` drops both columns.
+- **Room admin mode.** Rooms no longer carry `admin_mode`: `create_room`,
+  `update_room`, room details and the gateway room API drop it. Its only
+  effect was a line in the agent's room instructions promising elevated
+  capabilities that nothing granted. Migration `871623ec1ebf` drops the
+  column.
 
 ### [0.29.0] - 2026-09-29
 

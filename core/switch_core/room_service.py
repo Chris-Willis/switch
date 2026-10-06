@@ -92,7 +92,6 @@ class RoomCreateConfig(BaseModel):
     internal_only: bool = False
     external_channel_id: str | None = None
     instructions: str | None = None
-    admin_mode: bool = False
     created_by: str | None = None
     # Set when an agent operation creates the room; see the `Room` columns.
     created_by_agent_id: str | None = None
@@ -579,7 +578,6 @@ class RoomService:
                 channel_type=channel_type,
                 bridge_id=bridge_id,
                 external_channel_id=external_channel_id,
-                admin_mode=config.admin_mode,
                 instructions=config.instructions,
                 created_by=config.created_by,
                 created_by_agent_id=config.created_by_agent_id,
@@ -991,7 +989,6 @@ class RoomService:
         name: str | None = None,
         description: str | None = None,
         instructions: str | None = None,
-        admin_mode: bool | None = None,
         read_visibility: str | None = None,
         write_visibility: str | None = None,
     ) -> None:
@@ -1015,7 +1012,6 @@ class RoomService:
                 name=name,
                 description=description,
                 instructions=instructions,
-                admin_mode=admin_mode,
                 read_visibility=read_visibility,
                 write_visibility=write_visibility,
             )

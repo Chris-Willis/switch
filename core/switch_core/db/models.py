@@ -1204,9 +1204,6 @@ class Room(TenantScoped, Base):
     bridge_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     external_channel_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     channel_type: Mapped[str | None] = mapped_column(Text, nullable=True)
-    admin_mode: Mapped[bool] = mapped_column(
-        Boolean, server_default="false", nullable=False
-    )
     instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str | None] = mapped_column(
         Text, ForeignKey("users.id"), nullable=True

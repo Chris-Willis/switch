@@ -6,9 +6,11 @@ by nothing that changed what Switch does:
 - `rooms.protection_config` and `rooms.observe_config`, set from the gateway
   and from `create_room`'s `security_config`, for protection checks and an
   observe pipeline that were never built.
+- `rooms.admin_mode`, whose only effect was a line in an agent's room
+  instructions promising elevated capabilities that nothing granted.
 
-The downgrade puts the columns back empty and nullable, as `dad29005a7f7`
-created them. Their values are not restored.
+The downgrade puts every column back as `dad29005a7f7` created it: the
+settings empty, `admin_mode` off. Their values are not restored.
 
 Revision ID: 871623ec1ebf
 Revises: 7c26ad1a2d81
@@ -31,9 +33,14 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.drop_column("rooms", "protection_config")
     op.drop_column("rooms", "observe_config")
+    op.drop_column("rooms", "admin_mode")
 
 
 def downgrade() -> None:
+    op.add_column(
+        "rooms",
+        sa.Column("admin_mode", sa.Boolean(), server_default="false", nullable=False),
+    )
     op.add_column(
         "rooms",
         sa.Column(

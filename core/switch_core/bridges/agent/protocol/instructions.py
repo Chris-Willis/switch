@@ -119,8 +119,6 @@ def _agent_statuses(participants: list[ParticipantDescriptor]) -> str:
 def _room_setup(room: Room, bridge: CollaborationBridge | None) -> str:
     lines = ["## Room setup", ""]
     lines.append(f"- Channel type: `{room.channel_type or 'group'}`")
-    if room.admin_mode:
-        lines.append("- Room is in **admin mode** (elevated capabilities).")
     if bridge is not None:
         lines.append(
             f"- Room is **bridged** to an external `{bridge.type}` channel "

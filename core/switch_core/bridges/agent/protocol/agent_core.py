@@ -2208,7 +2208,6 @@ class AgentCore:
         channel_type: str | None,
         bridge_id: str | None,
         internal_only: bool = False,
-        admin_mode: bool = False,
         instructions: str | None = None,
         reference_ids: list[str] | None = None,
         package_ids: list[str] | None = None,
@@ -2264,7 +2263,6 @@ class AgentCore:
                 channel_type=channel_type,  # type: ignore[arg-type]
                 bridge_id=bridge_id,
                 internal_only=internal_only,
-                admin_mode=admin_mode,
                 instructions=instructions,
                 created_by=agent.owner_id,
                 created_by_kind="agent",
@@ -3316,7 +3314,6 @@ class AgentCore:
             name=room.name,
             description=room.description,
             channel_type=room.channel_type,
-            admin_mode=room.admin_mode,
             instructions=room.instructions,
             transport_room_id=room.transport_room_id,
             matrix_room_id=room.transport_room_id,
@@ -3385,7 +3382,6 @@ class AgentCore:
         name: str | None = None,
         description: str | None = None,
         instructions: str | None = None,
-        admin_mode: bool | None = None,
         join_event_listeners: dict[str, bool] | None = None,
         bridge_id: str | None = None,
         channel_type: str | None = None,
@@ -3423,7 +3419,6 @@ class AgentCore:
                 name=name,
                 description=description,
                 instructions=instructions,
-                admin_mode=admin_mode,
             )
             settings_by_id: dict[str, bool] = {}
             if join_event_listeners:

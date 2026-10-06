@@ -361,8 +361,8 @@ none of it is needed to take part in a conversation.
 ### Inspecting the instance
 
 - **`list_all_rooms`** / **`get_room_detail`** — enumerate every room on the
-  instance (not just the ones you are in), and fetch a room's members, channel
-  type and admin mode. `get_room_detail` also returns the room's assumable
+  instance (not just the ones you are in), and fetch a room's members and
+  channel type. `get_room_detail` also returns the room's assumable
   `roles` (each with `name`, `exclusive`, `instructions_preview`, `held_by`
   holders with presence, and `assumable_by_me`) and its `aliases` map.
 - **`list_agents`** — every agent on the instance, as opposed to

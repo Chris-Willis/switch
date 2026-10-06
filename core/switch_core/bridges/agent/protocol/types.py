@@ -157,7 +157,6 @@ class RoomDetailDescriptor(BaseModel):
     name: str
     description: str
     channel_type: str | None
-    admin_mode: bool
     instructions: str | None
     transport_room_id: str
     # Deprecated alias of `transport_room_id`, sent for the compatibility

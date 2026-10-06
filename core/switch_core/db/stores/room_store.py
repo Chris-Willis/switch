@@ -520,7 +520,6 @@ class RoomStore:
         name: str | None = None,
         description: str | None = None,
         instructions: str | None = None,
-        admin_mode: bool | None = None,
         read_visibility: str | None = None,
         write_visibility: str | None = None,
     ) -> None:
@@ -533,8 +532,6 @@ class RoomStore:
             room.description = description
         if instructions is not None:
             room.instructions = instructions
-        if admin_mode is not None:
-            room.admin_mode = admin_mode
         if read_visibility is not None:
             room.read_visibility = read_visibility
         if write_visibility is not None:
