@@ -21,20 +21,18 @@ import type { HostStartSource } from './session-start';
 import { type PlaceOutcome, type WatcherHealth, watcherHealthSchema } from './watcher-tools';
 
 /**
- * Console's end of a cloud worker's sessions, relayed through Switch.
+ * Console's end of a managed agent's sessions, relayed through Switch.
  *
- * A cloud worker accepts no inbound connection, so where a sidecar is reached
+ * A managed agent accepts no inbound connection, so where a sidecar is reached
  * over its loopback control port this goes through the Switch gateway: one
- * `POST <base>` per request, answered by the worker's watcher, and one
+ * `POST <base>` per request, answered by the agent controller, and one
  * `GET <base>/stream` per live view. The messages are the control
  * vocabulary's (`ControlMessage`), and the methods are `ControlClient`'s, so
  * the callers of either do not tell them apart. Large answers arrive in pages
  * and are reassembled here; attachments go up in chunks.
  *
- * The base is where Switch relays for the agent: a hosted launch's
- * (`/hosted-launches/{id}/relay`) or, for an agent its cloud machine's
- * controller runs, the managed agent's (`/management/agents/{id}/control`).
- * Both take the same requests and answer with the same replies and frames.
+ * The base is the managed agent's control route
+ * (`/management/agents/{id}/control`).
  */
 
 /** One call to the relay routes; `path` is relative to the gateway and starts with the base path. */

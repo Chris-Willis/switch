@@ -10,9 +10,7 @@ import { SessionHostFailedError, SessionUnavailableError } from './session-chann
 type Reply = { status: number; body: unknown };
 type Relayed = { message: Record<string, unknown>; timeout_ms: number };
 
-const LAUNCH_BASE = '/hosted-launches/launch/relay';
 const AGENT_BASE = '/management/agents/agent-1/control';
-const BASES = new Set([LAUNCH_BASE, AGENT_BASE]);
 
 const worker = { launch_revision: 3, boot_id: 'boot', generation: 1 };
 const ok = (value: unknown): Reply => ({ status: 200, body: { ok: true, value, worker } });
@@ -36,7 +34,7 @@ beforeEach(async () => {
   server = createServer((request: IncomingMessage, response: ServerResponse) => {
     const url = new URL(request.url ?? '/', 'http://relay');
     const streamOf = url.pathname.replace(/\/stream$/, '');
-    if (request.method === 'GET' && streamOf !== url.pathname && BASES.has(streamOf)) {
+    if (request.method === 'GET' && streamOf !== url.pathname && streamOf === AGENT_BASE) {
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       response.write(': keepalive\n\n');
       streams.push({ path: url.pathname, query: url.searchParams, response });
@@ -45,7 +43,7 @@ beforeEach(async () => {
     let body = '';
     request.on('data', (chunk: Buffer) => (body += chunk.toString()));
     request.on('end', () => {
-      if (request.method !== 'POST' || !BASES.has(url.pathname)) {
+      if (request.method !== 'POST' || url.pathname !== AGENT_BASE) {
         response.writeHead(404, { 'content-type': 'application/json' });
         response.end(JSON.stringify({ detail: 'Cloud launch not found.' }));
         return;
@@ -68,7 +66,7 @@ afterEach(async () => {
   await new Promise((resolve) => server.close(resolve));
 });
 
-function client(basePath = LAUNCH_BASE, retryMs = 2000): CloudRelayClient {
+function client(basePath = AGENT_BASE, retryMs = 2000): CloudRelayClient {
   return new CloudRelayClient(
     (path, init) =>
       fetch(`${base}${path}`, {
@@ -241,7 +239,7 @@ it('asks again while the worker is waking or busy, within its window', async () 
   expect(relayed).toHaveLength(3);
 
   answer = () => refused(409, 'worker_not_attached', 'No worker is attached.');
-  await expect(client(LAUNCH_BASE, 300).health()).rejects.toMatchObject({
+  await expect(client(AGENT_BASE, 300).health()).rejects.toMatchObject({
     relayCode: 'worker_not_attached',
   });
 });
@@ -290,7 +288,7 @@ it('raises the errors a sidecar raises for a stopped or failed session', async (
   answer = () => refused(400, 'refused_message', 'Console may not send that.');
   await expect(client().forget('one')).rejects.toMatchObject({ relayCode: 'refused_message' });
 
-  await expect(client('/hosted-launches/elsewhere/relay').forget('one')).rejects.toMatchObject({
+  await expect(client('/management/agents/elsewhere/control').forget('one')).rejects.toMatchObject({
     relayCode: 'not_found',
     status: 404,
   });
@@ -412,9 +410,9 @@ it('resets a view when the worker behind it changes or the stream ends', async (
   await vi.waitFor(() => expect(again).toHaveBeenCalledOnce());
 });
 
-it('refuses a view of a launch Switch will not relay', async () => {
+it('refuses a view of an agent Switch will not relay', async () => {
   await expect(
-    client('/hosted-launches/elsewhere/relay').subscribe(
+    client('/management/agents/elsewhere/control').subscribe(
       'one',
       () => {},
       () => {},
@@ -441,43 +439,6 @@ it('follows the watcher’s health and closes when its stream ends', async () =>
   await vi.waitFor(() => expect(closed).toHaveBeenCalledOnce());
   expect(relay.isClosed).toBe(true);
   await expect(relay.health()).rejects.toThrow(/closed/);
-});
-
-it('relays to an agent a cloud machine’s controller runs exactly as to a launch', async () => {
-  answer = (message) =>
-    'health' in message
-      ? ok({ state: 'connected', detail: null, since: '2026-09-25T12:00:00Z', placements: {} })
-      : ok(null);
-  const asked = async (basePath: string) => {
-    relayed = [];
-    relayedTo = [];
-    streams = [];
-    const relay = client(basePath);
-    await relay.health();
-    await relay.forget('one');
-    const subscribing = relay.subscribe(
-      'one',
-      () => {},
-      () => {},
-      () => {}
-    );
-    await vi.waitFor(() => expect(streams).toHaveLength(1));
-    frame(0, 'worker', worker);
-    (await subscribing)();
-    return {
-      bodies: relayed,
-      to: relayedTo,
-      stream: { path: streams[0]!.path, query: streams[0]!.query.toString() },
-    };
-  };
-  const launch = await asked(LAUNCH_BASE);
-  const agent = await asked(AGENT_BASE);
-  expect(agent.bodies).toEqual(launch.bodies);
-  expect(agent.stream.query).toBe(launch.stream.query);
-  expect(launch.to).toEqual([LAUNCH_BASE, LAUNCH_BASE]);
-  expect(agent.to).toEqual([AGENT_BASE, AGENT_BASE]);
-  expect(launch.stream.path).toBe(`${LAUNCH_BASE}/stream`);
-  expect(agent.stream.path).toBe(`${AGENT_BASE}/stream`);
 });
 
 it('reads agent management’s error envelope as the refusal it names', async () => {
