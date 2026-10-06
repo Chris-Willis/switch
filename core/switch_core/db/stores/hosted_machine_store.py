@@ -9,7 +9,12 @@ from uuid import uuid4
 from sqlalchemy import exists, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import HostedLaunch, HostedMachine, require_tenant_id
+from switch_core.db.models import (
+    AgentDefinition,
+    HostedLaunch,
+    HostedMachine,
+    require_tenant_id,
+)
 from switch_core.keys import Keyring
 
 MACHINE_CONNECT_TIMEOUT = timedelta(minutes=10)
@@ -328,7 +333,9 @@ class HostedMachineStore:
     ) -> bool:
         """Retain the machine's disk once no agent is left on it.
 
-        Returns whether it did. The caller holds the machine lock and commits.
+        A controller machine's agents include every managed agent placed on
+        its controller, launched from Switch Console or not. Returns whether it
+        did. The caller holds the machine lock and commits.
         """
         await session.flush()
         if await session.scalar(
@@ -338,6 +345,19 @@ class HostedMachineStore:
                     HostedLaunch.machine_id == machine.id,
                     HostedLaunch.state != "deleted",
                     HostedLaunch.desired_state != "deleted",
+                )
+            )
+        ):
+            return False
+        if (
+            machine.runtime == "controller"
+            and machine.controller_id is not None
+            and await session.scalar(
+                select(
+                    exists().where(
+                        AgentDefinition.tenant_id == require_tenant_id(),
+                        AgentDefinition.controller_id == machine.controller_id,
+                    )
                 )
             )
         ):
