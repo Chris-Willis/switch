@@ -68,7 +68,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(
                 200,
                 json.dumps(
-                    {"instanceId": INSTANCE_ID, "region": REGION, "accountId": "123456789012"}
+                    {
+                        "instanceId": INSTANCE_ID,
+                        "region": REGION,
+                        "accountId": "123456789012",
+                    }
                 ),
                 "application/json",
             )

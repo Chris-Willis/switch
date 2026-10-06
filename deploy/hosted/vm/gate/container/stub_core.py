@@ -99,7 +99,9 @@ def broadcast(event: str, data: Any) -> int:
     return len(targets)
 
 
-def error_body(code: str, message: str, retryable: bool = False, retry_after_s: float | None = None) -> dict[str, Any]:
+def error_body(
+    code: str, message: str, retryable: bool = False, retry_after_s: float | None = None
+) -> dict[str, Any]:
     body: dict[str, Any] = {"code": code, "message": message, "retryable": retryable}
     if retry_after_s is not None:
         body["retry_after_s"] = retry_after_s
@@ -114,10 +116,15 @@ def seal_login(body: dict[str, Any]) -> dict[str, Any]:
     provider = body.get("provider", "claude")
     revision = int(body["revision"])
     if body.get("revoked"):
-        context = login_context(config["tenant"], config["owner"], CONTROLLER_ID, provider)
+        context = login_context(
+            config["tenant"], config["owner"], CONTROLLER_ID, provider
+        )
         return revoked_envelope(provider, revision, context)
     context = body.get("context") or login_context(
-        config["tenant"], config["owner"], body.get("controller_id", CONTROLLER_ID), provider
+        config["tenant"],
+        config["owner"],
+        body.get("controller_id", CONTROLLER_ID),
+        provider,
     )
     envelope = asyncio.run(
         seal(
@@ -125,7 +132,9 @@ def seal_login(body: dict[str, Any]) -> dict[str, Any]:
             provider=provider,
             revision=revision,
             context=context,
-            plaintext=login_plaintext(provider, body.get("kind", "api-key"), body["credential"], revision),
+            plaintext=login_plaintext(
+                provider, body.get("kind", "api-key"), body["credential"], revision
+            ),
         )
     )
     if body.get("relabel_controller_id"):
@@ -151,7 +160,9 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return json.loads(raw)
 
-    def send_json(self, status: int, value: Any, headers: dict[str, str] | None = None) -> None:
+    def send_json(
+        self, status: int, value: Any, headers: dict[str, str] | None = None
+    ) -> None:
         data = b"" if value is None else json.dumps(value).encode()
         self.send_response(status)
         if value is not None:
@@ -254,17 +265,30 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
         if body.get("credential") != config["credential"]:
-            return self.send_json(401, error_body("invalid_credential", "The controller credential is not valid."))
+            return self.send_json(
+                401,
+                error_body(
+                    "invalid_credential", "The controller credential is not valid."
+                ),
+            )
         if instance != config["instance_id"] or not boot:
             return self.send_json(
                 409,
-                error_body("instance_mismatch", "This instance is not the machine's.", True, 2),
+                error_body(
+                    "instance_mismatch", "This instance is not the machine's.", True, 2
+                ),
             )
         token = "swct_gate_" + secrets.token_urlsafe(24)
         with lock:
             state.tokens.add(token)
         expires = datetime.now(UTC) + timedelta(hours=1)
-        self.send_json(200, {"access_token": token, "expires_at": expires.strftime("%Y-%m-%dT%H:%M:%SZ")})
+        self.send_json(
+            200,
+            {
+                "access_token": token,
+                "expires_at": expires.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            },
+        )
 
     def assignment(self) -> None:
         with lock:
@@ -282,7 +306,12 @@ class Handler(BaseHTTPRequestHandler):
         with lock:
             envelope = state.envelopes.get(provider)
         if envelope is None:
-            return self.send_json(404, error_body("provider_credential_not_found", f"No sealed {provider} login."))
+            return self.send_json(
+                404,
+                error_body(
+                    "provider_credential_not_found", f"No sealed {provider} login."
+                ),
+            )
         self.send_json(200, envelope)
 
     def status(self) -> None:
@@ -292,7 +321,9 @@ class Handler(BaseHTTPRequestHandler):
             state.status_reports.append(report)
             del state.status_reports[:-20]
             revision = state.assignment["revision"]
-        self.send_json(200, {"assignment_revision": revision, "report_within_s": REPORT_WITHIN_S})
+        self.send_json(
+            200, {"assignment_revision": revision, "report_within_s": REPORT_WITHIN_S}
+        )
 
     def control_reply(self, relay_id: str) -> None:
         reply = self.body()
@@ -323,8 +354,13 @@ class Handler(BaseHTTPRequestHandler):
     def beat(self) -> None:
         body = self.body() or {}
         with lock:
-            if body.get("connection_id") != state.connection_id or body.get("generation") != state.generation:
-                self.send_json(404, error_body("unknown_connection", "No such connection."))
+            if (
+                body.get("connection_id") != state.connection_id
+                or body.get("generation") != state.generation
+            ):
+                self.send_json(
+                    404, error_body("unknown_connection", "No such connection.")
+                )
                 return
             state.beats += 1
             agents = [agent["agent_id"] for agent in state.assignment["agents"]]
@@ -335,7 +371,9 @@ class Handler(BaseHTTPRequestHandler):
         generation = int((query.get("generation") or ["-1"])[0])
         with lock:
             if connection_id != state.connection_id or generation != state.generation:
-                self.send_json(404, error_body("unknown_connection", "No such connection."))
+                self.send_json(
+                    404, error_body("unknown_connection", "No such connection.")
+                )
                 return
             frames: queue.Queue[tuple[str, Any] | None] = queue.Queue()
             previous = state.streams.pop(generation, None)
@@ -366,7 +404,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             write("connection_state", first)
             for agent_id in agents:
-                write("agent.attached", {"agent_id": agent_id, "from_seq": 0, "rooms": []})
+                write(
+                    "agent.attached", {"agent_id": agent_id, "from_seq": 0, "rooms": []}
+                )
             while True:
                 try:
                     item = frames.get(timeout=KEEPALIVE_S)
@@ -392,7 +432,10 @@ class Handler(BaseHTTPRequestHandler):
                     "method": method,
                     "path": path,
                     "agent": self.headers.get("X-Switch-Agent-Id"),
-                    "authorized": self.headers.get("Authorization", "").removeprefix("Bearer ") in state.tokens,
+                    "authorized": self.headers.get("Authorization", "").removeprefix(
+                        "Bearer "
+                    )
+                    in state.tokens,
                 }
             )
             del state.relayed[:-200]
@@ -400,7 +443,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"version": "gate-stub", "protocol": 1})
         if method == "GET" and path == "/health":
             return self.send_json(200, {"status": "ok"})
-        self.send_json(404, error_body("not_in_stub", f"The gate's stub Core does not serve {method} {path}."))
+        self.send_json(
+            404,
+            error_body(
+                "not_in_stub", f"The gate's stub Core does not serve {method} {path}."
+            ),
+        )
 
     # ── admin (the gate's checks) ─────────────────────────────────────────
 
@@ -412,7 +460,10 @@ class Handler(BaseHTTPRequestHandler):
                     "token_requests": state.token_requests[-20:],
                     "token_count": len(state.token_requests),
                     "assignment": state.assignment,
-                    "envelopes": {name: env.get("revision") for name, env in state.envelopes.items()},
+                    "envelopes": {
+                        name: env.get("revision")
+                        for name, env in state.envelopes.items()
+                    },
                     "status_count": state.status_count,
                     "status_reports": state.status_reports[-5:],
                     "connection_id": state.connection_id,
@@ -426,7 +477,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, body)
         body = self.body() or {}
         if method == "POST" and path == "/frame":
-            return self.send_json(200, {"streams": broadcast(body["event"], body["data"])})
+            return self.send_json(
+                200, {"streams": broadcast(body["event"], body["data"])}
+            )
         if method == "POST" and path == "/control":
             relay_id = str(uuid.uuid4())
             timeout = float(body.get("timeout_s", 30))
@@ -447,7 +500,9 @@ class Handler(BaseHTTPRequestHandler):
                     lock.wait(timeout=max(0.0, deadline - time.time()))
                 reply = state.relays.pop(relay_id)
             if reply is None:
-                return self.send_json(504, {"relay_id": relay_id, "streams": sent, "error": "no reply"})
+                return self.send_json(
+                    504, {"relay_id": relay_id, "streams": sent, "error": "no reply"}
+                )
             return self.send_json(200, {"relay_id": relay_id, "reply": reply})
         if method == "POST" and path == "/seal":
             envelope = seal_login(body)
@@ -458,7 +513,10 @@ class Handler(BaseHTTPRequestHandler):
             if body.get("notify"):
                 notified = broadcast(
                     "provider.credential_changed",
-                    {"provider": envelope["provider"], "revision": envelope["revision"]},
+                    {
+                        "provider": envelope["provider"],
+                        "revision": envelope["revision"],
+                    },
                 )
             return self.send_json(200, {"envelope": envelope, "notified": notified})
         if method == "POST" and path == "/assignment":
@@ -485,7 +543,9 @@ def main() -> None:
     public.socket = context.wrap_socket(public.socket, server_side=True)
     admin = Server(("127.0.0.1", 8090), AdminHandler)
     threading.Thread(target=admin.serve_forever, daemon=True).start()
-    log("serving https://switch-gate.test (stub Core) and the admin API on 127.0.0.1:8090")
+    log(
+        "serving https://switch-gate.test (stub Core) and the admin API on 127.0.0.1:8090"
+    )
     public.serve_forever()
 
 

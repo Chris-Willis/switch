@@ -34,7 +34,14 @@ if "--version" in sys.argv[1:] or "-v" in sys.argv[1:]:
     print(VERSION)
     sys.exit(0)
 if sys.argv[1:3] == ["auth", "status"]:
-    print(json.dumps({"loggedIn": bool(os.environ.get("ANTHROPIC_API_KEY")), "authMethod": "api_key"}))
+    print(
+        json.dumps(
+            {
+                "loggedIn": bool(os.environ.get("ANTHROPIC_API_KEY")),
+                "authMethod": "api_key",
+            }
+        )
+    )
     sys.exit(0)
 
 session_id = argument("--session-id") or argument("--resume") or str(uuid.uuid4())
@@ -82,15 +89,15 @@ def text_of(message: dict) -> str:
     content = message.get("message", {}).get("content", "")
     if isinstance(content, str):
         return content
-    return " ".join(
-        part.get("text", "") for part in content if isinstance(part, dict)
-    )
+    return " ".join(part.get("text", "") for part in content if isinstance(part, dict))
 
 
 def answer(message: dict) -> None:
     text = text_of(message)
     if "GATE_HOLD" in text:
-        print("fake claude: holding the turn until SIGUSR1", file=sys.stderr, flush=True)
+        print(
+            "fake claude: holding the turn until SIGUSR1", file=sys.stderr, flush=True
+        )
         release.wait()
         release.clear()
     reply = "gate ok"

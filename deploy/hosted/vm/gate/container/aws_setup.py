@@ -18,7 +18,9 @@ session = boto3.session.Session(
 kms = session.client("kms", endpoint_url=ENDPOINT)
 secrets = session.client("secretsmanager", endpoint_url=ENDPOINT)
 
-key = kms.create_key(Description="cc-gate provider logins", KeyUsage="ENCRYPT_DECRYPT")["KeyMetadata"]
+key = kms.create_key(Description="cc-gate provider logins", KeyUsage="ENCRYPT_DECRYPT")[
+    "KeyMetadata"
+]
 grant = kms.create_grant(
     KeyId=key["Arn"],
     GranteePrincipal=f"arn:aws:iam::{key['AWSAccountId']}:role/cc-gate-machine-role",
@@ -33,8 +35,15 @@ worker_bundle = {
     "machineCapability": settings["machine_capability"],
     "apiEndpoint": settings["api_endpoint"],
 }
-secret = secrets.create_secret(Name="switch/hosted/cc-gate-machine", SecretString=json.dumps(worker_bundle))
+secret = secrets.create_secret(
+    Name="switch/hosted/cc-gate-machine", SecretString=json.dumps(worker_bundle)
+)
 json.dump(
-    {"key_arn": key["Arn"], "grant_token": grant["GrantToken"], "grant_id": grant["GrantId"], "secret_arn": secret["ARN"]},
+    {
+        "key_arn": key["Arn"],
+        "grant_token": grant["GrantToken"],
+        "grant_id": grant["GrantId"],
+        "secret_arn": secret["ARN"],
+    },
     sys.stdout,
 )
