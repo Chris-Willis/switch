@@ -5,6 +5,11 @@ connect. Enabled entries ship a skill under ``catalog/<slug>/skill/`` that is
 installed on the cloud agents the connection is granted to; placeholder
 entries ship none. The catalog is validated once, at import, so a malformed
 entry stops the server rather than surfacing on the first launch.
+
+An enabled entry also says what each access level reaches (``access``: OAuth
+scopes, or GitHub App permissions), which of the service's tools each level
+offers (``tools``), and how its sign-in is refreshed (``auth.refresh``).
+Placeholder entries may leave those out.
 """
 
 import re
@@ -13,7 +18,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 CATALOG_ROOT = Path(__file__).parent / "catalog"
 MAX_SKILL_BYTES = 32 * 1024
@@ -33,9 +38,53 @@ class CatalogError(RuntimeError):
     pass
 
 
+AccessLevel = Literal["read", "write"]
+
+
 class ConnectionAuth(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     type: Literal["oauth", "api_key"]
+    # rotating: each refresh returns a new refresh token and spends the old
+    # one, so two refreshes must never race. reusable: the refresh token
+    # survives its use. none: the stored secret is used as it is.
+    refresh: Literal["rotating", "reusable", "none"] | None = None
+
+
+class LevelAccess(BaseModel):
+    """What one access level reaches: OAuth scopes, or GitHub App permissions."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    scopes: list[str] | None = None
+    permissions: dict[str, AccessLevel] | None = None
+
+    @model_validator(mode="after")
+    def _one_kind(self) -> "LevelAccess":
+        if (self.scopes is None) == (self.permissions is None):
+            raise ValueError("an access level holds scopes or permissions, not both")
+        if not (self.scopes or self.permissions):
+            raise ValueError("an access level needs at least one scope or permission")
+        return self
+
+
+class ConnectionAccess(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    read: LevelAccess
+    write: LevelAccess | None = None
+
+
+class ConnectionTools(BaseModel):
+    """The service's tools by level. A write grant gets both lists."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    read: list[str]
+    write: list[str]
+
+    @model_validator(mode="after")
+    def _disjoint(self) -> "ConnectionTools":
+        both = sorted(set(self.read) & set(self.write))
+        if both:
+            raise ValueError(f"tools listed under both read and write: {both}")
+        return self
 
 
 class ConnectionDefinition(BaseModel):
@@ -46,6 +95,32 @@ class ConnectionDefinition(BaseModel):
     description: str = Field(min_length=1, max_length=200, pattern=r"^[^\n]+$")
     enabled: bool
     auth: ConnectionAuth
+    access: ConnectionAccess | None = None
+    tools: ConnectionTools | None = None
+
+    @model_validator(mode="after")
+    def _enabled_is_complete(self) -> "ConnectionDefinition":
+        if self.enabled:
+            missing = [
+                name
+                for name, value in (
+                    ("access", self.access),
+                    ("tools", self.tools),
+                    ("auth.refresh", self.auth.refresh),
+                )
+                if value is None
+            ]
+            if missing:
+                raise ValueError(f"an enabled entry needs {', '.join(missing)}")
+        return self
+
+    def level_tools(self, access: AccessLevel) -> list[str]:
+        """Every tool a grant at `access` may be given."""
+        if self.tools is None:
+            return []
+        if access == "read":
+            return list(self.tools.read)
+        return [*self.tools.read, *self.tools.write]
 
 
 @dataclass(frozen=True)

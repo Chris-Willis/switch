@@ -177,6 +177,9 @@ class SwitchConfig(BaseSettings):
     hosted_agents_per_owner: int = Field(default=3, ge=1, le=100)
     hosted_idle_stop_minutes: int = Field(default=30, ge=0, le=1440)
     hosted_disk_retention_days: int = Field(default=7, ge=1, le=90)
+    # How long a record of each service token Core issued is kept: which agent,
+    # on whose connection, through which controller, with what reach.
+    service_token_retention_days: int = Field(default=30, ge=1)
     hosted_controller_config_path: str | None = None
     hosted_github_config_path: str | None = None
     hosted_provider_verification_enabled: bool = False

@@ -8,6 +8,7 @@ import signal
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from functools import partial
 from pathlib import Path
 
@@ -89,6 +90,11 @@ from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.config import SwitchConfig, deprecated_env_names
+from switch_core.connections.broker import ServiceBroker
+from switch_core.connections.loader import CATALOG
+from switch_core.connections.maintenance import (
+    maintenance_loop as service_token_maintenance_loop,
+)
 from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
 from switch_core.db.engine import (
@@ -134,6 +140,7 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
+from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.tenant_store import TenantStore
@@ -824,6 +831,17 @@ async def run(config: SwitchConfig) -> None:
     # ── Lifespan: start server-side connectors once HTTP is serving ────────
     original_lifespan = agent_bridge_app.router.lifespan_context
 
+    # No service has an adapter yet, so nothing is issued; the broker's upkeep
+    # still revokes and prunes whatever records exist.
+    service_broker = ServiceBroker(
+        session_factory=session_factory,
+        keyring=config.keyring,
+        catalog=CATALOG,
+        adapters={},
+        store=ServiceConnectionStore(),
+        token_retention=timedelta(days=config.service_token_retention_days),
+    )
+
     snapshot_reporter = SnapshotReporter(
         telemetry=telemetry,
         session_factory=session_factory,
@@ -852,6 +870,9 @@ async def run(config: SwitchConfig) -> None:
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol, observability.lag)
             )
+            service_token_task = asyncio.create_task(
+                service_token_maintenance_loop(session_factory, service_broker)
+            )
             # Only when telemetry is on: the chart tells a customer that off
             # means nothing is collected, and the fan-out is not free.
             snapshot_task = (
@@ -867,6 +888,7 @@ async def run(config: SwitchConfig) -> None:
                 sweep_task.cancel()
                 session_activity_task.cancel()
                 connection_sweep_task.cancel()
+                service_token_task.cancel()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
                 await message_listener.stop()
