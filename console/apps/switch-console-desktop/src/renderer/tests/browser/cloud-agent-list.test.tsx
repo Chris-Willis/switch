@@ -40,7 +40,7 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
-  switchServersStore: { activeServerId: 'server', statusFor: () => null },
+  switchServersStore: { activeServerId: 'server', statusFor: () => null, isConnected: () => true },
 }));
 
 vi.mock('@renderer/lib/layout/navigation-provider', () => ({

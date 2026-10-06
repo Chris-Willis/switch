@@ -28,7 +28,7 @@ const navigate = vi.hoisted(() => vi.fn());
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { sdkHost, switchServers },
+  rpc: { sdkHost, switchServers, managedAgents: { list: async () => null } },
 }));
 
 vi.mock('@renderer/features/locations/stores/agents-store', () => ({
@@ -45,7 +45,7 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
-  switchServersStore: { servers: [], statusFor: () => null, isConnected: () => false },
+  switchServersStore: { servers: [], statusFor: () => null, isConnected: () => true },
 }));
 
 vi.mock('@renderer/lib/layout/navigation-provider', () => ({
