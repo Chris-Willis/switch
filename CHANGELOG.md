@@ -146,6 +146,9 @@ version of their own to them without also giving them a release of their own.
   registration are ignored), and the gateway's agent page drops its
   Capabilities section. Migration `871623ec1ebf` strips them from stored
   profiles.
+- **Unused tables.** Migration `871623ec1ebf` drops `delivery_cursors`,
+  which no code read or wrote, and `skills`, `agent_skills` and
+  `room_skills`, which nothing ever filled.
 
 ### [0.29.0] - 2026-09-29
 

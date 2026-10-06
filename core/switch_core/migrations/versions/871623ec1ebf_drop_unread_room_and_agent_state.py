@@ -14,6 +14,10 @@ by nothing that changed what Switch does:
 - `message_exchange`, `pre_invocation_mediation`, `post_invocation_mediation`
   and `event_reporting` in every stored integration profile. Nothing reads
   them, and the mediation and reporting routes they described are gone.
+- `delivery_cursors`, a persisted per-agent delivery position no code reads
+  or writes.
+- `skills`, `agent_skills` and `room_skills`, which nothing ever filled; the
+  only code that touched them deleted an agent's rows from them.
 
 The downgrade puts every column back as `dad29005a7f7` created it: the
 settings empty, `admin_mode` off. It recreates every table empty, with the
@@ -60,6 +64,10 @@ def upgrade() -> None:
     op.drop_column("rooms", "observe_config")
     op.drop_column("rooms", "admin_mode")
     op.drop_table("agent_runtime_states")
+    op.drop_table("delivery_cursors")
+    op.drop_table("room_skills")
+    op.drop_table("agent_skills")
+    op.drop_table("skills")
 
     op.execute(
         "UPDATE agents SET integration_profile = integration_profile - "
@@ -121,6 +129,102 @@ def downgrade() -> None:
         "ix_agent_runtime_states_tenant_id", "agent_runtime_states", ["tenant_id"]
     )
     _enable_rls("agent_runtime_states")
+
+    op.create_table(
+        "delivery_cursors",
+        sa.Column("id", sa.Text(), nullable=False),
+        sa.Column("agent_id", sa.Text(), nullable=False),
+        sa.Column("room_id", sa.Text(), nullable=False),
+        sa.Column("last_seq", sa.BigInteger(), nullable=False),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column("tenant_id", sa.Text(), nullable=False),
+        sa.PrimaryKeyConstraint("id", name="delivery_cursors_pkey"),
+        sa.UniqueConstraint(
+            "agent_id", "room_id", name="uq_delivery_cursors_agent_room"
+        ),
+        sa.ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_delivery_cursors_agent",
+            ondelete="CASCADE",
+        ),
+        sa.ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_delivery_cursors_room",
+            ondelete="CASCADE",
+        ),
+        sa.ForeignKeyConstraint(
+            ["tenant_id"], ["tenants.id"], name="fk_delivery_cursors_tenant"
+        ),
+    )
+    op.create_index("ix_delivery_cursors_tenant_id", "delivery_cursors", ["tenant_id"])
+    _enable_rls("delivery_cursors")
+
+    op.create_table(
+        "skills",
+        sa.Column("id", sa.Text(), nullable=False),
+        sa.Column("name", sa.Text(), nullable=False),
+        sa.Column("version", sa.Text(), nullable=False),
+        sa.Column("description", sa.Text(), nullable=False),
+        sa.Column("visibility", sa.Text(), nullable=False),
+        sa.Column("owner_agent_id", sa.Text(), nullable=True),
+        sa.Column("created_by", sa.Text(), nullable=True),
+        sa.Column("package_uri", sa.Text(), nullable=False),
+        sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column("tenant_id", sa.Text(), nullable=False),
+        sa.PrimaryKeyConstraint("id", name="skills_pkey"),
+        sa.UniqueConstraint("id", "tenant_id", name="uq_skills_id_tenant"),
+        sa.ForeignKeyConstraint(
+            ["tenant_id", "owner_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_skills_owner_agent",
+        ),
+        sa.ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_skills_tenant"),
+        sa.ForeignKeyConstraint(
+            ["created_by"], ["users.id"], name="skills_created_by_fkey"
+        ),
+    )
+    op.create_index("ix_skills_tenant_id", "skills", ["tenant_id"])
+    _enable_rls("skills")
+
+    for link, other, other_table in (
+        ("agent_skills", "agent_id", "agents"),
+        ("room_skills", "room_id", "rooms"),
+    ):
+        op.create_table(
+            link,
+            sa.Column(other, sa.Text(), nullable=False),
+            sa.Column("skill_id", sa.Text(), nullable=False),
+            sa.Column("tenant_id", sa.Text(), nullable=False),
+            sa.PrimaryKeyConstraint(other, "skill_id", name=f"{link}_pkey"),
+            sa.ForeignKeyConstraint(
+                ["tenant_id", other],
+                [f"{other_table}.tenant_id", f"{other_table}.id"],
+                name=f"fk_{link}_{other.removesuffix('_id')}",
+            ),
+            sa.ForeignKeyConstraint(
+                ["tenant_id", "skill_id"],
+                ["skills.tenant_id", "skills.id"],
+                name=f"fk_{link}_skill",
+            ),
+            sa.ForeignKeyConstraint(
+                ["tenant_id"], ["tenants.id"], name=f"fk_{link}_tenant"
+            ),
+        )
+        op.create_index(f"ix_{link}_tenant_id", link, ["tenant_id"])
+        _enable_rls(link)
 
     op.add_column(
         "rooms",

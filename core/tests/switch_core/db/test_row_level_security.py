@@ -66,6 +66,10 @@ _DROPPED_BY_LATER_REVISIONS = frozenset(
         "server_connectors",
         "tasks",
         "agent_runtime_states",
+        "delivery_cursors",
+        "skills",
+        "agent_skills",
+        "room_skills",
     }
 )
 

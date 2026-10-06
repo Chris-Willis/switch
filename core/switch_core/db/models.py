@@ -1025,63 +1025,6 @@ class Model(TenantScoped, Base):
     )
 
 
-# ── Skills ─────────────────────────────────────────────────────────────────────
-
-
-agent_skills = Table(
-    "agent_skills",
-    Base.metadata,
-    Column(
-        "tenant_id",
-        Text,
-        ForeignKey("tenants.id", name="fk_agent_skills_tenant"),
-        nullable=False,
-        default=require_tenant_id,
-    ),
-    Column("agent_id", Text, primary_key=True),
-    Column("skill_id", Text, primary_key=True),
-    ForeignKeyConstraint(
-        ["tenant_id", "agent_id"],
-        ["agents.tenant_id", "agents.id"],
-        name="fk_agent_skills_agent",
-    ),
-    ForeignKeyConstraint(
-        ["tenant_id", "skill_id"],
-        ["skills.tenant_id", "skills.id"],
-        name="fk_agent_skills_skill",
-    ),
-    Index("ix_agent_skills_tenant_id", "tenant_id"),
-)
-
-
-class Skill(TenantScoped, Base):
-    __tablename__ = "skills"
-    __table_args__ = (
-        Index("ix_skills_tenant_id", "tenant_id"),
-        UniqueConstraint("id", "tenant_id", name="uq_skills_id_tenant"),
-        ForeignKeyConstraint(
-            ["tenant_id", "owner_agent_id"],
-            ["agents.tenant_id", "agents.id"],
-            name="fk_skills_owner_agent",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    version: Mapped[str] = mapped_column(Text, nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False)
-    visibility: Mapped[str] = mapped_column(Text, nullable=False)
-    owner_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_by: Mapped[str | None] = mapped_column(
-        Text, ForeignKey("users.id"), nullable=True
-    )
-    package_uri: Mapped[str] = mapped_column(Text, nullable=False)
-    metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
-    created_at: Mapped[str] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-
-
 # ── Rooms ──────────────────────────────────────────────────────────────────────
 
 
@@ -1118,31 +1061,6 @@ room_agents = Table(
         name="fk_room_agents_agent",
     ),
     Index("ix_room_agents_tenant_id", "tenant_id"),
-)
-
-room_skills = Table(
-    "room_skills",
-    Base.metadata,
-    Column(
-        "tenant_id",
-        Text,
-        ForeignKey("tenants.id", name="fk_room_skills_tenant"),
-        nullable=False,
-        default=require_tenant_id,
-    ),
-    Column("room_id", Text, primary_key=True),
-    Column("skill_id", Text, primary_key=True),
-    ForeignKeyConstraint(
-        ["tenant_id", "room_id"],
-        ["rooms.tenant_id", "rooms.id"],
-        name="fk_room_skills_room",
-    ),
-    ForeignKeyConstraint(
-        ["tenant_id", "skill_id"],
-        ["skills.tenant_id", "skills.id"],
-        name="fk_room_skills_skill",
-    ),
-    Index("ix_room_skills_tenant_id", "tenant_id"),
 )
 
 
@@ -2350,52 +2268,6 @@ class MessageAttachment(TenantScoped, Base):
     size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-
-
-class DeliveryCursor(TenantScoped, Base):
-    """How far one agent has been delivered in one room.
-
-    The cursor it replaces lived in memory in the event buffer, so a restart
-    resumed from wherever that buffer happened to be rather than from what the
-    agent had actually been given. Persisting it makes "what has this agent
-    seen" outlive the process, which is what lets delivery be driven from the
-    table instead of from a live connection.
-
-    `last_seq` is a position in the room, not a count: `seq` is a per-room
-    total order, so "everything up to n" is unambiguous and re-reading from it
-    is idempotent. It is only ever advanced, never rewound — a cursor that
-    could go backwards would redeliver, and a redelivered message is
-    indistinguishable to a reader from a new one.
-    """
-
-    __tablename__ = "delivery_cursors"
-    __table_args__ = (
-        Index("ix_delivery_cursors_tenant_id", "tenant_id"),
-        UniqueConstraint("agent_id", "room_id", name="uq_delivery_cursors_agent_room"),
-        ForeignKeyConstraint(
-            ["tenant_id", "agent_id"],
-            ["agents.tenant_id", "agents.id"],
-            name="fk_delivery_cursors_agent",
-            ondelete="CASCADE",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "room_id"],
-            ["rooms.tenant_id", "rooms.id"],
-            name="fk_delivery_cursors_room",
-            ondelete="CASCADE",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
-    room_id: Mapped[str] = mapped_column(Text, nullable=False)
-    last_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    updated_at: Mapped[str] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
     )
 
 
