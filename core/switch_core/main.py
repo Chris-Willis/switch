@@ -681,7 +681,6 @@ async def run(config: SwitchConfig) -> None:
         bridge_store=bridge_store,
         client_lifecycle=client_lifecycle,
         collab_lifecycle=collab_lifecycle,
-        event_buffer=event_buffer,
         session_factory=session_factory,
         user_store=user_store,
         external_user_store=external_user_store,

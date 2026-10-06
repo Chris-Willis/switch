@@ -6,7 +6,6 @@ from fastapi import FastAPI
 from starlette.middleware.sessions import SessionMiddleware
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
-from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.collaboration.install_service import (
     MessagingInstallService,
 )
@@ -80,7 +79,6 @@ def create_gateway_app(
     bridge_store: CollaborationBridgeStore,
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
-    event_buffer: EventBuffer,
     session_factory: object,
     user_store: UserStore,
     external_user_store: ExternalUserStore,
@@ -104,7 +102,6 @@ def create_gateway_app(
         bridge_store=bridge_store,
         client_lifecycle=client_lifecycle,
         collab_lifecycle=collab_lifecycle,
-        event_buffer=event_buffer,
         session_factory=session_factory,
         user_store=user_store,
         external_user_store=external_user_store,

@@ -1417,10 +1417,6 @@ class CollaborationCore:
                 )
         return resolved
 
-    async def resolve_external_user_ids(self, user_names: list[str]) -> list[str]:
-        resolved = await self.resolve_external_user_id_map(user_names)
-        return list(resolved.values())
-
     async def ensure_users_in_room(
         self,
         room_id: str,

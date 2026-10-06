@@ -60,7 +60,6 @@ def init_dependencies(
     _state["room_service"] = room_service
     _state["client_lifecycle"] = client_lifecycle
     _state["collab_lifecycle"] = collab_lifecycle
-    _state["event_buffer"] = event_buffer
     _state["connections"] = connections
     _state["resource_service"] = resource_service
     _state["api_key_store"] = api_key_store
@@ -112,10 +111,6 @@ def get_room_service() -> RoomService:
 
 def get_client_lifecycle() -> ClientLifecycleService:
     return _state["client_lifecycle"]  # type: ignore[no-any-return]
-
-
-def get_event_buffer() -> EventBuffer:
-    return _state["event_buffer"]  # type: ignore[no-any-return]
 
 
 def get_resource_service() -> ResourceService:

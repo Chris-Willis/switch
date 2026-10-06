@@ -1378,9 +1378,6 @@ class AgentConnectionRegistry:
             conn.id for conn in self._by_id.values() if conn.is_alive(now)
         } | self.controllers.live_holder_ids()
 
-    def live_agents_in_room(self, agent_ids: Iterable[str], room_id: str) -> set[str]:
-        return {aid for aid in agent_ids if self.live_in_room(aid, room_id)}
-
     def live_agents(self, agent_ids: Iterable[str]) -> set[str]:
         return {aid for aid in agent_ids if self.is_live(aid)}
 
@@ -1388,11 +1385,3 @@ class AgentConnectionRegistry:
         self, agent_ids: Iterable[str], room_id: str
     ) -> set[str]:
         return {aid for aid in agent_ids if self.can_spawn_for(aid, room_id)}
-
-    def rooms_covered(self, agent_id: str, candidate_rooms: Iterable[str]) -> set[str]:
-        """Which of `candidate_rooms` this agent is reachable in right now."""
-        return {room for room in candidate_rooms if self.live_in_room(agent_id, room)}
-
-    def wake_agent(self, agent_id: str) -> None:
-        for conn in self.for_agent(agent_id):
-            conn.wake.set()

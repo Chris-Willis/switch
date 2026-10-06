@@ -6,7 +6,6 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
-from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.collaboration.install_service import (
     MessagingInstallService,
 )
@@ -46,7 +45,6 @@ def init_dependencies(
     bridge_store: CollaborationBridgeStore,
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
-    event_buffer: EventBuffer,
     session_factory: Any,
     user_store: UserStore,
     external_user_store: ExternalUserStore,
@@ -69,7 +67,6 @@ def init_dependencies(
     _state["bridge_store"] = bridge_store
     _state["client_lifecycle"] = client_lifecycle
     _state["collab_lifecycle"] = collab_lifecycle
-    _state["event_buffer"] = event_buffer
     _state["session_factory"] = session_factory
     _state["user_store"] = user_store
     _state["external_user_store"] = external_user_store
@@ -176,10 +173,6 @@ def get_client_lifecycle() -> ClientLifecycleService:
 
 def get_collab_lifecycle() -> CollaborationBridgeLifecycleService:
     return _state["collab_lifecycle"]  # type: ignore[no-any-return]
-
-
-def get_event_buffer() -> EventBuffer:
-    return _state["event_buffer"]  # type: ignore[no-any-return]
 
 
 def get_user_store() -> UserStore:

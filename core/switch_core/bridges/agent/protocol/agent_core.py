@@ -18,7 +18,7 @@ from switch_core.addressing import (
     parse_policy,
 )
 from switch_core.agent_display_name import normalise_display_name
-from switch_core.agent_icon import normalise_icon_url, validate_icon_url
+from switch_core.agent_icon import normalise_icon_url
 from switch_core.aliases import check_alias_collisions, validate_alias_format
 from switch_core.attachments import parse_attachment_group
 from switch_core.authz import Action, Principal, require, require_manage
@@ -855,28 +855,6 @@ class AgentCore:
                 await self.agent_store.update(session, agent_id, **updates)
                 await session.commit()
 
-    async def set_agent_icon(self, agent_id: str, icon_url: str | None) -> None:
-        """Set, change, or clear an agent's icon.
-
-        A URL replaces whatever the agent has; ``None`` clears it, leaving the
-        agent with no icon so callers fall back to their own default. This is
-        deliberately a separate operation from ``update_agent`` rather than
-        another optional field on it: there, ``None`` means "leave alone", and
-        an icon needs "remove it" to be sayable.
-
-        Raises:
-            InvalidIconUrl: the URL is malformed or points somewhere unsafe.
-            ValueError: no agent with this id exists.
-        """
-        validated = validate_icon_url(icon_url) if icon_url is not None else None
-
-        async with self.session_factory() as session:
-            agent = await self.agent_store.get(session, agent_id)
-            if agent is None:
-                raise ValueError(f"No such agent: {agent_id}")
-            await self.agent_store.update(session, agent_id, icon_url=validated)
-            await session.commit()
-
     async def _remove_bridge_identities(self, tenant_id: str, agent_name: str) -> None:
         """Remove `agent_name`'s platform identity from the bridges of
         `tenant_id` — and only that tenant's bridges.
@@ -1096,17 +1074,6 @@ class AgentCore:
         return await compute_agent_statuses(
             session, agents, room_id, self.agent_session_store, self.connections
         )
-
-    async def get_agent_statuses_by_name(
-        self,
-        room_id: str,
-        agent_names: list[str],
-    ) -> dict[str, AgentStatus]:
-        """Return status keyed by agent name. Unknown names are omitted."""
-        async with self.session_factory() as session:
-            agents = await self.agent_store.get_by_names(session, agent_names)
-            statuses = await self._compute_statuses(session, agents, room_id)
-        return {a.name: statuses[a.id] for a in agents}
 
     async def get_agent_statuses_by_ids(
         self,
