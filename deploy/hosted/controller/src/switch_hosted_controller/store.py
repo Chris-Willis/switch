@@ -339,6 +339,10 @@ class MachineStore:
     def upgrade_terminated(
         self, claim: Machine, image_id: str, previous_runtime_fingerprint: str
     ) -> Machine:
+        """Move a stopped machine onto `image_id` for its current runtime.
+
+        This supersedes a pending image change, but not a pending runtime change.
+        """
         if (
             claim.desired_state is not DesiredState.STOPPED
             or not claim.instance_id
@@ -351,7 +355,9 @@ class MachineStore:
             raise StoreError("the machine already uses this image")
         cursor = self._connection.execute(
             """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
-            image_id = ?, previous_runtime_fingerprint = ?, instance_seq = instance_seq + 1,
+            image_id = ?,
+            target_image_id = CASE WHEN target_runtime = runtime THEN NULL ELSE target_image_id END,
+            previous_runtime_fingerprint = ?, instance_seq = instance_seq + 1,
             desired_revision = desired_revision + 1, operation_id = ?,
             instance_launch_intent = 0, instance_launch_issued = 0, instance_launch_issued_at = NULL,
             instance_terminate_issued = 0,

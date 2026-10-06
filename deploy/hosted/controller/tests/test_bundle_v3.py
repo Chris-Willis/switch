@@ -18,7 +18,7 @@ from switch_hosted_controller.cloud import CloudResourceError, Ec2Cloud
 from switch_hosted_controller.config import ConfigError, ControllerConfig
 from switch_hosted_controller.gateway import CoreMachine, Gateway, GatewayConfig
 from switch_hosted_controller.kms_grants import KmsGrants
-from switch_hosted_controller.model import ObservedState, Runtime
+from switch_hosted_controller.model import DesiredState, ObservedState, Runtime
 from switch_hosted_controller.reconciler import Reconciler
 from switch_hosted_controller.store import MachineStore
 
@@ -592,6 +592,45 @@ def test_new_controller_image_replaces_the_instance_and_reattaches_the_volume(ha
     assert ec2.volume["Attachments"] == [
         {"InstanceId": new.instance_id, "Device": "/dev/sdf", "State": "attached"}
     ]
+
+
+def stopped_and_terminated(harness: Harness, ec2: Ec2):
+    machine = harness.store.set_desired(MACHINE_ID, DesiredState.STOPPED, None)
+    ec2.terminate_instance(machine)
+    return harness.store.mark_instance_terminal_observed(MACHINE_ID, machine.instance_id)
+
+
+def test_operator_upgrade_supersedes_a_pending_controller_image(harness):
+    ec2 = Ec2(harness.store, harness.cfg)
+    poll_until_running(harness, Reconciler(harness.store, ec2))
+    harness.store.request_runtime(MACHINE_ID, Runtime.CONTROLLER, NEW_CONTROLLER_IMAGE)
+    claim = stopped_and_terminated(harness, ec2)
+    assert claim.target_image_id == NEW_CONTROLLER_IMAGE
+
+    upgraded = harness.store.upgrade_terminated(claim, NEW_CONTROLLER_IMAGE, "sha256:" + "a" * 64)
+
+    assert (
+        upgraded.runtime,
+        upgraded.image_id,
+        upgraded.target_runtime,
+        upgraded.target_image_id,
+    ) == (Runtime.CONTROLLER, NEW_CONTROLLER_IMAGE, Runtime.CONTROLLER, None)
+
+
+def test_operator_upgrade_keeps_a_pending_runtime_change(harness):
+    ec2 = Ec2(harness.store, harness.cfg)
+    poll_until_running(harness, Reconciler(harness.store, ec2))
+    harness.store.request_runtime(MACHINE_ID, Runtime.WORKER, harness.cfg.image_id)
+    claim = stopped_and_terminated(harness, ec2)
+
+    upgraded = harness.store.upgrade_terminated(claim, NEW_CONTROLLER_IMAGE, "sha256:" + "a" * 64)
+
+    assert (
+        upgraded.runtime,
+        upgraded.image_id,
+        upgraded.target_runtime,
+        upgraded.target_image_id,
+    ) == (Runtime.CONTROLLER, NEW_CONTROLLER_IMAGE, Runtime.WORKER, harness.cfg.image_id)
 
 
 def test_new_controller_machine_launches_from_the_controller_image(harness):
