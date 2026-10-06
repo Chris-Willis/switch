@@ -64,7 +64,7 @@ Scope = Literal["single", "all"]
 DeliveryFilter = Literal["all", "addressed"]
 # How a connection's stream reaches its client. `sse` is the event stream an
 # agent runtime built before the WebSocket still asks for, served for a
-# compatibility window and told apart so we can see those clients drain.
+# compatibility window and counted apart so we can see those clients drain.
 Transport = Literal["websocket", "sse"]
 
 # Refuse a client that cannot meet this server's protocol rather than degrading
@@ -462,9 +462,10 @@ class AgentConnection:
 
 
 def connection_transport(conn: AgentConnection) -> str:
-    """`websocket` while the socket is attached; `detached` while the socket has
-    dropped and the connection waits out its heartbeat window for a reconnect."""
-    return "websocket" if conn.stream_attached else "detached"
+    """`websocket` or `sse` while a stream is attached, by what it travels over;
+    `detached` while it has dropped and the connection waits out its heartbeat
+    window for a reconnect."""
+    return conn.stream_transport if conn.stream_attached else "detached"
 
 
 class AgentConnectionRegistry:
