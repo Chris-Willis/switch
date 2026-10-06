@@ -107,15 +107,15 @@ export async function prepareSharedConfig(
 /**
  * Set by a host whose provider login is owned by Switch and can be
  * reconnected (an agents controller's unit, a hosted worker), so sessions
- * follow the host's login instead of keeping their first copy of it.
+ * share the host's login instead of keeping their first copy of it.
  */
 export const CODEX_AUTH_ENV = 'SWITCH_CODEX_AUTH';
 
-function codexAuthMode(): 'copy-once' | 'refresh' {
+function codexAuthMode(): 'copy-once' | 'shared' {
   const value = process.env[CODEX_AUTH_ENV];
   if (value === undefined) return 'copy-once';
-  if (value === 'refresh') return 'refresh';
-  throw new Error(`${CODEX_AUTH_ENV} must be 'refresh' or unset, not '${value}'.`);
+  if (value === 'shared') return 'shared';
+  throw new Error(`${CODEX_AUTH_ENV} must be 'shared' or unset, not '${value}'.`);
 }
 
 export async function readSharedCredentials(config: SharedHostConfig) {

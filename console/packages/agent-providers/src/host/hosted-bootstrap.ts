@@ -617,7 +617,7 @@ export async function prepareHostedDeployment(
   if (providerCredential !== null) providerEnvironment[variable] = providerCredential;
   if (githubCredential && !spec.github?.refresh) providerEnvironment.GH_TOKEN = githubCredential;
   providerEnvironment.SWITCH_HOSTED_BOOTSTRAP = '1';
-  providerEnvironment[CODEX_AUTH_ENV] = 'refresh';
+  providerEnvironment[CODEX_AUTH_ENV] = 'shared';
   providerEnvironment.SWITCH_HOST_INSTANCE_ID = machine.instanceId;
   providerEnvironment.SWITCH_HOST_BOOT_ID = machine.bootId;
   return {

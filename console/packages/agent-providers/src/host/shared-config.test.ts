@@ -247,7 +247,7 @@ describe('the Codex login a session starts with', () => {
   });
 
   it('follows a reconnected login on a host that asks for it', async () => {
-    vi.stubEnv('SWITCH_CODEX_AUTH', 'refresh');
+    vi.stubEnv('SWITCH_CODEX_AUTH', 'shared');
     const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
     try {
       expect(await loginAfterReconnect(root)).toBe('reconnected-login');

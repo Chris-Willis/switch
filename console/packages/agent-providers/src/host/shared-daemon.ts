@@ -101,7 +101,7 @@ async function runUnit(watcherRoot: string): Promise<void> {
     throw new Error(
       'An agent unit reaches Switch through its controller; unset SWITCH_HOSTED_BOOTSTRAP.'
     );
-  process.env[CODEX_AUTH_ENV] = 'refresh';
+  process.env[CODEX_AUTH_ENV] = 'shared';
   const unitRoot = resolve(watcherRoot);
   const config = sharedConfigSchema.parse(
     JSON.parse(await readFile(join(unitRoot, 'config.json'), 'utf8'))
