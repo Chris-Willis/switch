@@ -262,6 +262,21 @@ describe('SystemdRuntime', () => {
     expect(statSync(config).isFile()).toBe(true);
   });
 
+  it('never reads a failure through a supervisor directory the agent linked elsewhere', async () => {
+    await runtime.launch('agent-1', template(), START);
+    const elsewhere = join(dir, 'elsewhere');
+    mkdirSync(elsewhere);
+    writeFileSync(join(elsewhere, 'failure.json'), JSON.stringify({ message: 'planted' }));
+    const supervisor = join(layout.watcherRoot('agent-1'), 'supervisor');
+    rmSync(supervisor, { recursive: true, force: true });
+    symlinkSync(elsewhere, supervisor);
+    await expect(runtime.observe('agent-1')).rejects.toThrow(/symbolic link; it is not followed/);
+    rmSync(supervisor);
+    mkdirSync(supervisor);
+    writeFileSync(join(supervisor, 'failure.json'), JSON.stringify({ message: 'real' }));
+    expect((await runtime.observe('agent-1')).failure).toBe('real');
+  });
+
   it('observes the unit and the agent host’s health', async () => {
     expect(await runtime.observe('agent-1')).toMatchObject({ alive: false, health: null });
     await runtime.launch('agent-1', template(), START);

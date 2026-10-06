@@ -1,7 +1,17 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { mkdir, open, readFile, rename, stat, unlink } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  readlink,
+  realpath,
+  rename,
+  stat,
+  unlink,
+} from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -184,6 +194,35 @@ export const STATE_FILE_LIMIT = 4 * 1024 * 1024;
  * be written by the agent itself.
  */
 export async function readOptional(path: string): Promise<string | null> {
+  return readNoFollow(path, null);
+}
+
+/**
+ * `readOptional` for `parts` below `root`, where whoever may write below
+ * `root` could have replaced a directory on the way with a link: no component
+ * below `root` may be one. On Linux the opened file must also be the one at
+ * that path, which closes the race between checking and opening.
+ */
+export async function readOptionalBelow(root: string, parts: string[]): Promise<string | null> {
+  let directory = root;
+  for (const part of parts.slice(0, -1)) {
+    directory = join(directory, part);
+    let info;
+    try {
+      info = await lstat(directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+    if (info.isSymbolicLink())
+      throw new Error(`${directory} is a symbolic link; it is not followed.`);
+    if (!info.isDirectory()) throw new Error(`${directory} is not a directory.`);
+  }
+  const expected = process.platform === 'linux' ? join(await realpath(root), ...parts) : null;
+  return readNoFollow(join(root, ...parts), expected);
+}
+
+async function readNoFollow(path: string, expected: string | null): Promise<string | null> {
   let file;
   try {
     file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -194,6 +233,8 @@ export async function readOptional(path: string): Promise<string | null> {
     throw error;
   }
   try {
+    if (expected !== null && (await readlink(`/proc/self/fd/${file.fd}`)) !== expected)
+      throw new Error(`${path} is reached through a symbolic link; it is not followed.`);
     const info = await file.stat();
     if (!info.isFile()) throw new Error(`${path} is not a regular file.`);
     if (info.size > STATE_FILE_LIMIT)
@@ -302,7 +343,7 @@ export async function readRoot(root: string): Promise<Omit<AgentObservation, 'al
   const flagsText = await readOptional(join(root, WATCH_FLAGS_FILE));
   const flags: WatchFlags | null =
     flagsText === null ? null : watchFlagsSchema.parse(JSON.parse(flagsText));
-  const failureText = await readOptional(join(root, 'supervisor', 'failure.json'));
+  const failureText = await readOptionalBelow(root, ['supervisor', 'failure.json']);
   const failure =
     failureText === null
       ? null
