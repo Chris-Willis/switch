@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,6 +23,7 @@ from switch_hosted_controller.reconciler import Reconciler
 from switch_hosted_controller.store import MachineStore
 
 CONTROLLER_IMAGE = "ami-0c0c0c0c0c0c0c0c0"
+NEW_CONTROLLER_IMAGE = "ami-0d0d0d0d0d0d0d0d0"
 CONTROLLER_ID = CONTEXT["switch:controller_id"]
 CREDENTIAL = "swcc_SYNTHETIC-CONTROLLER-CREDENTIAL-0001"
 VOLUME_ID = "vol-0123456789abcdef0"
@@ -46,7 +48,10 @@ class ImageGate:
     """The image lookup of Ec2Cloud: images tagged with their capabilities."""
 
     def __init__(self, events: list[str]):
-        self.capabilities = {CONTROLLER_IMAGE: {"controller-v1"}}
+        self.capabilities = {
+            CONTROLLER_IMAGE: {"controller-v1"},
+            NEW_CONTROLLER_IMAGE: {"controller-v1"},
+        }
         self.calls: list[tuple[str, tuple[str, ...]]] = []
         self.events = events
 
@@ -145,6 +150,10 @@ class Harness:
 
     def bundle(self) -> dict:
         return self.secrets.current()[1]
+
+    def configure(self, **changes) -> None:
+        self.cfg = replace(self.cfg, **changes)
+        self.gateway.config = self.cfg
 
     def close(self) -> None:
         self.store.close()
@@ -430,7 +439,7 @@ class Ec2:
 
     def validate_image(self, image_id, require):
         self.validated.append((image_id, require))
-        if require and image_id != CONTROLLER_IMAGE:
+        if require and image_id not in {CONTROLLER_IMAGE, NEW_CONTROLLER_IMAGE}:
             raise CloudResourceError("configured AMI lacks capabilities")
 
     def validate_capacity(self):
@@ -523,6 +532,66 @@ def test_runtime_change_replaces_the_instance_and_reattaches_the_volume(harness)
     assert rolled_back.previous_instance_id == controller.instance_id
     assert ec2.launched_images == [harness.cfg.image_id, CONTROLLER_IMAGE, harness.cfg.image_id]
     assert harness.bundle()["version"] == 2
+
+
+def test_start_records_a_new_controller_image_but_not_a_new_worker_image(harness):
+    ec2 = Ec2(harness.store, harness.cfg)
+    reconciler = Reconciler(harness.store, ec2)
+    harness.core.runtime = "worker"
+    poll_until_running(harness, reconciler)
+    harness.configure(image_id="ami-0e0e0e0e0e0e0e0e0")
+    harness.core.revision = 2
+    harness.sync()
+    worker = harness.store.get(MACHINE_ID)
+    assert (worker.runtime, worker.target_runtime, worker.target_image_id) == (
+        Runtime.WORKER,
+        Runtime.WORKER,
+        None,
+    )
+
+    harness.core.revision = 3
+    harness.core.runtime = "controller"
+    poll_until_running(harness, reconciler)
+    harness.configure(controller_image_id=NEW_CONTROLLER_IMAGE)
+    harness.core.revision = 4
+    harness.sync()
+    controller = harness.store.get(MACHINE_ID)
+    assert (
+        controller.runtime,
+        controller.image_id,
+        controller.target_runtime,
+        controller.target_image_id,
+    ) == (Runtime.CONTROLLER, CONTROLLER_IMAGE, Runtime.CONTROLLER, NEW_CONTROLLER_IMAGE)
+
+
+def test_new_controller_image_replaces_the_instance_and_reattaches_the_volume(harness):
+    ec2 = Ec2(harness.store, harness.cfg)
+    reconciler = Reconciler(harness.store, ec2)
+    poll_until_running(harness, reconciler)
+    old = harness.store.get(MACHINE_ID)
+    assert old.image_id == CONTROLLER_IMAGE
+
+    harness.configure(controller_image_id=NEW_CONTROLLER_IMAGE)
+    harness.core.revision = 2
+    poll_until_running(harness, reconciler)
+
+    new = harness.store.get(MACHINE_ID)
+    assert (new.runtime, new.image_id, new.target_runtime, new.target_image_id) == (
+        Runtime.CONTROLLER,
+        NEW_CONTROLLER_IMAGE,
+        Runtime.CONTROLLER,
+        None,
+    )
+    assert new.previous_instance_id == old.instance_id
+    assert new.instance_id != old.instance_id
+    assert new.instance_seq == old.instance_seq + 1
+    assert new.recovery_count == 0
+    assert ec2.instances[old.instance_id]["State"]["Name"] == "terminated"
+    assert ec2.launched_images == [CONTROLLER_IMAGE, NEW_CONTROLLER_IMAGE]
+    assert ec2.validated[-1] == (NEW_CONTROLLER_IMAGE, ("controller-v1",))
+    assert ec2.volume["Attachments"] == [
+        {"InstanceId": new.instance_id, "Device": "/dev/sdf", "State": "attached"}
+    ]
 
 
 def test_new_controller_machine_launches_from_the_controller_image(harness):

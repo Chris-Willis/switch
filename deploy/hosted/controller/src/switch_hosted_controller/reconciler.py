@@ -74,7 +74,7 @@ class Reconciler:
             )
         if volume is None:
             return self._attention(claim, "recorded data volume cannot be found")
-        if machine.target_runtime is not machine.runtime:
+        if machine.target_runtime is not machine.runtime or machine.target_image_id is not None:
             return self._change_runtime(claim, volume)
 
         instance = self._cloud.get_instance(machine)
@@ -162,7 +162,7 @@ class Reconciler:
         return self._store.set_observed(claim, ObservedState.RUNNING, None)
 
     def _change_runtime(self, claim: Machine, volume: dict[str, Any]) -> Machine:
-        """Replace the instance with one of the requested runtime on the same data volume."""
+        """Replace the instance with one of the requested runtime and image on the same data volume."""
         pending = self._terminate_instance(
             claim, DesiredState.RUNNING, ObservedState.PROVISIONING, "runtime change"
         )

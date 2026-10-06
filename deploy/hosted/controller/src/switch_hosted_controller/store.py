@@ -405,28 +405,32 @@ class MachineStore:
     def request_runtime(self, machine_id: str, runtime: Runtime, image_id: str) -> Machine:
         """Record the runtime Core prepared the machine for.
 
-        A runtime other than the current one is applied by `switch_runtime` once
-        the instance of the current runtime is gone.
+        A runtime other than the current one, or a controller machine on an image
+        other than the configured one, is applied by `switch_runtime` once the
+        current instance is gone.
         """
         self._connection.execute(
             """
             UPDATE machines SET target_runtime = ?,
-                target_image_id = CASE WHEN runtime = ? THEN NULL ELSE ? END,
+                target_image_id = CASE
+                    WHEN runtime != ? THEN ?
+                    WHEN runtime = 'controller' AND image_id != ? THEN ?
+                    ELSE NULL END,
                 updated_at = CURRENT_TIMESTAMP
             WHERE machine_id = ?
             """,
-            (runtime.value, runtime.value, image_id, machine_id),
+            (runtime.value, runtime.value, image_id, image_id, image_id, machine_id),
         )
         return self.get(machine_id)
 
     def switch_runtime(self, claim: Machine) -> Machine:
-        """Adopt the requested runtime and its image for the next instance.
+        """Adopt the requested runtime and image for the next instance.
 
         The machine must have no instance, or a confirmed terminated one, which
         becomes the predecessor whose data volume the next instance reattaches.
         """
-        if claim.target_runtime is claim.runtime or claim.target_image_id is None:
-            raise StoreError("no runtime change is pending")
+        if claim.target_image_id is None:
+            raise StoreError("no runtime or image change is pending")
         if claim.instance_id is not None and not claim.instance_terminal_observed:
             raise StoreError("a runtime change requires a confirmed terminated predecessor")
         if claim.instance_id is None and claim.instance_launch_issued:
