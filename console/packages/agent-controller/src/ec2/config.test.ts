@@ -71,7 +71,10 @@ describe('readEc2Config', () => {
 
   it('reads a machine whose image installed only claude', async () => {
     const path = join(dir, 'controller.json');
-    writeFileSync(path, JSON.stringify({ ...CONFIG, providers: { claude: CONFIG.providers.claude } }));
+    writeFileSync(
+      path,
+      JSON.stringify({ ...CONFIG, providers: { claude: CONFIG.providers.claude } })
+    );
     const config = await readEc2Config(path);
     expect(config.providers).toEqual({ claude: '/opt/switch/providers/claude' });
   });
