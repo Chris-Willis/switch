@@ -14,6 +14,7 @@ import {
 } from '@renderer/features/remote-hosts/host-readiness-notice';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-policy-editor';
+import { ManagedGitHubStep } from '@renderer/features/switch-servers/managed-github-step';
 import { ManagedProviderConnectionStep } from '@renderer/features/switch-servers/managed-provider-connection-step';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { isSwitchCloudServer } from '@renderer/features/switch-servers/use-cloud-launches';
@@ -50,10 +51,12 @@ import {
   describeRemoteDirRefusal,
   isAbsoluteRemoteDir,
 } from '@shared/core/remote-hosts/remote-dir';
+import type { CloudRepositorySelection } from '@shared/core/switch-servers/cloud-launch';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { AgentAdvancedConfig } from './agent-advanced-config';
 import { AgentTypePicker } from './agent-type-picker';
 import { CloudAgentProvider } from './cloud-agent-provider';
+import { CloudAgentRepository } from './cloud-agent-repository';
 import { AgentIdentityFields, AgentSettingsSection } from './configure-agent-panel';
 import { LaunchProfileConfig } from './launch-profile-config';
 import { LocalDirectorySelector } from './local-directory-selector';
@@ -108,9 +111,11 @@ export const NewAgentForm = observer(function NewAgentForm({
   initialRunLocation,
 }: NewAgentFormProps) {
   const queryClient = useQueryClient();
+  const [connectingGitHub, setConnectingGitHub] = useState(false);
   const [connectingProvider, setConnectingProvider] = useState(false);
   const [submitState, setSubmitState] = useState<'idle' | 'creating'>('idle');
   const [cloudProviderConnected, setCloudProviderConnected] = useState(false);
+  const [cloudRepository, setCloudRepository] = useState<CloudRepositorySelection | null>(null);
   const { navigate } = useNavigate();
   const { setCloseGuard } = useModalContext();
   const showAddServerModal = useShowModal('addServerModal');
@@ -385,13 +390,15 @@ export const NewAgentForm = observer(function NewAgentForm({
     !!pickState.providerId &&
     (isMachineRun || needsCloudMachine || dir.trim().length > 0) &&
     (!needsCloudMachine || cloudProviderConnected) &&
+    (!isCloudRun || cloudRepository !== null) &&
     remoteDirIsAbsolute &&
     machineProviderReady &&
     runHostReachable &&
     runHostReady &&
     machineReason === null &&
     submitState === 'idle' &&
-    !connectingProvider;
+    !connectingProvider &&
+    !connectingGitHub;
 
   // Why "Add agent" is greyed out, in one line, shown on hover over the button.
   const disabledReason: string | null =
@@ -399,37 +406,39 @@ export const NewAgentForm = observer(function NewAgentForm({
       ? null
       : needsCloudMachine && !cloudProviderConnected
         ? 'Connect the provider.'
-        : !pickState.serverId
-          ? 'Add a Switch server to register this agent on.'
-          : form.agentName.trim().length === 0
-            ? 'Enter a name for the agent.'
-            : !form.nameIsValid
-              ? 'Fix the agent name: lowercase letters, digits, . - _, starting with a letter or digit.'
-              : nameTaken
-                ? `An agent called ${form.agentName} already exists on this server. Pick another name.`
-                : form.description.trim().length === 0
-                  ? 'Add a description so people and agents know what this agent is for.'
-                  : !runHostReachable
-                    ? `${runLocationLabel} can’t be reached right now — pick a run location that can.`
-                    : hostReadiness.checking
-                      ? `Checking what ${runLocationLabel} has installed…`
-                      : hostReadiness.blocked
-                        ? `${runLocationLabel} is missing setup this agent needs — the notice below has the details.`
-                        : machineReason !== null
-                          ? machineReason
-                          : !pickState.providerId
-                            ? 'Choose an agent type.'
-                            : !machineProviderReady
-                              ? `That provider is not installed and logged in on ${runLocationLabel}.`
-                              : !isCloudRun && !isMachineRun && dir.trim().length === 0
-                                ? isRemoteRun
-                                  ? 'Enter the agent’s working directory on the host.'
-                                  : 'Choose the agent’s working directory.'
-                                : !remoteDirIsAbsolute
-                                  ? `Give the full path on ${runLocationLabel}, starting with “/”.`
-                                  : policyHasDeadRule(form.addressingPolicy)
-                                    ? 'One addressing rule can never match — fix it under Settings.'
-                                    : null;
+        : isCloudRun && !cloudRepository
+          ? 'Connect GitHub and choose a repository.'
+          : !pickState.serverId
+            ? 'Add a Switch server to register this agent on.'
+            : form.agentName.trim().length === 0
+              ? 'Enter a name for the agent.'
+              : !form.nameIsValid
+                ? 'Fix the agent name: lowercase letters, digits, . - _, starting with a letter or digit.'
+                : nameTaken
+                  ? `An agent called ${form.agentName} already exists on this server. Pick another name.`
+                  : form.description.trim().length === 0
+                    ? 'Add a description so people and agents know what this agent is for.'
+                    : !runHostReachable
+                      ? `${runLocationLabel} can’t be reached right now — pick a run location that can.`
+                      : hostReadiness.checking
+                        ? `Checking what ${runLocationLabel} has installed…`
+                        : hostReadiness.blocked
+                          ? `${runLocationLabel} is missing setup this agent needs — the notice below has the details.`
+                          : machineReason !== null
+                            ? machineReason
+                            : !pickState.providerId
+                              ? 'Choose an agent type.'
+                              : !machineProviderReady
+                                ? `That provider is not installed and logged in on ${runLocationLabel}.`
+                                : !isCloudRun && !isMachineRun && dir.trim().length === 0
+                                  ? isRemoteRun
+                                    ? 'Enter the agent’s working directory on the host.'
+                                    : 'Choose the agent’s working directory.'
+                                  : !remoteDirIsAbsolute
+                                    ? `Give the full path on ${runLocationLabel}, starting with “/”.`
+                                    : policyHasDeadRule(form.addressingPolicy)
+                                      ? 'One addressing rule can never match — fix it under Settings.'
+                                      : null;
 
   /** `agentName` is what picks the agent out of the location — a location can
    * hold several, so navigating on `locationId` alone opens the directory
@@ -532,6 +541,7 @@ export const NewAgentForm = observer(function NewAgentForm({
             machineId,
             // A Switch cloud machine makes the agent's workspace itself.
             dir: isCloudRun ? null : trimmedRemoteDir || null,
+            repository: isCloudRun ? cloudRepository : null,
             model: managedSettingsRef.current.model,
             advancedConfig: managedSettingsRef.current.advancedConfig,
           });
@@ -634,7 +644,9 @@ export const NewAgentForm = observer(function NewAgentForm({
     void queryClient.invalidateQueries({
       queryKey: ['cloud-agent-connections', pickState.serverId],
     });
+    void queryClient.invalidateQueries({ queryKey: ['cloud-agent-github', pickState.serverId] });
     setConnectingProvider(false);
+    setConnectingGitHub(false);
   };
 
   return (
@@ -648,7 +660,15 @@ export const NewAgentForm = observer(function NewAgentForm({
           onDone={finishConnection}
         />
       )}
-      <div hidden={connectingProvider}>
+      {connectingGitHub && pickState.serverId && (
+        <ManagedGitHubStep
+          serverId={pickState.serverId}
+          onBack={finishConnection}
+          onSkip={finishConnection}
+          onContinue={finishConnection}
+        />
+      )}
+      <div hidden={connectingProvider || connectingGitHub}>
         <ModalLayout
           header={
             <DialogHeader showCloseButton={submitState === 'idle'}>
@@ -825,7 +845,7 @@ export const NewAgentForm = observer(function NewAgentForm({
                     {serverMachine.state !== 'online'
                       ? machineReason
                       : isCloudMachineRun
-                        ? 'Runs as a managed agent on your Switch cloud machine, in a fresh workspace there. A GitHub repository cannot be chosen for it here yet.'
+                        ? 'Runs as a managed agent on your Switch cloud machine, in a worktree of the repository chosen below.'
                         : `Runs as a managed agent on ${serverMachine.name}.`}
                   </span>
                 </p>
@@ -919,6 +939,14 @@ export const NewAgentForm = observer(function NewAgentForm({
                 onProviderChange={setProviderId}
                 onConnectedChange={setCloudProviderConnected}
                 onConnectProvider={() => setConnectingProvider(true)}
+              />
+            )}
+
+            {isCloudRun && pickState.serverId && (
+              <CloudAgentRepository
+                serverId={pickState.serverId}
+                onSelection={setCloudRepository}
+                onConnectGitHub={() => setConnectingGitHub(true)}
               />
             )}
 

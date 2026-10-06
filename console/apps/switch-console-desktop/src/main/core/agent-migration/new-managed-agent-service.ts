@@ -1,6 +1,7 @@
 import { type AdvancedConfig, advancedConfigProblem } from '@switch-console/plugins/agents';
 import type { NewAgentMachine } from '@shared/core/agent-migration/agent-migration';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import type { CloudRepositorySelection } from '@shared/core/switch-servers/cloud-launch';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import type { MachineRef } from './agent-migration';
 import type { MigrationLog, TargetLookup } from './agent-migration-service';
@@ -12,6 +13,8 @@ export type AddManagedAgentParams = {
   machineId: string;
   /** The working directory, absolute on the machine; null for a fresh workspace the machine chooses. */
   dir: string | null;
+  /** The GitHub repository a Switch cloud machine makes the agent's workspace a worktree of. */
+  repository: CloudRepositorySelection | null;
   name: string;
   providerId: AgentProviderId;
   serverId: string;
@@ -54,7 +57,9 @@ export type NewManagedAgentDeps = {
       icon_url: string | null;
       controller_id: string;
       desired_state: 'running' | 'stopped';
-      definition: ManagedDefinition;
+      definition: ManagedDefinition & {
+        repository: { installation_id: number; repository_id: number } | null;
+      };
     }
   ): Promise<ManagedCreateOutcome>;
   log: MigrationLog;
@@ -100,13 +105,17 @@ export class NewManagedAgentService {
     } catch (error) {
       return { kind: 'error', message: message(error) };
     }
-    const definition: ManagedDefinition = {
+    const definition = {
       provider: input.providerId,
       model: input.model || null,
       advanced_config: input.advancedConfig,
       instructions: input.instructions,
       auto_approve: input.autoApprove,
       directory: input.dir,
+      repository: input.repository && {
+        installation_id: input.repository.installationId,
+        repository_id: input.repository.repositoryId,
+      },
     };
 
     const created = await this.deps.create(workspaceId, {

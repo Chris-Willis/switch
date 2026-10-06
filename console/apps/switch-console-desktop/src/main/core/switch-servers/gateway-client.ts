@@ -2975,7 +2975,10 @@ export async function createManagedAgent(
     icon_url: string | null;
     controller_id: string;
     desired_state: 'running' | 'stopped';
-    definition: ManagedAgentDefinitionBody;
+    definition: ManagedAgentDefinitionBody & {
+      /** The GitHub repository a Switch cloud machine clones for the agent, by id. */
+      repository: { installation_id: number; repository_id: number } | null;
+    };
   }
 ): Promise<string> {
   const res = await managementFetch(server, '/agents', {

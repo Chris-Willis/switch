@@ -10,6 +10,7 @@ import {
 const PARAMS: AddManagedAgentParams = {
   machineId: 'controller-1',
   dir: '/work/pm',
+  repository: null,
   name: 'pm-agent',
   providerId: 'claude',
   serverId: 'server-1',
@@ -101,6 +102,7 @@ describe('NewManagedAgentService.add', () => {
           instructions: 'Be brief.',
           auto_approve: true,
           directory: '/work/pm',
+          repository: null,
         },
       },
     ]);
@@ -119,6 +121,17 @@ describe('NewManagedAgentService.add', () => {
   it('asks the machine for a fresh workspace when no directory is given', async () => {
     await new NewManagedAgentService(h.deps).add({ ...PARAMS, dir: null });
     expect(h.created).toMatchObject([{ definition: { directory: null } }]);
+  });
+
+  it('names the GitHub repository a Switch cloud machine clones for the agent', async () => {
+    await new NewManagedAgentService(h.deps).add({
+      ...PARAMS,
+      dir: null,
+      repository: { installationId: 12, repositoryId: 34 },
+    });
+    expect(h.created).toMatchObject([
+      { definition: { directory: null, repository: { installation_id: 12, repository_id: 34 } } },
+    ]);
   });
 
   it('says a name Switch already has is taken', async () => {
