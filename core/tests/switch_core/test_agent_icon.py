@@ -147,11 +147,25 @@ def test_normalise_validates_a_present_url() -> None:
         normalise_icon_url("http://10.0.0.1/i.png")
 
 
-def test_generated_icon_is_a_stable_raster_robot_per_seed() -> None:
+def test_generated_icon_is_a_stable_raster_gaze_per_seed() -> None:
+    # Switch Console builds the same URL (`agent-avatar.ts`) and its test pins
+    # this same string: change one and the other has to follow, or an agent
+    # wears a different face in the app than on the chat platforms.
     url = generated_icon_url("pm-agent")
-    assert url == "https://api.dicebear.com/9.x/bottts/png?seed=pm-agent&size=256"
+    assert url == (
+        "https://api.dicebear.com/10.x/gaze/png?seed=pm-agent&size=256&scale=1.1"
+        "&shapeVariant=circle&shapeVariant=column&shapeVariant=diamond"
+        "&shapeVariant=egg&shapeVariant=hexagon&shapeVariant=octagon"
+        "&shapeVariant=pentagon&shapeVariant=pill&shapeVariant=square"
+        "&shapeVariant=triangle"
+    )
     assert generated_icon_url("pm-agent") == url
     assert validate_icon_url(url) == url
+
+
+def test_generated_icon_escapes_the_seed() -> None:
+    url = generated_icon_url("a&b=c d")
+    assert "seed=a%26b%3Dc%20d&" in url
 
 
 def test_generated_choices_lead_with_the_name_and_stay_put() -> None:

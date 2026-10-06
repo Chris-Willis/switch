@@ -16,7 +16,7 @@ from typing import Any
 import discord
 import pytest
 
-from switch_core.agent_icon import default_icon_url
+from switch_core.agent_icon import generated_icon_url
 from switch_core.bridges.collaboration.adapter import (
     AgentPresentation,
     PlatformAdapter,
@@ -58,7 +58,7 @@ TELEGRAM_CHAT = "-1001234567890"
 
 # A DiceBear URL with no background of its own — the only shape Slack's avatar
 # recolour can act on.
-_DICEBEAR = "https://api.dicebear.com/9.x/bottts/png?seed=worker&size=256"
+_DICEBEAR = generated_icon_url("worker")
 
 
 def _run(coro: Any) -> Any:
@@ -235,18 +235,7 @@ class TestAdapterLabelSelection:
 
         rendering = await adapter.agent_rendering("some-slack-bot")
         assert rendering.field_label == "some-slack-bot"
-        assert rendering.icon_url == default_icon_url("some-slack-bot")
-
-    async def test_mattermost_still_pins_the_format_of_its_default_icon(self) -> None:
-        """`default_agent_icon` is consulted through `self`, so the platform
-        that uploads the bytes rather than passing a link on keeps the response
-        format it can accept."""
-        adapter = MattermostAdapter.__new__(MattermostAdapter)
-        PlatformAdapter.__init__(adapter)
-
-        assert await adapter.agent_icon_url("worker") == default_icon_url(
-            "worker", image_format="png"
-        )
+        assert rendering.icon_url == generated_icon_url("some-slack-bot")
 
 
 def test_the_resolver_is_installed_before_the_adapter_starts() -> None:

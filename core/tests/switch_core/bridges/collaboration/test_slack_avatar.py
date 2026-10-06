@@ -1,7 +1,7 @@
 import asyncio
 from urllib.parse import parse_qs, urlsplit
 
-from switch_core.agent_icon import default_icon_url
+from switch_core.agent_icon import generated_icon_url
 from switch_core.bridges.collaboration.adapter import AgentPresentation
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
@@ -12,7 +12,7 @@ from switch_core.bridges.collaboration.slack.avatar import (
     on_slack_background,
 )
 
-DICEBEAR = "https://api.dicebear.com/9.x/bottts/png?seed=worker&size=256"
+DICEBEAR = generated_icon_url("worker")
 
 
 def _background(url: str) -> list[str]:
@@ -26,10 +26,22 @@ def test_gives_a_dicebear_avatar_slacks_background() -> None:
 
 
 def test_keeps_the_rest_of_the_url_intact() -> None:
-    # The seed decides which bot is drawn: lose it and the agent changes face.
+    # The seed decides which face is drawn: lose it and the agent changes face.
     query = parse_qs(urlsplit(on_slack_background(DICEBEAR)).query)
+    original = parse_qs(urlsplit(DICEBEAR).query)
     assert query["seed"] == ["worker"]
-    assert query["size"] == ["256"]
+    assert {
+        key: values for key, values in query.items() if key != "backgroundColor"
+    } == original
+
+
+def test_keeps_the_shapes_as_separate_parameters() -> None:
+    # DiceBear refuses a shape list whose commas arrive percent-encoded, which
+    # is what re-encoding a comma list here would produce: every agent's icon
+    # on Slack would fail to load.
+    adapted = on_slack_background(DICEBEAR)
+    assert "%2C" not in adapted
+    assert len(parse_qs(urlsplit(adapted).query)["shapeVariant"]) > 1
 
 
 def test_leaves_a_background_that_was_already_chosen() -> None:
@@ -44,16 +56,9 @@ def test_leaves_an_operators_own_image_alone() -> None:
     assert on_slack_background(custom) == custom
 
 
-def test_leaves_the_initials_default_alone() -> None:
-    # ui-avatars already draws an opaque background, so it has no white square
-    # to fix and its own colour must survive.
-    default = default_icon_url("switch_worker")
-    assert on_slack_background(default) == default
-
-
 def test_does_not_match_a_lookalike_host() -> None:
     # `api.dicebear.com.evil.test` is not DiceBear; only the exact host is.
-    impostor = "https://api.dicebear.com.evil.test/9.x/bottts/png?seed=worker"
+    impostor = "https://api.dicebear.com.evil.test/10.x/gaze/png?seed=worker"
     assert on_slack_background(impostor) == impostor
 
 

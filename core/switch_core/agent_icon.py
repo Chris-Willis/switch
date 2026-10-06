@@ -2,9 +2,10 @@
 
 Switch stores a link to an agent's icon, never the image bytes. The picture may
 come from an operator's own host or anywhere else the client chooses; an agent
-created without one gets a generated robot (`generated_icon_url`), the same set
+created without one gets a generated icon (`generated_icon_url`), the same set
 every client offers, so it looks alike in the gateway, Console and every
-platform.
+platform. An agent with no icon stored at all is drawn with the one its name
+generates, so it looks the same as one that was given it.
 
 That makes the URL attacker-controlled input with two distinct consumers, and
 the rules below exist for the second one:
@@ -24,7 +25,7 @@ rather than treating storage validation as sufficient.
 
 import ipaddress
 from typing import NoReturn
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 # Long enough for a generated-avatar link carrying a full set of style options,
 # short enough that the column cannot be used to smuggle a payload.
@@ -109,40 +110,45 @@ def validate_icon_url(url: str) -> str:
     return candidate
 
 
-def default_icon_url(agent_name: str, *, image_format: str | None = None) -> str:
-    """The initials avatar shown for an agent that has set no icon of its own.
-
-    Unchanged from what the collaboration bridges have always generated — this
-    is the picture agents already have on Slack, Mattermost, Discord and Teams,
-    and it stays the default so nothing regresses for an agent nobody has given
-    an icon to. It is gathered here only so the four bridges stop each keeping
-    their own copy of the URL.
-
-    `image_format` forces a response format for a caller that needs real bytes
-    rather than a link to hand onward (Mattermost uploads the image itself).
-    """
-    # Escape first, substitute second. The `+` stands in for a space so the
-    # avatar draws two initials for `switch_worker`; percent-encoding it after
-    # the fact turns it back into a literal plus and the agent renders with one
-    # initial instead. Agent names are already restricted to characters that
-    # need no escaping, so `quote` is only a guard against a name that somehow
-    # got past that.
-    name = quote(agent_name).replace("_", "+")
-    url = f"https://ui-avatars.com/api/?name={name}&background=random&size=128"
-    return f"{url}&format={image_format}" if image_format else url
-
-
 # Generated icons. The URL is all Switch stores; the picture is DiceBear's
-# "bottts" robot, raster because Slack, Discord and Mattermost render no SVG,
-# and pinned to a major version because the drawing changes between majors.
-_GENERATED_ICON_BASE = "https://api.dicebear.com/9.x/bottts/png"
+# "gaze", raster because Slack, Discord and Mattermost render no SVG, and pinned
+# to a major version because the drawing changes between majors.
+_GENERATED_ICON_BASE = "https://api.dicebear.com/10.x/gaze/png"
 _GENERATED_ICON_PIXELS = 256
+# A tenth larger than DiceBear draws it, which leaves the body small in its
+# frame at chat-avatar size. At that scale the arch is the one silhouette a round
+# crop (Discord, Mattermost, Teams) cuts into, so it is left out of the draw.
+_GENERATED_ICON_SCALE = "1.1"
+_GENERATED_ICON_SHAPES = (
+    "circle",
+    "column",
+    "diamond",
+    "egg",
+    "hexagon",
+    "octagon",
+    "pentagon",
+    "pill",
+    "square",
+    "triangle",
+)
 GENERATED_ICON_CHOICES = 10
 
 
 def generated_icon_url(seed: str) -> str:
-    """The generated robot icon for `seed`: the same seed always draws the same robot."""
-    return f"{_GENERATED_ICON_BASE}?seed={quote(seed, safe='')}&size={_GENERATED_ICON_PIXELS}"
+    """The generated icon for `seed`: the same seed always draws the same face.
+
+    Each shape is its own `shapeVariant` parameter rather than one comma list.
+    DiceBear refuses a list whose commas arrive percent-encoded, and anything
+    that re-encodes the query, as the Slack bridge does to add a background,
+    encodes them.
+    """
+    query = [
+        ("seed", seed),
+        ("size", str(_GENERATED_ICON_PIXELS)),
+        ("scale", _GENERATED_ICON_SCALE),
+        *(("shapeVariant", shape) for shape in _GENERATED_ICON_SHAPES),
+    ]
+    return f"{_GENERATED_ICON_BASE}?{urlencode(query, quote_via=quote)}"
 
 
 def generated_icon_choices(agent_name: str, page: int) -> list[str]:
