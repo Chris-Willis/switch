@@ -35,9 +35,6 @@ def _config() -> Any:
         agent_auth_cache_ttl_seconds = 1
         agent_auth_cache_max_entries = 16
         keyring = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
-        oauth_issuer_url = None
-        oauth_audience = None
-        oauth_verify_issuer = True
         id_server_name = "test"
 
     return _Config()

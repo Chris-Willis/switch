@@ -47,7 +47,6 @@ export interface AgentSummary {
   model_count: number;
   owner_id: string | null;
   owner_name: string | null;
-  oauth_client_id: string | null;
   created_at: string;
   parent_agent_id: string | null;
   known_agent_type: string | null;

@@ -246,7 +246,6 @@ class AgentSummary(BaseModel):
     model_count: int
     owner_id: str | None = None
     owner_name: str | None
-    oauth_client_id: str | None
     created_at: str
     # Set when this agent is a child of another (e.g. a Claude Code subagent
     # under the user's main agent). The UI nests children under their parent.
@@ -413,7 +412,6 @@ class UpdateAgentOptionsRequest(BaseModel):
 class RegisterAgentResponse(BaseModel):
     id: str
     api_key: str
-    oauth_client_id: str | None = None
 
 
 # ── API Keys ────────────────────────────────────────────────────────────────

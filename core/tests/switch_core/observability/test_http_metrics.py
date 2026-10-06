@@ -240,51 +240,14 @@ def test_untimed_routes_are_real_routes():
     whole dependency graph, and the mount prefix is a constant of `app.py`.
     """
     from switch_core.bridges.agent.api.handlers import router
-    from switch_core.observability.http import MCP_ROUTE, UNTIMED_ROUTES
+    from switch_core.observability.http import UNTIMED_ROUTES
 
-    # `app.py` mounts this router at "/agents". The MCP entry is a mount rather
-    # than a route, so it is checked by `test_mcp_traffic_is_labelled` instead.
+    # `app.py` mounts this router at "/agents".
     paths = {f"/agents{getattr(route, 'path', '')}" for route in router.routes}
 
-    missing = UNTIMED_ROUTES - paths - {MCP_ROUTE}
+    missing = UNTIMED_ROUTES - paths
     assert not missing, (
         f"{sorted(missing)} are listed as untimed but are no longer routes on "
         "the agent bridge. Point UNTIMED_ROUTES at the new names, or drop them "
         "if those endpoints stopped being long-lived."
     )
-
-
-def test_mcp_traffic_is_labelled_rather_than_unmatched(registry):
-    """A mount sets no route, so without this every MCP call is a 404's twin."""
-    from starlette.applications import Starlette
-    from starlette.responses import JSONResponse as StarletteJSON
-    from starlette.routing import Route
-
-    inner = Starlette(routes=[Route("/{path:path}", lambda r: StarletteJSON({}))])
-    app = FastAPI()
-    app.mount("/mcp", inner)
-    app.add_middleware(MetricsMiddleware)
-
-    with TestClient(app) as client:
-        client.post("/mcp/")
-
-    counted = {dict(key)["route"] for key in _counts(registry.collect())}
-    assert counted == {"/mcp"}
-
-
-def test_mcp_traffic_is_counted_but_not_timed(registry):
-    from starlette.applications import Starlette
-    from starlette.responses import JSONResponse as StarletteJSON
-    from starlette.routing import Route
-
-    inner = Starlette(routes=[Route("/{path:path}", lambda r: StarletteJSON({}))])
-    app = FastAPI()
-    app.mount("/mcp", inner)
-    app.add_middleware(MetricsMiddleware)
-
-    with TestClient(app) as client:
-        client.post("/mcp/")
-
-    payloads = {p.name for p in registry.collect()}
-    assert HTTP_REQUESTS.name in payloads
-    assert HTTP_REQUEST_DURATION.name not in payloads

@@ -1,19 +1,21 @@
 """The MCP tool surface agents are told about must be the surface that exists.
 
-The Switch skill Console pushes into every session and
-`protocol/instructions.py` name specific tools and tell agents to call them, and neither is checked against the server's actual
-registrations at build time. These tests pin the tool names so a rename, a
+Every session's MCP tools are the operations Switch serves at
+`/agents/{id}/ops`, relayed by the session's own runtime. The Switch skill
+Console pushes into every session and `protocol/instructions.py` name specific
+tools and tell agents to call them, and neither is checked against the
+operation registry at build time. These tests pin the tool names so a rename, a
 removal, or a name that only ever existed in the documentation fails here
 rather than surfacing as an agent calling into nothing.
 """
 
 import re
-from collections.abc import AsyncIterator
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
-from switch_core.bridges.agent.mcp.server import mcp
+from switch_core.bridges.agent.api.operations import list_operations
 from switch_core.bridges.agent.operations import all_operations
 from switch_core.bridges.agent.operations.agent_management import (
     AGENT_MANAGEMENT_OPERATIONS,
@@ -35,26 +37,26 @@ AGENT_MANAGEMENT_TOOLS = {
 
 
 @pytest.fixture
-async def tool_names() -> AsyncIterator[set[str]]:
+def tool_names() -> Iterator[set[str]]:
     enable_operation_group(AGENT_MANAGEMENT_OPERATIONS)
     try:
-        yield {tool.name for tool in await mcp.list_tools()}
+        yield set(list_operations())
     finally:
         disable_operation_group(AGENT_MANAGEMENT_OPERATIONS)
 
 
-async def test_agent_management_tools_exist_only_with_their_group_enabled() -> None:
-    names = {tool.name for tool in await mcp.list_tools()}
+def test_agent_management_tools_exist_only_with_their_group_enabled() -> None:
+    names = set(list_operations())
     assert not AGENT_MANAGEMENT_TOOLS & names
     enable_operation_group(AGENT_MANAGEMENT_OPERATIONS)
     try:
-        names = {tool.name for tool in await mcp.list_tools()}
+        names = set(list_operations())
     finally:
         disable_operation_group(AGENT_MANAGEMENT_OPERATIONS)
     assert AGENT_MANAGEMENT_TOOLS <= names
 
 
-async def test_documented_tools_exist(tool_names: set[str]) -> None:
+def test_documented_tools_exist(tool_names: set[str]) -> None:
     """Every tool the Switch skill advertises is registered.
 
     Mirrors the tool names used in `console/packages/plugins/src/switch-skill/SKILL.md`,
@@ -110,12 +112,12 @@ async def test_documented_tools_exist(tool_names: set[str]) -> None:
     )
 
 
-async def test_tool_descriptions_preserve_the_full_operation_contract() -> None:
-    tools = {tool.name: tool for tool in await mcp.list_tools()}
+def test_tool_descriptions_preserve_the_full_operation_contract() -> None:
+    listed = list_operations()
     operation = all_operations()["list_agents"]
 
-    assert tools[operation.name].description == operation.description
-    assert "Returns:" in tools[operation.name].description
+    assert listed[operation.name]["description"] == operation.description
+    assert "Returns:" in listed[operation.name]["description"]
 
 
 SKILL = (
@@ -129,11 +131,11 @@ SKILL = (
 )
 
 
-# Tools the agent runtime serves itself, so absent from the bridge's surface.
-# The skill indexes them alongside the bridge tools because an agent calls them
-# the same way, but they are registered by
+# Tools the agent runtime serves itself, so absent from the operation registry.
+# The skill indexes them alongside the operations because an agent calls them
+# the same way, but they are implemented by
 # `console/packages/switch-agent-runtime/`, not here — checking them against
-# this server's registrations would fail on tools that are working correctly.
+# this server's operations would fail on tools that are working correctly.
 RUNTIME_TOOLS = {"send_attachment", "download_attachment"}
 
 
@@ -166,8 +168,8 @@ def _indexed_tools(skill: Path) -> list[str]:
     return names
 
 
-async def test_every_registered_tool_is_indexed(tool_names: set[str]) -> None:
-    """The index names every tool the bridge serves — no silent omissions.
+def test_every_registered_tool_is_indexed(tool_names: set[str]) -> None:
+    """The index names every operation the bridge serves — no silent omissions.
 
     The frontmatter list this replaced was one mechanical line; a prose bullet
     list is easy to shorten by accident. Without this, deleting a bullet passes
@@ -179,7 +181,7 @@ async def test_every_registered_tool_is_indexed(tool_names: set[str]) -> None:
     assert not missing, f"{SKILL} does not index registered tools: {sorted(missing)}"
 
 
-async def test_skill_indexed_tools_are_registered(tool_names: set[str]) -> None:
+def test_skill_indexed_tools_are_registered(tool_names: set[str]) -> None:
     """Every tool the skill's index advertises actually exists.
 
     Derived from the files rather than restated here, so this half cannot go

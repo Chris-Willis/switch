@@ -342,7 +342,6 @@ class AgentCore:
         metadata: dict[str, Any] | None = None,
         owner_id: str,
         parent_agent_id: str | None = None,
-        oauth_client_id: str | None = None,
         overwrite: bool = False,
         addressable_by_agent_ids: list[str] | None = None,
         owner_only: bool = True,
@@ -472,7 +471,6 @@ class AgentCore:
                     connector_type=connector_type,
                     integration_profile=profile_data,
                     metadata=metadata,
-                    oauth_client_id=oauth_client_id,
                     owner_id=owner_id,
                     parent_agent_id=parent_agent_id,
                     tools=tool_specs,
@@ -495,7 +493,6 @@ class AgentCore:
                     connector_type=connector_type,
                     integration_profile=profile_data,
                     metadata=metadata,
-                    oauth_client_id=oauth_client_id,
                     owner_id=owner_id,
                     parent_agent_id=parent_agent_id,
                     api_key_hash=api_key_hash,
@@ -533,7 +530,6 @@ class AgentCore:
         return RegistrationResult(
             agent_id=agent_id,
             api_key=api_key,
-            oauth_client_id=oauth_client_id,
         )
 
     async def register_agent_with_token(
@@ -633,7 +629,6 @@ class AgentCore:
         connector_type: str,
         integration_profile: dict[str, Any],
         metadata: dict[str, Any] | None,
-        oauth_client_id: str | None,
         owner_id: str,
         parent_agent_id: str | None,
         api_key_hash: str,
@@ -674,7 +669,6 @@ class AgentCore:
             api_key_id=api_key_record.id,
             owner_id=owner_id,
             parent_agent_id=parent_agent_id,
-            oauth_client_id=oauth_client_id,
             metadata_=metadata,
             addressing_policy=(
                 addressing_policy.model_dump()
@@ -722,7 +716,6 @@ class AgentCore:
         connector_type: str,
         integration_profile: dict[str, Any],
         metadata: dict[str, Any] | None,
-        oauth_client_id: str | None,
         owner_id: str,
         parent_agent_id: str | None,
         tools: list[ToolSpec],
@@ -756,7 +749,6 @@ class AgentCore:
             connector_type=connector_type,
             integration_profile=integration_profile,
             metadata_=metadata,
-            oauth_client_id=oauth_client_id,
             parent_agent_id=parent_agent_id,
             **icon_fields,
             **display_name_fields,
@@ -2689,8 +2681,7 @@ class AgentCore:
             does once one connection carries several sessions — the
             connection's rooms are then the union of theirs, and naming one
             would be a guess. A seat taken without a session falls back to its
-            connection, and to the binding row for callers predating
-            connections.
+            connection.
 
             A controller-backed holder is here while it is connected and a
             member of this room. Switch does not know where its sessions are,
@@ -2706,14 +2697,9 @@ class AgentCore:
             if lease.transport_session_id is None:
                 return None
             connection = self.connections.get(lease.transport_session_id)
-            if connection is not None:
-                return (
-                    next(iter(connection.rooms)) if len(connection.rooms) == 1 else None
-                )
-            conn = await self.agent_session_store.get_connected_room(
-                session, lease.transport_session_id
-            )
-            return conn[1] if conn is not None else None
+            if connection is None or len(connection.rooms) != 1:
+                return None
+            return next(iter(connection.rooms))
 
         async def _locate(lease: RoleLease) -> tuple[bool, str | None]:
             """Return (present_here, session_room_name) for a lease."""

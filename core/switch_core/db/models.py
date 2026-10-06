@@ -906,14 +906,6 @@ class Agent(TenantScoped, Base):
     __tablename__ = "agents"
     __table_args__ = (
         Index("ix_agents_parent_agent_id", "parent_agent_id"),
-        # Deployment-wide, not per tenant: an OIDC sign-in resolves the agent
-        # from its client id before any tenant is known.
-        Index(
-            "uq_agents_oauth_client_id",
-            "oauth_client_id",
-            unique=True,
-            postgresql_where=text("oauth_client_id IS NOT NULL"),
-        ),
         UniqueConstraint("tenant_id", "name", name="uq_agents_tenant_name"),
         UniqueConstraint("id", "tenant_id", name="uq_agents_id_tenant"),
         ForeignKeyConstraint(
@@ -966,7 +958,6 @@ class Agent(TenantScoped, Base):
     # SET NULL so deleting a parent orphans its children rather than removing
     # them (they keep their own identity, rooms, and history).
     parent_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    oauth_client_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Scoped agent-addressing permissions (CHOO-1585). NULL preserves today's
     # open behaviour (anyone may address the agent); a stored policy is a
     # `switch_core.addressing.AddressingPolicy` blob (an allow-list of rules
@@ -2002,17 +1993,11 @@ class ExternalUserClaim(TenantScoped, Base):
 
 
 class AgentSession(TenantScoped, Base):
-    """Tracks agent reachability and MCP-session room bindings.
+    """Tracks agent reachability from heartbeats.
 
-    Each row carries two independent pieces of state:
-
-    - `lifecycle` + `last_seen_at`: reachability. `'heartbeat'` rows are
-      refreshed by poll handlers (always_on, session_addressable) and
-      considered live while `last_seen_at` is within the TTL. `'explicit'`
-      rows (session_passive) exist only as transport bindings and are not
-      used for liveness.
-    - `transport_session_id`: the MCP transport currently bound to this
-      (agent, room) by `connect_to_room`. Heartbeats never clear it.
+    `lifecycle` + `last_seen_at`: `'heartbeat'` rows are refreshed by the
+    heartbeat routes and considered live while `last_seen_at` is within the
+    TTL.
 
     Uniqueness is enforced on `(agent_id, COALESCE(room_id, ''))` so a single
     agent has at most one row per room (and at most one room-agnostic row for
@@ -2029,7 +2014,6 @@ class AgentSession(TenantScoped, Base):
             unique=True,
         ),
         Index("ix_agent_sessions_agent_room", "agent_id", "room_id"),
-        Index("ix_agent_sessions_transport_session_id", "transport_session_id"),
         ForeignKeyConstraint(
             ["tenant_id", "agent_id"],
             ["agents.tenant_id", "agents.id"],
@@ -2047,7 +2031,6 @@ class AgentSession(TenantScoped, Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     agent_id: Mapped[str] = mapped_column(Text, nullable=False)
     room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    transport_session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     lifecycle: Mapped[str] = mapped_column(Text, nullable=False)
     last_seen_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -2175,8 +2158,8 @@ class RoleLease(TenantScoped, Base):
     One lease per agent is enforced by the unique index on `agent_id`;
     `release_role` (or holder death + TTL) frees it, and release stays open to
     any of the agent's sessions. `transport_session_id` records the connection
-    or MCP transport that assumed the role, and identifies the holder when
-    there is no `session_id`.
+    that assumed the role, and identifies the holder when there is no
+    `session_id`.
     """
 
     __tablename__ = "role_leases"

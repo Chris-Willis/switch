@@ -196,8 +196,7 @@ is one round trip. Read the panel as "the application's queries", not "all
 database work".
 
 **Not every HTTP surface is counted.** `switch.http.*` comes from middleware on
-the FastAPI app, which is the agent bridge, the MCP mount and the gateway
-beneath it. Two listeners sit outside it — the Teams bridge and the
+the FastAPI app, which is the agent bridge and the gateway beneath it. Two listeners sit outside it — the Teams bridge and the
 collaboration callback ingress each run their own `aiohttp` server on their own
 port — so their traffic appears in no request metric. Read the HTTP panels as
 "the main API", not "everything this process serves".

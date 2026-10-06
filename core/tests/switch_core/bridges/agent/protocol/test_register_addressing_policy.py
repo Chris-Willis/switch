@@ -172,7 +172,7 @@ class TestRegisterWithTokenPassesThrough:
 
         async def _register_agent(**kwargs: object) -> object:
             captured.update(kwargs)
-            return SimpleNamespace(agent_id="a1", api_key="k", oauth_client_id=None)
+            return SimpleNamespace(agent_id="a1", api_key="k")
 
         svc.register_agent = _register_agent  # type: ignore[assignment, method-assign]
         svc.api_key_store = SimpleNamespace(  # type: ignore[assignment]
@@ -199,7 +199,7 @@ class TestRegisterWithTokenPassesThrough:
 
         async def _register_agent(**kwargs: object) -> object:
             captured.update(kwargs)
-            return SimpleNamespace(agent_id="a1", api_key="k", oauth_client_id=None)
+            return SimpleNamespace(agent_id="a1", api_key="k")
 
         svc.register_agent = _register_agent  # type: ignore[assignment, method-assign]
         svc.api_key_store = SimpleNamespace(  # type: ignore[assignment]

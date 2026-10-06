@@ -124,7 +124,6 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.gateway.auth",
     "switch_core.gateway.dependencies",
     "switch_core.bridges.agent.dependencies",
-    "switch_core.bridges.agent.operations.context",
     "switch_core.bridges.agent.operations.definitions",
     "switch_core.bridges.agent.operations.agent_management",
     "switch_core.bridges.agent.mediation",

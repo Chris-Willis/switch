@@ -79,14 +79,6 @@ class AgentStore:
         )
         return result.scalar_one_or_none()
 
-    async def get_by_oauth_client_id(
-        self, session: AsyncSession, oauth_client_id: str
-    ) -> Agent | None:
-        result = await session.execute(
-            select(Agent).where(Agent.oauth_client_id == oauth_client_id)
-        )
-        return result.scalar_one_or_none()
-
     async def get_by_names(
         self, session: AsyncSession, names: list[str]
     ) -> list[Agent]:

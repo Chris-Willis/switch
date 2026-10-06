@@ -467,8 +467,8 @@ class AgentConnectionRegistry:
         # session's host keeps everything else about it, and a session whose
         # placement a restart forgot is told to connect again.
         self._session_rooms: dict[str, dict[str, str]] = {}
-        # Who placed each of those sessions: the connection id or MCP transport
-        # session the placement arrived on. A connection's placements are
+        # Who placed each of those sessions: the connection id the placement
+        # arrived on. A connection's placements are
         # replaced wholesale, and a placement another connection takes is
         # reported to the one that lost it.
         self._placement_owners: dict[str, dict[str, str]] = {}
@@ -854,8 +854,8 @@ class AgentConnectionRegistry:
 
         One session of an agent per room. A sibling that was working in the
         room is taken out of it, so events for the room go to the session that
-        asked for it last. `owner` is the connection id or transport session the
-        placement arrived on; a sibling placed by another connection is
+        asked for it last. `owner` is the connection id the placement
+        arrived on; a sibling placed by another connection is
         reported to that connection as released.
         """
         placed = self._session_rooms.setdefault(agent_id, {})

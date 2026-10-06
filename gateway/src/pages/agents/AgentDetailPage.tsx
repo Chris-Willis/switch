@@ -210,7 +210,6 @@ function InfoSection({ agent }: { agent: AgentDetail }) {
         label="Connection type"
         value={agent.connection_model ? titleCase(agent.connection_model) : null}
       />
-      <InfoLine label="OAuth client" value={agent.oauth_client_id} mono />
       <InfoLine label="Created" value={formatDateTime(agent.created_at)} />
     </Stack>
   );

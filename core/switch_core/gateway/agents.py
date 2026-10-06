@@ -215,7 +215,6 @@ async def register_known_agent(
     return RegisterAgentResponse(
         id=result.agent_id,
         api_key=result.api_key,
-        oauth_client_id=result.oauth_client_id,
     )
 
 

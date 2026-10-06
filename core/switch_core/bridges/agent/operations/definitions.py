@@ -1,9 +1,9 @@
 """Agent operations — what an agent can do, defined once (CHOO-1857 / CHOO-490).
 
-These functions are the operations themselves. The MCP server registers them as
-tools and the HTTP endpoint dispatches into them; neither owns them. Adding one
-here makes it available through both doors at once, which is what keeps the two
-from drifting apart.
+These functions are the operations themselves. The HTTP endpoint at
+`/agents/{id}/ops` dispatches into them, and each session's runtime serves
+them to its agent as MCP tools under the same names. Adding one here makes it
+available to every session at once.
 
 Each takes its arguments and nothing else — the caller's identity, connection
 and room come from `operations.context`.
@@ -50,7 +50,6 @@ from switch_core.bridges.agent.protocol.hosted_workers import (
     hosted_launch_of,
 )
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
-from switch_core.bridges.agent.protocol.types import IntegrationProfile
 from switch_core.db.models import CollaborationBridge, User
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.rooms_yaml import GroupSpec, template_json_schema
@@ -95,9 +94,8 @@ def claim_room_on_caller_connection(
     """
     connection = protocol.connections.get(connection_id)
     if connection is None or connection.agent_id != agent_id:
-        # No connection behind this caller: an MCP transport session, or a
-        # runtime borrowing an id whose connection has since expired. The
-        # binding row still stands and room-scoped calls resolve through it.
+        # The connection expired after the request named it; there is nothing
+        # left to route the room's events to.
         return None
     try:
         evicted = protocol.connections.claim_room(connection, room_id, takeover=True)
@@ -152,48 +150,6 @@ def release_room_on_caller_connection(
     if connection is None or connection.agent_id != agent_id:
         return
     protocol.connections.release_room(connection, room_id)
-
-
-async def bind_room_for_connectionless_caller(
-    protocol: AgentCore,
-    *,
-    agent_id: str,
-    connection_id: str,
-    room_id: str,
-    connection_model: str,
-) -> bool:
-    """Record the room binding row, for callers that have no connection.
-
-    The row is how an MCP transport session resolves its room, and the only
-    way it can. A connection carries its own rooms, so writing the row for one
-    records a binding nothing reads — and the row has no liveness check and no
-    expiry, so it outlives the connection it was written for and keeps
-    answering room-scoped calls afterwards. A connection that reopens without
-    re-claiming its room then reads as connected on the send path while
-    delivery, which consults the connection, has nothing: the agent posts into
-    a room it is no longer receiving from, invisibly from either side.
-
-    Returns whether a row was written.
-    """
-    if protocol.connections.get(connection_id) is not None:
-        return False
-
-    # session_passive agents have no poll loop, so the row exists only to bind
-    # the MCP transport to a room — lifecycle="explicit". always_on and
-    # session_addressable agents also receive heartbeat upserts; we mark the row
-    # "heartbeat" so the poll path's on-conflict update doesn't need to
-    # special-case it.
-    lifecycle = "explicit" if connection_model == "session_passive" else "heartbeat"
-    async with protocol.session_factory() as db:
-        await protocol.agent_session_store.set_connected_room(
-            db,
-            agent_id=agent_id,
-            room_id=room_id,
-            transport_session_id=connection_id,
-            lifecycle=lifecycle,
-        )
-        await db.commit()
-    return True
 
 
 @operation
@@ -299,7 +255,6 @@ async def connect_to_room(
         if caller_connection is None or caller_connection.worker is None:
             raise CodedPermissionError("hosted_worker_only", HOSTED_WORKER_ONLY_MESSAGE)
 
-    profile = IntegrationProfile(**agent.integration_profile)
     instructions = build_room_instructions(
         agent,
         room_model,
@@ -315,7 +270,10 @@ async def connect_to_room(
 
     key = session_key()
     if not key:
-        raise ValueError("MCP session has no session id; cannot connect to room")
+        raise ValueError(
+            "This call names no connection; send X-Switch-Connection-Id to "
+            "connect to a room"
+        )
 
     # A controller-backed agent's sessions are placed by its controller, which
     # tracks the room locally and names it on later calls: connecting checks
@@ -359,14 +317,6 @@ async def connect_to_room(
             reader = counting_reader()
             if reader is not None:
                 protocol.event_buffer.hand_counting_to(agent_id, reader, room.id)
-
-            await bind_room_for_connectionless_caller(
-                protocol,
-                agent_id=agent_id,
-                connection_id=key,
-                room_id=room.id,
-                connection_model=profile.connection_model,
-            )
 
     return {
         "agent_id": agent_id,
@@ -1889,8 +1839,7 @@ async def list_agents(
         A list of agent summaries (sorted by name), each
         {id, name, description, icon_url, display_name, connector_type,
         connection_model, tool_count, model_count, owner_id, owner_name,
-        oauth_client_id, created_at, parent_agent_id, known_agent_type,
-        known_agent_options}.
+        created_at, parent_agent_id, known_agent_type, known_agent_options}.
         `icon_url` is null when the agent has no icon set. `display_name` is
         null when the agent has no display name set; fall back to `name`.
         Address agents by `name`: `display_name` is a human label that routes
@@ -1918,8 +1867,8 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
     Returns:
         {id, name, description, icon_url, display_name, connector_type,
         connection_model, tool_count, model_count, owner_id, owner_name,
-        oauth_client_id, created_at, parent_agent_id, known_agent_type,
-        known_agent_options, agent_type, can_manage_agents,
+        created_at, parent_agent_id, known_agent_type, known_agent_options,
+        agent_type, can_manage_agents,
         integration_profile, tools, models, rooms, sessions, children}.
         `icon_url` is null when the agent has no icon set. `display_name` is
         null when the agent has no display name set; fall back to `name`.

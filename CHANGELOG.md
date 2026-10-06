@@ -80,6 +80,21 @@ version of their own to them without also giving them a release of their own.
   participants no longer report them, and the gateway's agent page no longer
   shows them. Migration `7c26ad1a2d81` drops the `tasks` table and strips
   `task_protocol` from stored profiles.
+- **Switch's own MCP server at `/mcp`.** No current client uses it: every
+  session gets the Switch tools from a runtime on its own host, which calls
+  `/agents/{id}/ops`. The tool surface is unchanged. The `fastmcp` dependency
+  goes with it, as does the chart's `FASTMCP_HTTP_HOST_ORIGIN_PROTECTION`
+  variable. Remove `/mcp` from your own Ingress if you route it.
+- **OIDC sign-in for agents.** It was accepted on `/mcp` only. `OAUTH_ISSUER_URL`,
+  `OAUTH_AUDIENCE` and `OAUTH_VERIFY_ISSUER` are no longer read, `/oauth` and
+  `/.well-known` are no longer public on the agent bridge or in
+  `ingress.agentApiPaths`, and agents no longer carry an OAuth client id (the
+  gateway's agent page, `get_agent_detail` and `list_agents` stop showing it).
+  The gateway's own OIDC sign-in (`GATEWAY_OIDC_*`) is unaffected. Migration
+  `4dcf1747443d` drops `agents.oauth_client_id` and its tenant lookup.
+- **The room binding an MCP transport session kept.** Migration `4dcf1747443d`
+  drops `agent_sessions.transport_session_id` and the `explicit` rows that
+  existed only to hold it; a connection carries its own rooms.
 
 ### [0.29.0] - 2026-09-29
 

@@ -53,7 +53,6 @@ class ModelSpec(BaseModel):
 class RegistrationResult(BaseModel):
     agent_id: str
     api_key: str
-    oauth_client_id: str | None = None
 
 
 # ── Reporting ─────────────────────────────────────────────────────────────────

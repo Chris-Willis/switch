@@ -1236,20 +1236,12 @@ class AgentConsumer(Consumer[AgentActor]):
             if self.agent.id in watching:
                 return _STARTING_SESSION_MESSAGE
 
-        occupied = rooms_occupied(self.agent.id, self._connections)
-        room_ids = await self._agent_session_store.live_connected_rooms(
-            session, self.agent.id
-        )
         # Where the agent actually is, which is not what its connections cover:
         # a shared one covers every room the agent belongs to, and offering the
         # user "it is busy in these rooms" from that names rooms nothing is in.
-        room_ids = sorted(set(room_ids) | occupied)
-        bound_here = (
-            await self._agent_session_store.has_room_binding(
-                session, self.agent.id, meta.room_id
-            )
-            or meta.room_id in occupied
-        )
+        occupied = rooms_occupied(self.agent.id, self._connections)
+        room_ids = sorted(occupied)
+        bound_here = meta.room_id in occupied
         names: list[str] = []
         holds_role_here = False
         other_room_ids = [rid for rid in room_ids if rid != meta.room_id]

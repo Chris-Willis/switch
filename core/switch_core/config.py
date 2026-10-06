@@ -113,18 +113,10 @@ class SwitchConfig(BaseSettings):
     gateway_admin_email: str
     gateway_admin_password: str
 
-    # OIDC (optional — enables OAuth token validation on the MCP server).
-    # The audience is required with the issuer: without it, a token the same
-    # IdP minted for any other application would be accepted here.
-    oauth_issuer_url: str | None = None
-    oauth_audience: str | None = None
-    oauth_verify_issuer: bool = True
-
     # Gateway OIDC login (optional — bring-your-own identity provider for the
-    # gateway browser login, e.g. Okta). Distinct from the agent oauth_*
-    # settings above, which gate the MCP/agent bridge and may point at a
-    # different IdP. Active only when issuer + client id + secret + scopes
-    # are all set; the provider's endpoints are read from OIDC discovery.
+    # gateway browser login, e.g. Okta). Active only when issuer + client id +
+    # secret + scopes are all set; the provider's endpoints are read from OIDC
+    # discovery.
     gateway_oidc_issuer_url: str | None = None
     gateway_oidc_client_id: str | None = None
     gateway_oidc_client_secret: str | None = None
@@ -348,9 +340,9 @@ class SwitchConfig(BaseSettings):
     # down a connection Switch already holds open.
     #
     # A socket of its own, not a route on the port above, which carries the
-    # agent API, the MCP server and the operator dashboard. What an operator
-    # has to expose for a button to work should be callbacks and nothing else,
-    # so that one over-broad proxy rule cannot publish the other three. It
+    # agent API and the operator dashboard. What an operator has to expose for
+    # a button to work should be callbacks and nothing else, so that one
+    # over-broad proxy rule cannot publish the other two. It
     # stays unbound in a deployment where no bridge asks to be called back.
     collaboration_callback_host: str = "0.0.0.0"
     collaboration_callback_port: int = 8081
@@ -820,16 +812,6 @@ class SwitchConfig(BaseSettings):
     @cached_property
     def keyring(self) -> Keyring:
         return Keyring.parse(self.secret_keys, legacy_secret=self.jwt_secret_key)
-
-    @model_validator(mode="after")
-    def _validate_oauth_audience(self) -> "SwitchConfig":
-        if self.oauth_issuer_url and not self.oauth_audience:
-            raise ValueError(
-                "OAUTH_AUDIENCE is required when OAUTH_ISSUER_URL is set: "
-                "without it, agent tokens are accepted whatever application "
-                "the IdP issued them for."
-            )
-        return self
 
     @model_validator(mode="after")
     def _validate_db_require_restricted_role(self) -> "SwitchConfig":

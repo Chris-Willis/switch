@@ -225,9 +225,8 @@ exist only while management runs: they are declared in their own operation group
 (`registry.gated_operation`), and `Management.install` enables it by handing Core
 management's implementation of `AgentManagementPort`
 (`bridges/agent/protocol/agent_management.py`, implemented by
-`management/agent_operations.py`). With the flag off they are on neither door: not in
-`GET /ops`, `404` on `POST /ops/{name}`, and not listed or callable over MCP (the MCP server
-registers every declared operation and filters by the registry per request).
+`management/agent_operations.py`). With the flag off they are absent: not in
+`GET /ops` and `404` on `POST /ops/{name}`.
 
 - `list_machines()`: the owner's controllers that are not revoked, each `{id, name,
   description, kind, state, last_seen_at, providers: [{provider, installed, version, auth}],
