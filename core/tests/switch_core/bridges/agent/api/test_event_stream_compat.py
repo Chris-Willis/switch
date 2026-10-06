@@ -93,7 +93,6 @@ async def _open(protocol: _Protocol, **kw: Any) -> StreamingResponse:
         agent_id=AGENT_ID,
         agent=_agent(),
         protocol=protocol,  # type: ignore[arg-type]
-        config=None,  # type: ignore[arg-type]
         **params,
     )
     assert isinstance(resp, StreamingResponse)

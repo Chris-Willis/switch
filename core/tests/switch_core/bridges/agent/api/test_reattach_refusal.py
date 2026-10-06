@@ -63,7 +63,6 @@ def _attach(protocol: _Protocol) -> Any:
 
 async def _reopen(protocol: _Protocol, expected_generation: int | None) -> Any:
     conn, _frames = await _open_connection(
-        config=None,  # type: ignore[arg-type]
         agent=SimpleNamespace(id=AGENT_ID, metadata_={}),  # type: ignore[arg-type]
         protocol=protocol,  # type: ignore[arg-type]
         connection_id=CONN_ID,

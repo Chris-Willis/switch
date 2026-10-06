@@ -101,7 +101,6 @@ async def _call(protocol: _Protocol, **kw: Any) -> Any:
     # What used to open the stream now opens the connection the WebSocket
     # carries; the rules are the same ones.
     conn, _frames = await _open_connection(
-        config=None,  # type: ignore[arg-type]
         agent=params["agent"],
         protocol=params["protocol"],
         connection_id=params["connection_id"],
@@ -137,7 +136,6 @@ async def test_with_the_sse_accept_header_it_opens_the_event_stream() -> None:
         agent_id=AGENT_ID,
         agent=_agent(),
         protocol=protocol,  # type: ignore[arg-type]
-        config=None,  # type: ignore[arg-type]
         accept="text/event-stream",
         connection_id="c1",
         scope="all",
@@ -417,7 +415,6 @@ async def test_reconnect_during_bookkeeping_cannot_detach_the_new_stream(
             agent_id=AGENT_ID,
             agent=_agent(),
             protocol=protocol,  # type: ignore[arg-type]
-            config=None,  # type: ignore[arg-type]
             accept="text/event-stream",
             connection_id="c1",
         )
