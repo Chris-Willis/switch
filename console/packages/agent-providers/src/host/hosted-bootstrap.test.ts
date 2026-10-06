@@ -583,6 +583,7 @@ it('wires the shared daemon to the supervisor and forwards shutdown', async () =
   expect(launched?.args.join(' ')).not.toContain('switch-secret-value');
   expect(launched?.env.ANTHROPIC_API_KEY).toBe('provider-secret-value');
   expect(launched?.env.SWITCH_HOSTED_BOOTSTRAP).toBe('1');
+  expect(launched?.env.SWITCH_CODEX_AUTH).toBe('refresh');
   expect(launched?.env.SWITCH_HOST_INSTANCE_ID).toBe('instance-fixture');
   expect(launched?.env.SWITCH_HOST_BOOT_ID).toBe('boot-fixture');
   expect(JSON.stringify(launched?.env)).not.toContain('worker-capability-secret');

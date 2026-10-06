@@ -1,8 +1,9 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EXECUTION_INHERIT_ENV } from './agent-env';
+import { buildSharedHostConfig } from './build-shared-config';
 import {
   executionEnvironment,
   prepareSharedConfig,
@@ -185,6 +186,86 @@ it('gives Codex the Switch skill as instructions, like the other providers', asy
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+describe('the Codex login a session starts with', () => {
+  const runtime = { transport: 'http' as const, url: 'http://127.0.0.1:4321/mcp', headers: {} };
+
+  async function codexSession(root: string) {
+    const credentialsPath = join(root, 'credentials.json');
+    await writeFile(
+      credentialsPath,
+      JSON.stringify({
+        env: {
+          SWITCH_API_ENDPOINT: 'https://switch.test',
+          SWITCH_API_TOKEN: 'agent-token',
+          SWITCH_AGENT_ID: 'agent',
+        },
+      })
+    );
+    const sourceHome = join(root, 'codex-source');
+    await mkdir(sourceHome);
+    await writeFile(join(sourceHome, 'auth.json'), 'first-login');
+    const config = buildSharedHostConfig({
+      session: { sessionId: 'session', agentId: 'agent', provider: 'codex' },
+      launch: {
+        cwd: root,
+        runtimeMode: 'approval-required',
+        env: { CODEX_HOME: sourceHome },
+        model: undefined,
+      },
+      capabilities: { approvals: true, userInput: true },
+      execution: {
+        credentialsPath,
+        inheritEnv: [],
+        binaryPath: 'codex',
+        codexConfig: '',
+        skill: '',
+        context: '',
+        agentDefinition: undefined,
+      },
+      ids: { hostId: 'host', epoch: 'epoch', connectionId: 'connection' },
+    });
+    return { config, sourceHome };
+  }
+
+  async function loginAfterReconnect(root: string): Promise<string> {
+    const { config, sourceHome } = await codexSession(root);
+    await prepareSharedConfig(root, config, runtime);
+    await writeFile(join(sourceHome, 'auth.json'), 'reconnected-login');
+    const prepared = await prepareSharedConfig(root, config, runtime);
+    return readFile(join(prepared.input.env.CODEX_HOME!, 'auth.json'), 'utf8');
+  }
+
+  it('keeps its first copy on a host that does not own the login', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
+    try {
+      expect(await loginAfterReconnect(root)).toBe('first-login');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('follows a reconnected login on a host that asks for it', async () => {
+    vi.stubEnv('SWITCH_CODEX_AUTH', 'refresh');
+    const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
+    try {
+      expect(await loginAfterReconnect(root)).toBe('reconnected-login');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a mode it does not know', async () => {
+    vi.stubEnv('SWITCH_CODEX_AUTH', 'sometimes');
+    const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
+    try {
+      const { config } = await codexSession(root);
+      await expect(prepareSharedConfig(root, config, runtime)).rejects.toThrow('SWITCH_CODEX_AUTH');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('agent definitions in the launch spec', () => {

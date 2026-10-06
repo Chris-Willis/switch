@@ -17,6 +17,7 @@ import { checkProviderReadiness } from './provider-readiness';
 import { adapterFor } from './server';
 import { HOST_EXIT_GRACE_MS, SessionLinks } from './session-channel';
 import {
+  CODEX_AUTH_ENV,
   type SharedHostConfig,
   sessionProviderEnvironment,
   sharedConfigSchema,
@@ -100,6 +101,7 @@ async function runUnit(watcherRoot: string): Promise<void> {
     throw new Error(
       'An agent unit reaches Switch through its controller; unset SWITCH_HOSTED_BOOTSTRAP.'
     );
+  process.env[CODEX_AUTH_ENV] = 'refresh';
   const unitRoot = resolve(watcherRoot);
   const config = sharedConfigSchema.parse(
     JSON.parse(await readFile(join(unitRoot, 'config.json'), 'utf8'))

@@ -94,7 +94,7 @@ export async function prepareSharedConfig(
         sessionId: config.session.sessionId,
         sourceHome: input.env.CODEX_HOME || join(homedir(), '.codex'),
         config: execution.codexConfig,
-        auth: process.env.SWITCH_HOSTED_BOOTSTRAP === '1' ? 'refresh' : 'copy-once',
+        auth: codexAuthMode(),
       });
     input.systemContext = execution.context;
   }
@@ -102,6 +102,20 @@ export async function prepareSharedConfig(
   if (!agentApiUrl || !token)
     throw new Error('Shared SDK host requires execution-host Switch credentials.');
   return { agentApiUrl, token, input };
+}
+
+/**
+ * Set by a host whose provider login is owned by Switch and can be
+ * reconnected (an agents controller's unit, a hosted worker), so sessions
+ * follow the host's login instead of keeping their first copy of it.
+ */
+export const CODEX_AUTH_ENV = 'SWITCH_CODEX_AUTH';
+
+function codexAuthMode(): 'copy-once' | 'refresh' {
+  const value = process.env[CODEX_AUTH_ENV];
+  if (value === undefined) return 'copy-once';
+  if (value === 'refresh') return 'refresh';
+  throw new Error(`${CODEX_AUTH_ENV} must be 'refresh' or unset, not '${value}'.`);
 }
 
 export async function readSharedCredentials(config: SharedHostConfig) {

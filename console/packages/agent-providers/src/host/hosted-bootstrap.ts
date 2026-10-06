@@ -48,7 +48,7 @@ import {
 } from './hosted-skills';
 import { PLACEMENTS_FILE } from './placements';
 import { checkProviderReadiness } from './provider-readiness';
-import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
+import { CODEX_AUTH_ENV, sharedConfigSchema, type SharedHostConfig } from './shared-config';
 import type { superviseSharedHost } from './supervisor';
 import { WATCH_FLAGS_FILE } from './watch-flags';
 import { writeWorkerCapability } from './worker-capability';
@@ -617,6 +617,7 @@ export async function prepareHostedDeployment(
   if (providerCredential !== null) providerEnvironment[variable] = providerCredential;
   if (githubCredential && !spec.github?.refresh) providerEnvironment.GH_TOKEN = githubCredential;
   providerEnvironment.SWITCH_HOSTED_BOOTSTRAP = '1';
+  providerEnvironment[CODEX_AUTH_ENV] = 'refresh';
   providerEnvironment.SWITCH_HOST_INSTANCE_ID = machine.instanceId;
   providerEnvironment.SWITCH_HOST_BOOT_ID = machine.bootId;
   return {
