@@ -95,6 +95,7 @@ const {
   fetchAgentManagementAccess,
   updateCanManageAgents,
   updateManagedAgent,
+  putManagedAgent,
 } = await import('./gateway-client');
 
 const SERVER = {
@@ -1837,6 +1838,70 @@ describe('agent management calls', () => {
       },
       controller_id: 'controller-2',
     });
+  });
+
+  it('carries the repository the server holds over a PUT of the definition', async () => {
+    const definition = {
+      provider: 'claude',
+      model: null,
+      advanced_config: {},
+      instructions: '',
+      auto_approve: false,
+      directory: null,
+    };
+    const repository = { installation_id: 7, repository_id: 42 };
+    fetchMock
+      .mockImplementationOnce(async () =>
+        respond(200, { agent_id: 'agent-1', definition: { ...definition, repository } })
+      )
+      .mockImplementationOnce(async () => respond(200, {}));
+    await putManagedAgent(SERVER, 'agent-1', {
+      controller_id: 'controller-1',
+      desired_state: 'running',
+      definition: { ...definition, instructions: 'Be brief.' },
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/management/agents/agent-1');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({
+      controller_id: 'controller-1',
+      desired_state: 'running',
+      definition: { ...definition, instructions: 'Be brief.', repository },
+    });
+
+    fetchMock
+      .mockImplementationOnce(async () =>
+        respond(404, { error: { code: 'not_found', message: 'Agent not found', retryable: false } })
+      )
+      .mockImplementationOnce(async () => respond(200, {}));
+    await putManagedAgent(SERVER, 'agent-2', {
+      controller_id: 'controller-1',
+      desired_state: 'running',
+      definition,
+    });
+    const [, adopted] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(JSON.parse(String(adopted.body)).definition).toEqual(definition);
+  });
+
+  it('does not PUT a definition when the server’s copy could not be read', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(403, { error: { code: 'forbidden', message: 'Not yours', retryable: false } })
+    );
+    await expect(
+      putManagedAgent(SERVER, 'agent-1', {
+        controller_id: null,
+        desired_state: 'stopped',
+        definition: {
+          provider: 'claude',
+          model: null,
+          advanced_config: {},
+          instructions: '',
+          auto_approve: false,
+          directory: null,
+        },
+      })
+    ).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('maps managed agents, definition and last report included', async () => {

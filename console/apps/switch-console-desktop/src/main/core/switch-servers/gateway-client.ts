@@ -2941,7 +2941,10 @@ export type ManagedAgentDefinitionBody = {
 
 /**
  * Adopt an agent the signed-in user owns onto a controller, or replace its
- * definition and placement (`PUT /gateway/management/agents/{id}`).
+ * definition and placement (`PUT /gateway/management/agents/{id}`). The PUT
+ * replaces the whole definition, so the repository a Switch cloud agent works
+ * in, which no caller edits, is carried over from the definition the server
+ * holds.
  */
 export async function putManagedAgent(
   server: SwitchServer,
@@ -2952,10 +2955,19 @@ export async function putManagedAgent(
     definition: ManagedAgentDefinitionBody;
   }
 ): Promise<void> {
-  await managementFetch(server, `/agents/${encodeURIComponent(agentId)}`, {
+  const path = `/agents/${encodeURIComponent(agentId)}`;
+  let repository: unknown = null;
+  try {
+    const res = await managementFetch(server, path, { authenticated: true });
+    const current = (await res.json()) as { definition: Record<string, unknown> | null };
+    repository = current.definition?.repository ?? null;
+  } catch (error) {
+    if (managementErrorCode(error) !== 'not_found') throw error;
+  }
+  await managementFetch(server, path, {
     authenticated: true,
     method: 'PUT',
-    body,
+    body: repository === null ? body : { ...body, definition: { ...body.definition, repository } },
   });
 }
 
