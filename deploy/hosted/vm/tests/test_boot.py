@@ -846,6 +846,12 @@ class UnitFileTests(unittest.TestCase):
         self.assertIn('subject.user !== "switch-controller"', rule)
         self.assertIn(r"/^switch-agent@[A-Za-z0-9_-]{1,64}\.service$/", rule)
 
+    def test_no_unit_orders_after_cloud_final(self) -> None:
+        for unit_file in (HERE.parent).glob("*.service"):
+            with self.subTest(unit_file=unit_file.name):
+                content = unit_file.read_text()
+                self.assertNotIn("cloud-final.service", content)
+
 
 if __name__ == "__main__":
     unittest.main()

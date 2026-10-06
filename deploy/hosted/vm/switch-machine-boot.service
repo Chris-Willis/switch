@@ -1,7 +1,7 @@
 [Unit]
 Description=Switch hosted machine boot (data volume, controller configuration, IMDS rules)
 Wants=network-online.target
-After=network-online.target cloud-final.service nftables.service
+After=network-online.target cloud-config.service nftables.service
 Before=switch-controller.service
 Conflicts=switch-hosted-worker.service
 ConditionPathExists=/etc/switch-hosted/assignment.json
