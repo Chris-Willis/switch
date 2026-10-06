@@ -2182,11 +2182,12 @@ describe('the heartbeat across its own reopen after a refusal', () => {
 describe('choosing the transport', () => {
   /** A stream body that announces a server speaking `protocol` (none for a
    * server from before the declaration), then ends. */
-  function announcingThenClose(protocol?: number): ReadableStream<Uint8Array> {
+  function announcingThenClose(protocol?: number, epoch?: string): ReadableStream<Uint8Array> {
     return frameThenClose('connection_state', {
       connection_id: 'conn-1',
       generation: 0,
       ...(protocol === undefined ? {} : { protocol }),
+      ...(epoch === undefined ? {} : { epoch }),
     });
   }
 
@@ -2249,12 +2250,15 @@ describe('choosing the transport', () => {
   it('goes back to the socket once the server says it speaks a revision with one', async () => {
     vi.useFakeTimers();
     // The socket failed to open (a proxy, say) but the server is a new one.
-    const fetchMock = serving(() => announcingThenClose(8));
+    const fetchMock = serving(() => announcingThenClose(8, 'epoch-1'));
     const { abort } = makeStream(fetchMock, { rooms: [] });
 
     await vi.advanceTimersByTimeAsync(2000);
 
     expect(SocketThatNeverOpens.opened).toHaveLength(2);
+    // The epoch it was told over the stream goes back on both transports.
+    expect(new URL(SocketThatNeverOpens.opened[1]!).searchParams.get('epoch')).toBe('epoch-1');
+    expect(new URL(urlsFor(fetchMock, '/events')[1]!).searchParams.get('epoch')).toBe('epoch-1');
     abort.abort();
   });
 

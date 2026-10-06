@@ -2,7 +2,7 @@
 
 Agent runtimes up to 0.8.x connect over the Server-Sent Events stream and beat
 with `POST /connection/beat`, declaring agent-protocol 6 (0.7.x) or 7 (0.8.0,
-which added the hosted worker).
+which added the hosted worker), and sending no epoch.
 The WebSocket replaces both, and both are kept beside it for a compatibility
 window (the expand half of expand/contract), so these drive the server the way
 such a client does: open the stream, read events, beat, and lapse when it stops
@@ -241,6 +241,32 @@ async def test_a_client_that_moves_to_the_socket_is_reported_on_the_socket() -> 
         ("websocket", "agent-runtime"): 1
     }
     await stream.close()
+
+
+async def test_an_epoch_on_the_stream_is_honoured_like_on_the_socket() -> None:
+    """A new runtime that fell back to the stream still sends its epoch."""
+    protocol = _Protocol()
+    for n in range(5):
+        protocol.event_buffer.enqueue(AGENT_ID, ROOM, _message(f"new life {n}"))
+
+    stream = _Reader(
+        (
+            await _open(
+                protocol,
+                start_from="2",
+                epoch="an-earlier-process",
+                protocol_version=8,
+            )
+        ).body_iterator
+    )
+    _, _, state = await stream.frame()
+    event, _, gap = await stream.frame()
+    await stream.close()
+
+    assert state["epoch"] == protocol.event_buffer.epoch
+    assert event == "gap"
+    assert "restarted" in gap["reason"]
+    assert gap["resumed_at"] == 5
 
 
 async def test_a_refused_stream_is_counted_like_a_refused_socket() -> None:

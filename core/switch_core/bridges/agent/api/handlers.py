@@ -747,6 +747,7 @@ async def poll_events(
     client: Annotated[str | None, Query()] = None,
     client_version: Annotated[str | None, Query()] = None,
     rooms: Annotated[str | None, Query()] = None,
+    epoch: Annotated[str | None, Query()] = None,
     last_event_id: Annotated[str | None, Header(alias="last-event-id")] = None,
     worker_capability: Annotated[
         str | None, Header(alias="x-switch-worker-capability")
@@ -795,6 +796,7 @@ async def poll_events(
             host_boot_id=host_boot_id,
             host_instance_id=host_instance_id,
             worker_state_version=worker_state_version,
+            epoch=epoch,
         )
 
     if hosted_launch_of(agent.metadata_) is not None:
@@ -1065,6 +1067,7 @@ async def _open_event_stream(
     host_boot_id: str | None,
     host_instance_id: str | None,
     worker_state_version: int | None,
+    epoch: str | None,
 ) -> StreamingResponse:
     """The connection as a Server-Sent Events stream, for an old client.
 
@@ -1091,6 +1094,7 @@ async def _open_event_stream(
             worker_state_version=worker_state_version,
             last_event_id=last_event_id,
             transport="sse",
+            epoch=epoch or None,
         )
     except HTTPException as exc:
         metrics().increment(AGENT_CONNECTIONS_REFUSED, {"reason": _refusal_reason(exc)})
