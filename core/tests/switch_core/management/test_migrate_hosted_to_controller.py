@@ -24,6 +24,7 @@ from switch_core.db.models import (
     AgentDefinition,
     ApiKey,
     Client,
+    HostedLaunch,
     HostedMachine,
     ProviderConnection,
     SealedProviderCredential,
@@ -166,6 +167,29 @@ async def _keyring_copy(cloud: Cloud, owner: User) -> bytes | None:  # noqa: F81
         )
 
 
+async def _set_launch(cloud: Cloud, agent_id: str, **values: Any) -> None:  # noqa: F811
+    async with cloud.factory() as session:
+        launch = await session.scalar(
+            select(HostedLaunch).where(HostedLaunch.agent_id == agent_id)
+        )
+        assert launch is not None
+        for key, value in values.items():
+            setattr(launch, key, value)
+        await session.commit()
+
+
+async def _launch_state(
+    cloud: Cloud,  # noqa: F811
+    agent_id: str,
+) -> tuple[str, str, str | None, str | None]:
+    async with cloud.factory() as session:
+        launch = await session.scalar(
+            select(HostedLaunch).where(HostedLaunch.agent_id == agent_id)
+        )
+    assert launch is not None
+    return (launch.state, launch.desired_state, launch.error, launch.error_code)
+
+
 async def _revision(cloud: Cloud, controller_id: str) -> int:  # noqa: F811
     async with cloud.factory() as session:
         controller = await session.get(AgentController, controller_id)
@@ -254,6 +278,59 @@ class TestMigrate:
         assert (machine.revision, machine.controller_id) == (2, first.controller_id)
         assert await _revision(cloud, first.controller_id) == 1
         assert await _sealed(cloud, hosted.owner) == [("claude", "connected", 1)]
+
+    @pytest.mark.parametrize(
+        ("left", "desired", "settled"),
+        [
+            ("queued", "running", "ready"),
+            ("provisioning", "running", "ready"),
+            ("error", "running", "ready"),
+            ("stopping", "stopped", "stopped"),
+        ],
+    )
+    async def test_settles_a_launch_left_mid_transition_at_its_desired_state(
+        self,
+        cloud: Cloud,  # noqa: F811
+        hosted: Hosted,
+        left: str,
+        desired: str,
+        settled: str,
+    ) -> None:
+        await _set_launch(
+            cloud,
+            hosted.agent_id,
+            state=left,
+            desired_state=desired,
+            error="crashed",
+            error_code="agent_crashed",
+        )
+
+        planned = await _run(cloud, hosted.machine_id, "migrate", dry_run=True)
+        assert any(f"state {left} -> {settled}" in line for line in planned)
+        assert (await _launch_state(cloud, hosted.agent_id))[0] == left
+
+        await _run(cloud, hosted.machine_id, "migrate", dry_run=False)
+
+        assert await _launch_state(cloud, hosted.agent_id) == (
+            settled,
+            desired,
+            None,
+            None,
+        )
+
+    async def test_running_it_again_settles_a_launch_left_queued_since(
+        self,
+        cloud: Cloud,  # noqa: F811
+        hosted: Hosted,
+    ) -> None:
+        await _run(cloud, hosted.machine_id, "migrate", dry_run=False)
+        await _set_launch(cloud, hosted.agent_id, state="queued")
+
+        lines = await _run(cloud, hosted.machine_id, "migrate", dry_run=False)
+
+        assert any("state queued -> ready" in line for line in lines)
+        assert (await _launch_state(cloud, hosted.agent_id))[0] == "ready"
+        assert (await _machine(cloud, hosted.machine_id)).revision == 2
 
     async def test_an_agent_placed_elsewhere_is_refused(
         self,

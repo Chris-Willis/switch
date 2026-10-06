@@ -16,12 +16,15 @@ machine lock, in one transaction:
   repository, `auto_approve`, `isolation=isolated`, the launch's desired state,
   and the worktree the worker used as its directory. `auto_session` stays
   where the launch registered it, in the agent's known-agent options;
+- settles each of those agents' launches at its desired state (`ready`, or
+  `stopped`), clearing any error: no worker reports a launch once the
+  controller runs it, so one left starting or in error would stay so;
 - sets the machine's runtime to `controller` and bumps its revision, so the
   hosted controller replaces the instance on the controller image.
 
 Running it again changes nothing that is already done: an agent with a
-definition on the controller keeps it, and a login sealed since it was last
-verified is not sealed again.
+definition on the controller keeps it, a login sealed since it was last
+verified is not sealed again, and a settled launch stays as it is.
 
 The keyring copies of the logins stay, so `--rollback` can return the machine
 to the worker: it removes those agents' definitions, sets the runtime back to
@@ -199,6 +202,10 @@ async def _sealed(
     )
 
 
+def _settled_state(launch: HostedLaunch) -> str:
+    return "stopped" if launch.desired_state == "stopped" else "ready"
+
+
 def _describe(plan: _AgentPlan) -> str:
     definition = plan.definition
     assert definition.repository is not None
@@ -283,6 +290,18 @@ async def migrate_machine(
             continue
         lines.append(f"  agent {plan.agent_id} ({plan.launch.name}): {_describe(plan)}")
         created += 1
+    unsettled = [
+        plan.launch
+        for plan in plans
+        if plan.launch.state != _settled_state(plan.launch)
+        or plan.launch.error is not None
+        or plan.launch.error_code is not None
+    ]
+    for launch in unsettled:
+        lines.append(
+            f"  launch {launch.id} ({launch.name}): state {launch.state} -> "
+            f"{_settled_state(launch)}"
+        )
     lines.append(
         "  runtime: already controller"
         if machine.runtime == "controller"
@@ -323,6 +342,11 @@ async def migrate_machine(
         await service.controllers.bump_assignment_revision(
             session, tenant_id, controller_id
         )
+    for launch in unsettled:
+        launch.state = _settled_state(launch)
+        launch.error = None
+        launch.error_code = None
+        launch.updated_at = now
     if machine.runtime != "controller":
         machine.runtime = "controller"
         bump_revision(machine, now)
