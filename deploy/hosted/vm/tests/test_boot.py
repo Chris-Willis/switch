@@ -822,14 +822,21 @@ class UnitFileTests(unittest.TestCase):
         self,
     ) -> None:
         unit = self.unit("switch-agent@.service")
+        sandbox = (
+            "!/usr/bin/unshare --pid --fork --mount-proc --kill-child -- "
+            "/usr/bin/setpriv --reuid=switch-agent --regid=switch-agent --init-groups "
+            "--inh-caps=-all --bounding-set=-all --no-new-privs -- "
+            "/usr/bin/python3 -I -S /usr/local/libexec/switch-agent-init"
+        )
         self.assertIn(
-            f"ExecStartPre={boot.NODE_PATH} {boot.SHARED_HOST_DAEMON_PATH} --prepare /data/agents/%i",
+            f"ExecStartPre={sandbox} {boot.NODE_PATH} {boot.SHARED_HOST_DAEMON_PATH} --prepare /data/agents/%i\n",
             unit,
         )
         self.assertIn(
-            f"ExecStart={boot.NODE_PATH} {boot.SHARED_HOST_DAEMON_PATH} --unit /data/agents/%i/watcher",
+            f"ExecStart={sandbox} {boot.NODE_PATH} {boot.SHARED_HOST_DAEMON_PATH} --unit /data/agents/%i/watcher\n",
             unit,
         )
+        self.assertIn("User=switch-agent\n", unit)
         self.assertNotIn("SWITCH_HOSTED_BOOTSTRAP", unit)
         self.assertNotIn("--watch-supervise", unit)
         self.assertIn("IPAddressDeny=169.254.169.254/32 fd00:ec2::254/128", unit)

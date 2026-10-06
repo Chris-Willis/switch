@@ -62,7 +62,7 @@ const SHOW_PROPERTIES = [
   'SubState',
   'Result',
   'NRestarts',
-  'ExecMainPID',
+  'InvocationID',
   'ActiveEnterTimestampMonotonic',
 ];
 const LIVE_STATES = new Set(['active', 'activating', 'deactivating', 'reloading']);
@@ -85,7 +85,7 @@ type UnitState = {
   activeState: string;
   result: string;
   restarts: number;
-  mainPid: number;
+  invocationId: string;
 };
 
 type PendingRestart = { connected: boolean; since: number };
@@ -212,7 +212,8 @@ export class SystemdRuntime implements AgentRuntime {
     if (healthText !== null) {
       const parsed = unitHealthSchema.safeParse(parseJson(healthText));
       if (parsed.success) {
-        const current = alive && unit.mainPid > 0 && parsed.data.pid === unit.mainPid;
+        const current =
+          alive && unit.invocationId !== '' && parsed.data.invocation === unit.invocationId;
         const { busy, lastActivityAt, ...rest } = parsed.data;
         health = { ...rest, current };
         if (current && busy !== undefined)
@@ -381,7 +382,7 @@ export class SystemdRuntime implements AgentRuntime {
       activeState,
       result: values.get('Result') ?? '',
       restarts: Number(values.get('NRestarts') ?? 0) || 0,
-      mainPid: Number(values.get('ExecMainPID') ?? 0) || 0,
+      invocationId: values.get('InvocationID') ?? '',
     };
   }
 

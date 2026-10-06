@@ -56,16 +56,16 @@ class FakeSystemctl {
       ActiveState: 'inactive',
       Result: 'success',
       NRestarts: '0',
-      ExecMainPID: '0',
+      InvocationID: '',
     };
     if (verb === 'show')
       return `${Object.entries(state)
         .map(([key, value]) => `${key}=${value}`)
         .join('\n')}\n`;
     if (verb === 'start' || verb === 'restart')
-      this.states.set(unit, { ...state, ActiveState: 'active', ExecMainPID: '4242' });
+      this.states.set(unit, { ...state, ActiveState: 'active', InvocationID: 'inv-4242' });
     if (verb === 'stop')
-      this.states.set(unit, { ...state, ActiveState: 'inactive', ExecMainPID: '0' });
+      this.states.set(unit, { ...state, ActiveState: 'inactive', InvocationID: '' });
     if (verb === 'reset-failed') this.states.set(unit, { ...state, ActiveState: 'inactive' });
     return '';
   };
@@ -272,7 +272,8 @@ describe('SystemdRuntime', () => {
         detail: null,
         since: '2026-01-01T12:00:00Z',
         placements: { 'session-a': '!room:example.org' },
-        pid: 4242,
+        pid: 1,
+        invocation: 'inv-4242',
         updatedAt: '2026-01-01T12:00:01Z',
         busy: false,
         lastActivityAt: '2026-01-01T11:00:00Z',
@@ -290,14 +291,14 @@ describe('SystemdRuntime', () => {
     expect(systemctl.calls.find((args) => args[0] === 'show')).toEqual([
       'show',
       UNIT,
-      '--property=ActiveState,SubState,Result,NRestarts,ExecMainPID,ActiveEnterTimestampMonotonic',
+      '--property=ActiveState,SubState,Result,NRestarts,InvocationID,ActiveEnterTimestampMonotonic',
     ]);
 
     systemctl.states.set(UNIT, {
       ActiveState: 'active',
       Result: 'oom-kill',
       NRestarts: '2',
-      ExecMainPID: '5000',
+      InvocationID: 'inv-5000',
     });
     const restarted = await runtime.observe('agent-1');
     expect(restarted.health?.current).toBe(false);
@@ -310,7 +311,7 @@ describe('SystemdRuntime', () => {
       ActiveState: 'failed',
       Result: 'exit-code',
       NRestarts: '2',
-      ExecMainPID: '0',
+      InvocationID: '',
     });
     expect(await runtime.observe('agent-1')).toMatchObject({
       alive: false,
@@ -328,7 +329,7 @@ describe('SystemdRuntime', () => {
       ActiveState: 'failed',
       Result: 'exit-code',
       NRestarts: '0',
-      ExecMainPID: '0',
+      InvocationID: '',
     });
     await runtime.writeCredentials('agent-1', {
       endpoint: 'http://127.0.0.1:47100',
@@ -364,18 +365,19 @@ describe('SystemdRuntime', () => {
   it('restarts an agent for a new login once it is idle, or after the grace period', async () => {
     await runtime.launch('agent-1', template('agent-1'), START);
     await runtime.launch('agent-2', template('agent-2'), START);
-    const health = (pid: number, busy: boolean) =>
+    const health = (invocation: string, busy: boolean) =>
       JSON.stringify({
         state: 'connected',
         detail: null,
         since: 'x',
         placements: {},
-        pid,
+        pid: 1,
+        invocation,
         updatedAt: 'x',
         busy,
       });
-    writeFileSync(join(layout.watcherRoot('agent-1'), 'health.json'), health(4242, true));
-    writeFileSync(join(layout.watcherRoot('agent-2'), 'health.json'), health(4242, false));
+    writeFileSync(join(layout.watcherRoot('agent-1'), 'health.json'), health('inv-4242', true));
+    writeFileSync(join(layout.watcherRoot('agent-2'), 'health.json'), health('inv-4242', false));
     logins.emit({ provider: 'claude', agentIds: ['agent-1', 'agent-2'], connected: true });
     const act = (runtime as unknown as { actOnPending: () => Promise<void> }).actOnPending.bind(
       runtime
@@ -391,7 +393,7 @@ describe('SystemdRuntime', () => {
       'restart switch-agent@agent-1.service',
     ]);
     logins.emit({ provider: 'claude', agentIds: ['agent-2'], connected: false });
-    writeFileSync(join(layout.watcherRoot('agent-2'), 'health.json'), health(4242, false));
+    writeFileSync(join(layout.watcherRoot('agent-2'), 'health.json'), health('inv-4242', false));
     await act();
     expect(systemctl.verbs().at(-1)).toBe('stop switch-agent@agent-2.service');
   });

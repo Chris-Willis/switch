@@ -37,7 +37,7 @@ for command in python3 lsblk wipefs udevadm mkfs.ext4 mount findmnt sha256sum gi
     exit 1
   }
 done
-for executable in /usr/bin/lsblk /usr/sbin/wipefs /usr/bin/udevadm /usr/sbin/mkfs.ext4 /usr/bin/findmnt /usr/bin/git /usr/bin/systemctl /usr/bin/systemd-mount /usr/sbin/nft /usr/bin/python3; do
+for executable in /usr/bin/lsblk /usr/sbin/wipefs /usr/bin/udevadm /usr/sbin/mkfs.ext4 /usr/bin/findmnt /usr/bin/git /usr/bin/systemctl /usr/bin/systemd-mount /usr/sbin/nft /usr/bin/python3 /usr/bin/unshare /usr/bin/setpriv; do
   [ -x "$executable" ] || {
     echo "the controller runtime requires $executable" >&2
     exit 1
@@ -167,6 +167,7 @@ install -o root -g root -m 0755 "$source_dir/switch_machine_boot.py" /usr/local/
 install -o root -g root -m 0644 "$source_dir/switch-machine-boot.service" /etc/systemd/system/switch-machine-boot.service
 install -o root -g root -m 0644 "$source_dir/switch-controller.service" /etc/systemd/system/switch-controller.service
 install -o root -g root -m 0644 "$source_dir/switch-agent@.service" /etc/systemd/system/switch-agent@.service
+install -o root -g root -m 0755 "$source_dir/switch-agent-init" /usr/local/libexec/switch-agent-init
 install -o root -g root -m 0644 "$source_dir/switch-agents.slice" /etc/systemd/system/switch-agents.slice
 install -o root -g root -m 0644 "$source_dir/50-switch-controller.rules" /etc/polkit-1/rules.d/50-switch-controller.rules
 install -o root -g root -m 0644 "$source_dir/switch-imds.nft" /etc/nftables.d/switch-imds.nft

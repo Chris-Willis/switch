@@ -25,6 +25,13 @@ export const WATCHER_HEALTH_FILE = 'health.json';
  */
 export const watcherHealthFileSchema = watcherHealthSchema.extend({
   pid: z.number().int().positive(),
+  /**
+   * The systemd invocation the watcher runs in, where it runs as a unit. An
+   * agent unit runs in a PID namespace of its own, so `pid` is not the PID
+   * systemd knows it by; its controller compares this with the unit's
+   * InvocationID instead.
+   */
+  invocation: z.string().optional(),
   updatedAt: z.string(),
   /**
    * Whether any of the watcher's session hosts has work in hand (one that
@@ -66,6 +73,7 @@ export function recordWatcherHealth(
       ...control.health(),
       ...activity(),
       pid: process.pid,
+      ...(process.env.INVOCATION_ID ? { invocation: process.env.INVOCATION_ID } : {}),
       updatedAt: new Date().toISOString(),
     };
     writing = writing

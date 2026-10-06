@@ -19,8 +19,16 @@ LoadCredential=agent:/run/switch-controller/agents/%i.credentials.json
 LoadCredential=provider:/run/switch-controller/agents/%i.provider.json
 EnvironmentFile=-/run/switch-controller/agents/%i.env
 WorkingDirectory=/data/agents/%i
-ExecStartPre=/opt/switch/node/bin/node /opt/switch/agent-providers/shared-host-daemon.mjs --prepare /data/agents/%i
-ExecStart=/opt/switch/node/bin/node /opt/switch/agent-providers/shared-host-daemon.mjs --unit /data/agents/%i/watcher
+# Every agent runs as the one switch-agent uid, and ProtectProc= hides only
+# other users' processes, so without more one agent could reach another's
+# files and credentials through /proc/<pid>/root. Each command therefore runs
+# in a PID namespace (and /proc) of its own: started as root ("!" ignores
+# User=, nothing else), which may only make the namespace and drop to
+# switch-agent with no capabilities left. switch-agent-init is the
+# namespace's PID 1, reaping orphans. User= stays set, so systemd hands the
+# credentials to switch-agent.
+ExecStartPre=!/usr/bin/unshare --pid --fork --mount-proc --kill-child -- /usr/bin/setpriv --reuid=switch-agent --regid=switch-agent --init-groups --inh-caps=-all --bounding-set=-all --no-new-privs -- /usr/bin/python3 -I -S /usr/local/libexec/switch-agent-init /opt/switch/node/bin/node /opt/switch/agent-providers/shared-host-daemon.mjs --prepare /data/agents/%i
+ExecStart=!/usr/bin/unshare --pid --fork --mount-proc --kill-child -- /usr/bin/setpriv --reuid=switch-agent --regid=switch-agent --init-groups --inh-caps=-all --bounding-set=-all --no-new-privs -- /usr/bin/python3 -I -S /usr/local/libexec/switch-agent-init /opt/switch/node/bin/node /opt/switch/agent-providers/shared-host-daemon.mjs --unit /data/agents/%i/watcher
 StandardInput=null
 StandardOutput=journal
 StandardError=journal
@@ -34,7 +42,8 @@ RestartPreventExitStatus=75
 MemoryMax=75%
 OOMPolicy=stop
 NoNewPrivileges=yes
-CapabilityBoundingSet=
+# For the root wrapper above only: setpriv drops every one before the agent runs.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETUID CAP_SETGID CAP_SETPCAP
 AmbientCapabilities=
 ProtectProc=invisible
 ProtectSystem=full
