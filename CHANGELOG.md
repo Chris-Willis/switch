@@ -112,6 +112,12 @@ version of their own to them without also giving them a release of their own.
   default: it never carries owner names, and the gateway's ecosystem page no
   longer shows its inert "Show owners" toggle. Migration `4dcf1747443d` drops
   the table.
+- **Room protection and observe settings.** `PUT /gateway/rooms/{id}/protection`
+  and `PUT /gateway/rooms/{id}/observe` are gone, room details no longer carry
+  `protection_config` / `observe_config`, and `create_room` no longer takes
+  `security_config`. They were stored for protection checks and an observe
+  pipeline that were never built, and nothing read them. Migration
+  `871623ec1ebf` drops both columns.
 
 ### [0.29.0] - 2026-09-29
 

@@ -264,18 +264,11 @@ class Consumer[ActorT: Actor[Any]]:
 
         entry = self._EVENT_DISPATCH.get(event.event_type)
         if entry is None:
-            if event.event_type.startswith("com.switch.observe."):
-                logger.warning(
-                    "Observe event %s not yet supported in %s",
-                    event.event_type,
-                    room.room_id,
-                )
-            else:
-                logger.error(
-                    "Unhandled custom event type %s in %s",
-                    event.event_type,
-                    room.room_id,
-                )
+            logger.error(
+                "Unhandled custom event type %s in %s",
+                event.event_type,
+                room.room_id,
+            )
             return
 
         event_class, method_name = entry

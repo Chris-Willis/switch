@@ -90,8 +90,6 @@ class RoomDetail(RoomSummary):
     matrix_room_id: str
     external_channel_id: str | None
     instructions: str | None
-    protection_config: dict[str, Any] | None
-    observe_config: dict[str, Any] | None
     agent_ids: list[str]
     agent_statuses: dict[str, str]
     roles: list[RoomRoleDetail] = []
@@ -155,14 +153,6 @@ class RoomAgentUpdateRequest(BaseModel):
 
 class RoomUsersRequest(BaseModel):
     user_names: list[str]
-
-
-class RoomProtectionRequest(BaseModel):
-    protection_config: dict[str, Any]
-
-
-class RoomObserveRequest(BaseModel):
-    observe_config: dict[str, Any]
 
 
 class BulkDeleteRequest(BaseModel):

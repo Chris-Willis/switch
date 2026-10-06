@@ -65,10 +65,6 @@ def test_bus_traffic_is_not_recorded():
     assert not should_record("com.switch.report.llm_call")
 
 
-def test_the_unimplemented_observe_prefix_is_not_recorded():
-    assert not should_record("com.switch.observe.anything")
-
-
 def test_an_unknown_type_is_recorded_rather_than_dropped():
     """The denylist fails towards keeping too much, never towards silence."""
     assert should_record("com.switch.something.nobody.has.written.yet")

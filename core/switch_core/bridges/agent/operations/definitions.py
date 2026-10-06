@@ -814,7 +814,6 @@ async def create_room(
     bridge_id: str | None = None,
     internal_only: bool = False,
     admin_mode: bool = False,
-    security_config: dict[str, Any] | None = None,
     instructions: str | None = None,
     reference_ids: list[str] | None = None,
     package_ids: list[str] | None = None,
@@ -858,7 +857,6 @@ async def create_room(
         internal_only: Create a room with no external channel, opting out of
             the default bridge. Ignored when `bridge_id` is set.
         admin_mode: When true, the room is created in administrative mode.
-        security_config: Optional dict overriding default protection checks.
         instructions: Room-specific system prompt / guidance shown to agents
             when they connect.
         reference_ids: References to attach at creation. Authorization is
@@ -917,7 +915,6 @@ async def create_room(
             bridge_id=bridge_id,
             internal_only=internal_only,
             admin_mode=admin_mode,
-            security_config=security_config,
             instructions=instructions,
             reference_ids=reference_ids,
             package_ids=package_ids,

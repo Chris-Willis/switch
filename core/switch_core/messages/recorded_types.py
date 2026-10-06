@@ -65,13 +65,7 @@ RETIRED = frozenset(
 
 NOT_RECORDED = EPHEMERAL | TELEMETRY | RETIRED
 
-# The observe prefix is reserved and unimplemented; no type under it exists to
-# name individually yet.
-NOT_RECORDED_PREFIXES = ("com.switch.observe.",)
-
 
 def should_record(event_type: str) -> bool:
     """Whether an event of this type belongs in the message log."""
-    if event_type in NOT_RECORDED:
-        return False
-    return not event_type.startswith(NOT_RECORDED_PREFIXES)
+    return event_type not in NOT_RECORDED
