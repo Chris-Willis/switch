@@ -28,6 +28,7 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.hosted_machine_store import DISK_FULL_BELOW_BYTES
 from switch_core.db.stores.hosted_mailbox_store import HostedMailboxStore, MailboxEntry
 from switch_core.gateway.hosted_controller import _should_sleep
 from switch_core.gateway.hosted_controller_activity import (
@@ -312,6 +313,30 @@ class TestHeartbeat:
             "memory": {"total_bytes": 17179869184, "available_bytes": 8589934592},
             "sessions_running": 1,
         }
+
+    async def test_a_nearly_full_disk_raises_disk_full_until_there_is_room(
+        self,
+        cloud: Cloud,  # noqa: F811
+        placed: Placed,
+    ) -> None:
+        async def report_free(free: int) -> str | None:
+            placed.seq += 1
+            body = status_report(placed.seq, providers=[provider("claude")])
+            body["machine"]["disk_free_bytes"] = free
+            response = await cloud.client.put(
+                f"/v1/management/controllers/{placed.controller.controller_id}/status",
+                json=body,
+                headers=placed.controller.headers,
+            )
+            assert response.status_code == 200, response.text
+            return (await _machine(cloud, placed)).error_code
+
+        full = await report_free(DISK_FULL_BELOW_BYTES - 1)
+        room = await report_free(DISK_FULL_BELOW_BYTES)
+        await cloud.update_machine(placed.machine_id, error_code="machine_lost")
+        other = await report_free(1)
+
+        assert (full, room, other) == ("disk_full", None, "machine_lost")
 
 
 def _addressed(room_id: str, message_id: str) -> AgentEvent:

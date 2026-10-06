@@ -30,6 +30,7 @@ from switch_core.db.models import (
 from switch_core.db.stores.hosted_machine_store import (
     HostedMachineStore,
     idle_sleeping,
+    record_free_disk,
 )
 from switch_core.db.stores.hosted_mailbox_store import BUSY_STATES
 
@@ -167,8 +168,9 @@ async def record_controller_heartbeat(
     session: AsyncSession, controller_id: str, status: dict[str, Any], now: datetime
 ) -> HostedMachine | None:
     """Keep the machine that runs ec2 controller `controller_id` as its latest
-    status report describes it: its disk and memory, when it was last heard
-    from, and ready once the instance Core saw running has reported.
+    status report describes it: its disk and memory, `disk_full` while its
+    disk is nearly full, when it was last heard from, and ready once the
+    instance Core saw running has reported.
 
     Takes the machine lock; the caller commits. None when no live machine
     runs the controller.
@@ -201,6 +203,9 @@ async def record_controller_heartbeat(
         machine.error = None
         machine.error_code = None
         machine.updated_at = now
+    disk = machine.heartbeat["disk"]
+    if disk is not None:
+        record_free_disk(machine, disk["available_bytes"])
     return machine
 
 
