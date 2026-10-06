@@ -130,8 +130,8 @@ class TestRegistrationDefaultPolicy:
     async def test_owner_only_false_leaves_the_agent_open(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        # A service the deployment offers everyone (a server-side connector
-        # agent) is owned by someone only in the bookkeeping sense.
+        # A service the deployment offers everyone is owned by someone only in
+        # the bookkeeping sense.
         svc = make_service(session_factory)
         owner_id = await make_owner(session_factory)
         agent_id = await register(svc, "shared", owner_id, owner_only=False)

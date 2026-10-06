@@ -245,9 +245,6 @@ handled in a way that leaves no trace.
 - **`switch.bridge.errors`** — an inbound bridge failure is a message a person
   sent that nobody received; from the platform it is indistinguishable from
   being ignored.
-- **`switch.connectors.running`** — connectors start fire-and-forget, each
-  failure logged and stepped over, so one that never came up is a dead agent
-  host nothing else reports.
 
 If you add another place that catches an exception to keep something alive,
 this is the list it belongs on.

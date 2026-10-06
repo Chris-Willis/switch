@@ -84,11 +84,10 @@ _ALLOWED_MODULES = {
     # is reachable by any endpoint that declares it, which would make this
     # list name one module while the exemption was open to every route.
     "switch_core.gateway.auth",
-    # Enumerating tenants at boot, and starting one bridge or one connector by
-    # id from a context bound to somebody else's tenant.
+    # Enumerating tenants at boot, and starting one bridge by id from a
+    # context bound to somebody else's tenant.
     "switch_core.clients.client_lifecycle_service",
     "switch_core.bridges.collaboration.lifecycle_service",
-    "switch_core.bridges.agent.server_connectors.lifecycle",
     # `_room_tenant`'s fallback: which tenant is this room in, asked when the
     # answer is not already cached alongside the channel mapping.
     "switch_core.bridges.collaboration.collaboration_core",
@@ -141,7 +140,6 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.bridges.agent.commands",
     "switch_core.bridges.collaboration.collaboration_core",
     "switch_core.bridges.collaboration.lifecycle_service",
-    "switch_core.bridges.agent.server_connectors.lifecycle",
     "switch_core.clients.agent_consumer",
     "switch_core.clients.command_consumer",
     "switch_core.clients.client_lifecycle_service",

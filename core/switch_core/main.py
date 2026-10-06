@@ -42,13 +42,6 @@ from switch_core.bridges.agent.registration_bootstrap import (
     RETIRED_KEY_TYPE,
     ensure_bootstrap_owner,
 )
-from switch_core.bridges.agent.server_connectors.lifecycle import (
-    ServerSideConnectorLifecycleService,
-)
-from switch_core.bridges.agent.server_connectors.opencode.connector import (
-    OpenCodeConnectionConfig,
-    OpenCodeConnector,
-)
 from switch_core.bridges.collaboration.adapter import SupportsSharedConnection
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
@@ -133,7 +126,6 @@ from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.tenant_store import TenantStore
@@ -477,7 +469,6 @@ async def run(config: SwitchConfig) -> None:
 
     # ── Event queue + request trackers ───────────────────────────────────────
     event_buffer = EventBuffer(sequence_base=event_boot << 32)
-    connector_store = ServerConnectorStore()
 
     # ── Product telemetry ────────────────────────────────────────────────────
     # Before the services that report through it, switched on or not.
@@ -662,20 +653,6 @@ async def run(config: SwitchConfig) -> None:
     # connection the handler saw start.
     connections.set_close_listener(protocol.sessions.on_close)
 
-    # ── Server-side connector lifecycle ─────────────────────────────────────
-    connector_lifecycle = ServerSideConnectorLifecycleService(
-        connector_store=connector_store,
-        api_key_store=api_key_store,
-        protocol=protocol,
-        session_factory=session_factory,
-        keyring=config.keyring,
-        telemetry=telemetry,
-        outbound_policy=config.outbound_policy,
-    )
-    connector_lifecycle.register_connector_type(
-        "opencode", OpenCodeConnector, OpenCodeConnectionConfig
-    )
-
     # ── Messaging app installs ──────────────────────────────────────────────
     # Registration is the feature flag. An installer exists for a platform when
     # this deployment holds that platform's app credentials, and the whole
@@ -726,8 +703,6 @@ async def run(config: SwitchConfig) -> None:
         bridge_store=bridge_store,
         client_lifecycle=client_lifecycle,
         collab_lifecycle=collab_lifecycle,
-        connector_lifecycle=connector_lifecycle,
-        connector_store=connector_store,
         event_buffer=event_buffer,
         session_factory=session_factory,
         user_store=user_store,
@@ -815,13 +790,11 @@ async def run(config: SwitchConfig) -> None:
         bridges_running_by_platform=collab_lifecycle.running_by_platform,
         bridges_configured=collab_lifecycle.expected_count,
         consumers_running=client_lifecycle.running_count,
-        connectors_running=connector_lifecycle.running_count,
-        connectors_configured=connector_lifecycle.expected_count,
         agents_connected=lambda: len(connections.live_agent_ids()),
         pool_stats=lambda: pool_stats(engine, pool_watermark),
     )
 
-    # ── Lifespan: start server-side connectors once HTTP is serving ────────
+    # ── Lifespan: start background work once HTTP is serving ───────────────
     original_lifespan = agent_bridge_app.router.lifespan_context
 
     snapshot_reporter = SnapshotReporter(
@@ -842,7 +815,6 @@ async def run(config: SwitchConfig) -> None:
                 session_factory=session_factory,
                 probes=probes,
             )
-            asyncio.create_task(connector_lifecycle.start_all())
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
             session_activity_task = asyncio.create_task(
                 session_activity_maintenance_loop(
@@ -961,7 +933,6 @@ async def run(config: SwitchConfig) -> None:
                     server,
                     client_lifecycle,
                     collab_lifecycle,
-                    connector_lifecycle,
                     provisioning,
                     discord_gateway,
                     discord_gateway_task,
@@ -1408,14 +1379,12 @@ async def _shutdown(
     server: uvicorn.Server,
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
-    connector_lifecycle: ServerSideConnectorLifecycleService,
     provisioning: Provisioning,
     discord_gateway: DiscordGatewayClient | None,
     discord_gateway_task: asyncio.Task[None] | None,
 ) -> None:
     logger.info("Shutting down...")
     server.should_exit = True
-    await connector_lifecycle.stop_all()
     await collab_lifecycle.stop_all()
     # Cancel the supervised connect/retry loop before closing the socket, so a
     # retry in flight cannot re-open what stop() just closed.

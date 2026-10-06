@@ -1,4 +1,4 @@
-"""The whole exemption from row-level security, written out as eleven functions.
+"""The whole exemption from row-level security, written out as ten functions.
 
 Row-level security is enforced by `require_tenant_id()` (`db/rls_ddl.py`),
 which raises when no tenant is bound. That is the property everything else
@@ -64,7 +64,7 @@ them about *metadata* rather than rows:
 
 So the property this design actually holds is: **the exemption discloses the
 shape of the deployment — which tenants exist, and which tenant a given user,
-credential, room, bridge, connector, invitation or installed workspace belongs
+credential, room, bridge, invitation or installed workspace belongs
 to — and no row of any tenant-scoped table.** It is a boundary on data, not on
 metadata. Narrowing
 the second is a question about who may hold the runtime role's credentials at
@@ -77,13 +77,13 @@ not are now one of three shapes, and the shape is the interesting part:
    client id, the registration token. Resolve the *tenant* here, bind it,
    then read the row itself through the ordinary scoped store. The row never
    arrives from an exempt path.
-2. **Cross-tenant enumeration** — the boot passes over every client, bridge,
-   connector and room, and the runtime-state sweep. `all_tenant_ids()` and
+2. **Cross-tenant enumeration** — the boot passes over every client, bridge
+   and room, and the runtime-state sweep. `all_tenant_ids()` and
    then one scoped pass per tenant. These sites already fanned out per row
    and bound that row's tenant; the loop simply moved one level up, and the
    read inside it is now subject to the policies like any other.
-3. **Per-item work that can derive its tenant** — a bridge or connector being
-   started by id, a room reached by id. One lookup by the globally unique
+3. **Per-item work that can derive its tenant** — a bridge being started by
+   id, a room reached by id. One lookup by the globally unique
    identifier the caller already has, and everything after it is scoped.
 
 **A lookup whose caller already knows the answer does not belong here.** There
@@ -95,7 +95,8 @@ in hand. `Actor` and `PostgresTransport` now take a `tenant_id` the way
 they take a `client_id`, and revision `b1d7c4f0a92e` drops the function. The
 test that keeps the list honest is the one that would have let this stand: a
 function nobody needs is still a function every role could call, so the shorter
-list is the whole point of noticing.
+list is the whole point of noticing. `tenant_of_server_connector` went with
+the server-side connectors it served, dropped by revision `7c26ad1a2d81`.
 
 **`tenant_of_invitation` is the eighth, and it is the same shape as
 `tenant_of_api_key`.** Accepting an invitation is credential resolution: the
@@ -243,7 +244,7 @@ class TenantLookup:
         return f"{self.name}({', '.join('text' for _ in self.arguments)})"
 
 
-# The eleven of them. Ordered as the three shapes above: enumeration, then
+# The ten of them. Ordered as the three shapes above: enumeration, then
 # credential resolution, then deriving a tenant from an identifier in hand.
 TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
     TenantLookup(
@@ -309,12 +310,6 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
             "bound, and from an HTTP request that restarted it, where what is "
             "bound is the operator's tenant and not necessarily the bridge's."
         ),
-    ),
-    TenantLookup(
-        name="tenant_of_server_connector",
-        arguments=("connector_id",),
-        query="SELECT tenant_id FROM server_connectors WHERE id = p_connector_id",
-        purpose="Same as the bridge, for a server-side connector.",
     ),
     TenantLookup(
         name="tenant_of_invitation",
@@ -431,7 +426,7 @@ def attach_tenant_lookups(metadata: MetaData) -> None:
 # ── Calling them ──────────────────────────────────────────────────────────────
 
 # One `text()` per lookup, written out rather than assembled from `lookup.name`
-# at call time: the eleven names are fixed and known here, so there is nothing
+# at call time: the ten names are fixed and known here, so there is nothing
 # for a call site to build. Each bind is named after the lookup's own argument,
 # which is what lets `_call` zip them positionally against the dataclass and
 # fail loudly on a mismatch rather than binding the workspace to the platform.
@@ -455,9 +450,6 @@ _LOOKUP_STATEMENTS: dict[str, TextClause] = {
     ),
     "tenant_of_collaboration_bridge": text(
         "SELECT tenant_id FROM tenant_of_collaboration_bridge(:bridge_id) AS tenant_id"
-    ),
-    "tenant_of_server_connector": text(
-        "SELECT tenant_id FROM tenant_of_server_connector(:connector_id) AS tenant_id"
     ),
     "tenant_of_invitation": text(
         "SELECT tenant_id FROM tenant_of_invitation(:token_hash) AS tenant_id"
@@ -557,13 +549,6 @@ async def tenant_of_collaboration_bridge(
 ) -> str | None:
     lookup = TENANT_LOOKUPS_BY_NAME["tenant_of_collaboration_bridge"]
     return _at_most_one(lookup, await _call(session_factory, lookup, bridge_id))
-
-
-async def tenant_of_server_connector(
-    session_factory: async_sessionmaker[AsyncSession], connector_id: str
-) -> str | None:
-    lookup = TENANT_LOOKUPS_BY_NAME["tenant_of_server_connector"]
-    return _at_most_one(lookup, await _call(session_factory, lookup, connector_id))
 
 
 async def tenant_of_invitation(

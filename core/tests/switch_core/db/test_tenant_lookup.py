@@ -54,7 +54,6 @@ from switch_core.db.models import (
     Invitation,
     MessagingInstall,
     Room,
-    ServerConnector,
     Tenant,
     TenantJoinDomain,
     TenantMember,
@@ -72,7 +71,6 @@ from switch_core.db.tenant_lookup import (
     tenant_of_invitation,
     tenant_of_messaging_install,
     tenant_of_room,
-    tenant_of_server_connector,
     tenants_inviting_email,
     tenants_of_user,
     tenants_open_to_domain,
@@ -91,7 +89,10 @@ _LOOKUP_REVISION = "9c41a7b0e5d8"
 # today. The two agree only once the drops between them are accounted for,
 # and naming the revision here is what keeps 'we removed it from the module'
 # from passing as 'we removed it from the database'.
-_DROPPED_SINCE = {"tenant_of_client": "b1d7c4f0a92e"}
+_DROPPED_SINCE = {
+    "tenant_of_client": "b1d7c4f0a92e",
+    "tenant_of_server_connector": "7c26ad1a2d81",
+}
 
 # The same bookkeeping in the other direction: a lookup the live module names
 # that `9c41a7b0e5d8` never created, and the revision that did create it. The
@@ -144,7 +145,6 @@ class _Fixture:
         self.client_a: str = ""
         self.room_a: str = ""
         self.bridge_a: str = ""
-        self.connector_a: str = ""
         self.key_hash_a: str = ""
         self.workspace_a: str = ""
         self.workspace_b: str = ""
@@ -229,15 +229,7 @@ async def _two_populated_tenants(harness: RLSHarness) -> _Fixture:
                 connection_config={},
                 client_id=client.id,
             )
-            connector = ServerConnector(
-                tenant_id=tenant_id,
-                type="opencode",
-                display_name=f"connector {tag}",
-                api_key_id=key.id,
-                status="active",
-                connection_config={},
-            )
-            session.add_all([bridge, connector])
+            session.add(bridge)
             invitation = Invitation(
                 tenant_id=tenant_id,
                 role="member",
@@ -280,7 +272,6 @@ async def _two_populated_tenants(harness: RLSHarness) -> _Fixture:
                 fixture.client_a = client.id
                 fixture.room_a = room.id
                 fixture.bridge_a = bridge.id
-                fixture.connector_a = connector.id
                 fixture.invitation_token_hash_a = invitation.token_hash
             else:
                 fixture.invitation_token_hash_b = invitation.token_hash
@@ -443,7 +434,7 @@ class TestWhatTheyAnswer:
         await _two_populated_tenants(rls_harness)
         assert await tenant_of_api_key(rls_harness.restricted, "no-such-hash") is None
 
-    async def test_a_room_bridge_and_connector_resolve_to_their_tenant(
+    async def test_a_room_and_bridge_resolve_to_their_tenant(
         self, rls_harness: RLSHarness
     ) -> None:
         fixture = await _two_populated_tenants(rls_harness)
@@ -451,10 +442,6 @@ class TestWhatTheyAnswer:
         assert await tenant_of_room(restricted, fixture.room_a) == fixture.tenant_a
         assert (
             await tenant_of_collaboration_bridge(restricted, fixture.bridge_a)
-            == fixture.tenant_a
-        )
-        assert (
-            await tenant_of_server_connector(restricted, fixture.connector_a)
             == fixture.tenant_a
         )
 
@@ -867,23 +854,23 @@ class TestTheMigrationInstallsTheSameThing:
         schema the revision below it created.
         """
         installed = _migration_module()
-        dropped = _revision_module(_DROPPED_SINCE["tenant_of_client"])
-        assert (
-            dropped.DROP_TENANT_OF_CLIENT
-            == "DROP FUNCTION IF EXISTS tenant_of_client(text)"
-        )
         frozen = {
-            name: (parameters, body)
-            for name, parameters, _signature, body in installed.LOOKUPS
+            name: (parameters, signature, body)
+            for name, parameters, signature, body in installed.LOOKUPS
         }
-        parameters, body = frozen["tenant_of_client"]
-        assert dropped.CREATE_TENANT_OF_CLIENT == installed.create_lookup_ddl(
-            "tenant_of_client", parameters, body
-        ), (
-            "the downgrade would recreate tenant_of_client with different DDL "
-            "from the one 9c41a7b0e5d8 installed, so a rollback past it lands "
-            "on a schema that revision would not recognise."
-        )
+        for name, revision in _DROPPED_SINCE.items():
+            dropped = _revision_module(revision)
+            parameters, signature, body = frozen[name]
+            assert getattr(dropped, f"DROP_{name.upper()}") == (
+                f"DROP FUNCTION IF EXISTS {signature}"
+            )
+            assert getattr(
+                dropped, f"CREATE_{name.upper()}"
+            ) == installed.create_lookup_ddl(name, parameters, body), (
+                f"the downgrade would recreate {name} with different DDL "
+                "from the one 9c41a7b0e5d8 installed, so a rollback past it "
+                "lands on a schema that revision would not recognise."
+            )
 
     def test_the_statement_it_would_run_is_the_statement_the_module_builds(
         self,

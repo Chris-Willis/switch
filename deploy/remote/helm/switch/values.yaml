@@ -284,7 +284,7 @@ switchCore:
   # once every API client authenticating against this deployment handles it.
   tenantChoiceEnabled: false
   # Private hosts switch-core may reach at a URL a tenant or agent supplied —
-  # a Mattermost server, an OpenCode server, an agent icon. Hostnames or CIDRs.
+  # a Mattermost server, an agent icon. Hostnames or CIDRs.
   # Anything else that is not a public address is refused, and link-local and
   # cloud metadata addresses are refused even when listed. The bundled
   # Mattermost (mattermost.enabled) is added automatically.

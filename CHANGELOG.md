@@ -63,6 +63,14 @@ version of their own to them without also giving them a release of their own.
   `POST /gateway/agents/register-known-bulk`. Agents are created from Switch
   Console (or the Machines page); `POST /gateway/agents/register`, which
   Console calls, is unchanged.
+- **Server-side connectors.** Switch no longer dials out to agent hosts (the
+  OpenCode connector): every agent session is started by Switch Console or its
+  sidecar and connects in. `/gateway/connectors` is gone, along with the
+  `switch.connectors.running` metric, the `connectors` health check and the
+  `server_connector_*` telemetry events. Migration `7c26ad1a2d81` drops the
+  `server_connectors` table and its tenant lookup, and retires the
+  registration key each connector held. Agents a connector registered stay
+  registered; delete them from the gateway if you no longer want them.
 
 ### [0.29.0] - 2026-09-29
 

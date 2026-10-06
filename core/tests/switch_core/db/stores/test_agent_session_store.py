@@ -5,9 +5,6 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.server_connectors.core import (
-    CONNECTOR_POLL_TIMEOUT_SECONDS,
-)
 from switch_core.db.models import (
     Agent,
     AgentSession,
@@ -17,6 +14,8 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.stores.agent_session_store import AgentSessionStore
+
+IDLE_POLL_SECONDS = 30
 
 
 async def _make_agent(session: AsyncSession, name: str) -> Agent:
@@ -88,17 +87,15 @@ async def _age_room_heartbeat(
 class TestLiveness:
     def test_ttl_exceeds_connector_poll_cadence(self) -> None:
         """Regression guard for the always_on flapping bug: the liveness
-        window must stay above the connector's long-poll timeout, otherwise a
+        window must stay above an idle long-poll's timeout, otherwise a
         healthy agent reads "disconnected" between heartbeats. Keep generous
         headroom for event-handling time on top of the idle cadence."""
-        assert AgentSessionStore.ALWAYS_ON_TTL > timedelta(
-            seconds=CONNECTOR_POLL_TIMEOUT_SECONDS
-        )
+        assert AgentSessionStore.ALWAYS_ON_TTL > timedelta(seconds=IDLE_POLL_SECONDS)
 
     async def test_heartbeat_at_idle_poll_cadence_stays_live(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """A heartbeat as old as the idle connector poll cadence (30s) must
+        """A heartbeat as old as an idle 30s long-poll must
         still count as live — this is the false-negative the bug produced when
         TTL (18s) was below the 30s cadence."""
         store = AgentSessionStore()
@@ -106,7 +103,7 @@ class TestLiveness:
             agent = await _make_agent(session, "always-on-idle")
             await store.touch_heartbeat(session, agent.id, None)
             await _age_heartbeat(
-                session, agent.id, timedelta(seconds=CONNECTOR_POLL_TIMEOUT_SECONDS)
+                session, agent.id, timedelta(seconds=IDLE_POLL_SECONDS)
             )
             await session.commit()
 

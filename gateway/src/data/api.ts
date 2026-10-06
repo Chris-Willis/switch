@@ -637,64 +637,6 @@ export async function updateAgentOptions(
   return (await res.json()) as AgentSummary;
 }
 
-// ── Connectors ──────────────────────────────────────────────────────────────
-
-export interface ConnectorTypeConfigSchema {
-  type: string;
-  properties: Record<
-    string,
-    {
-      type?: string;
-      title?: string;
-      description?: string;
-      default?: unknown;
-      format?: string;
-    }
-  >;
-  required?: string[];
-}
-
-export interface ConnectorTypeInfo {
-  key: string;
-  config_schema: ConnectorTypeConfigSchema;
-}
-
-export interface ConnectorResult {
-  connector_id: string;
-  connector_type: string;
-  display_name: string;
-  status: string;
-  agent_names: string[];
-  created_at: string;
-}
-
-export async function fetchConnectorTypes(): Promise<ConnectorTypeInfo[] | null> {
-  return fetchJson<ConnectorTypeInfo[]>("/connectors/types");
-}
-
-export async function createConnector(
-  type: string,
-  displayName: string,
-  connectionConfig: Record<string, unknown>,
-): Promise<ConnectorResult> {
-  const res = await fetch(`${BASE}/connectors`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({
-      type,
-      display_name: displayName,
-      connection_config: connectionConfig,
-    }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    const detail = body?.detail ?? `${res.status} ${res.statusText}`;
-    throw new Error(detail);
-  }
-  return (await res.json()) as ConnectorResult;
-}
-
 // ── API Keys ─────────────────────────────────────────────────────────────────
 
 export interface ApiKeyDetail {
@@ -750,6 +692,21 @@ export async function deleteApiKey(keyId: string): Promise<boolean> {
 }
 
 // ── Collaborations ───────────────────────────────────────────────────────────
+
+export interface ConnectorTypeConfigSchema {
+  type: string;
+  properties: Record<
+    string,
+    {
+      type?: string;
+      title?: string;
+      description?: string;
+      default?: unknown;
+      format?: string;
+    }
+  >;
+  required?: string[];
+}
 
 export interface BridgeTypeInfo {
   key: string;
