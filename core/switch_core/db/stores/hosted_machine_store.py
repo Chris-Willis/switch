@@ -15,6 +15,7 @@ from switch_core.db.models import (
     HostedMachine,
     require_tenant_id,
 )
+from switch_core.gateway.cloud_controllers import CloudControllers
 from switch_core.keys import Keyring
 
 MACHINE_CONNECT_TIMEOUT = timedelta(minutes=10)
@@ -220,12 +221,59 @@ class HostedMachineStore:
         slots: list[str],
         capacity: int,
         now: datetime,
+        controllers: CloudControllers,
     ) -> HostedMachine:
-        """The owner's machine, reused or newly placed on a free slot.
+        """The owner's machine, reused or newly placed on a free slot, linked
+        to its ec2 controller.
 
+        A new machine runs the agent controller. A reused one keeps its
+        runtime, and only one on the controller runtime is linked.
         The caller holds `lock_launches`, so no other claim in the tenant can
         take the same slot or count towards capacity meanwhile.
         """
+        machine = await self._claim(
+            session,
+            owner_id=owner_id,
+            slots=slots,
+            capacity=capacity,
+            now=now,
+            runtime="controller",
+        )
+        if machine.runtime == "controller":
+            await controllers.cloud_controller(session, machine)
+            await session.flush()
+        return machine
+
+    async def claim_for_launch(
+        self,
+        session: AsyncSession,
+        *,
+        owner_id: str,
+        slots: list[str],
+        capacity: int,
+        now: datetime,
+    ) -> HostedMachine:
+        """The owner's machine for a hosted launch: as `claim`, except that a
+        new machine runs the worker and is linked to no controller."""
+        return await self._claim(
+            session,
+            owner_id=owner_id,
+            slots=slots,
+            capacity=capacity,
+            now=now,
+            runtime="worker",
+        )
+
+    async def _claim(
+        self,
+        session: AsyncSession,
+        *,
+        owner_id: str,
+        slots: list[str],
+        capacity: int,
+        now: datetime,
+        runtime: Literal["controller", "worker"],
+    ) -> HostedMachine:
         tenant_id = require_tenant_id()
         machine = await self.live_for_owner(session, owner_id)
         if machine is not None:
@@ -271,6 +319,7 @@ class HostedMachineStore:
             owner_id=owner_id,
             slot_id=slot_id,
             generation=(generation or 0) + 1,
+            runtime=runtime,
             state="queued",
             desired_state="running",
             active_at=now,

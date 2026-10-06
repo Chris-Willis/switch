@@ -21,6 +21,10 @@ from switch_core.db.stores.hosted_machine_store import (
 )
 from switch_core.db.stores.hosted_mailbox_store import HostedMailboxStore, MailboxNotice
 from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.cloud_controllers import (
+    CloudControllersUnavailable,
+    cloud_controllers,
+)
 from switch_core.gateway.dependencies import get_config, get_protocol, get_session
 from switch_core.gateway.hosted_launches import (
     LAUNCH_DISABLED,
@@ -65,6 +69,7 @@ async def machine_summary(session: AsyncSession, machine: HostedMachine) -> dict
         else machine.heartbeat_at.isoformat(),
         "disk": _usage(machine.heartbeat, "disk"),
         "memory": _usage(machine.heartbeat, "memory"),
+        "controller_id": machine.controller_id,
         "agents": [launch.id for launch in launches],
     }
 
@@ -79,7 +84,8 @@ async def ensure_machine(
     config: SwitchConfig,
     settings: HostedControllerSettings | None,
 ) -> HostedMachine:
-    """The owner's machine, claimed and started so it warms before an agent needs it.
+    """The owner's machine, claimed and started so it warms before an agent
+    needs it, and linked to the ec2 controller its agents are placed on.
 
     A machine its owner stopped, or one in error or being removed, is
     returned as it is.
@@ -89,6 +95,10 @@ async def ensure_machine(
     """
     if settings is None or not launch_enabled(config, settings):
         raise MachineUnavailable(LAUNCH_DISABLED)
+    try:
+        controllers = cloud_controllers()
+    except CloudControllersUnavailable as error:
+        raise MachineUnavailable(str(error)) from error
     machines = HostedMachineStore()
     await lock_launches(session)
     existing = await machines.live_for_owner(session, owner_id)
@@ -105,6 +115,7 @@ async def ensure_machine(
         slots=list(settings.machine_slots),
         capacity=config.hosted_launch_capacity,
         now=datetime.now(UTC),
+        controllers=controllers,
     )
 
 

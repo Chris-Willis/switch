@@ -8,6 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.db.models import AgentController, HostedMachine
 
 
+class CloudControllersUnavailable(RuntimeError):
+    """Agent management is not enabled, so no cloud machine can run the agent controller."""
+
+
 class CloudControllers(Protocol):
     """What preparing a machine on the controller runtime, and telling its
     controller a login sealed for it changed, need from agent management,
@@ -45,7 +49,7 @@ def set_cloud_controllers(provider: CloudControllers | None) -> None:
 
 def cloud_controllers() -> CloudControllers:
     if _cloud_controllers is None:
-        raise RuntimeError(
+        raise CloudControllersUnavailable(
             "A cloud machine runs the agent controller, and agent management "
             "is not enabled to provide it (AGENT_MANAGEMENT_ENABLED)."
         )

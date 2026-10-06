@@ -40,6 +40,7 @@ from switch_core.db.models import (
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.hosted_controller import router as hosted_controller_router
+from switch_core.gateway.hosted_machines import router as hosted_machines_router
 from switch_core.gateway.provider_connections import (
     router as provider_connections_router,
 )
@@ -197,12 +198,14 @@ async def cloud(
         hosted_login_kms_key_arn=KEY_ARN,
         hosted_login_kms_region="us-east-1",
         hosted_provider_verification_enabled=False,
+        hosted_launch_capacity=2,
         hosted_controller_config_path=str(settings_path),
         hosted_github_config_path="/tmp/synthetic-github.json",
     )
     gateway = _gateway_app(harness)
     gateway.state.hosted_controller_settings = settings
     gateway.include_router(hosted_controller_router)
+    gateway.include_router(hosted_machines_router)
     gateway.include_router(provider_connections_router, prefix="/provider-connections")
     gateway.dependency_overrides[gw_deps.get_config] = lambda: config
     harness.app.include_router(hosted_router)
@@ -403,6 +406,58 @@ class TestPrepare:
         owner = await add_member(cloud.factory, "ada")
         with pytest.raises(SealingNotConfigured):
             await cloud.prepare(await cloud.machine(owner))
+
+
+class TestEnsure:
+    async def test_a_new_users_machine_runs_the_controller_it_is_linked_to(
+        self, cloud: Cloud
+    ) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        async with cloud.factory() as session:
+            await ProviderConnectionStore().save(
+                session,
+                owner.id,
+                "setup-token",
+                KEYRING.encrypt("PLACEHOLDER-CLAUDE-TOKEN"),
+                datetime.now(UTC),
+            )
+            await session.commit()
+
+        ensured = await cloud.client.post(
+            "/gateway/hosted-machines/ensure", cookies=cookies_for(owner)
+        )
+
+        assert ensured.status_code == 200, ensured.text
+        body = ensured.json()
+        async with cloud.factory() as session:
+            machine = await session.get(
+                HostedMachine, (TENANT_ZERO_ID, body["machine_id"])
+            )
+            assert machine is not None
+            controller = await session.get(AgentController, body["controller_id"])
+        assert machine.runtime == "controller"
+        assert machine.controller_id == body["controller_id"]
+        assert controller is not None
+        assert (controller.kind, controller.owner_id) == ("ec2", owner.id)
+
+        prepared = await cloud.prepare(body["machine_id"])
+        assert prepared.status_code == 200, prepared.text
+        credential = prepared.json()["controller"]
+        await cloud.update_machine(body["machine_id"], instance_id=INSTANCE)
+        assert credential["id"] == body["controller_id"]
+        token = await cloud.exchange(credential["id"], credential["credential"])
+        assert token.status_code == 200, token.text
+        envelope = await cloud.envelope(
+            EnrolledController(
+                controller_id=credential["id"],
+                credential=credential["credential"],
+                access_token=token.json()["access_token"],
+                owner=owner,
+            ),
+            "claude",
+        )
+        assert envelope.status_code == 200, envelope.text
+        assert _open(envelope.json())["credential"] == "PLACEHOLDER-CLAUDE-TOKEN"
 
 
 class TestExchange:

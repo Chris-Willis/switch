@@ -113,7 +113,7 @@ class HostedLaunchStore:
                 "Your cloud agent limit has been reached. Remove an agent before creating another."
             )
         machines = HostedMachineStore()
-        machine = await machines.claim(
+        machine = await machines.claim_for_launch(
             session, owner_id=owner_id, slots=slots, capacity=capacity, now=now
         )
         launch = HostedLaunch(

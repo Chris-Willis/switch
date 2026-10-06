@@ -25,7 +25,11 @@ from switch_core.db.stores.hosted_machine_store import (
 )
 from tests.switch_core.bridges.agent.protocol.registration_harness import KEYRING
 from tests.switch_core.gateway.agent_route_harness import add_agent
-from tests.switch_core.hosted_machine_helpers import seed_launch, seed_machine
+from tests.switch_core.hosted_machine_helpers import (
+    LinkingControllers,
+    seed_launch,
+    seed_machine,
+)
 
 SLOTS = ["slot-a", "slot-b"]
 
@@ -58,6 +62,7 @@ async def claim(factory, owner_id, slots=SLOTS, capacity=2):
             slots=slots,
             capacity=capacity,
             now=datetime.now(UTC),
+            controllers=LinkingControllers(),
         )
         await session.commit()
         return machine
@@ -89,6 +94,22 @@ async def test_claim_creates_a_queued_machine(factory):
         machine.agents_version,
     ) == ("owner-a", "slot-a", 1, "queued", "running", 1, 1)
     assert machine_starting(machine)
+    assert machine.runtime == "controller"
+    assert machine.controller_id is not None
+
+
+async def test_a_claim_for_a_launch_creates_an_unlinked_worker_machine(factory):
+    async with factory() as session:
+        await lock_launches(session)
+        machine = await HostedMachineStore().claim_for_launch(
+            session,
+            owner_id="owner-a",
+            slots=SLOTS,
+            capacity=2,
+            now=datetime.now(UTC),
+        )
+        await session.commit()
+    assert (machine.runtime, machine.controller_id) == ("worker", None)
 
 
 async def test_a_second_claim_reuses_the_owner_s_machine(factory):

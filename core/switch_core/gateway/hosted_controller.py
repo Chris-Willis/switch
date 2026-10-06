@@ -460,13 +460,13 @@ async def _prepare_controller(
 
     A retry at one revision returns the same credential; a new revision
     replaces it, which retires the old one and every token exchanged for it.
-    A controller linked just now gets every login its owner already holds,
-    sealed for it.
+    A controller linked just now, or on the machine's first prepare, gets
+    every login its owner already holds, sealed for it.
     """
     kms = kms_settings(config)
     store = HostedMachineStore()
     controller, linked = await management.cloud_controller(session, machine)
-    if linked:
+    if linked or machine.controller_credential_revision is None:
         sealed = await seal_stored_logins(
             session, config, config.keyring, controller, now
         )

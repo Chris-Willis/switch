@@ -80,7 +80,11 @@ from tests.switch_core.bridges.agent.protocol.registration_harness import (
     make_owner,
     make_service,
 )
-from tests.switch_core.hosted_machine_helpers import seed_launch, seed_machine
+from tests.switch_core.hosted_machine_helpers import (
+    LinkingControllers,
+    seed_launch,
+    seed_machine,
+)
 
 TOKEN = "SYNTHETIC-CONTROLLER-CREDENTIAL-FOR-TESTS"
 HEADERS = {"Authorization": "Bearer " + TOKEN}
@@ -1345,6 +1349,7 @@ async def _claim(factory, owner_id: str) -> HostedMachine:
             slots=["slot-a", "slot-b"],
             capacity=2,
             now=datetime.now(UTC),
+            controllers=LinkingControllers(),
         )
         await session.commit()
         return machine

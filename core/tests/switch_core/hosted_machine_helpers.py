@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import HostedLaunch, HostedMachine
+from switch_core.db.models import AgentController, HostedLaunch, HostedMachine
 
 
 async def seed_machine(
@@ -70,3 +71,24 @@ async def seed_launch(
     session.add(launch)
     await session.flush()
     return launch
+
+
+class LinkingControllers:
+    """Links a machine to a new ec2 controller, as agent management does for
+    an owner's first machine."""
+
+    async def cloud_controller(self, session, machine):
+        if machine.controller_id is not None:
+            linked = await session.scalar(
+                select(AgentController).where(
+                    AgentController.id == machine.controller_id
+                )
+            )
+            return linked, False
+        controller = AgentController(
+            owner_id=machine.owner_id, name="Switch cloud", kind="ec2"
+        )
+        session.add(controller)
+        await session.flush()
+        machine.controller_id = controller.id
+        return controller, True
