@@ -348,17 +348,9 @@ previous connection intact. Back up and rotate the server encryption key with th
 same care as other encrypted credentials. Removal deletes the database record;
 revocation at Anthropic and database-backup retention are separate concerns.
 
-Worker assignment bundles contain no provider credential. Managed runtimes fetch
-current credentials from the authenticated worker
-API. Revocation denies further credential and control requests and stops the
-affected workers. Reconnect the provider, then use Retry to start them again.
-
 Codex, Cursor, OpenCode and Antigravity use the same owner-scoped connection API
-under their provider IDs. The hosted controller runs no provider verification
-instances, so leave `HOSTED_PROVIDER_VERIFICATION_ENABLED` (Helm:
-`switchCore.hostedProviderVerificationEnabled`) off: a check queued with it on is
-never run. Test each provider with its intended account before deployment
-acceptance.
+under their provider IDs. Test each provider with its intended account before
+deployment acceptance.
 
 ### GitHub App connections
 
@@ -399,8 +391,6 @@ again when an agent is started or addressed, or when the user creates an agent.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `HOSTED_AGENTS_PER_OWNER` | 3 | Cloud agents per user. They share the user's machine. |
-| `HOSTED_SESSIONS_PER_AGENT` | 8 | Sessions per agent. |
 | `HOSTED_IDLE_STOP_MINUTES` | 30 | Idle minutes before a machine stops. 0 disables. Maximum 1440. |
 | `HOSTED_DISK_RETENTION_DAYS` | 7 | Days a data disk is kept after its last agent is removed. 1–90. |
 | `HOSTED_LAUNCH_CAPACITY` | 0 | Maximum live machines. No more than the number of machine slots. 0 disables creation. |

@@ -152,7 +152,6 @@ switchCore:
   hostedLaunchCapacity: 0
   hostedDiskRetentionDays: 7
   hostedIdleStopMinutes: 30
-  hostedProviderVerificationEnabled: false
   # KMS key that seals hosted provider logins for cloud machines running the
   # agent controller. switch-core only calls GenerateDataKey on it, so its
   # ServiceAccount (below) needs a cloud IAM binding allowing that. Empty
