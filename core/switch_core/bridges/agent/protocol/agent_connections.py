@@ -469,6 +469,11 @@ class AgentConnection:
         return self.closure is None and (now - self.last_beat) < HEARTBEAT_TTL_SECONDS
 
 
+# The `(transport, client)` an agent run by an agents controller counts under:
+# it travels on its controller's connection, whatever that connection uses.
+CONTROLLER_LABEL = ("controller", "agents-controller")
+
+
 def connection_transport(conn: AgentConnection) -> str:
     """`websocket` or `sse` while a stream is attached, by what it travels over;
     `detached` while it has dropped and the connection waits out its heartbeat
@@ -1430,6 +1435,8 @@ class AgentConnectionRegistry:
         Counted like `live_agent_ids`: an agent is one, however many
         connections it holds, but an agent connected two different ways counts
         once under each, so the labels can sum to more than the agent count.
+        An agent run by an agents controller has no connection of its own and
+        counts under `CONTROLLER_LABEL` while its controller is live.
         """
         now = time.monotonic()
         agents: dict[tuple[str, str], set[str]] = {}
@@ -1437,6 +1444,9 @@ class AgentConnectionRegistry:
             if conn.is_alive(now):
                 key = (connection_transport(conn), client_label(conn.declaration))
                 agents.setdefault(key, set()).add(conn.agent_id)
+        controlled = self.controllers.live_agent_ids()
+        if controlled:
+            agents.setdefault(CONTROLLER_LABEL, set()).update(controlled)
         return {key: len(ids) for key, ids in agents.items()}
 
     def live_connection_ids(self) -> set[str]:

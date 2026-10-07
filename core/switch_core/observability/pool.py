@@ -271,8 +271,10 @@ class WaitTimedQueuePool(AsyncAdaptedQueuePool):
 
     def _do_get(self) -> ConnectionPoolEntry:
         started = time.perf_counter()
-        entry = super()._do_get()
-        metrics().observe(
-            DB_POOL_WAIT_DURATION, {}, (time.perf_counter() - started) * 1000.0
-        )
-        return entry
+        try:
+            return super()._do_get()
+        finally:
+            # A wait that ends in a pool timeout is the one that matters most.
+            metrics().observe(
+                DB_POOL_WAIT_DURATION, {}, (time.perf_counter() - started) * 1000.0
+            )

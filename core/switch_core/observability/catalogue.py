@@ -356,14 +356,15 @@ AGENT_CONNECTIONS_OPENED = _spec(
 # `client` is the declared artifact when the registry knows the name, else
 # `other` or `unknown`. Never the declared version: the client chooses it.
 # `transport` is `websocket`, `sse` (an old client on the event stream, kept
-# for a compatibility window that ends when this stays at zero), or `detached`
-# (the stream dropped, and the connection waits out its heartbeat window).
+# for a compatibility window that ends when this stays at zero), `detached`
+# (the stream dropped, and the connection waits out its heartbeat window), or
+# `controller` (run by an agents controller, on that controller's connection).
 AGENTS_CONNECTED = _spec(
     "switch.agents.connected",
     "gauge",
     "{agent}",
     "Agents holding a live protocol connection, by transport (websocket, sse, "
-    "detached) and client. An agent connected more than one way counts once "
+    "detached, controller) and client. An agent connected more than one way counts once "
     "under each, so summing across the attributes can exceed the number of "
     "agents.",
     "transport",

@@ -23,11 +23,13 @@ from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.auth import BearerAuthMiddleware
 from switch_core.bridges.agent.dependencies import get_config, get_protocol
 from switch_core.bridges.agent.protocol.agent_connections import (
+    CONTROLLER_LABEL,
     PROTOCOL_VERSION,
     AgentConnectionRegistry,
     ClientDeclaration,
     client_label,
 )
+from switch_core.bridges.agent.protocol.controller_presence import Binding
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.db.models import Agent
 from switch_core.db.stores.agent_store import AgentStore
@@ -111,6 +113,29 @@ def test_agents_are_counted_per_transport_and_client() -> None:
         ("websocket", "unknown"): 1,
         ("websocket", "other"): 1,
         ("detached", "agent-runtime"): 1,
+    }
+
+
+def test_agents_run_by_a_live_controller_count_under_the_controller() -> None:
+    connections = AgentConnectionRegistry()
+    _open(connections, "a1", "c1", "agent-runtime")
+    controllers = connections.controllers
+    for agent_id in ("m1", "m2"):
+        controllers.bind(
+            Binding(
+                agent_id=agent_id,
+                controller_id="ctl",
+                tenant_id="t",
+                controller_name="the machine",
+                running=True,
+            )
+        )
+    conn = controllers.open(controller_id="ctl", tenant_id="t", resume_cursors={})
+    controllers.attach_stream(conn)
+
+    assert connections.live_agents_by_transport() == {
+        ("websocket", "agent-runtime"): 1,
+        CONTROLLER_LABEL: 2,
     }
 
 

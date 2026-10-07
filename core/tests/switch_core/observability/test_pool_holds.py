@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy import exc as sqlalchemy_exc
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import QueuePool
 from sqlalchemy.util import greenlet_spawn
@@ -154,6 +155,25 @@ class TestWaitTime:
             pool._do_get()  # type: ignore[attr-defined]
 
         await greenlet_spawn(get_and_return)
+
+        waits = _histograms(registry, "switch.db.pool.wait.duration")
+        assert waits[()][0] == 1
+        await engine.dispose()
+
+    async def test_a_wait_that_times_out_is_timed_too(self, registry) -> None:
+        engine = create_async_engine(
+            "postgresql+asyncpg://u:p@localhost/db",
+            poolclass=WaitTimedQueuePool,
+            pool_size=1,
+            max_overflow=0,
+            pool_timeout=0.01,
+        )
+        pool = engine.pool
+        # Every connection the pool may have is out: the request can only wait.
+        pool._overflow = pool._max_overflow  # type: ignore[attr-defined]
+
+        with pytest.raises(sqlalchemy_exc.TimeoutError):
+            await greenlet_spawn(pool._do_get)  # type: ignore[attr-defined]
 
         waits = _histograms(registry, "switch.db.pool.wait.duration")
         assert waits[()][0] == 1
