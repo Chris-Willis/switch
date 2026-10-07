@@ -46,13 +46,45 @@ import AddMachineDialog from "./AddMachineDialog";
 import EditMachineDialog from "./EditMachineDialog";
 import ManagedAgentDialog from "./ManagedAgentDialog";
 
-const REFRESH_MS = 10_000;
+const REFRESH_MS = 5_000;
 
 const STATE_COLOR: Record<ControllerState, "success" | "warning" | "default"> = {
   online: "success",
-  unknown: "warning",
+  offline: "warning",
+  unknown: "default",
   revoked: "default",
 };
+
+const DISCONNECT_REASON: Record<string, string> = {
+  closed: "its controller stopped",
+  heartbeat_lapsed: "its connection stopped responding",
+  taken_over: "another instance of its controller took over",
+  revoked: "it was removed",
+};
+
+/** What the state chip says on hover: when the machine connected, or when and why it stopped. */
+function stateTitle(row: Controller): string {
+  const connection = row.connection;
+  if (row.state === "revoked") return "Removed from Switch.";
+  if (row.state === "unknown" || connection === null)
+    return "Has never connected to Switch. Start its controller with switch-agent-controller run.";
+  if (row.state === "online") return `Connected since ${absoluteTitle(connection.connected_at)}`;
+  if (connection.disconnected_at !== null) {
+    const why = connection.disconnect_reason
+      ? (DISCONNECT_REASON[connection.disconnect_reason] ?? connection.disconnect_reason)
+      : null;
+    return `Disconnected ${formatRelative(connection.disconnected_at)}${why ? `: ${why}` : ""}.`;
+  }
+  return `Not heard from since ${formatRelative(connection.last_beat_at)}.`;
+}
+
+/** The last time Switch heard from the machine at all: a status report, or its connection. */
+function lastContact(row: Controller): string | null {
+  const times = [row.last_seen_at, row.connection?.last_beat_at, row.connection?.disconnected_at]
+    .filter((t): t is string => typeof t === "string")
+    .sort((a, b) => Date.parse(b) - Date.parse(a));
+  return times[0] ?? null;
+}
 
 const PROCESS_COLOR: Record<string, "success" | "warning" | "error" | "default"> = {
   running: "success",
@@ -199,7 +231,9 @@ export default function MachinesPage() {
         headerName: "State",
         width: 110,
         renderCell: ({ row }) => (
-          <Chip size="small" color={STATE_COLOR[row.state]} label={row.state} />
+          <Tooltip title={stateTitle(row)}>
+            <Chip size="small" color={STATE_COLOR[row.state] ?? "default"} label={row.state} />
+          </Tooltip>
         ),
       },
       {
@@ -245,9 +279,11 @@ export default function MachinesPage() {
         valueGetter: (_value, row) =>
           row.state === "revoked"
             ? "None (revoked)"
-            : row.state === "unknown"
-              ? "Unknown"
-              : row.status
+            : row.state === "offline"
+              ? "Not connected"
+              : row.state === "unknown"
+                ? "Unknown"
+                : row.status
                 ? `${row.status.agents.filter((a) => a.process === "running").length} / ${row.status.agents.length}`
                 : EM_DASH,
       },
@@ -255,9 +291,10 @@ export default function MachinesPage() {
         field: "last_seen_at",
         headerName: "Last seen",
         width: 130,
+        valueGetter: (_value, row) => lastContact(row),
         renderCell: ({ row }) => (
-          <Tooltip title={absoluteTitle(row.last_seen_at)}>
-            <span>{formatRelative(row.last_seen_at)}</span>
+          <Tooltip title={absoluteTitle(lastContact(row))}>
+            <span>{formatRelative(lastContact(row))}</span>
           </Tooltip>
         ),
       },
@@ -372,10 +409,16 @@ export default function MachinesPage() {
                 <Chip size="small" label="not running: machine revoked" />
               </Tooltip>
             );
+          if (row.controller_state === "offline")
+            return (
+              <Tooltip title="Its machine is not connected to Switch, so this agent is not reachable. It runs again once the machine's controller is back.">
+                <Chip size="small" color="warning" label="machine offline" />
+              </Tooltip>
+            );
           if (row.controller_state === "unknown")
             return (
-              <Tooltip title="The machine has stopped reporting; this agent's state is not known.">
-                <Chip size="small" color="warning" label="unknown" />
+              <Tooltip title="Its machine has never connected to Switch; this agent's state is not known.">
+                <Chip size="small" label="unknown" />
               </Tooltip>
             );
           if (!row.status)

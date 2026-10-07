@@ -16,7 +16,22 @@ export const PROVIDERS: { value: Provider; label: string }[] = [
 
 export type DesiredState = "running" | "stopped";
 export type Isolation = "shared" | "isolated";
-export type ControllerState = "online" | "unknown" | "revoked";
+/**
+ * `online`: its stream connection to Switch is open and beating. `offline`: it
+ * was connected and is not now (stopped, asleep, or cut off). `unknown`: it has
+ * never connected. `revoked`: removed from Switch.
+ */
+export type ControllerState = "online" | "offline" | "unknown" | "revoked";
+
+/** The machine's stream connection as Switch last recorded it: the current one, or the last. */
+export interface ControllerConnection {
+  connected_at: string;
+  last_beat_at: string | null;
+  /** Null while the connection is open. */
+  disconnected_at: string | null;
+  /** `closed` (the machine said goodbye), `heartbeat_lapsed`, `taken_over` or `revoked`. */
+  disconnect_reason: string | null;
+}
 
 export interface Platform {
   os: string;
@@ -74,7 +89,10 @@ export interface Controller {
   platform: Platform | null;
   version: string | null;
   state: ControllerState;
+  /** When it last reported its status. */
   last_seen_at: string | null;
+  /** Null when it has never connected. */
+  connection: ControllerConnection | null;
   status: StatusReport | null;
   assignment_revision: number;
   created_at: string;
@@ -258,7 +276,26 @@ export function createOperation(body: {
   return request<Operation>("/operations", { method: "POST", body: JSON.stringify(body) });
 }
 
-/** The command a user runs on the machine to enroll it with a fresh code. */
-export function enrollCommand(server: string, code: string): string {
-  return `switch-agent-controller enroll --server ${server} --code ${code}`;
+/** One word for a POSIX shell: as it is when nothing in it is special, else single-quoted. */
+export function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * The command a user runs on the machine to enroll it with a fresh code, with
+ * the machine's name and description when given (blank is left out: the name
+ * then defaults to the host name).
+ */
+export function enrollCommand(
+  server: string,
+  code: string,
+  machine: { name: string; description: string },
+): string {
+  const words = ["switch-agent-controller", "enroll", "--server", server, "--code", code];
+  const name = machine.name.trim();
+  const description = machine.description.trim();
+  if (name) words.push("--name", name);
+  if (description) words.push("--description", description);
+  return words.map(shellQuote).join(" ");
 }
