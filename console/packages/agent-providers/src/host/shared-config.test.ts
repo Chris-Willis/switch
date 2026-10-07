@@ -284,7 +284,6 @@ it("gives an agent unit's sessions git and gh through the unit's credentials, ov
     );
     vi.stubEnv('PATH', '/usr/local/bin:/usr/bin:/bin');
     vi.stubEnv('SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS', credentialsPath);
-    vi.stubEnv('SWITCH_HOSTED_GITHUB_REPOSITORY', 'example/project');
     vi.stubEnv('SWITCH_HOSTED_GITHUB_CLI', join(root, 'bin'));
     const config = buildSharedHostConfig({
       session: { sessionId: 'session', agentId: 'agent', provider: 'claude' },
@@ -314,8 +313,9 @@ it("gives an agent unit's sessions git and gh through the unit's credentials, ov
     const { input } = await prepareSharedConfig(root, config, runtime);
     expect(input.env).toMatchObject({
       SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: credentialsPath,
-      SWITCH_HOSTED_GITHUB_REPOSITORY: 'example/project',
       GIT_CONFIG_KEY_1: 'credential.https://github.com.helper',
+      GIT_CONFIG_KEY_3: 'credential.https://github.com.useHttpPath',
+      GIT_CONFIG_VALUE_3: 'true',
       GIT_TERMINAL_PROMPT: '0',
       PATH: `${join(root, 'bin')}:/usr/local/bin:/usr/bin:/bin`,
     });
