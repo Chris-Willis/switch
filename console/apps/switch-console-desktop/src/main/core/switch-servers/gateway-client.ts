@@ -2437,6 +2437,7 @@ export async function getConnectionCatalog(
     description: entry.description,
     enabled: entry.enabled,
     auth_type: entry.auth_type,
+    connectable: entry.connectable,
     status: !entry.enabled ? 'coming_soon' : entry.status === 'active' ? 'connected' : entry.status,
     unavailable_reason: entry.enabled ? entry.unavailable_reason : null,
   }));
@@ -2446,9 +2447,30 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
   const response = await gatewayFetch(server, '/provider-connections/catalog', {
     authenticated: true,
   });
-  return connectionCatalogSchema
-    .parse(await response.json())
-    .connections.map((entry) => ({ ...entry, unavailable_reason: null }));
+  return (
+    connectionCatalogSchema
+      .parse(await response.json())
+      // GitHub was the one service such a server could connect.
+      .connections.map((entry) => ({
+        ...entry,
+        connectable: entry.enabled && entry.slug === 'github',
+        unavailable_reason: null,
+      }))
+  );
+}
+
+/**
+ * Whether the server has service connections, which any of its agents can be
+ * granted: an older one had connections for its cloud agents alone.
+ */
+export async function servesServiceConnections(server: SwitchServer): Promise<boolean> {
+  try {
+    await gatewayFetch(server, '/service-connections', { authenticated: true });
+    return true;
+  } catch (error) {
+    if (error instanceof GatewayError && error.status === 404) return false;
+    throw error;
+  }
 }
 
 /** An agent's service grants, with any it works without; its owner's alone to read. */

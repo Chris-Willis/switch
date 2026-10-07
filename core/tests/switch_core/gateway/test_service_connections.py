@@ -122,8 +122,10 @@ class TestConnections:
             "external_identity": "login-1001",
         }
         assert (github["enabled"], github["auth_type"]) == (True, "oauth")
+        assert github["connectable"] is True
         assert entries["jira"]["configured"] is False
         assert entries["jira"]["enabled"] is False
+        assert entries["jira"]["connectable"] is False
         assert entries["jira"]["status"] == "not_connected"
 
     async def test_disconnecting_deletes_grants_and_revokes_the_sign_in(

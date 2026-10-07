@@ -281,7 +281,8 @@ Both are mounted with the other agent routes in
 
 - `GET /gateway/service-connections`: each catalog entry with the user's
   status: `not_connected`, `active`, `needs_reauthorization` or `error`, plus
-  `enabled` and `auth_type` from the catalog, `configured` (false when the
+  `enabled` and `auth_type` from the catalog, `connectable` (the server has
+  the service's adapter), `configured` (false when the
   service cannot be granted here, with the reason), `consent` and
   `external_identity`. It replaces `/provider-connections/catalog`, which
   Console still reads from a server that answers this route 404.

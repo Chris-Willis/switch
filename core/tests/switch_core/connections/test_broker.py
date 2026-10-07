@@ -397,6 +397,7 @@ class TestChecks:
             False,
         )
         assert "not available on this server" in refused.message
+        assert broker.connectable("github") is False
 
     async def test_an_owner_no_longer_in_the_workspace_is_forbidden(
         self, broker, session_factory
@@ -659,6 +660,8 @@ class TestConnectOnly:
 
         reason = broker.availability("github")
         assert reason is not None and "not granted to agents" in reason
+        assert broker.connectable("github") is True
+        assert broker.connectable("jira") is False
         refused = await _refused(broker, session_factory, world.agent.id)
         assert (refused.status_code, refused.code, refused.retryable) == (
             503,

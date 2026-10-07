@@ -752,6 +752,13 @@ class ServiceBroker:
             )
         return grants
 
+    def connectable(self, service: str) -> bool:
+        """Whether a person can connect `service` here: it has an adapter."""
+        entry = self._catalog.get(service)
+        return (
+            entry is not None and entry.definition.enabled and service in self._adapters
+        )
+
     def availability(self, service: str) -> str | None:
         """Why `service` cannot be granted on this server, or None if it can."""
         entry = self._catalog.get(service)

@@ -50,6 +50,7 @@ const {
   cloudLifecycle,
   getCloudLaunchConfiguration,
   getConnectionCatalog,
+  servesServiceConnections,
   fetchServiceGrants,
   removeServiceGrant,
   setServiceGrant,
@@ -1138,6 +1139,7 @@ describe('GitHub connection transport', () => {
       description: 'Repositories.',
       enabled: true,
       auth_type: 'oauth',
+      connectable: true,
       configured: false,
       unavailable_reason: 'GitHub can be connected on this server but not granted to agents.',
       status: 'needs_reauthorization',
@@ -1162,6 +1164,7 @@ describe('GitHub connection transport', () => {
         description: 'Repositories.',
         enabled: true,
         auth_type: 'oauth',
+        connectable: true,
         status: 'needs_reauthorization',
         unavailable_reason: entry.unavailable_reason,
       },
@@ -1183,7 +1186,9 @@ describe('GitHub connection transport', () => {
     fetchMock
       .mockResolvedValueOnce(new Response('{"detail":"Not Found"}', { status: 404 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ connections: [github] })));
-    expect(await getConnectionCatalog(SERVER)).toEqual([{ ...github, unavailable_reason: null }]);
+    expect(await getConnectionCatalog(SERVER)).toEqual([
+      { ...github, connectable: true, unavailable_reason: null },
+    ]);
     const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
     expect(url).toBe('https://switch.example.com/gateway/provider-connections/catalog');
     fetchMock
@@ -1192,6 +1197,14 @@ describe('GitHub connection transport', () => {
         new Response(JSON.stringify({ connections: [{ ...github, status: 'pending' }] }))
       );
     await expect(getConnectionCatalog(SERVER)).rejects.toThrow();
+  });
+  it('tells a server with service connections from one without', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ connections: [] })));
+    expect(await servesServiceConnections(SERVER)).toBe(true);
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"Not Found"}', { status: 404 }));
+    expect(await servesServiceConnections(SERVER)).toBe(false);
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"boom"}', { status: 500 }));
+    await expect(servesServiceConnections(SERVER)).rejects.toThrow();
   });
   it("reads, sets and removes an agent's service grants", async () => {
     const listed = {
@@ -1214,7 +1227,7 @@ describe('GitHub connection transport', () => {
     expect((await fetchServiceGrants(SERVER, 'agent 1')).grants[0]?.summary).toBe(
       listed.grants[0]!.summary
     );
-    expect(fetchMock.mock.calls.at(-1)?.[0]).toBe(
+    expect((fetchMock.mock.calls.at(-1) as unknown as [string])[0]).toBe(
       'https://switch.example.com/gateway/agents/agent%201/service-grants'
     );
 

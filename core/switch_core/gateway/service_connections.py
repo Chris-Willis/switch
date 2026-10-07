@@ -94,6 +94,7 @@ async def list_service_connections(
                 "description": definition.description,
                 "enabled": definition.enabled,
                 "auth_type": definition.auth.type,
+                "connectable": broker.connectable(definition.slug),
                 "configured": unavailable is None,
                 "unavailable_reason": unavailable,
                 "status": "not_connected" if connection is None else connection.status,

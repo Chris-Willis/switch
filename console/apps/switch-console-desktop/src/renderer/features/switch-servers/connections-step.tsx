@@ -98,7 +98,8 @@ export function ConnectionsGrid({
             className="grid max-h-96 grid-cols-2 gap-2 overflow-auto"
           >
             {visible.map((connection) => {
-              const available = connection.enabled && connection.slug === 'github';
+              // GitHub is the one service with a connect step here.
+              const available = connection.connectable && connection.slug === 'github';
               return (
                 <button
                   key={connection.slug}
