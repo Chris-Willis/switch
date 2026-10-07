@@ -38,7 +38,8 @@ where it deliberately stops short.
   when the flag is on**: a model validator raises if it is missing or shorter than 32 chars. It is
   separate from `jwt_secret_key` on purpose.
 - `controller_status_interval_seconds: int = 60`. Returned to controllers as `report_within_s`.
-  A controller is `unknown` after 3 intervals without a status.
+  Placement needs a status within 3 intervals. Whether a machine is online is read from its
+  persisted stream connection instead (see "Liveness" below).
 
 With the flag off, none of the routes below are mounted, and the middleware branch is
 inactive.
@@ -50,7 +51,10 @@ inactive.
     `version` null, `public_key` null.
   - `api_key_id`: the credential, an `api_keys` row of type `controller`, holding the hash only.
   - `assignment_revision` int default 0, `status_seq` bigint null, `status` JSONB null.
-  - `last_seen_at` null, `revoked_at` null, `created_at`, `updated_at`.
+  - `last_seen_at` null (the last status), `revoked_at` null, `created_at`, `updated_at`.
+  - The stream connection, as the process holding it last recorded it (all null until the
+    first): `connection_id`, `connected_at`, `connection_beat_at`, `disconnected_at`,
+    `disconnect_reason` (`closed`, `heartbeat_lapsed`, `taken_over`, `revoked`).
 - `agent_controller_enrollment_codes`: `id`, `owner_id`, `api_key_id` (an `api_keys` row of
   type `controller_enrollment`, so the existing global hash → tenant lookup works),
   `expires_at`, `used_at` null, `controller_id` null, `created_at`.
@@ -88,6 +92,11 @@ Public (they authenticate through the body):
 
 Controller access token (`{id}` must match the token's `cid`, otherwise `403 forbidden`):
 - `POST /v1/management/controllers/{id}/credential/rotate` returns `{credential}`.
+- `PATCH /v1/management/controllers/{id}`
+  - Body: `{name?, description?}`, at least one: the controller renames its own machine
+    (`switch-agent-controller set-info`). The same validation and effects as the owner's
+    `PATCH /gateway/management/controllers/{id}`, including the rename reaching Core's
+    bindings. Returns the controller as the owner's list shows it.
 - `GET  /v1/management/controllers/{id}/assignment`
   - Honours `If-None-Match`; returns `200` with an `ETag` header, or `304`.
 - `PUT  /v1/management/controllers/{id}/status`
@@ -124,8 +133,10 @@ Controller access token (`{id}` must match the token's `cid`, otherwise `403 for
   - Body: `{name, description?, kind:"console", platform, version, public_key?}`.
   - Returns `{controller_id, credential}`.
 - `GET    /gateway/management/controllers`
-  - Returns the list, each with its `description`, derived `state` (`online|unknown|revoked`),
-    `last_seen_at`, its last `status`, and `workspaces_dir`: the directory the controller makes
+  - Returns the list, each with its `description`, derived `state`
+    (`online|offline|unknown|revoked`, see "Liveness" below), `last_seen_at` (its last status),
+    `connection` (`{connected_at, last_beat_at, disconnected_at, disconnect_reason}` or null
+    when it never connected), its last `status`, and `workspaces_dir`: the directory the controller makes
     agents' workspaces in, from that status (`machine.workspaces_dir`), null when it has not
     reported one.
 - `PATCH  /gateway/management/controllers/{id}`
@@ -157,7 +168,8 @@ Controller access token (`{id}` must match the token's `cid`, otherwise `403 for
 
 **Placement checks** run on create, adopt and move, and on a change to `running`. Each failure returns `409` with a reason:
 - `controller_revoked`
-- `controller_offline`: no status, or the last status is stale
+- `controller_offline`: not online (never connected, or its connection closed or went
+  stale), or no status, or the last status is stale
 - `provider_not_installed`
 - `provider_login_missing` or `provider_login_expired`
 
@@ -283,6 +295,9 @@ exactly the answer a missing one does.
 - CLI `switch-agent-controller`:
   - `enroll --server <agent-bridge-url> --code <code> [--name] [--description] [--data-dir]`
   - `run [--data-dir]`
+  - `set-info [--name] [--description] [--data-dir]`: renames the machine and/or changes its
+    description on the server, with the controller's own credential, and records the new name
+    locally.
   - `status [--data-dir]`
 - **Data dir:** `SWITCH_CONTROLLER_DATA_DIR`, otherwise the OS default.
   - macOS: `~/Library/Application Support/Switch/agent-controller`
@@ -435,7 +450,20 @@ stream. The flag and everything else above stay as they are.
   In-room session commands (`!reset`, `!compact`) are still relayed on the
   controller's stream with the room, and the controller picks the session.
 - **Liveness** is "stream attached and beat within 6 s"; the connection sweep
-  closes lapsed controller connections.
+  closes lapsed controller connections. A controller stopping cleanly closes its
+  connection at once with `DELETE /v1/controllers/{id}/connection`.
+- **Persisted liveness.** `ControllerPresence` stays the in-memory fast path for
+  routing and agent presence, and tells a ledger (`ControllerConnectionLedger`, Core's
+  port, implemented by `management/connection_ledger.py`) of every opening, beat and
+  closing. The ledger writes them to the controller's `connection_*` columns:
+  openings and closings when the connection routes (or the 2 s connection sweep)
+  persist, beats at most every 5 s. A machine's `state` is read from those columns,
+  so it is the same from every replica and survives a restart: online while the
+  connection is open and its persisted beat is under 15 s old; offline once it
+  closed or its beat aged out (the process holding it died). Openings and beats
+  replace the row; a closing is written only while the row still names that
+  connection, so a process sweeping a connection the controller has since replaced
+  through another process leaves the replacement standing.
 - **Holder id.** A controller-backed agent holds things under
   `controller:{controller_id}:{agent_id}`: the operation caller's session key
   and session id, the reader of its unread counts, and the holder of a role

@@ -3071,6 +3071,14 @@ class AgentController(TenantScoped, Base):
     `status_seq` its sequence number: a report with a sequence at or below it is
     ignored. `assignment_revision` bumps on every change to the set of agents
     the controller should run, and is what its ETag carries.
+
+    The `connection_*` columns are the controller's stream connection as the
+    agent-bridge process holding it last recorded it (`management/
+    connection_ledger.py`): which connection, when it opened, its last
+    persisted beat, and when and why it closed. They describe the current
+    connection, or the last one once it has closed; a new connection replaces
+    them. Every replica reads them, so whether the machine is connected does
+    not depend on which process holds its stream.
     """
 
     __tablename__ = "agent_controllers"
@@ -3110,6 +3118,19 @@ class AgentController(TenantScoped, Base):
     revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    connection_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    connected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    connection_beat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    disconnected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # `closed` (the controller said goodbye), `heartbeat_lapsed`,
+    # `taken_over` or `revoked`.
+    disconnect_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

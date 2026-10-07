@@ -40,6 +40,7 @@ from switch_core.bridges.agent.auth import BearerAuthMiddleware, ControllerPrinc
 from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.db.models import (
     TENANT_ZERO_ID,
@@ -307,6 +308,8 @@ class EnrolledController:
     credential: str
     access_token: str
     owner: User
+    # Core's presence, to tell whether this controller holds a connection.
+    presence: ControllerPresence
 
     @property
     def headers(self) -> dict[str, str]:
@@ -339,6 +342,7 @@ async def enroll_console(
         credential=body["credential"],
         access_token=token.json()["access_token"],
         owner=owner,
+        presence=harness.protocol.connections.controllers,
     )
 
 
@@ -350,6 +354,24 @@ async def report_status(
     providers: list[dict[str, Any]] | None = None,
     agents: list[dict[str, Any]] | None = None,
 ) -> httpx.Response:
+    """Report status as a running controller does: one that holds its stream
+    connection, opened first unless it already holds one."""
+    if controller.presence.current_connection(controller.controller_id) is None:
+        await open_connection(client, controller)
+    return await report_status_only(
+        client, controller, seq, providers=providers, agents=agents
+    )
+
+
+async def report_status_only(
+    client: httpx.AsyncClient,
+    controller: EnrolledController,
+    seq: int,
+    *,
+    providers: list[dict[str, Any]] | None = None,
+    agents: list[dict[str, Any]] | None = None,
+) -> httpx.Response:
+    """Report status without opening a connection."""
     return await client.put(
         f"/v1/management/controllers/{controller.controller_id}/status",
         json=status_report(seq, providers=providers, agents=agents),

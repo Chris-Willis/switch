@@ -65,9 +65,9 @@ def _placement_sentence(code: str, machine: str, provider: str) -> str | None:
             f"machine '{machine}' has been removed from Switch; pick another machine"
         ),
         reason_codes.CONTROLLER_OFFLINE: (
-            f"machine '{machine}' has not reported recently (it may be asleep, "
-            "off or disconnected); your owner needs to bring it back online, or "
-            "pick another machine"
+            f"machine '{machine}' is not connected to Switch or has not reported "
+            "recently (it may be asleep, off or disconnected); your owner needs "
+            "to bring it back online, or pick another machine"
         ),
         reason_codes.PROVIDER_NOT_INSTALLED: (
             f"{provider} is not installed on machine '{machine}'; your owner "

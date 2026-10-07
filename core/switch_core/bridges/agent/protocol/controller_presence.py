@@ -19,7 +19,14 @@ the bearer middleware's act-as check, and the controller stream.
 
 Like the connection registry it is memory only. A restart forgets every
 controller connection, and Management loads the bindings again before the
-agent bridge serves.
+agent bridge serves. What it decides about each controller's connection
+(opened, beating, closed and why) is also handed to a ledger, which
+Management installs (`use_ledger`) and which persists it, so that whether a
+machine is connected can be read from any process and survives a restart.
+The ledger is told synchronously, as each transition happens here, and
+writes when `persist` or `persist_all` is awaited: the connection routes
+await it for their own controller, and the connection sweep for every
+controller once a round.
 """
 
 from __future__ import annotations
@@ -32,7 +39,7 @@ import uuid
 from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from switch_core.bridges.agent.protocol.liveness import (
     HEARTBEAT_LAPSED,
@@ -53,6 +60,14 @@ DETACH_DELETED = "deleted"
 REVOKED = Closure(
     code="closed", message="the controller has been revoked", room_id=None
 )
+
+GOODBYE = Closure(
+    code="closed", message="the controller closed its connection", room_id=None
+)
+
+# What the ledger records for a connection that ended with its controller's
+# revocation; every other ending is recorded as its closure's code.
+DISCONNECT_REVOKED = "revoked"
 
 # How many superseded connection ids a controller is remembered by, so a late
 # beat from one is told `taken_over` rather than `unknown_connection`.
@@ -162,6 +177,26 @@ class ControllerConnection:
         )
 
 
+class ControllerConnectionLedger(Protocol):
+    """Where controller connections' liveness is persisted.
+
+    `opened`, `beat` and `closed` are called as each happens and must not
+    block; `flush` and `flush_all` write what they were told. `closed` gets
+    the reason to record: `closed` (the controller said goodbye),
+    `heartbeat_lapsed`, `taken_over` or `revoked`.
+    """
+
+    def opened(self, conn: ControllerConnection) -> None: ...
+
+    def beat(self, conn: ControllerConnection) -> None: ...
+
+    def closed(self, conn: ControllerConnection, reason: str) -> None: ...
+
+    async def flush(self, controller_id: str) -> None: ...
+
+    async def flush_all(self) -> None: ...
+
+
 class ControllerPresence:
     def __init__(self, *, on_bound: Callable[[str], None]) -> None:
         # Called with each agent that becomes controller-backed, so the
@@ -177,11 +212,38 @@ class ControllerPresence:
         self._rooms: dict[str, set[str]] = {}
         self._next_generation = secrets.randbits(32)
         self._auth_cache: ControllerAuthCache | None = None
+        self._ledger: ControllerConnectionLedger | None = None
 
     def use_auth_cache(self, cache: ControllerAuthCache) -> None:
         """The cache of controller-token reads to keep in step with the
         bindings and revocations recorded here."""
         self._auth_cache = cache
+
+    def use_ledger(self, ledger: ControllerConnectionLedger) -> None:
+        """Where each connection's opening, beats and closing are persisted."""
+        self._ledger = ledger
+
+    async def persist(self, controller_id: str) -> None:
+        """Write what the ledger holds for this controller's connection."""
+        if self._ledger is not None:
+            await self._ledger.flush(controller_id)
+
+    async def persist_all(self) -> None:
+        """Write what the ledger holds for every controller's connection."""
+        if self._ledger is not None:
+            await self._ledger.flush_all()
+
+    def _record_opened(self, conn: ControllerConnection) -> None:
+        if self._ledger is not None:
+            self._ledger.opened(conn)
+
+    def _record_beat(self, conn: ControllerConnection) -> None:
+        if self._ledger is not None:
+            self._ledger.beat(conn)
+
+    def _record_closed(self, conn: ControllerConnection, reason: str) -> None:
+        if self._ledger is not None:
+            self._ledger.closed(conn, reason)
 
     def _invalidate_agent_auth(self, agent_id: str) -> None:
         if self._auth_cache is not None:
@@ -266,6 +328,7 @@ class ControllerPresence:
             conn.closure = REVOKED
             conn.stream_attached = False
             conn.wake.set()
+            self._record_closed(conn, DISCONNECT_REVOKED)
 
     # ------------------------------------------------------------------
     # Bindings, read by Core
@@ -401,10 +464,8 @@ class ControllerPresence:
             previous.closure = TAKEN_OVER
             previous.stream_attached = False
             previous.wake.set()
-            remembered = self._superseded.setdefault(
-                controller_id, deque(maxlen=_SUPERSEDED_REMEMBERED)
-            )
-            remembered.append(previous.id)
+            self._remember_superseded(previous)
+            self._record_closed(previous, TAKEN_OVER.code)
         now = time.monotonic()
         generation = self._next_generation
         self._next_generation += 1
@@ -418,6 +479,7 @@ class ControllerPresence:
             opened_at=now,
         )
         self._connections[controller_id] = conn
+        self._record_opened(conn)
         logger.info(
             "[CONTROLLER] opened controller=%s connection=%s generation=%s agents=%d",
             controller_id,
@@ -427,7 +489,13 @@ class ControllerPresence:
         )
         return conn
 
-    def require(
+    def _remember_superseded(self, conn: ControllerConnection) -> None:
+        remembered = self._superseded.setdefault(
+            conn.controller_id, deque(maxlen=_SUPERSEDED_REMEMBERED)
+        )
+        remembered.append(conn.id)
+
+    def _current(
         self, controller_id: str, connection_id: str, generation: int
     ) -> ControllerConnection:
         conn = self._connections.get(controller_id)
@@ -439,6 +507,12 @@ class ControllerPresence:
             raise UnknownControllerConnectionError(connection_id)
         if conn.generation != generation:
             raise StaleGenerationError(connection_id, generation, conn.generation)
+        return conn
+
+    def require(
+        self, controller_id: str, connection_id: str, generation: int
+    ) -> ControllerConnection:
+        conn = self._current(controller_id, connection_id, generation)
         if (time.monotonic() - conn.last_beat) >= HEARTBEAT_TTL_SECONDS:
             self._close(conn, HEARTBEAT_LAPSED)
             raise UnknownControllerConnectionError(connection_id)
@@ -454,6 +528,7 @@ class ControllerPresence:
         conn.stream_attached = True
         conn.last_beat = time.monotonic()
         conn.wake.set()
+        self._record_beat(conn)
         return conn.stream_token
 
     def detach_stream(self, conn: ControllerConnection, token: int) -> None:
@@ -468,6 +543,16 @@ class ControllerPresence:
             raise ControllerNoStreamError(connection_id)
         conn.last_beat = time.monotonic()
         conn.beats += 1
+        self._record_beat(conn)
+        return conn
+
+    def close(
+        self, controller_id: str, connection_id: str, generation: int
+    ) -> ControllerConnection:
+        """The controller is going away and said so: its connection closes now
+        rather than when its beat lapses, and its agents stop being live."""
+        conn = self._current(controller_id, connection_id, generation)
+        self._close(conn, GOODBYE)
         return conn
 
     @staticmethod
@@ -476,6 +561,10 @@ class ControllerPresence:
         current = conn.resume_cursors.get(agent_id)
         if current is None or cursor > current:
             conn.resume_cursors[agent_id] = cursor
+
+    def current_connection(self, controller_id: str) -> ControllerConnection | None:
+        """The controller's open connection, live or not yet swept."""
+        return self._connections.get(controller_id)
 
     def is_current(self, conn: ControllerConnection) -> bool:
         return self._connections.get(conn.controller_id) is conn
@@ -528,6 +617,7 @@ class ControllerPresence:
                 closure.code,
                 conn.beats,
             )
+            self._record_closed(conn, closure.code)
         conn.stream_attached = False
         conn.wake.set()
 

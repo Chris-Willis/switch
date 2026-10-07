@@ -1,15 +1,29 @@
 """Controller state, and whether an agent may be placed on a controller.
 
-A controller is `revoked` once its credential is gone, `online` while its
-last accepted status report is fresh, and `unknown` otherwise — including
-before it has ever reported. Fresh means within three status intervals, the
-interval being what each controller is told as `report_within_s`.
+A controller's state is read from its persisted stream connection
+(`connection_ledger.py`), so every process answers alike and a restart
+changes nothing:
 
-Placement reads the controller's last status and refuses, with a contract
-reason code, when the controller is revoked or not online, when the
-definition's provider is not installed there, or when its login is missing
-or expired. A provider whose login is `unknown` passes: the controller could
-not tell, and refusing would block every provider whose CLI has no probe.
+- `revoked`: its credential is gone.
+- `online`: its stream connection is open and its last persisted beat is
+  recent (within `PERSISTED_BEAT_STALE_AFTER`).
+- `offline`: it has connected before, and that connection has closed (the
+  controller said goodbye, its beat lapsed, it was taken over and not
+  replaced) or its persisted beat is stale (the process holding it died).
+- `unknown`: no connection has ever been recorded for it: enrolled but never
+  run, or connected only to a server that did not record connections.
+
+Its status report is not what makes it online; the report carries the
+details (providers, disk, agents).
+
+Placement needs the controller online and its last status report fresh,
+within three status intervals (the interval being what each controller is
+told as `report_within_s`), since that report is what the provider checks
+read. It refuses, with a contract reason code, when either is not so, when
+the definition's provider is not installed there, or when its login is
+missing or expired. A provider whose login is `unknown` passes: the
+controller could not tell, and refusing would block every provider whose CLI
+has no probe.
 """
 
 from __future__ import annotations
@@ -19,26 +33,36 @@ from typing import Any, Literal
 
 from switch_core.db.models import AgentController
 from switch_core.management import reason_codes
+from switch_core.management.connection_ledger import PERSISTED_BEAT_STALE_AFTER
 from switch_core.management.errors import ManagementError
 
-ControllerState = Literal["online", "unknown", "revoked"]
+ControllerState = Literal["online", "offline", "unknown", "revoked"]
 
 STALE_AFTER_INTERVALS = 3
 
 PROVIDER_AUTH_STATES = frozenset({"ok", "expired", "missing", "unknown"})
 
 
-def controller_state(
-    controller: AgentController, *, now: datetime, interval_seconds: int
-) -> ControllerState:
+def controller_state(controller: AgentController, *, now: datetime) -> ControllerState:
     if controller.revoked_at is not None or controller.api_key_id is None:
         return "revoked"
-    if controller.status is None or controller.last_seen_at is None:
+    if controller.connected_at is None or controller.connection_beat_at is None:
         return "unknown"
-    stale_after = timedelta(seconds=STALE_AFTER_INTERVALS * interval_seconds)
-    if now - controller.last_seen_at > stale_after:
-        return "unknown"
+    if controller.disconnected_at is not None:
+        return "offline"
+    if now - controller.connection_beat_at > PERSISTED_BEAT_STALE_AFTER:
+        return "offline"
     return "online"
+
+
+def status_is_fresh(
+    controller: AgentController, *, now: datetime, interval_seconds: int
+) -> bool:
+    """Whether the controller has reported status within three intervals."""
+    if controller.status is None or controller.last_seen_at is None:
+        return False
+    stale_after = timedelta(seconds=STALE_AFTER_INTERVALS * interval_seconds)
+    return now - controller.last_seen_at <= stale_after
 
 
 def provider_auth(entry: dict[str, Any]) -> str:
@@ -55,10 +79,20 @@ def placement_refusal(
     interval_seconds: int,
 ) -> tuple[str, str] | None:
     """The reason code and message refusing this placement, or None to allow it."""
-    state = controller_state(controller, now=now, interval_seconds=interval_seconds)
+    state = controller_state(controller, now=now)
     if state == "revoked":
         return reason_codes.CONTROLLER_REVOKED, "the controller has been revoked"
-    if state != "online":
+    if state == "unknown":
+        return (
+            reason_codes.CONTROLLER_OFFLINE,
+            "the controller has never connected to Switch",
+        )
+    if state == "offline":
+        return (
+            reason_codes.CONTROLLER_OFFLINE,
+            "the controller is not connected to Switch",
+        )
+    if not status_is_fresh(controller, now=now, interval_seconds=interval_seconds):
         return (
             reason_codes.CONTROLLER_OFFLINE,
             "the controller has not reported status recently",

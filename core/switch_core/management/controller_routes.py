@@ -55,6 +55,7 @@ from switch_core.management.schemas import (
     MAX_STATUS_BYTES,
     ControllerBeatRequest,
     ControllerConnectionRequest,
+    ControllerInfoRequest,
     DefinitionV1,
     EnrollRequest,
     OperationResultRequest,
@@ -200,6 +201,22 @@ async def exchange_token(
 # ── Controller access token ───────────────────────────────────────────────────
 
 
+@router.patch("/v1/management/controllers/{controller_id}")
+async def update_controller_info(
+    body: ControllerInfoRequest,
+    principal: PathController,
+    management: Management,
+    session: Session,
+) -> dict[str, Any]:
+    """Rename this machine and/or change its description, as its owner can
+    in the gateway. Returns the machine as the owner's list shows it."""
+    return await management.update_own_controller(
+        session,
+        principal,
+        {key: getattr(body, key) for key in body.model_fields_set},
+    )
+
+
 @router.post("/v1/management/controllers/{controller_id}/credential/rotate")
 async def rotate_credential(
     principal: PathController, management: Management, session: Session
@@ -326,6 +343,7 @@ async def open_connection(
         )
     except ControllerConnectionError as exc:
         raise _connection_refusal(exc) from exc
+    await presence.persist(principal.controller_id)
     logger.info(
         "Controller %s opened connection %s (client=%s version=%s)",
         principal.controller_id,
@@ -416,6 +434,7 @@ async def connection_beat(
         )
     except ControllerConnectionError as exc:
         raise _connection_refusal(exc) from exc
+    await presence.persist(principal.controller_id)
     agents = presence.agents_of(principal.controller_id)
     for agent_id, cursor in body.cursors.items():
         binding = presence.binding(agent_id)
@@ -427,3 +446,30 @@ async def connection_beat(
         protocol.event_buffer.confirm(agent_id, presence.holder_id(binding), confirmed)
         presence.resume_from(conn, agent_id, confirmed)
     return {"agents": sorted(agents)}
+
+
+@router.delete("/v1/controllers/{controller_id}/connection", status_code=204)
+async def close_connection(
+    principal: PathController,
+    protocol: Protocol,
+    connection_id: str,
+    generation: int,
+) -> Response:
+    """The controller's goodbye: it is shutting down, so its connection closes
+    now, its agents stop being connected, and the machine reads as offline at
+    once rather than when its beat lapses. The stream, if still attached,
+    ends with `evicted {code: "closed"}`.
+
+    Refused like a beat for a connection that is not the current one:
+    `unknown_connection`, `stale_generation`, or `taken_over`.
+    """
+    presence = protocol.connections.controllers
+    try:
+        presence.close(principal.controller_id, connection_id, generation)
+    except ControllerConnectionError as exc:
+        raise _connection_refusal(exc) from exc
+    await presence.persist(principal.controller_id)
+    logger.info(
+        "Controller %s closed connection %s", principal.controller_id, connection_id
+    )
+    return Response(status_code=204)

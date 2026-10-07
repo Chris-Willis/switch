@@ -164,6 +164,55 @@ class AgentControllerStore:
         )
         return result.scalar_one_or_none() is not None
 
+    async def record_connection(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        *,
+        connection_id: str,
+        connected_at: datetime,
+        beat_at: datetime,
+        disconnected_at: datetime | None,
+        disconnect_reason: str | None,
+        replaces: bool,
+    ) -> bool:
+        """Record the state of the controller's stream connection.
+
+        With `replaces`, it takes the row's place whatever the row holds.
+        Otherwise it is written only while the row holds this same
+        connection, or none yet, so a process closing a connection that has
+        since been replaced elsewhere leaves the replacement standing.
+        Returns whether the row was written. `updated_at` is left alone:
+        liveness is not an edit.
+        """
+        conditions = [
+            AgentController.tenant_id == tenant_id,
+            AgentController.id == controller_id,
+        ]
+        if not replaces:
+            conditions.append(
+                or_(
+                    AgentController.connection_id.is_(None),
+                    AgentController.connection_id == connection_id,
+                )
+            )
+        result = await session.execute(
+            update(AgentController)
+            .where(*conditions)
+            .values(
+                connection_id=connection_id,
+                connected_at=connected_at,
+                connection_beat_at=beat_at,
+                disconnected_at=disconnected_at,
+                disconnect_reason=disconnect_reason,
+                updated_at=AgentController.updated_at,
+            )
+            .returning(AgentController.id)
+            .execution_options(synchronize_session=False)
+        )
+        return result.scalar_one_or_none() is not None
+
     async def set_credential(
         self,
         session: AsyncSession,

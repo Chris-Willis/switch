@@ -15,7 +15,7 @@ same files.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -352,7 +352,7 @@ class ConsoleControllerRequest(_GatewayBody):
         return _controller_description(value)
 
 
-class UpdateControllerRequest(_GatewayBody):
+class _ControllerDetailsChange(BaseModel):
     """Rename a machine or change its description. Either or both; a key left
     out is left as it is, and `description: null` (or blank) clears it — read
     `model_fields_set`, not the value."""
@@ -377,10 +377,22 @@ class UpdateControllerRequest(_GatewayBody):
         return _controller_description(value)
 
     @model_validator(mode="after")
-    def _changes_something(self) -> UpdateControllerRequest:
+    def _changes_something(self) -> Self:
         if not self.model_fields_set:
             raise ValueError("give a name, a description, or both")
         return self
+
+
+class UpdateControllerRequest(_ControllerDetailsChange):
+    """The owner's change, through the gateway."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ControllerInfoRequest(_ControllerDetailsChange):
+    """The controller's own change (`switch-agent-controller set-info`)."""
+
+    model_config = ConfigDict(extra="ignore")
 
 
 class CreateManagedAgentRequest(_GatewayBody):
@@ -489,6 +501,19 @@ def workspaces_dir_of(controller: AgentController) -> str | None:
     return directory if isinstance(directory, str) and directory else None
 
 
+def connection_view(controller: AgentController) -> dict[str, Any] | None:
+    """The controller's stream connection as last persisted: the current one,
+    or the last one once it closed. None when none was ever recorded."""
+    if controller.connected_at is None:
+        return None
+    return {
+        "connected_at": wire_time(controller.connected_at),
+        "last_beat_at": wire_time_or_none(controller.connection_beat_at),
+        "disconnected_at": wire_time_or_none(controller.disconnected_at),
+        "disconnect_reason": controller.disconnect_reason,
+    }
+
+
 def controller_view(controller: AgentController, state: str) -> dict[str, Any]:
     return {
         "id": controller.id,
@@ -499,6 +524,7 @@ def controller_view(controller: AgentController, state: str) -> dict[str, Any]:
         "version": controller.version,
         "state": state,
         "last_seen_at": wire_time_or_none(controller.last_seen_at),
+        "connection": connection_view(controller),
         "status": controller.status,
         "assignment_revision": controller.assignment_revision,
         "workspaces_dir": workspaces_dir_of(controller),

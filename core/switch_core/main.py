@@ -250,6 +250,13 @@ async def _connection_sweep_loop(protocol: AgentCore, lag: EventLoopLag) -> None
                 )
         except Exception:
             logger.exception("AgentConnection sweep failed")
+        try:
+            await protocol.connections.controllers.persist_all()
+        except Exception:
+            logger.exception(
+                "Persisting controller connection state failed; it is kept and "
+                "written on the next round"
+            )
 
 
 # The innermost of three nested budgets: under

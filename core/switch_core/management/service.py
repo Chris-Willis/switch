@@ -138,11 +138,7 @@ class ManagementService:
         return self._clock()
 
     def state_of(self, controller: AgentController) -> ControllerState:
-        return controller_state(
-            controller,
-            now=self.now(),
-            interval_seconds=self.settings.status_interval_seconds,
-        )
+        return controller_state(controller, now=self.now())
 
     # ── Credentials and enrollment ────────────────────────────────────────────
 
@@ -554,6 +550,28 @@ class ManagementService:
         that is the name the room is told when the machine is offline.
         """
         await self.owned_controller(session, tenant_id, owner_id, controller_id)
+        return await self._update_details(session, tenant_id, controller_id, changes)
+
+    async def update_own_controller(
+        self,
+        session: AsyncSession,
+        principal: ControllerPrincipal,
+        changes: dict[str, str | None],
+    ) -> dict[str, Any]:
+        """The controller renames itself or changes its description, with the
+        same limits and effects as its owner's change."""
+        await self._principal_controller(session, principal)
+        return await self._update_details(
+            session, principal.tenant_id, principal.controller_id, changes
+        )
+
+    async def _update_details(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        changes: dict[str, str | None],
+    ) -> dict[str, Any]:
         controller = await self.controllers.update_details(
             session, tenant_id, controller_id, changes
         )

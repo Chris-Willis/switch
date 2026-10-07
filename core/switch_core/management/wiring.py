@@ -37,6 +37,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.management.agent_operations import ManagementAgentOperations
 from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.bindings import load_bindings
+from switch_core.management.connection_ledger import ControllerConnectionLedger
 from switch_core.management.controller_routes import router as controller_router
 from switch_core.management.dependencies import init_management_dependencies
 from switch_core.management.gateway_routes import router as gateway_router
@@ -99,6 +100,11 @@ def build_management(
 ) -> Management:
     controllers = AgentControllerStore()
     presence.use_auth_cache(auth_cache)
+    presence.use_ledger(
+        ControllerConnectionLedger(
+            session_factory=session_factory, controllers=controllers, clock=clock
+        )
+    )
     service = ManagementService(
         settings=ManagementSettings(
             token_secret=token_secret,
