@@ -26,7 +26,7 @@ export function grantedRepositoryNames(
   });
 }
 
-const APP_NOTE = 'Pushes, pull requests and comments appear as the Switch GitHub App, not as you.';
+const APP_NOTE = 'Pushes, pull requests and comments show as the Switch GitHub App, not you.';
 
 /** What a GitHub grant means for a cloud agent, which has no other GitHub sign-in. */
 export const CLOUD_GITHUB_GRANT_NOTES = [APP_NOTE] as const;
@@ -34,7 +34,7 @@ export const CLOUD_GITHUB_GRANT_NOTES = [APP_NOTE] as const;
 /** What a GitHub grant changes on the machine the agent runs on, and what it does not. */
 export const GITHUB_GRANT_NOTES = [
   APP_NOTE,
-  "For this agent's sessions, a GitHub grant replaces your own GitHub login for HTTPS access to github.com. SSH remotes still use your keys.",
-  'On your own computer a grant limits what Switch hands the agent, not what the machine allows: the agent can still use anything you are signed in to there.',
-  "Not yet on Windows: an agent running there uses the machine's own GitHub sign-in.",
+  'Replaces your GitHub login for this agent over HTTPS. SSH still uses your keys.',
+  "On your computer, the agent can still use anything you're signed in to.",
+  'Not available on Windows yet.',
 ] as const;

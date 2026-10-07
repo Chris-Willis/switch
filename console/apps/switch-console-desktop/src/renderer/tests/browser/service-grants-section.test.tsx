@@ -119,8 +119,8 @@ it('shows each grant with its repositories and what a GitHub grant means', async
 
   await vi.waitFor(() => expect(el.textContent).toContain(GRANTED.grants[0]!.summary));
   await vi.waitFor(() => expect(el.textContent).toContain('example-org/project'));
-  expect(el.textContent).toContain('appear as the Switch GitHub App');
-  expect(el.textContent).toContain('Not yet on Windows');
+  expect(el.textContent).toContain('show as the Switch GitHub App');
+  expect(el.textContent).toContain('Not available on Windows yet');
   expect(workspaces.getServiceGrants).toHaveBeenCalledWith({
     workspaceId: 'workspace',
     agentId: 'agent',
@@ -237,7 +237,7 @@ it("says only what applies to a cloud agent's GitHub grant", async () => {
   );
 
   await vi.waitFor(() => expect(container!.textContent).toContain(GRANTED.grants[0]!.summary));
-  expect(container!.textContent).toContain('appear as the Switch GitHub App');
-  expect(container!.textContent).not.toContain('Not yet on Windows');
-  expect(container!.textContent).not.toContain('your own computer');
+  expect(container!.textContent).toContain('show as the Switch GitHub App');
+  expect(container!.textContent).not.toContain('Not available on Windows yet');
+  expect(container!.textContent).not.toContain('On your computer');
 });
