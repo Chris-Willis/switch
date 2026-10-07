@@ -11,12 +11,15 @@ the leg the outside world reaches. `/gateway` is not routed here from the
 public load balancer at all, and it would not help if it were — it is
 cookie-authenticated and this caller has no cookie of ours.
 
-**A finished install goes back to the dashboard.** The install starts there,
-in the same tab, so a Connect sends the browser back to its Messaging Apps page
-(`FRONTEND_BASE_URL`), where the new workspace is already listed. Everything
-short of that — the confirmation itself, a cancel, a refusal — is rendered here
-as one self-contained page on the origin the browser already reached, and so
-is the success when the deployment names no dashboard to return to.
+**A finished install goes back to whoever started it.** The dashboard starts
+an install in its own tab, so a Connect sends that tab back to its Messaging
+Apps page (`FRONTEND_BASE_URL`). Switch Console starts one in the system
+browser, so a Connect renders the "Opening Switch Console…" handoff page, which
+opens a `switchdash://installed` deeplink and brings the app forward; the
+Console is already watching for the new connection. Everything short of that —
+the confirmation itself, a cancel, a refusal — is rendered here as one
+self-contained page on the origin the browser already reached, and so is a
+dashboard install's success when the deployment names no dashboard.
 
 The event routes answer nobody who reads English, so they answer in status
 codes and say the rest in the log.
@@ -32,6 +35,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, BackgroundTasks, Form, Query, Request, Response
 from starlette.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
+from switch_core.bridges.agent.deeplink import render_handoff_page
 from switch_core.bridges.collaboration.install import (
     PUBLIC_PATH_PREFIX,
     InboundWebhook,
@@ -58,6 +62,7 @@ from switch_core.db.stores.messaging_install_store import (
     MessagingInstallClaimedError,
     MessagingInstallStateError,
 )
+from switch_core.deeplinks import installed_deeplink
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +105,21 @@ _PAGE_HEADERS = {
     "Cache-Control": "no-store",
     "Referrer-Policy": "no-referrer",
 }
+
+
+#: The handoff page runs one inline script (it navigates to the deeplink and
+#: notices when the app takes focus) and draws inline SVG; nothing else loads.
+_HANDOFF_HEADERS = {
+    **_PAGE_HEADERS,
+    "Content-Security-Policy": (
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+        "frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+    ),
+}
+
+#: Navigation-only headers for a redirect: nothing to frame, nothing to cache,
+#: and the callback's query string must not leak onward as a referrer.
+_REDIRECT_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
 
 
 def _page(*, title: str, detail: str, status: int, extra: str = "") -> HTMLResponse:
@@ -243,7 +263,7 @@ def create_messaging_install_router(
                     ),
                     status=200,
                 )
-            install = await service.confirm(platform=platform, ticket=ticket)
+            confirmed = await service.confirm(platform=platform, ticket=ticket)
         except (InstallTicketError, InstallPlatformMismatch) as failure:
             logger.warning("Refused a %s install confirmation: %s", platform, failure)
             return _page(
@@ -273,12 +293,18 @@ def create_messaging_install_router(
                 status=400,
             )
 
+        install = confirmed.install
+        if confirmed.return_to == "console":
+            return HTMLResponse(
+                render_handoff_page(installed_deeplink(install.platform)),
+                headers=_HANDOFF_HEADERS,
+            )
         if dashboard is not None:
             query = urlencode({"installed": install.platform})
             return RedirectResponse(
                 f"{dashboard}/collaborations?{query}",
                 status_code=303,
-                headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+                headers=_REDIRECT_HEADERS,
             )
         return _page(
             title="Switch is connected",

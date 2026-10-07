@@ -113,6 +113,31 @@ async def test_connect_returns_to_the_dashboard_when_there_is_one(
     assert len(fixture.lifecycle.registered) == 1
 
 
+async def test_a_console_install_hands_off_to_switch_console(
+    rls_harness: RLSHarness,
+) -> None:
+    fixture = await _fixture(rls_harness)
+    state = await _begin(
+        rls_harness.restricted, fixture, fixture.tenant_a, return_to="console"
+    )
+
+    async with _client(fixture.service, "https://switch.example.com") as client:
+        page = await client.get(
+            "/messaging/slack/oauth/callback",
+            params={"code": "the-code", "state": state},
+        )
+        connected = await client.post(
+            "/messaging/slack/oauth/confirm",
+            data={"ticket": _ticket(page.text), "decision": "connect"},
+        )
+
+    assert connected.status_code == 200
+    assert 'href="switchdash://installed?platform=slack"' in connected.text
+    assert "frame-ancestors 'none'" in connected.headers["content-security-policy"]
+    assert connected.headers["cache-control"] == "no-store"
+    assert len(fixture.lifecycle.registered) == 1
+
+
 async def test_cancel_on_the_page_connects_nothing(rls_harness: RLSHarness) -> None:
     fixture = await _fixture(rls_harness)
     state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
