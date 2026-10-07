@@ -391,7 +391,7 @@ again when an agent is started or addressed, or when the user creates an agent.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `HOSTED_IDLE_STOP_MINUTES` | 30 | Idle minutes before a machine stops. 0 disables. Maximum 1440. |
+| `HOSTED_IDLE_STOP_MINUTES` | 1440 | Idle minutes before a machine stops (24 hours). 0 disables. Maximum 1440. |
 | `HOSTED_DISK_RETENTION_DAYS` | 7 | Days a data disk is kept after its last agent is removed. 1–90. |
 | `HOSTED_LAUNCH_CAPACITY` | 0 | Maximum live machines. No more than the number of machine slots. 0 disables creation. |
 
