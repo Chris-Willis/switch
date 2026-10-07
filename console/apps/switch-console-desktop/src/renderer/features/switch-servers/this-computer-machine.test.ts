@@ -35,7 +35,9 @@ function overview(
   };
 }
 
-const ok = (state: 'online' | 'unknown' | 'revoked' | null): EmbeddedControllerRemote => ({
+const ok = (
+  state: 'online' | 'offline' | 'unknown' | 'revoked' | null
+): EmbeddedControllerRemote => ({
   kind: 'ok',
   controller: state ? { name: 'box', description: null, state, lastSeenAt: null } : null,
   agents: [],
