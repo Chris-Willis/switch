@@ -7,8 +7,11 @@ import {
   type Assignment,
   assignmentSchema,
   type ControllerConnection,
+  type ControllerInfo,
+  type ControllerInfoChange,
   controllerBeatResponseSchema,
   controllerConnectionResponseSchema,
+  controllerInfoResponseSchema,
   credentialRotateResponseSchema,
   type EnrollRequest,
   type EnrollResponse,
@@ -322,6 +325,31 @@ export class ControllerClient {
     }
   }
 
+  /** Renames this machine and/or changes its description, as its owner can in the gateway. */
+  async updateInfo(change: ControllerInfoChange): Promise<ControllerInfo> {
+    let response: Response;
+    try {
+      response = await this.request(this.controllerPath, { method: 'PATCH', body: change });
+    } catch (error) {
+      // A server from before this route answers with the framework's own
+      // refusal, which carries no Switch error envelope.
+      if (
+        error instanceof ControllerApiError &&
+        (error.status === 404 || error.status === 405) &&
+        error.code === 'unexpected_response'
+      )
+        throw new ControllerApiError(
+          error.status,
+          'not_supported',
+          "This Switch server cannot rename a machine from its controller. Change the name and description in the gateway's Machines page instead.",
+          false,
+          null
+        );
+      throw error;
+    }
+    return parsed(response, controllerInfoResponseSchema);
+  }
+
   async rotateCredential(): Promise<string> {
     const response = await this.request(`${this.controllerPath}/credential/rotate`, {
       method: 'POST',
@@ -425,6 +453,22 @@ export class ControllerClient {
       signal,
     });
     await parsed(response, controllerBeatResponseSchema);
+  }
+
+  /**
+   * Tells Switch this controller is going away, so the connection closes now
+   * and the machine reads as offline at once, rather than once its heartbeat
+   * lapses.
+   */
+  async closeConnection(
+    connection: { connectionId: string; generation: number },
+    signal: AbortSignal
+  ): Promise<void> {
+    const query = new URLSearchParams({
+      connection_id: connection.connectionId,
+      generation: String(connection.generation),
+    });
+    await this.request(`${this.streamPath}/connection?${query}`, { method: 'DELETE', signal });
   }
 
   /** Attaches the controller stream to an open connection; the caller reads the body. */

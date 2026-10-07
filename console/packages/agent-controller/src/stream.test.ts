@@ -79,9 +79,11 @@ class ScriptedClient {
   opens: Record<string, AgentCursor>[] = [];
   attaches: { connectionId: string; generation: number }[] = [];
   beats: Record<string, number>[] = [];
+  goodbyes: { connectionId: string; generation: number }[] = [];
   open: () => Promise<ControllerConnection> = async () => opened;
   events: () => Promise<Response> = async () => new Response(streamOf([], true));
   beat: () => Promise<void> = async () => {};
+  goodbye: () => Promise<void> = async () => {};
 
   readonly client: ControllerStreamOptions['client'] = {
     openConnection: async (cursors) => {
@@ -95,6 +97,13 @@ class ScriptedClient {
     beat: async (_connection, cursors) => {
       this.beats.push(cursors);
       return this.beat();
+    },
+    closeConnection: async (connection) => {
+      this.goodbyes.push({
+        connectionId: connection.connectionId,
+        generation: connection.generation,
+      });
+      return this.goodbye();
     },
   };
 }
@@ -182,6 +191,40 @@ describe('runControllerStream', () => {
     stop.abort();
     await ending;
     expect(scripted.beats[0]).toEqual({ 'agent-1': 7 });
+  });
+
+  it('says goodbye for the connection it holds when it is stopped', async () => {
+    const scripted = new ScriptedClient();
+    const stop = new AbortController();
+    const { ending } = run(scripted, stop.signal);
+    await waitFor(() => scripted.beats.length >= 1, 'a beat');
+    stop.abort();
+    expect(await ending).toBe('stopped');
+    expect(scripted.goodbyes).toEqual([{ connectionId: 'connection-1', generation: 1 }]);
+  });
+
+  it('stops all the same when Switch refuses the goodbye, or predates it', async () => {
+    const scripted = new ScriptedClient();
+    scripted.goodbye = async () => {
+      throw new ControllerApiError(405, 'unexpected_response', 'HTTP 405', false, null);
+    };
+    const stop = new AbortController();
+    const { ending } = run(scripted, stop.signal);
+    await waitFor(() => scripted.beats.length >= 1, 'a beat');
+    stop.abort();
+    expect(await ending).toBe('stopped');
+    expect(scripted.goodbyes).toHaveLength(1);
+  });
+
+  it('says no goodbye for a connection taken over, or when revoked', async () => {
+    const evicted = new ScriptedClient();
+    evicted.events = async () =>
+      new Response(streamOf([sse('evicted', { code: 'taken_over', reason: 'x' })], true));
+    expect(await run(evicted, new AbortController().signal).ending).toBe('taken_over');
+    const revoked = new ScriptedClient();
+    revoked.events = async () => new Response(streamOf([sse('credential.revoked', {})], true));
+    expect(await run(revoked, new AbortController().signal).ending).toBe('revoked');
+    expect([...evicted.goodbyes, ...revoked.goodbyes]).toEqual([]);
   });
 
   it('reattaches to the same connection after the stream ends', async () => {

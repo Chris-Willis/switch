@@ -51,6 +51,10 @@ export class FakeCore {
   readonly results = new Map<string, OperationResult>();
   readonly opens: Record<string, AgentCursor>[] = [];
   readonly beats: Record<string, number>[] = [];
+  /** Each connection closed by the controller's goodbye. */
+  readonly goodbyes: string[] = [];
+  /** The machine's name and description, as `PATCH .../controllers/{id}` changes them. */
+  info: { name: string; description: string | null } = { name: 'laptop', description: null };
   /** Answers the next request to a path with this, once. */
   readonly scripted: { method: string; path: string; status: number; body: unknown }[] = [];
   /** What `GET .../media` sends, in these chunks; `waitBetween` holds back all but the first. */
@@ -315,6 +319,25 @@ export class FakeCore {
       if ('placements' in (body as object)) return this.refuse(res, 422, 'validation_error');
       this.beats.push(beat.cursors);
       return this.json(res, 200, { agents: this.bound() });
+    }
+    if (method === 'DELETE' && url.pathname === `${streamBase}/connection`) {
+      const connection = this.connections.get(url.searchParams.get('connection_id') ?? '');
+      if (!connection) return this.refuse(res, 404, 'unknown_connection');
+      if (connection.superseded) return this.refuse(res, 409, 'taken_over');
+      if (Number(url.searchParams.get('generation')) !== connection.generation)
+        return this.refuse(res, 409, 'stale_generation');
+      this.connections.delete(connection.id);
+      if (this.current === connection) this.current = null;
+      this.goodbyes.push(connection.id);
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    if (method === 'PATCH' && url.pathname === base) {
+      const change = body as { name?: string; description?: string | null };
+      if (change.name !== undefined) this.info.name = change.name;
+      if (change.description !== undefined) this.info.description = change.description;
+      return this.json(res, 200, { id: this.controllerId, ...this.info, state: 'online' });
     }
     if (method === 'GET' && url.pathname === `${base}/assignment`) {
       const etag = `"${this.assignment.revision}"`;

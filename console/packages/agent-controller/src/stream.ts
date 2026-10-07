@@ -112,11 +112,14 @@ export type ControllerFrame =
   | { type: 'operation.pending'; data: OperationPending }
   | { type: 'credential.revoked'; data: Record<string, never> };
 
+/** How long a stopping controller waits for Switch to take its goodbye. */
+export const GOODBYE_TIMEOUT_MS = 3_000;
+
 /** Why the stream stopped for good. */
 export type StreamEnding = 'stopped' | 'revoked' | 'taken_over';
 
 export type ControllerStreamOptions = {
-  client: Pick<ControllerClient, 'openConnection' | 'beat' | 'openEvents'>;
+  client: Pick<ControllerClient, 'openConnection' | 'beat' | 'openEvents' | 'closeConnection'>;
   /** Where each agent resumes when a connection is opened. */
   cursors: () => Record<string, AgentCursor>;
   /** How far each agent's watcher has confirmed reading, sent on every beat. */
@@ -186,6 +189,11 @@ type Attempt = {
  * controller took the connection over (an `evicted` frame or a refusal saying
  * so: reopening would take it straight back, so this one stops), and with
  * `'stopped'` when `signal` fires. Any other `evicted` opens a new connection.
+ *
+ * Stopped, it says goodbye (`DELETE .../connection`) for the connection it
+ * holds, so Switch shows the machine offline at once. That is best effort,
+ * within `GOODBYE_TIMEOUT_MS`: a server that refuses it, or predates it, lets
+ * the heartbeat lapse instead.
  */
 export function runControllerStream(options: ControllerStreamOptions): Promise<StreamEnding> {
   return new ControllerStream(options).run();
@@ -244,7 +252,25 @@ class ControllerStream {
       await delay(wait, undefined, { signal }).catch(() => {});
       this.backoff = Math.min(this.backoff * 2, this.options.maxBackoffMs);
     }
+    await this.goodbye();
     return 'stopped';
+  }
+
+  private async goodbye(): Promise<void> {
+    const held = this.held;
+    if (!held) return;
+    this.held = null;
+    try {
+      await this.options.client.closeConnection(held, AbortSignal.timeout(GOODBYE_TIMEOUT_MS));
+      this.options.log.info('Closed the controller stream connection', {
+        connectionId: held.connectionId,
+      });
+    } catch (error) {
+      this.options.log.warn(
+        'Switch did not take the goodbye; it shows this machine offline once the heartbeat lapses.',
+        { error: errorMessage(error) }
+      );
+    }
   }
 
   private async attach(attempt: Attempt): Promise<void> {

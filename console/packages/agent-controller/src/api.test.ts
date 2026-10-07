@@ -332,6 +332,47 @@ describe('the controller stream routes', () => {
   });
 });
 
+describe('the machine and its goodbye', () => {
+  it("changes the machine's name and description", async () => {
+    const { client: c } = client();
+    expect(await c.updateInfo({ name: 'build-box', description: 'The box' })).toEqual({
+      id: core.controllerId,
+      name: 'build-box',
+      description: 'The box',
+    });
+    expect(await c.updateInfo({ description: null })).toMatchObject({ description: null });
+    const sent = core.requests.filter((r) => r.method === 'PATCH');
+    expect(sent.map((r) => r.body)).toEqual([
+      { name: 'build-box', description: 'The box' },
+      { description: null },
+    ]);
+  });
+
+  it('says so when the server cannot rename from the controller', async () => {
+    core.scripted.push({
+      method: 'PATCH',
+      path: `/v1/management/controllers/${core.controllerId}`,
+      status: 405,
+      body: { detail: 'Method Not Allowed' },
+    });
+    const error = await client()
+      .client.updateInfo({ name: 'x' })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ControllerApiError);
+    expect(error).toMatchObject({ status: 405, code: 'not_supported' });
+  });
+
+  it('closes the connection it names', async () => {
+    const { client: c } = client();
+    const opened = await c.openConnection({}, new AbortController().signal);
+    const held = { connectionId: opened.connection_id, generation: opened.generation };
+    await c.closeConnection(held, new AbortController().signal);
+    expect(core.goodbyes).toEqual([opened.connection_id]);
+    const again = await c.closeConnection(held, new AbortController().signal).catch((e) => e);
+    expect(again).toMatchObject({ status: 404, code: 'unknown_connection' });
+  });
+});
+
 describe('operations', () => {
   it('lists, claims, renews and reports', async () => {
     const { client: api } = client();
