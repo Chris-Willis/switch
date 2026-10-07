@@ -10,6 +10,12 @@ import type { HttpMcpServerSpec } from '../adapter';
 import { prepareCodexSessionHome } from '../codex/home';
 import { roomConnectionSchema } from './room-inbox';
 import { startSchema } from './server';
+import {
+  grantedSkills,
+  readServiceGrants,
+  type ServiceSkill,
+  skillContext,
+} from './service-access';
 
 export const sharedConfigSchema = z.strictObject({
   session: sessionSchema,
@@ -65,7 +71,8 @@ export type SharedHostConfig = z.infer<typeof sharedConfigSchema>;
 export async function prepareSharedConfig(
   root: string,
   config: SharedHostConfig,
-  runtime: HttpMcpServerSpec
+  runtime: HttpMcpServerSpec,
+  serviceSkills: ServiceSkill[]
 ) {
   if (config.session.provider !== config.start.provider)
     throw new Error('Shared SDK host provider mismatch.');
@@ -101,12 +108,46 @@ export async function prepareSharedConfig(
         config: execution.codexConfig,
         auth: process.env.SWITCH_HOSTED_BOOTSTRAP === '1' ? 'refresh' : 'copy-once',
       });
-    input.systemContext = execution.context;
+    // The skills of the agent's grants join the context for every provider
+    // but OpenCode, which loads them as files (`adapterFor`), as it does the
+    // Switch skill. Added here rather than saved with the session, so a
+    // resume takes the grants as they are then.
+    input.systemContext = [
+      execution.context,
+      ...(config.start.provider === 'opencode' ? [] : serviceSkills.map(skillContext)),
+    ]
+      .filter(Boolean)
+      .join('\n\n');
   }
   input.mcpServers.switch = runtime;
   if (!agentApiUrl || !token)
     throw new Error('Shared SDK host requires execution-host Switch credentials.');
   return { agentApiUrl, token, input };
+}
+
+/**
+ * The skills of the agent's service grants, read as this session starts.
+ *
+ * A session starts without them, saying so, when Switch cannot tell it what
+ * they are: its Switch tools and the rest of its work do not depend on them.
+ */
+export async function sessionServiceSkills(config: SharedHostConfig): Promise<ServiceSkill[]> {
+  if (!config.execution) return [];
+  try {
+    const credentials = await readSharedCredentials(config);
+    return grantedSkills(
+      await readServiceGrants({
+        endpoint: credentials.SWITCH_API_ENDPOINT,
+        token: credentials.SWITCH_API_TOKEN,
+        agentId: credentials.SWITCH_AGENT_ID,
+      })
+    );
+  } catch (error) {
+    console.warn(
+      `Session ${config.session.sessionId} starts without the skills of its agent's service grants: ${error instanceof Error ? error.message : String(error)}`
+    );
+    return [];
+  }
 }
 
 export async function readSharedCredentials(config: SharedHostConfig) {

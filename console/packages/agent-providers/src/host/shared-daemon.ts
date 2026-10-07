@@ -13,7 +13,7 @@ import { ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
 import { adapterFor } from './server';
 import { HOST_EXIT_GRACE_MS, SessionLinks } from './session-channel';
-import { sharedConfigSchema } from './shared-config';
+import { sessionServiceSkills, sharedConfigSchema } from './shared-config';
 import { hostSessionProcess } from './shared-host';
 import { superviseSharedHost } from './supervisor';
 import { recordWatcherHealth } from './watcher-health-file';
@@ -25,7 +25,7 @@ if (!root || !configPath)
 async function main(): Promise<void> {
   if (root === '--models') {
     const provider = sharedConfigSchema.shape.start.shape.provider.parse(configPath);
-    const adapter = adapterFor(provider, process.argv[5], '');
+    const adapter = adapterFor(provider, process.argv[5], '', []);
     const sessionId = randomUUID();
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -184,14 +184,17 @@ async function main(): Promise<void> {
     // Started by a parent that talks to it: it goes when the parent goes.
     process.on('disconnect', () => stop.abort());
     try {
+      const serviceSkills = await sessionServiceSkills(config);
       await hostSessionProcess({
         root,
         config,
         adapter: adapterFor(
           config.start.provider,
           config.execution?.binaryPath,
-          config.execution?.skill ?? ''
+          config.execution?.skill ?? '',
+          serviceSkills
         ),
+        serviceSkills,
         port: process,
         authenticate:
           config.start.provider === 'claude'

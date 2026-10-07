@@ -1,9 +1,9 @@
 """The built-in connection catalog shipped in ``connections/catalog/``.
 
 Each ``catalog/<slug>/connection.yaml`` describes one service a user can
-connect. Enabled entries ship a skill under ``catalog/<slug>/skill/`` that is
-installed on the cloud agents the connection is granted to; placeholder
-entries ship none. The catalog is validated once, at import, so a malformed
+connect. Enabled entries ship a skill under ``catalog/<slug>/skill/``, which
+each session of an agent granted the service is given; placeholder entries
+ship none. The catalog is validated once, at import, so a malformed
 entry stops the server rather than surfacing on the first launch.
 
 An enabled entry also says what each access level reaches (``access``: OAuth
@@ -31,11 +31,6 @@ FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 # is its host's business, and a skill that names one invites the agent to go
 # looking for it.
 SKILL_FORBIDDEN = ("GH_TOKEN", "gh auth", "access token", "API key")
-
-# Hosts whose agent loads skills from a directory the hosted bootstrap can
-# install into. Cursor and Antigravity have none, so a cloud agent on those
-# providers gets connection credentials but no connection skills.
-SKILL_PROVIDERS = frozenset({"claude", "codex", "opencode"})
 
 
 class CatalogError(RuntimeError):
@@ -226,25 +221,6 @@ def load_catalog(root: Path) -> dict[str, Connection]:
     if not catalog:
         raise CatalogError("The connection catalog is empty.")
     return catalog
-
-
-def deployment_skills(catalog: dict[str, Connection], slugs: list[str]) -> list[dict]:
-    """The ``deployment.skills`` payload for the granted connections."""
-    skills = []
-    total = 0
-    for slug in slugs:
-        connection = catalog.get(slug)
-        if connection is None or not connection.definition.enabled:
-            raise CatalogError(f"Connection {slug} is not an enabled catalog entry.")
-        total += sum(
-            len(content.encode()) for content in connection.skill_files.values()
-        )
-        if total > MAX_SKILL_BYTES:
-            raise CatalogError(
-                f"Granted connection skills exceed {MAX_SKILL_BYTES} bytes."
-            )
-        skills.append({"slug": slug, "files": dict(connection.skill_files)})
-    return skills
 
 
 CATALOG = load_catalog(CATALOG_ROOT)

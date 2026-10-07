@@ -17,6 +17,7 @@ import {
   roomMessageSchema,
   type RoomAttachmentSource,
 } from './room-prompt';
+import type { ServiceSkill } from './service-access';
 import {
   connectParent,
   type BusyReason,
@@ -889,13 +890,15 @@ export async function hostSessionProcess(input: {
   adapter: ProviderAdapter;
   port: ParentPort;
   authenticate: ((input: ProviderSessionStartInput) => Promise<void>) | null;
+  /** The skills of the agent's service grants, as this session starts. */
+  serviceSkills: ServiceSkill[];
   signal: AbortSignal;
 }): Promise<void> {
   const { config } = input;
   const parent = connectParent(input.port);
   const mcp = await startSessionMcp(parent);
   try {
-    const prepared = await prepareSharedConfig(input.root, config, mcp.spec);
+    const prepared = await prepareSharedConfig(input.root, config, mcp.spec, input.serviceSkills);
     const authenticate = input.authenticate;
     await runSharedHost(
       {

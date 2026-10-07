@@ -7,7 +7,6 @@ from switch_core.connections.loader import (
     CATALOG_ROOT,
     MAX_SKILL_BYTES,
     CatalogError,
-    deployment_skills,
     load_catalog,
 )
 
@@ -110,17 +109,6 @@ def test_rejects_unexpected_files_beside_the_definition(catalog_copy):
     (catalog_copy / "jira" / "icon.svg").write_text("<svg/>")
     with pytest.raises(CatalogError, match="unexpected files"):
         load_catalog(catalog_copy)
-
-
-def test_deployment_skills_carries_the_skill_files():
-    skills = deployment_skills(CATALOG, ["github"])
-    assert skills == [{"slug": "github", "files": CATALOG["github"].skill_files}]
-
-
-def test_deployment_skills_rejects_placeholders_and_unknown_slugs():
-    for slug in ("jira", "unknown"):
-        with pytest.raises(CatalogError, match="not an enabled catalog entry"):
-            deployment_skills(CATALOG, [slug])
 
 
 def test_the_shipped_github_entry_says_what_each_level_reaches():

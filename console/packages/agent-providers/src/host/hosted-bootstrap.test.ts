@@ -682,6 +682,23 @@ it('installs granted connection skills into the provider skills directory before
   expect(await readdir(join(input.state, 'provider-home', 'claude', 'skills'))).toEqual(['github']);
 });
 
+it('removes a connection skill an earlier bootstrap installed when none is listed', async () => {
+  const input = await fixture();
+  delete input.spec.skills;
+  await writeFile(input.specPath, JSON.stringify(input.spec));
+  const skills = join(input.state, 'provider-home', 'claude', 'skills');
+  await mkdir(input.state, { mode: 0o700 });
+  await mkdir(join(skills, 'github'), { recursive: true, mode: 0o700 });
+  await writeFile(join(skills, 'github', 'SKILL.md'), '---\nname: github\n---\n');
+  await mkdir(join(skills, 'own-skill'), { recursive: true, mode: 0o700 });
+  mockHosted();
+  const supervise = vi.fn<typeof superviseSharedHost>(async () => {
+    expect(await readdir(skills)).toEqual(['own-skill']);
+  });
+  await run(input, { supervise });
+  expect(supervise).toHaveBeenCalledOnce();
+});
+
 it('rejects unsafe, oversized or unsupported connection skills', async () => {
   const { spec } = await fixture();
   const skill = (files: Record<string, string>, slug = 'github') => ({ slug, files });

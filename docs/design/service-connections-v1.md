@@ -416,8 +416,12 @@ through `runAgentHost`.
   only against the revision it issued under, reading the grant `FOR SHARE`,
   so a token being issued as the launch stops is taken back. The change takes
   no connection lock, so a stop never waits on a refresh at the vendor.
-- **The machine agent list** stops sending skills (the cloud bootstrap treats
-  the field as optional); sessions get skills from `service-grants`.
+- **The machine agent list** sends every agent an empty `skills` list:
+  deployed workers refuse an agent without the key, and leave an empty list
+  out of the deployment they hand the bootstrap. Sessions get skills from
+  `service-grants`. A bootstrap given no skills removes the `github` skill an
+  earlier one installed into the provider's skills folder, which would
+  otherwise reach the session twice.
 - **`/hosted/github-credential`** calls the broker for one release, for cloud
   workers not yet updated, then goes. After the issue it checks the launch
   under its lock and revokes the token if the launch changed meanwhile.

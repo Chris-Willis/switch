@@ -34,6 +34,7 @@ import {
   hostedSkillsDirectory,
   hostedSkillsSchema,
   installHostedSkills,
+  removeFormerlyInstalledSkills,
   supportsHostedSkills,
 } from './hosted-skills';
 import { checkProviderReadiness } from './provider-readiness';
@@ -663,11 +664,17 @@ export async function runHostedBootstrap(
         env: prepared.providerEnvironment,
       });
     await writeDefinition(spec, false);
-    if (spec.skills && supportsHostedSkills(spec.provider.kind))
-      await installHostedSkills(
-        hostedSkillsDirectory(spec.provider.kind, prepared.providerEnvironment),
-        spec.skills
-      );
+    // A Switch that still lists connection skills with the agent gets them
+    // installed, as before; one that does not gives each session its skills
+    // from the agent's grants instead.
+    if (supportsHostedSkills(spec.provider.kind)) {
+      if (spec.skills)
+        await installHostedSkills(
+          hostedSkillsDirectory(spec.provider.kind, prepared.providerEnvironment),
+          spec.skills
+        );
+      else await removeFormerlyInstalledSkills(spec.provider.kind, prepared.providerEnvironment);
+    }
     await dependencies.supervise({
       root: prepared.root,
       executable: process.execPath,
