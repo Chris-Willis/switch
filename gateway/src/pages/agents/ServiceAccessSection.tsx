@@ -343,21 +343,10 @@ function GitHubGrantForm({
 export function GitHubNotes() {
   return (
     <Box component="ul" sx={{ m: 0, pl: 2.5, color: "text.secondary", typography: "body2" }}>
-      <li>
-        Pushes, pull requests and comments appear as the Switch GitHub App, not as you.
-      </li>
-      <li>
-        For this agent&apos;s sessions, a GitHub grant replaces your own GitHub login for
-        HTTPS access to github.com. SSH remotes still use your keys.
-      </li>
-      <li>
-        On your own computer a grant limits what Switch hands the agent, not what the
-        machine allows: the agent can still use anything you are signed in to there.
-      </li>
-      <li>
-        Not yet on Windows: an agent running there uses the machine&apos;s own GitHub
-        sign-in.
-      </li>
+      <li>Pushes, pull requests and comments show as the Switch GitHub App, not you.</li>
+      <li>Replaces your GitHub login for this agent over HTTPS. SSH still uses your keys.</li>
+      <li>On your computer, the agent can still use anything you&apos;re signed in to.</li>
+      <li>Not available on Windows yet.</li>
     </Box>
   );
 }

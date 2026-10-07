@@ -98,8 +98,8 @@ describe("ServiceAccessSection", () => {
     render(<ServiceAccessSection agent={agent} onAgentUpdated={updated} />);
     expect(await screen.findByText(GRANTED.grants[0]!.summary)).toBeTruthy();
     expect(await screen.findByText("example-org/project")).toBeTruthy();
-    expect(screen.getByText(/appear as the Switch GitHub App/)).toBeTruthy();
-    expect(screen.getByText(/Not yet on Windows/)).toBeTruthy();
+    expect(screen.getByText(/show as the Switch GitHub App/)).toBeTruthy();
+    expect(screen.getByText(/Not available on Windows yet/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Make owner-only" }));
     await waitFor(() => expect(updated).toHaveBeenCalled());
