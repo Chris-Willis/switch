@@ -17,11 +17,13 @@ only connection that works; every other service in the catalog is shown as
   connection skills.
 - **CLIs.** Baked into the VM image (`gh` today). Nothing is downloaded at
   boot.
-- **GitHub stays required** for a cloud launch, since the workspace is a
-  GitHub repository. Every cloud launch is therefore granted the GitHub
-  connection. Claude Code, Codex and OpenCode agents also get its skill.
-  Cursor and Antigravity agents get no connection skills, because they have
-  no skills directory.
+- **Grants.** The owner grants connections per cloud agent, in the agent
+  definition's `connections`. GitHub is optional. For each GitHub App
+  installation the owner grants all repositories (each one the owner can push
+  to) or selected ones. Nothing is cloned: the agent clones what it needs.
+  Claude Code, Codex and OpenCode agents get the skill of each granted
+  connection. Cursor and Antigravity agents get no connection skills, because
+  they have no skills directory.
 
 ## Catalog
 
@@ -41,7 +43,7 @@ catalog/<slug>/
 slug: github                # must equal the directory name
 name: GitHub
 category: Source control
-description: Clone, branch, push and open pull requests in the repository you grant.
+description: Clone, branch, push and open pull requests in the repositories you grant.
 enabled: true               # false = "Coming soon" placeholder
 auth:
   type: oauth               # oauth | api_key
@@ -162,8 +164,6 @@ which calls the gateway from the main process.
 
 ## Not in v1
 
-- Choosing, per launch, which connections an agent gets. Today GitHub is
-  always granted.
 - Other services: their auth flows, credential storage and delivery
   (credential files, environment wrappers), and "Test connection" checks.
 - Custom catalog entries, and more than one account per service.
