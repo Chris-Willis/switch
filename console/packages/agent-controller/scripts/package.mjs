@@ -30,7 +30,11 @@ const headless = {
     pluginBuild.onResolve({ filter: /.*/ }, (args) => {
       const hit = FORBIDDEN.find((name) => args.path === name || args.path.startsWith(`${name}/`));
       return hit
-        ? { errors: [{ text: `The controller must not depend on '${hit}' (from ${args.importer}).` }] }
+        ? {
+            errors: [
+              { text: `The controller must not depend on '${hit}' (from ${args.importer}).` },
+            ],
+          }
         : null;
     });
   },
