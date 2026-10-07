@@ -92,7 +92,7 @@ export const embeddedControllerService = new EmbeddedControllerService({
   management: gatewayManagementPort,
   files: {
     dataDir: (serverId) => controllerDataDir(base(), serverId),
-    readFeatureFlags: async (dataDir) => (await readFeatureFlagsFile(dataDir))?.flags ?? null,
+    readFeatureFlags: readFeatureFlagsFile,
     turnOffWatchers,
     wipeIdentity: wipeControllerIdentity,
   },

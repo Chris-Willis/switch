@@ -5,7 +5,7 @@
  * learns them through the controller it runs for that server, which records
  * what the server last sent. A flag this list does not name is ignored, and
  * one the server has not sent (an older server, or no controller running) is
- * off.
+ * off. Console reads them only while that controller is running.
  */
 export const CONSOLE_FEATURE_FLAGS = ['ecosystem.show_owners'] as const;
 

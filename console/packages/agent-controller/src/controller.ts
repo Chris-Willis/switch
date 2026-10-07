@@ -471,7 +471,8 @@ export async function runController(
     switch (frame.type) {
       case 'connection_state':
         reportWithinS = frame.data.report_within_s;
-        if (frame.data.feature_flags) recordFeatureFlags(frame.data.feature_flags);
+        // A server that sends none has no flags: every one is off.
+        recordFeatureFlags(frame.data.feature_flags ?? {});
         if (assignment === null || frame.data.assignment_revision > assignment.revision)
           void sync('the stream says the assignment moved on');
         return;

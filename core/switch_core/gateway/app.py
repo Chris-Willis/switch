@@ -32,7 +32,7 @@ from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.feature_flag_changes import FeatureFlagChanges
+from switch_core.feature_flag_service import FeatureFlagService
 from switch_core.gateway.agent_sessions import router as agent_sessions_router
 from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.api_keys import router as api_keys_router
@@ -103,7 +103,7 @@ def create_gateway_app(
     protocol: AgentCore,
     install_service: MessagingInstallService | None,
     invite_mailer: InviteMailer | None,
-    feature_flag_changes: FeatureFlagChanges,
+    feature_flag_service: FeatureFlagService,
     config: SwitchConfig,
 ) -> FastAPI:
     init_dependencies(
@@ -130,7 +130,7 @@ def create_gateway_app(
         protocol=protocol,
         install_service=install_service,
         invite_mailer=invite_mailer,
-        feature_flag_changes=feature_flag_changes,
+        feature_flag_service=feature_flag_service,
         config=config,
     )
 

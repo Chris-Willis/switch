@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -444,6 +444,25 @@ describe('runController', () => {
     expect(await running).toBe('stopped');
   });
 
+  it('records no flags from a server that sends none, replacing what an earlier one sent', async () => {
+    core.setAssignment({ revision: 1, agents: [] });
+    const file = join(dir, 'feature-flags.json');
+    writeFileSync(
+      file,
+      JSON.stringify({
+        flags: { 'ecosystem.show_owners': true },
+        receivedAt: '2025-01-01T00:00:00Z',
+      })
+    );
+    running = runController(deps(), stop.signal);
+    await waitFor(
+      () => JSON.stringify(JSON.parse(readFileSync(file, 'utf8')).flags) === '{}',
+      'the flags cleared'
+    );
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
   it('resyncs after the stream drops and reconnects', async () => {
     core.setAssignment({ revision: 1, agents: [agent(1)] });
     running = runController(deps(), stop.signal);
@@ -509,7 +528,7 @@ describe('runController', () => {
       expect(handed.revokedAt()).not.toBeNull();
       expect(existsSync(join(handedDir, 'secrets'))).toBe(false);
       for (const name of readdirSync(handedDir))
-        if (!name.startsWith('controller.db'))
+        if (!name.startsWith('controller.db') && name !== 'feature-flags.json')
           throw new Error(`The controller wrote ${name} into its data directory.`);
       for (const name of readdirSync(handedDir))
         expect(readFileSync(join(handedDir, name)).includes(core.credential)).toBe(false);

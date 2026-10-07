@@ -55,7 +55,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.feature_flag_changes import FeatureFlagChanges
+from switch_core.feature_flag_service import FeatureFlagService
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
 from switch_core.gateway.feature_flags import router as feature_flags_router
@@ -154,7 +154,7 @@ class Harness:
     controller_auth_cache: ControllerAuthCache
     clock: Clock
     session_factory: async_sessionmaker[AsyncSession]
-    feature_flag_changes: FeatureFlagChanges
+    feature_flag_service: FeatureFlagService
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -205,12 +205,12 @@ def build_harness(
 
     agent_app = FastAPI()
     gateway_app = FastAPI()
-    feature_flag_changes = FeatureFlagChanges()
+    feature_flag_service = FeatureFlagService()
     management.install(
         agent_bridge_app=agent_app,
         gateway_app=gateway_app,
         protocol=protocol,
-        feature_flag_changes=feature_flag_changes,
+        feature_flag_service=feature_flag_service,
     )
 
     agent_app.include_router(activity_router)
@@ -229,8 +229,8 @@ def build_harness(
     gateway_app.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
     gateway_app.dependency_overrides[gw_deps.get_protocol] = lambda: protocol
     gateway_app.include_router(feature_flags_router, prefix="/feature-flags")
-    gateway_app.dependency_overrides[gw_deps.get_feature_flag_changes] = lambda: (
-        feature_flag_changes
+    gateway_app.dependency_overrides[gw_deps.get_feature_flag_service] = lambda: (
+        feature_flag_service
     )
     gateway_app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         keyring=TEST_KEYRING, gateway_tenant_choice_enabled=False
@@ -252,7 +252,7 @@ def build_harness(
         controller_auth_cache=controller_auth_cache,
         clock=clock,
         session_factory=session_factory,
-        feature_flag_changes=feature_flag_changes,
+        feature_flag_service=feature_flag_service,
     )
 
 

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core import feature_flags
 from switch_core.db.models import TenantMember
 from switch_core.feature_flags import ECOSYSTEM_SHOW_OWNERS
 from switch_core.management.notifier import FEATURE_FLAGS_CHANGED
@@ -148,3 +150,69 @@ class TestControllers:
         await stream.aclose()
         assert event == "connection_state"
         assert data["feature_flags"] == {ECOSYSTEM_SHOW_OWNERS: True}
+
+
+class TestConcurrentChanges:
+    async def test_two_admins_flipping_different_flags_announce_both(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setitem(feature_flags.KNOWN_FEATURE_FLAGS, "test.one", False)
+        monkeypatch.setitem(feature_flags.KNOWN_FEATURE_FLAGS, "test.two", False)
+        ada = await add_member(harness.session_factory, "ada")
+        bob = await add_member(harness.session_factory, "bob")
+        await _make_admin(harness.session_factory, ada.id)
+        await _make_admin(harness.session_factory, bob.id)
+        announced: list[dict[str, bool]] = []
+        service = harness.feature_flag_service
+        service.add_listener(lambda _tenant, flags: announced.append(flags))
+        # Hold each write open until the other has written too, or briefly when
+        # it cannot: without serialisation both would read before either commits.
+        both_written = asyncio.Barrier(2)
+        real_set = service._store.set
+
+        async def set_then_wait(session: AsyncSession, key: str, enabled: bool) -> None:
+            await real_set(session, key, enabled)
+            try:
+                await asyncio.wait_for(both_written.wait(), timeout=0.5)
+            except TimeoutError:
+                pass
+
+        monkeypatch.setattr(service._store, "set", set_then_wait)
+        async with harness.client() as client:
+            await asyncio.gather(
+                client.put(
+                    "/gateway/feature-flags/test.one",
+                    json={"enabled": True},
+                    cookies=cookies_for(ada),
+                ),
+                client.put(
+                    "/gateway/feature-flags/test.two",
+                    json={"enabled": True},
+                    cookies=cookies_for(bob),
+                ),
+            )
+        assert len(announced) == 2
+        assert announced[-1]["test.one"] is True
+        assert announced[-1]["test.two"] is True
+
+    async def test_a_failing_listener_does_not_fail_a_saved_change(
+        self, harness: Harness
+    ) -> None:
+        admin = await add_member(harness.session_factory, "ada")
+        await _make_admin(harness.session_factory, admin.id)
+
+        def broken(_tenant: str, _flags: dict[str, bool]) -> None:
+            raise RuntimeError("listener down")
+
+        harness.feature_flag_service.add_listener(broken)
+        async with harness.client() as client:
+            flipped = await client.put(
+                f"/gateway/feature-flags/{ECOSYSTEM_SHOW_OWNERS}",
+                json={"enabled": True},
+                cookies=cookies_for(admin),
+            )
+            listed = await client.get(
+                "/gateway/feature-flags", cookies=cookies_for(admin)
+            )
+        assert flipped.status_code == 200, flipped.text
+        assert listed.json()["flags"][0]["enabled"] is True

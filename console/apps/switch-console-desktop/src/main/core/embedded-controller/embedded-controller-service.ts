@@ -8,6 +8,7 @@ import type {
   MachineDetailsChange,
 } from '@shared/core/embedded-controller/embedded-controller';
 import { type ConsoleFeatureFlags, resolveFeatureFlags } from '@shared/core/feature-flags';
+import type { FeatureFlagsFile } from '@switch-console/agent-providers';
 import {
   credentialSecretKey,
   type EnrollmentRecord,
@@ -46,8 +47,8 @@ export interface SecretsPort {
 
 export interface ControllerFilesPort {
   dataDir(serverId: string): string;
-  /** The feature flags the server last sent the controller, or null if none yet. */
-  readFeatureFlags(dataDir: string): Promise<Record<string, boolean> | null>;
+  /** What the controller recorded the server last sent it, or null if nothing yet. */
+  readFeatureFlags(dataDir: string): Promise<FeatureFlagsFile | null>;
   turnOffWatchers(dataDir: string): Promise<number>;
   wipeIdentity(dataDir: string): Promise<void>;
 }
@@ -518,12 +519,14 @@ export class EmbeddedControllerService {
 
   /**
    * The workspace feature flags, as the server last sent this computer's
-   * controller for `serverId`. All off when it has not been sent any.
+   * controller for `serverId`. All off while that controller is not running:
+   * what it recorded then is only what it was told before it stopped, and an
+   * admin may have changed it since.
    */
   async featureFlags(serverId: string): Promise<ConsoleFeatureFlags> {
-    return resolveFeatureFlags(
-      await this.deps.files.readFeatureFlags(this.deps.files.dataDir(serverId))
-    );
+    if (this.runners.get(serverId)?.phase.kind !== 'running') return resolveFeatureFlags(null);
+    const recorded = await this.deps.files.readFeatureFlags(this.deps.files.dataDir(serverId));
+    return resolveFeatureFlags(recorded?.flags ?? null);
   }
 
   private async forget(serverId: string): Promise<void> {

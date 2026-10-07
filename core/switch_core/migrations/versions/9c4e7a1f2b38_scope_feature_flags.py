@@ -6,12 +6,19 @@ Create Date: 2026-10-07 00:00:00.000000
 
 Every existing flag row was server-global, so it is copied into every tenant:
 a flag that was on for the whole deployment stays on for each workspace in it.
+There is no deployment default after this: a workspace created later starts
+with every flag off. The flags that were on are logged, so an operator knows
+what to turn on again in a new workspace.
 Downgrade cannot reverse that copy faithfully once workspaces disagree; it
 keeps a flag on if any workspace had it on.
 """
 
+import logging
+
 import sqlalchemy as sa
 from alembic import op
+
+logger = logging.getLogger("alembic.runtime.migration")
 
 revision = "9c4e7a1f2b38"
 down_revision = "eb24eafa59a0"
@@ -47,6 +54,19 @@ def upgrade() -> None:
         "SELECT t.id, f.key, f.enabled, f.updated_at "
         "FROM tenants t CROSS JOIN feature_flags_global f"
     )
+    enabled = [
+        row.key
+        for row in op.get_bind().execute(
+            sa.text("SELECT key FROM feature_flags_global WHERE enabled ORDER BY key")
+        )
+    ]
+    if enabled:
+        logger.warning(
+            "Feature flags are now per workspace. These were on for the whole "
+            "deployment and are now on in every existing workspace; a workspace "
+            "created from now on starts with them off: %s",
+            ", ".join(enabled),
+        )
     op.drop_table("feature_flags_global")
     op.execute('ALTER TABLE "feature_flags" ENABLE ROW LEVEL SECURITY')
     op.execute(
