@@ -1422,9 +1422,10 @@ version of their own to them without also giving them a release of their own.
   grant, or on Windows yet. A token GitHub refuses is replaced on the next
   command. Tokens are scrubbed from session logs, transcripts, activity shown
   on messaging platforms and anything the agent posts to a room.
-- **Service access in an agent's settings:** its grants, the GitHub repositories
-  they reach, a grant a cloud agent works without (restored in one click), and
-  a warning, with "Make owner-only", when anyone can address the agent.
+- **Service access in an agent's settings, and when editing a cloud agent:**
+  its grants, the GitHub repositories they reach, a grant a cloud agent works
+  without (restored in one click), and a warning, with "Make owner-only", when
+  anyone can address the agent.
 - The skills of an agent's granted services reach each session, and a session
   is told when its agent's grants could not be loaded.
 - A server's Connections show a connection that needs reconnecting, and why a

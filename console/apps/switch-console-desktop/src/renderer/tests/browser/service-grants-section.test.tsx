@@ -25,7 +25,10 @@ vi.mock('@renderer/lib/ipc', () => ({
   rpc: { agents, workspaces, switchServers },
 }));
 
-import { ServiceGrantsSettingsSection } from '@renderer/features/locations/components/settings-view/sections/service-grants-settings-section';
+import {
+  ServiceGrantsRow,
+  ServiceGrantsSettingsSection,
+} from '@renderer/features/locations/components/settings-view/sections/service-grants-settings-section';
 
 const GITHUB = {
   status: 'connected' as const,
@@ -211,4 +214,30 @@ it('draws nothing for someone who does not own the agent', async () => {
   await vi.waitFor(() => expect(workspaces.getServiceGrants).toHaveBeenCalled());
   await act(async () => {});
   expect(el.textContent).toBe('');
+});
+
+it("says only what applies to a cloud agent's GitHub grant", async () => {
+  workspaces.getServiceGrants.mockResolvedValue(GRANTED);
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  await act(async () =>
+    root!.render(
+      <QueryClientProvider client={client}>
+        <ServiceGrantsRow
+          workspaceId="workspace"
+          serverId="server"
+          agentId="agent"
+          agentName="reviewer"
+          cloud
+        />
+      </QueryClientProvider>
+    )
+  );
+
+  await vi.waitFor(() => expect(container!.textContent).toContain(GRANTED.grants[0]!.summary));
+  expect(container!.textContent).toContain('appear as the Switch GitHub App');
+  expect(container!.textContent).not.toContain('Not yet on Windows');
+  expect(container!.textContent).not.toContain('your own computer');
 });

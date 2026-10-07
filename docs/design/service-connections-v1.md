@@ -329,15 +329,16 @@ offer "Make owner-only". Owner-only still leaves instructions others write in
 shared rooms, delegation through the owner's other open agents, and results
 posted to shared rooms; the warning names them.
 
-**Grant screens.** The gateway's agent page and Console's agent settings
-show the agent's owner its grants (summary, level, repositories), a missing
+**Grant screens.** The gateway's agent page, Console's agent settings and
+Console's dialog for editing a cloud agent show the agent's owner its grants (summary, level, repositories), a missing
 one with "Grant it", the addressing warning, and a GitHub grant form (an
 installation of the App, its repositories, read or read and push). Both say
 that the agent acts as the GitHub App, that a GitHub grant replaces the
 owner's own HTTPS login to github.com for the agent's sessions while SSH
 remotes keep the owner's keys, that on the owner's own computer a grant
 limits what Switch hands the agent and not what the machine allows, and that
-Windows is not supported yet. Console's connection list shows a connection
+Windows is not supported yet; for a cloud agent, which has no other GitHub
+sign-in and runs on no machine of the owner's, only the first applies. Console's connection list shows a connection
 needing reauthorization and why a service cannot be granted on the server.
 
 ### Audit, member removal and metrics

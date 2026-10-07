@@ -17,7 +17,12 @@ import {
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { GitHubConnection } from '@shared/core/switch-servers/github-connection';
 import { OWNER_ONLY_POLICY, type ServiceGrant } from '@shared/core/switch-servers/service-grants';
-import { GITHUB_GRANT_NOTES, grantedRepositoryIds, grantedRepositoryNames } from './service-grants';
+import {
+  CLOUD_GITHUB_GRANT_NOTES,
+  GITHUB_GRANT_NOTES,
+  grantedRepositoryIds,
+  grantedRepositoryNames,
+} from './service-grants';
 
 type Access = 'read' | 'write';
 
@@ -54,20 +59,28 @@ export function ServiceGrantsSettingsSection({
       serverId={agent.serverId as string}
       agentId={agent.switchAgentId as string}
       agentName={agent.name}
+      cloud={false}
     />
   );
 }
 
-function ServiceGrantsRow({
+/**
+ * One agent's Service access. `cloud` is for a cloud agent, whose sessions
+ * have no GitHub sign-in of their own and run on no machine of the owner's.
+ */
+export function ServiceGrantsRow({
   workspaceId,
   serverId,
   agentId,
   agentName,
+  cloud,
 }: {
   workspaceId: string;
   serverId: string;
+  /** The agent's id in Switch. */
   agentId: string;
   agentName: string;
+  cloud: boolean;
 }) {
   const queryClient = useQueryClient();
   const [notice, setNotice] = useState<string | null>(null);
@@ -196,7 +209,7 @@ function ServiceGrantsRow({
       )}
 
       <ul className="list-disc space-y-1 pl-5 text-xs text-foreground-muted">
-        {GITHUB_GRANT_NOTES.map((note) => (
+        {(cloud ? CLOUD_GITHUB_GRANT_NOTES : GITHUB_GRANT_NOTES).map((note) => (
           <li key={note}>{note}</li>
         ))}
       </ul>
