@@ -1,4 +1,5 @@
 import { type AdvancedConfig, advancedConfigProblem } from '@switch-console/plugins/agents';
+import { switchCloudEnabled } from '@main/core/switch-servers/switch-cloud';
 import type { NewAgentMachine } from '@shared/core/agent-migration/agent-migration';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { CloudRepositorySelection } from '@shared/core/switch-servers/github-connection';
@@ -96,6 +97,12 @@ export class NewManagedAgentService {
    * refuses it in its own words.
    */
   async add(input: AddManagedAgentParams): Promise<AddManagedAgentResult> {
+    if (input.repository && !switchCloudEnabled())
+      return {
+        kind: 'error',
+        message:
+          'Switch Cloud is turned off in this build, so no agent can be placed on a cloud machine.',
+      };
     const workspaceId = await this.deps.workspaceFor(input.serverId);
 
     const problem = advancedConfigProblem(input.providerId, input.advancedConfig);

@@ -9,6 +9,7 @@ import {
   SessionHeaderOutlet,
   SessionHeaderSlotsProvider,
 } from '@renderer/features/sessions/session-header-slots';
+import { switchCloudFeature } from '@renderer/features/switch-servers/switch-cloud-feature';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
@@ -144,6 +145,7 @@ export const cloudSessionView = {
       typeof value.name !== 'string'
     )
       return { ok: false, redirect: 'home', discardParams: true };
+    if (!switchCloudFeature.enabled) return { ok: false, redirect: 'home' };
     return { ok: true };
   },
 } satisfies ViewDefinition<CloudSessionParams>;

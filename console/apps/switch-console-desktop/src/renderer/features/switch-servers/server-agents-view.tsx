@@ -8,6 +8,7 @@ import { useConfirmDeleteAgent } from '@renderer/features/locations/hooks/use-co
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationStore } from '@renderer/features/locations/stores/location-selectors';
 import {
+  isCloudManagedAgent,
   managedAgentLabel,
   managedAgentState,
 } from '@renderer/features/managed-agents/managed-agent-state';
@@ -38,6 +39,7 @@ import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agent
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { ServerPage } from './server-page';
 import { ServerSectionTitlebar } from './server-section-titlebar';
+import { switchCloudFeature } from './switch-cloud-feature';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
 
@@ -65,6 +67,9 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
   const machines = useCloudMachines(serverId);
   const managed = useManagedAgents(serverId);
   const agents = withoutManaged(agentsStore.agentsOnServer(serverId), managed.data);
+  const listedManaged = switchCloudFeature.enabled
+    ? managed.data
+    : managed.data?.filter((agent) => !isCloudManagedAgent(agent));
 
   return (
     <ServerPage
@@ -110,7 +115,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
         {agents.map((agent) => (
           <AgentCard key={agent.id} agent={agent} serverId={serverId} />
         ))}
-        {managed.data?.map((agent) => (
+        {listedManaged?.map((agent) => (
           <ManagedAgentCard key={agent.agentId} agent={agent} />
         ))}
       </div>

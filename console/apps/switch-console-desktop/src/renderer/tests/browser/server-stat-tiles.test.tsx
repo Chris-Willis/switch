@@ -43,7 +43,13 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: { servers: [], statusFor: () => null, isConnected: () => true },
 }));
 
+import { runInAction } from 'mobx';
 import { ServerStatTiles } from '@renderer/features/switch-servers/server-stat-tiles';
+import { switchCloudFeature } from '@renderer/features/switch-servers/switch-cloud-feature';
+
+runInAction(() => {
+  switchCloudFeature.enabled = true;
+});
 
 function cloudAgent(): CloudAgent {
   return {

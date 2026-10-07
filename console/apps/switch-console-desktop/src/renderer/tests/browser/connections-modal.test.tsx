@@ -62,9 +62,15 @@ vi.mock('@renderer/lib/stores/use-remote-agents', () => ({
   useAgentIconUrl: () => null,
 }));
 
+import { runInAction } from 'mobx';
 import { ConnectionsModal } from '@renderer/features/switch-servers/ConnectionsModal';
 import { serverAgentsView } from '@renderer/features/switch-servers/server-agents-view';
+import { switchCloudFeature } from '@renderer/features/switch-servers/switch-cloud-feature';
 import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
+
+runInAction(() => {
+  switchCloudFeature.enabled = true;
+});
 
 /** Stands in for the modal renderer: shows the Connections modal once the page asks for it. */
 function ModalHost() {

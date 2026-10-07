@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TargetLookup } from './agent-migration-service';
 import {
   type AddManagedAgentParams,
@@ -72,6 +72,10 @@ function harness(): Harness {
   };
 }
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe('NewManagedAgentService.add', () => {
   let h: Harness;
   beforeEach(() => {
@@ -124,6 +128,7 @@ describe('NewManagedAgentService.add', () => {
   });
 
   it('names the GitHub repository a Switch cloud machine clones for the agent', async () => {
+    vi.stubEnv('SWITCH_CLOUD_ENABLED', 'true');
     await new NewManagedAgentService(h.deps).add({
       ...PARAMS,
       dir: null,
@@ -132,6 +137,17 @@ describe('NewManagedAgentService.add', () => {
     expect(h.created).toMatchObject([
       { definition: { directory: null, repository: { installation_id: 12, repository_id: 34 } } },
     ]);
+  });
+
+  it('refuses a cloud machine agent while Switch Cloud is turned off', async () => {
+    vi.stubEnv('SWITCH_CLOUD_ENABLED', 'false');
+    const result = await new NewManagedAgentService(h.deps).add({
+      ...PARAMS,
+      dir: null,
+      repository: { installationId: 12, repositoryId: 34 },
+    });
+    expect(result).toMatchObject({ kind: 'error', message: expect.stringContaining('turned off') });
+    expect(h.created).toEqual([]);
   });
 
   it('says a name Switch already has is taken', async () => {

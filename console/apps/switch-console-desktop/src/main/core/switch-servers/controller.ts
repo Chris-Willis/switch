@@ -92,7 +92,13 @@ import {
   setActiveServerId,
   updateServer,
 } from './servers-store';
-import { requireSwitchCloudEndpoint, switchCloudEndpoint } from './switch-cloud';
+import {
+  isHiddenSwitchCloudServer,
+  requireSwitchCloudEnabled,
+  requireSwitchCloudEndpoint,
+  switchCloudEnabled,
+  switchCloudEndpoint,
+} from './switch-cloud';
 
 /** A sign-in's own error union, as a reportable code. Never its message. */
 const SIGN_IN_FAILURE: Record<LoginError['kind'], TelemetrySignInFailure> = {
@@ -198,48 +204,60 @@ async function registerSwitchCloud({ url }: SwitchCloudEndpoint): Promise<Switch
 export const switchServersController = createRPCController({
   getLocalProviderSignIn,
   connectLocalProviderSignIn: async (serverId: string, provider: LocalSignInProvider) => {
+    requireSwitchCloudEnabled();
     const credential = await readLocalProviderSignIn(provider, localProviderAuthPath(provider));
     if (!credential) throw new Error('Local sign-in file is missing. Sign in locally first.');
     return withReachableServerWorkspaceSession(serverId, (server) =>
       connectCloudProvider(server, provider, 'auth-json', credential)
     );
   },
-  getCloudProviderConnection: (serverId: string, provider: AgentProviderId) =>
-    withReachableServerWorkspaceSession(serverId, (server) =>
+  getCloudProviderConnection: async (serverId: string, provider: AgentProviderId) => {
+    requireSwitchCloudEnabled();
+    return withReachableServerWorkspaceSession(serverId, (server) =>
       getCloudProviderConnection(server, provider)
-    ),
-  connectCloudProvider: (
+    );
+  },
+  connectCloudProvider: async (
     serverId: string,
     provider: Exclude<AgentProviderId, 'claude'>,
     kind: 'api-key' | 'auth-json',
     credential: string
-  ) =>
-    withReachableServerWorkspaceSession(serverId, (server) =>
+  ) => {
+    requireSwitchCloudEnabled();
+    return withReachableServerWorkspaceSession(serverId, (server) =>
       connectCloudProvider(server, provider, kind, credential)
-    ),
-  disconnectCloudProvider: (serverId: string, provider: Exclude<AgentProviderId, 'claude'>) =>
-    withReachableServerWorkspaceSession(serverId, (server) =>
+    );
+  },
+  disconnectCloudProvider: async (
+    serverId: string,
+    provider: Exclude<AgentProviderId, 'claude'>
+  ) => {
+    requireSwitchCloudEnabled();
+    return withReachableServerWorkspaceSession(serverId, (server) =>
       disconnectCloudProvider(server, provider)
-    ),
+    );
+  },
   /** The icons the server generates for an agent called `name`, one page at a time. */
   agentIconChoices: (params: { serverId: string; name: string; page: number }) =>
     withReachableServerWorkspaceSession(params.serverId, (server) =>
       fetchAgentIconChoices(server, params.name, params.page)
     ),
-  cloudMachineLifecycle: (
+  cloudMachineLifecycle: async (
     serverId: string,
     machineId: string,
     action: 'stop' | 'start' | 'retry',
     revision: number
-  ) =>
-    withReachableServerWorkspaceSession(serverId, (server) =>
+  ) => {
+    requireSwitchCloudEnabled();
+    return withReachableServerWorkspaceSession(serverId, (server) =>
       cloudMachineLifecycle(
         server,
         machineId,
         z.enum(['stop', 'start', 'retry']).parse(action),
         revision
       )
-    ),
+    );
+  },
   getClaudeConnection: (serverId: string) =>
     withServerWorkspaceSession(serverId, (server) => getClaudeConnection(server)),
   connectClaude: (serverId: string, kind: ClaudeCredentialKind, credential: string) => {
@@ -249,13 +267,15 @@ export const switchServersController = createRPCController({
   disconnectClaude: (serverId: string) =>
     withServerWorkspaceSession(serverId, (server) => disconnectClaude(server)),
 
-  listServers: (): Promise<SwitchServer[]> => listServers(),
+  listServers: async (): Promise<SwitchServer[]> =>
+    (await listServers()).filter((server) => !isHiddenSwitchCloudServer(server)),
 
   // Both outcomes are reported here rather than the success at the store's
   // insert, so that one press of Add produces exactly one event whichever way
   // it goes. Reported on the insert, because that is the whole of the action:
   // registering a URL is a row, and everything after it is bookkeeping.
   addServer: async (params: AddServerParams): Promise<SwitchServer> => {
+    if (isHiddenSwitchCloudServer(params)) requireSwitchCloudEnabled();
     let server: SwitchServer;
     try {
       server = await addServer(params);
@@ -267,7 +287,10 @@ export const switchServersController = createRPCController({
     return server;
   },
 
-  /** Where Switch Cloud is, or null when this build or run has not been told. */
+  /** Whether this build or run offers Switch Cloud at all. */
+  switchCloudEnabled: async (): Promise<boolean> => switchCloudEnabled(),
+
+  /** Where Switch Cloud is, or null when it is turned off or this build or run has not been told. */
   switchCloud: async (): Promise<SwitchCloudEndpoint | null> => switchCloudEndpoint(),
 
   /** Register Switch Cloud as a server, or hand back the one already registered. */
@@ -284,6 +307,7 @@ export const switchServersController = createRPCController({
    * connect is not something to guess, so the caller has to ask.
    */
   serverForInvite: async (origin: string): Promise<InviteServer> => {
+    if (isHiddenSwitchCloudServer({ gatewayUrl: origin })) requireSwitchCloudEnabled();
     const cloud = switchCloudEndpoint();
     if (cloud && new URL(cloud.url).origin === new URL(origin).origin) {
       return { kind: 'known', server: await registerSwitchCloud(cloud), via: 'cloud' };
@@ -503,8 +527,10 @@ export const switchServersController = createRPCController({
     return result;
   },
 
-  ensureCloudMachine: (serverId: string) =>
-    withReachableServerWorkspaceSession(serverId, (server) => ensureCloudMachine(server)),
+  ensureCloudMachine: async (serverId: string) => {
+    requireSwitchCloudEnabled();
+    return withReachableServerWorkspaceSession(serverId, (server) => ensureCloudMachine(server));
+  },
 
   logout: async (serverId: string): Promise<void> => {
     // Read before the cookie goes, so the kind of server is still knowable — and

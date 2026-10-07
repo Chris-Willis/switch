@@ -16,6 +16,7 @@ import {
   type ManagedAgent,
 } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
+import { requireSwitchCloudEnabled } from '@main/core/switch-servers/switch-cloud';
 import { withServerWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { KV } from '@main/db/kv';
 import {
@@ -62,6 +63,7 @@ export function cloudRelayBasePath(target: CloudAgentTarget): string {
 }
 
 async function requireCloudServer(serverId: string): Promise<void> {
+  requireSwitchCloudEnabled();
   if (!(await getServer(serverId)))
     throw new Error('The Switch server for this cloud agent was removed.');
 }
@@ -97,6 +99,7 @@ const KEEPS_LAST_SESSIONS = new Set(['machine_stopped', 'worker_sleeping', 'work
 
 /** The relay client for this cloud agent, made if there is none. */
 export async function cloudControl(agentId: string): Promise<CloudRelayClient> {
+  requireSwitchCloudEnabled();
   const existing = clients.get(agentId);
   if (existing && !existing.isClosed) return existing;
   const target = targetOf(agentId);

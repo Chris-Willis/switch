@@ -91,7 +91,7 @@ local-cloud:
 # Run Switch Console with "Switch Cloud" pointing at `just local-cloud`, in
 # its own data directory so other dev builds' databases are left alone
 local-cloud-console:
-    cd console && SWITCH_CLOUD_URL=http://localhost:8000 SWITCH_CONSOLE_USER_DATA_DIR=switchdash-local-cloud pnpm dev
+    cd console && SWITCH_CLOUD_ENABLED=true SWITCH_CLOUD_URL=http://localhost:8000 SWITCH_CONSOLE_USER_DATA_DIR=switchdash-local-cloud pnpm dev
 
 # Made by the gateway admin from .env, so it joins the admin's workspace, as
 # every admin-made account does. Use the admin's domain (switch.local by

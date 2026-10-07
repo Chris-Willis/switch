@@ -48,6 +48,11 @@ vi.mock('@renderer/lib/stores/app-state', () => ({
 
 import { runInAction } from 'mobx';
 import { CloudAgentList } from '@renderer/features/cloud-agents/cloud-agent-list';
+import { switchCloudFeature } from '@renderer/features/switch-servers/switch-cloud-feature';
+
+runInAction(() => {
+  switchCloudFeature.enabled = true;
+});
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;

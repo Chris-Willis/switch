@@ -132,10 +132,17 @@ Switch Cloud, the hosted deployment the first-run page and the Add server dialog
 offer, has no URL in source. Point a run at one with `SWITCH_CLOUD_URL`, or bake
 one into a build with `MAIN_VITE_SWITCH_CLOUD_URL` (inlined into the main
 process by electron-vite). Either must be a bare https origin; with neither set
-the Cloud choice reads "Coming soon".
+the Cloud choice is not offered.
+
+The whole feature is off unless `SWITCH_CLOUD_ENABLED` (run time) or
+`MAIN_VITE_SWITCH_CLOUD_ENABLED` (build time) is exactly `true`; the run-time
+value wins when set. Off hides every Cloud surface — the Cloud choice, Switch
+Cloud servers already registered (their rows are kept), cloud agents and
+machines, Connections, and the "Switch cloud" run location — and the main
+process refuses Cloud calls. Any value other than `true` or `false` is an error.
 
 ```bash
-SWITCH_CLOUD_URL=https://cloud.example.com pnpm run dev
+SWITCH_CLOUD_ENABLED=true SWITCH_CLOUD_URL=https://cloud.example.com pnpm run dev
 ```
 
 Run main-process or renderer-only dev watches:

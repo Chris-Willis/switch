@@ -16,6 +16,7 @@ import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-
 import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-policy-editor';
 import { ManagedGitHubStep } from '@renderer/features/switch-servers/managed-github-step';
 import { ManagedProviderConnectionStep } from '@renderer/features/switch-servers/managed-provider-connection-step';
+import { switchCloudFeature } from '@renderer/features/switch-servers/switch-cloud-feature';
 import { isSwitchCloudServer } from '@renderer/features/switch-servers/switch-cloud-origin';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -124,7 +125,9 @@ export const NewAgentForm = observer(function NewAgentForm({
 
   // Run location: 'local' (default) or an onboarded remote host's SSH alias. A
   // remote agent runs its sessions on the host and needs a remote working dir.
-  const [runHost, setRunHost] = useState<string>(initialRunLocation);
+  const [runHost, setRunHost] = useState<string>(
+    switchCloudFeature.enabled ? initialRunLocation : LOCAL_RUN_LOCATION
+  );
   // Typed directly, with no commit step: it used to need one because committing
   // fired the directory scans, and there are none left to fire.
   const [remoteRepoDir, setRemoteRepoDir] = useState('');
@@ -218,7 +221,8 @@ export const NewAgentForm = observer(function NewAgentForm({
   // computer only. External servers are unconstrained — the user owns their
   // reachability.
   const targetServer = switchServersStore.servers.find((s) => s.id === targetServerId) ?? null;
-  const cloudAvailable = isManagedCloud || switchCloudMachine(serverMachines) !== null;
+  const cloudAvailable =
+    switchCloudFeature.enabled && (isManagedCloud || switchCloudMachine(serverMachines) !== null);
   const targetKind = targetServer?.managementKind ?? null;
   const targetHost = targetServer?.sshHost ?? null;
   const allowedHosts = useMemo(

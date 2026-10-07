@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { switchCloudFeature } from '@renderer/features/switch-servers/switch-cloud-feature';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -18,15 +19,23 @@ export function serverNotSignedIn(serverId: string | null): boolean {
  * The server's cloud agents, from its managed agents and cloud machines; no
  * machine is asked for sessions. Not asked until signed in: the sidebar says to sign in meanwhile.
  *
- * `null` means the server has no cloud agents. It is not asked again until its
+ * `null` means the server has no cloud agents, and is the answer without
+ * asking when Switch Cloud is turned off. It is not asked again until its
  * session or declared version changes, which is when it may have gained them.
  */
 export function useCloudAgents(serverId: string | null) {
   const signedIn = serverId !== null && switchServersStore.isConnected(serverId);
   const user = serverId === null ? null : (switchServersStore.statusFor(serverId)?.user ?? null);
+  const cloudEnabled = switchCloudFeature.enabled;
   return useQuery({
-    queryKey: ['cloud-agents', serverId, user?.id ?? null, user?.server?.version ?? null],
-    queryFn: () => rpc.sdkHost.cloudAgents(serverId!),
+    queryKey: [
+      'cloud-agents',
+      serverId,
+      user?.id ?? null,
+      user?.server?.version ?? null,
+      cloudEnabled,
+    ],
+    queryFn: () => (cloudEnabled ? rpc.sdkHost.cloudAgents(serverId!) : null),
     enabled: signedIn,
     refetchInterval: (query) => (query.state.data === null ? false : 5000),
     retry: false,
@@ -41,9 +50,10 @@ export function useCloudAgents(serverId: string | null) {
 export function useCloudMachines(serverId: string | null) {
   const signedIn = serverId !== null && switchServersStore.isConnected(serverId);
   const user = serverId === null ? null : (switchServersStore.statusFor(serverId)?.user ?? null);
+  const cloudEnabled = switchCloudFeature.enabled;
   return useQuery({
-    queryKey: ['cloud-agents', serverId, 'machines', user?.id ?? null],
-    queryFn: () => rpc.sdkHost.cloudMachines(serverId!),
+    queryKey: ['cloud-agents', serverId, 'machines', user?.id ?? null, cloudEnabled],
+    queryFn: () => (cloudEnabled ? rpc.sdkHost.cloudMachines(serverId!) : null),
     enabled: signedIn,
     refetchInterval: (query) => (query.state.data === null ? false : 5000),
     retry: false,

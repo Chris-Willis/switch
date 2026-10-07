@@ -48,11 +48,17 @@ vi.mock('@renderer/lib/layout/navigation-provider', () => ({
   }),
 }));
 
+import { runInAction } from 'mobx';
 import { cloudSessionView } from '@renderer/features/cloud-agents/cloud-session-view';
 import {
   SessionHeaderOutlet,
   SessionHeaderSlotsProvider,
 } from '@renderer/features/sessions/session-header-slots';
+import { switchCloudFeature } from '@renderer/features/switch-servers/switch-cloud-feature';
+
+runInAction(() => {
+  switchCloudFeature.enabled = true;
+});
 
 const snapshot = {
   contractVersion: 1,

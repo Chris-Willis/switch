@@ -54,7 +54,9 @@ vi.mock('@renderer/lib/stores/use-remote-agents', () => ({
   useAgentIconUrl: () => null,
 }));
 
+import { runInAction } from 'mobx';
 import { serverAgentsView } from '@renderer/features/switch-servers/server-agents-view';
+import { switchCloudFeature } from '@renderer/features/switch-servers/switch-cloud-feature';
 
 function sleepingMachine(): CloudMachine {
   return {
@@ -79,7 +81,14 @@ function sleepingMachine(): CloudMachine {
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
+function setCloudEnabled(enabled: boolean): void {
+  runInAction(() => {
+    switchCloudFeature.enabled = enabled;
+  });
+}
+
 beforeEach(() => {
+  setCloudEnabled(true);
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
   sdkHost.cloudAgents.mockReset();
   sdkHost.cloudAgents.mockResolvedValue([]);
@@ -125,9 +134,8 @@ function button(el: HTMLElement, name: RegExp): HTMLButtonElement | undefined {
   return [...el.querySelectorAll('button')].find((b) => name.test(b.textContent ?? ''));
 }
 
-it('shows a cloud agent once, as its managed agent', async () => {
-  const machine = sleepingMachine();
-  const cloudAgent: CloudAgent = {
+function cloudAgentOn(machine: CloudMachine): CloudAgent {
+  return {
     key: 'cloud:server:agent=agent',
     agentId: 'agent',
     name: 'reviewer',
@@ -142,7 +150,10 @@ it('shows a cloud agent once, as its managed agent', async () => {
     sessions: null,
     problem: null,
   };
-  const managed: ManagedAgentView = {
+}
+
+function managedCloudAgent(): ManagedAgentView {
+  return {
     serverId: 'server',
     workspaceId: 'workspace',
     agentId: 'agent',
@@ -164,14 +175,34 @@ it('shows a cloud agent once, as its managed agent', async () => {
     },
     status: null,
   };
-  sdkHost.cloudAgents.mockResolvedValue([cloudAgent]);
+}
+
+it('shows a cloud agent once, as its managed agent', async () => {
+  const machine = sleepingMachine();
+  sdkHost.cloudAgents.mockResolvedValue([cloudAgentOn(machine)]);
   sdkHost.cloudMachines.mockResolvedValue([machine]);
-  managedAgents.list.mockResolvedValue([managed]);
+  managedAgents.list.mockResolvedValue([managedCloudAgent()]);
   const el = await render();
 
   expect(el.querySelectorAll('[aria-label="Open reviewer"]')).toHaveLength(1);
   expect(el.querySelector('[aria-label="reviewer actions"]')).toBeNull();
   expect(button(el, /new session/i)).toBeUndefined();
+});
+
+it('shows no cloud agent, machine card or Connections while Switch Cloud is turned off', async () => {
+  setCloudEnabled(false);
+  const machine = sleepingMachine();
+  sdkHost.cloudAgents.mockResolvedValue([cloudAgentOn(machine)]);
+  sdkHost.cloudMachines.mockResolvedValue([machine]);
+  managedAgents.list.mockResolvedValue([managedCloudAgent()]);
+  const el = await render();
+
+  expect(el.querySelector('[aria-label="Open reviewer"]')).toBeNull();
+  expect(el.textContent).not.toMatch(/Cloud machine/);
+  expect(button(el, /connections/i)).toBeUndefined();
+  expect(button(el, /start machine/i)).toBeUndefined();
+  expect(sdkHost.cloudAgents).not.toHaveBeenCalled();
+  expect(sdkHost.cloudMachines).not.toHaveBeenCalled();
 });
 
 it.each([

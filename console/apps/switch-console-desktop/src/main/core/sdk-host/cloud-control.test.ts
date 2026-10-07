@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const server = vi.hoisted(() => ({
   machines: [] as { machine_id: string; revision: number }[],
@@ -186,7 +186,12 @@ const asleep = () =>
 const ownerStopped = () =>
   machine({ state: 'stopped', desired_state: 'stopped', stop_reason: 'owner' });
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 beforeEach(() => {
+  vi.stubEnv('SWITCH_CLOUD_ENABLED', 'true');
   server.machines = [machine({})];
   server.hostedMachinesMissing = false;
   server.machineActions = [];
@@ -244,6 +249,13 @@ it('lists the managed agents an ec2 controller runs, each with its controller’
     sessions: null,
     problem: null,
   });
+});
+
+it('refuses every cloud call while Switch Cloud is turned off', async () => {
+  vi.stubEnv('SWITCH_CLOUD_ENABLED', 'false');
+  await expect(listCloudAgents('server')).rejects.toThrow('Switch Cloud is turned off');
+  await expect(cloudControl(agent)).rejects.toThrow('Switch Cloud is turned off');
+  expect(server.relayClients).toBe(0);
 });
 
 it('leaves out agents on other controllers, and lists none without agent management', async () => {
