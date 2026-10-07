@@ -10,14 +10,20 @@ from __future__ import annotations
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import ServiceAdapterError
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG
 from switch_core.db.audit import AuditAction
-from switch_core.db.models import AuditEvent, ServiceConnection
+from switch_core.db.models import (
+    Agent,
+    AuditEvent,
+    HostedLaunch,
+    ServiceConnection,
+    ServiceGrant,
+)
 from switch_core.db.session_scope import tenant_session
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import FakeVendor
@@ -37,6 +43,7 @@ from tests.switch_core.gateway.test_tenant_api_routes import (
     _make_tenant,
     _token,
 )
+from tests.switch_core.hosted_machine_helpers import seed_launch, seed_machine
 from tests.switch_core.management.harness import (
     Harness,
     add_member,
@@ -114,7 +121,9 @@ class TestConnections:
             "consent": "read",
             "external_identity": "login-1001",
         }
+        assert (github["enabled"], github["auth_type"]) == (True, "oauth")
         assert entries["jira"]["configured"] is False
+        assert entries["jira"]["enabled"] is False
         assert entries["jira"]["status"] == "not_connected"
 
     async def test_disconnecting_deletes_grants_and_revokes_the_sign_in(
@@ -174,6 +183,73 @@ class TestGrants:
         assert listed.status_code == 200, listed.text
         assert listed.json()["addressing_open"] is True
         assert [g["service"] for g in listed.json()["grants"]] == ["github"]
+
+    async def test_a_cloud_agent_without_its_repository_grant_is_shown_it(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        agent_id, _ = await agent_with_key(harness.session_factory, owner, "cloud")
+        await connect(harness.session_factory, owner.id)
+        async with harness.session_factory() as session:
+            machine = await seed_machine(
+                session,
+                owner_id=owner.id,
+                slot_id="slot-a",
+                state="ready",
+                desired_state="running",
+                stop_reason=None,
+                revision=1,
+                generation=1,
+            )
+            launch = await seed_launch(
+                session,
+                machine=machine,
+                request_id="launch-1",
+                name="cloud",
+                state="ready",
+                desired_state="running",
+                revision=1,
+                agent_id=agent_id,
+                spec={"installation_id": 7, "repository_id": 70},
+            )
+            launch.repository = "example/project"
+            agent = await session.get(Agent, agent_id)
+            agent.metadata_ = {**(agent.metadata_ or {}), "hosted_launch_id": launch.id}
+            await session.commit()
+
+        async def listed() -> dict:
+            async with harness.client() as client:
+                response = await client.get(
+                    f"/gateway/agents/{agent_id}/service-grants",
+                    cookies=cookies_for(owner),
+                )
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        [missing] = (await listed())["missing"]
+        assert missing["service"] == "github"
+        assert "example/project" in missing["reason"]
+        assert (missing["access"], missing["resources"]) == (
+            "write",
+            {"installation_id": 7, "repository_ids": [70]},
+        )
+
+        granted = await _put(harness, owner, agent_id, {"resources": RESOURCES})
+        assert granted.status_code == 200, granted.text
+        assert (await listed())["missing"] == []
+
+        # A launch on its way out needs nothing.
+        async with harness.session_factory() as session:
+            await session.execute(
+                delete(ServiceGrant).where(ServiceGrant.agent_id == agent_id)
+            )
+            await session.execute(
+                update(HostedLaunch)
+                .where(HostedLaunch.id == "launch-1")
+                .values(state="deleting", desired_state="deleted")
+            )
+            await session.commit()
+        assert (await listed())["missing"] == []
 
     async def test_someone_elses_agent_is_not_found(self, harness: Harness) -> None:
         owner = await add_member(harness.session_factory, "ada")

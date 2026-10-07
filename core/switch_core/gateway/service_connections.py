@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.addressing import parse_policy
+from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.connections.broker import (
     ServiceBroker,
     ServiceError,
@@ -25,6 +26,7 @@ from switch_core.connections.broker import (
 )
 from switch_core.connections.loader import CATALOG, AccessLevel
 from switch_core.db.models import Agent, ServiceGrant, User, require_tenant_id
+from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_session
@@ -90,6 +92,8 @@ async def list_service_connections(
                 "name": definition.name,
                 "category": definition.category,
                 "description": definition.description,
+                "enabled": definition.enabled,
+                "auth_type": definition.auth.type,
                 "configured": unavailable is None,
                 "unavailable_reason": unavailable,
                 "status": "not_connected" if connection is None else connection.status,
@@ -124,13 +128,52 @@ async def list_service_grants(
     session: Annotated[AsyncSession, Depends(get_session)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
 ) -> dict[str, Any]:
-    """The agent's grants, and whether others can address it (and so use them)."""
+    """The agent's grants, what it needs and lacks, and whether others can address it.
+
+    `missing` names a grant the agent works without: a cloud agent's
+    repository, whose grant the launch could not make or someone removed,
+    with the grant that would restore it.
+    """
     agent = await _owned_agent(session, agent_id, user)
     grants = await STORE.list_grants(session, agent.id)
     return {
         "grants": [_grant_view(broker, agent, grant) for grant in grants],
+        "missing": await _missing_grants(session, agent, user, grants),
         "addressing_open": parse_policy(agent.addressing_policy).is_open(),
     }
+
+
+async def _missing_grants(
+    session: AsyncSession, agent: Agent, user: User, grants: list[ServiceGrant]
+) -> list[dict[str, Any]]:
+    launch_id = hosted_launch_of(agent.metadata_)
+    if launch_id is None or any(grant.service == "github" for grant in grants):
+        return []
+    launch = await HostedLaunchStore().owned(session, launch_id, user.id)
+    if (
+        launch is None
+        or launch.state in ("deleting", "deleted")
+        or not launch.repository
+    ):
+        return []
+    installation_id = launch.spec.get("installation_id")
+    repository_id = launch.spec.get("repository_id")
+    if type(installation_id) is not int or type(repository_id) is not int:
+        return []
+    return [
+        {
+            "service": "github",
+            "reason": (
+                f"This cloud agent works in {launch.repository}, but has no GitHub "
+                "grant, so it cannot fetch or push. Grant it the repository again."
+            ),
+            "access": "write",
+            "resources": {
+                "installation_id": installation_id,
+                "repository_ids": [repository_id],
+            },
+        }
+    ]
 
 
 class GrantBody(BaseModel):

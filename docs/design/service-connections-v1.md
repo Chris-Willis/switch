@@ -281,16 +281,21 @@ Both are mounted with the other agent routes in
 
 - `GET /gateway/service-connections`: each catalog entry with the user's
   status: `not_connected`, `active`, `needs_reauthorization` or `error`, plus
-  `configured` (false when the service has no adapter here, with the reason),
-  `consent` and `external_identity`. It replaces `/provider-connections/catalog`
-  once GitHub has moved.
+  `enabled` and `auth_type` from the catalog, `configured` (false when the
+  service cannot be granted here, with the reason), `consent` and
+  `external_identity`. It replaces `/provider-connections/catalog`, which
+  Console still reads from a server that answers this route 404.
 - `DELETE /gateway/service-connections/{service}`: the connection's owner.
   Deletes it; grants cascade; issued tokens are queued for revocation and
   revoked; the connection is revoked at the vendor where supported.
 - `GET /gateway/agents/{agent_id}/service-grants`: the agent's owner. Each
-  grant, a plain summary of its reach ("Build bot can push to two repositories
-  in example-org, as the GitHub App"), and `addressing_open`
-  (`AddressingPolicy.is_open()`), for the warning below.
+  grant, a plain summary of its reach ("Build bot can read and push to 2
+  repositories, acting as the GitHub App"; the screens add the repositories'
+  names from the owner's GitHub connection), `missing`, and `addressing_open`
+  (`AddressingPolicy.is_open()`), for the warning below. `missing` names a
+  grant the agent works without: a live cloud launch with a repository and no
+  GitHub grant (the launch could not make it, or someone removed it), with the
+  reason and the grant that restores it, which the screens offer in one click.
 - `PUT /gateway/agents/{agent_id}/service-grants/{service}`: the agent's owner,
   who must own the connection. Body `{access?, tool_mode?, tools?, resources}`.
   Creates or replaces the grant; with no `access` it is `read`, with the read
@@ -322,6 +327,17 @@ that someone else can address the agent and so use the owner's grant, and
 offer "Make owner-only". Owner-only still leaves instructions others write in
 shared rooms, delegation through the owner's other open agents, and results
 posted to shared rooms; the warning names them.
+
+**Grant screens.** The gateway's agent page and Console's agent settings
+show the agent's owner its grants (summary, level, repositories), a missing
+one with "Grant it", the addressing warning, and a GitHub grant form (an
+installation of the App, its repositories, read or read and push). Both say
+that the agent acts as the GitHub App, that a GitHub grant replaces the
+owner's own HTTPS login to github.com for the agent's sessions while SSH
+remotes keep the owner's keys, that on the owner's own computer a grant
+limits what Switch hands the agent and not what the machine allows, and that
+Windows is not supported yet. Console's connection list shows a connection
+needing reauthorization and why a service cannot be granted on the server.
 
 ### Audit, member removal and metrics
 

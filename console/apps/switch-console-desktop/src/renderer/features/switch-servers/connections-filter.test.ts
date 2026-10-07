@@ -11,6 +11,7 @@ function entry(name: string, category: string): ConnectionCatalogEntry {
     enabled: false,
     auth_type: 'oauth',
     status: 'coming_soon',
+    unavailable_reason: null,
   };
 }
 

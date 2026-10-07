@@ -101,6 +101,7 @@ function entry(
     enabled,
     auth_type: 'oauth',
     status,
+    unavailable_reason: null,
   };
 }
 
