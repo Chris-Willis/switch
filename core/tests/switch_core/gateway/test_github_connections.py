@@ -18,7 +18,7 @@ from switch_core.db.models import (
 )
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_config, get_session
-from switch_core.gateway.github_connections import router
+from switch_core.gateway.github_connections import page, router
 from switch_core.keys import Keyring
 from switch_core.providers.github import (
     GitHubAuthorizationError,
@@ -483,3 +483,21 @@ async def test_relink_revokes_the_previous_access_token(github_app):
     assert response.status_code == 200
     assert response.json()["warning"] is None
     github.revoke.assert_awaited_once_with("SYNTHETIC-ACCESS")
+
+
+def test_result_page_is_branded_and_allows_only_inline_styles():
+    response = page("Sign-in was interrupted. Start it again from Switch Console.", 400)
+    policy = response.headers["content-security-policy"]
+    body = response.body.decode()
+
+    assert response.status_code == 400
+    assert "default-src 'none'" in policy
+    assert "style-src 'unsafe-inline'" in policy
+    assert "frame-ancestors 'none'" in policy
+    assert "script-src" not in policy
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert "Sign-in was interrupted. Start it again from Switch Console." in body
+    assert 'class="status error"' in body
+    assert "<script" not in body

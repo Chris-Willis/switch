@@ -34,6 +34,7 @@ from switch_core.providers.github import (
     revoke_oauth,
 )
 from switch_core.providers.github_tasks import finish_shielded
+from switch_core.web_page import render_page, status_icon
 
 logger = logging.getLogger(__name__)
 
@@ -97,17 +98,29 @@ def conditions(user_id: str) -> tuple:
     )
 
 
+def page_policy(form_action: str) -> str:
+    return (
+        "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; "
+        f"form-action {form_action}; base-uri 'none'"
+    )
+
+
 def page(message: str, status: int) -> HTMLResponse:
+    """A GitHub connect page. `message` is markup: callers escape what they
+    interpolate into it."""
+    failed = status >= 400
     return HTMLResponse(
-        "<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content='width=device-width'>"
-        "<title>Switch · GitHub</title><body><main><h1>Switch · GitHub</h1><p>"
-        + message
-        + "</p></main></body></html>",
+        render_page(
+            title="GitHub sign-in did not finish" if failed else "Connect GitHub",
+            icon=status_icon("error" if failed else "info"),
+            body=message,
+        ),
         status_code=status,
         headers={
             "Cache-Control": "no-store",
             "Referrer-Policy": "no-referrer",
-            "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'",
+            "X-Frame-Options": "DENY",
+            "Content-Security-Policy": page_policy("'self'"),
         },
     )
 
@@ -205,17 +218,16 @@ async def callback(
             raise GitHubError("GitHub authorization was cancelled.")
         flow.status = "returning"
         response = page(
-            f"Linking GitHub to <strong>{escape(flow.owner_label)}</strong>. "
-            "Continue only if this is your Switch account. Use the same computer where you started the connection."
+            f"<p>Linking GitHub to <strong>{escape(flow.owner_label)}</strong>.</p>"
+            "<p>Continue only if this is your Switch account. Use the same computer where you started the connection.</p>"
             '<form method="post" action="/gateway/provider-connections/github/callback">'
             f'<input type="hidden" name="state" value="{escape(state, quote=True)}">'
             f'<input type="hidden" name="code" value="{escape(code, quote=True)}">'
             '<button type="submit">Continue in Switch Console</button></form>',
             200,
         )
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'none'; frame-ancestors 'none'; "
-            f"form-action 'self' http://127.0.0.1:{flow.port}; base-uri 'none'"
+        response.headers["Content-Security-Policy"] = page_policy(
+            f"'self' http://127.0.0.1:{flow.port}"
         )
         return response
     except GitHubError:
