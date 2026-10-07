@@ -58,6 +58,7 @@ from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.feature_flag_store import FeatureFlagStore
 from switch_core.gateway.known_agents import KNOWN_AGENTS, KnownAgent
 from switch_core.management import reason_codes, tokens
 from switch_core.management.errors import ManagementError, not_found
@@ -387,6 +388,7 @@ class ManagementService:
             "controller_id": principal.controller_id,
             "assignment_revision": await self.assignment_revision(session, principal),
             "report_within_s": self.settings.status_interval_seconds,
+            "feature_flags": await FeatureFlagStore().get_all(session),
         }
 
     # ── Operations, controller side ───────────────────────────────────────────

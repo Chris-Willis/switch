@@ -428,6 +428,22 @@ describe('runController', () => {
     expect(await running).toBe('stopped');
   });
 
+  it('records the workspace feature flags it is sent, on connect and on change', async () => {
+    core.setAssignment({ revision: 1, agents: [] });
+    core.featureFlags = { 'ecosystem.show_owners': true };
+    const file = join(dir, 'feature-flags.json');
+    const flags = () =>
+      existsSync(file)
+        ? (JSON.parse(readFileSync(file, 'utf8')) as { flags: Record<string, boolean> }).flags
+        : null;
+    running = runController(deps(), stop.signal);
+    await waitFor(() => flags()?.['ecosystem.show_owners'] === true, 'the flags from connect');
+    core.push('feature_flags.changed', { flags: { 'ecosystem.show_owners': false } });
+    await waitFor(() => flags()?.['ecosystem.show_owners'] === false, 'the changed flags');
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
   it('resyncs after the stream drops and reconnects', async () => {
     core.setAssignment({ revision: 1, agents: [agent(1)] });
     running = runController(deps(), stop.signal);

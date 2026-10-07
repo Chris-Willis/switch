@@ -1463,3 +1463,19 @@ class BudgetResponse(BaseModel):
     spent: int
     resets_at: datetime
     exhausted: bool
+
+
+class FeatureFlagState(BaseModel):
+    key: str
+    enabled: bool
+
+
+class FeatureFlagsResponse(BaseModel):
+    flags: list[FeatureFlagState]
+    # Whether the caller may change them: an admin of this workspace, or the
+    # deployment operator.
+    can_edit: bool
+
+
+class SetFeatureFlagRequest(BaseModel):
+    enabled: bool

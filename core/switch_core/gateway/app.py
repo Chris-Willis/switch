@@ -32,6 +32,7 @@ from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.feature_flag_changes import FeatureFlagChanges
 from switch_core.gateway.agent_sessions import router as agent_sessions_router
 from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.api_keys import router as api_keys_router
@@ -42,6 +43,7 @@ from switch_core.gateway.connectors import router as connectors_router
 from switch_core.gateway.dependencies import init_dependencies
 from switch_core.gateway.documents import router as documents_router
 from switch_core.gateway.ecosystem import router as ecosystem_router
+from switch_core.gateway.feature_flags import router as feature_flags_router
 from switch_core.gateway.github_connections import router as github_connections_router
 from switch_core.gateway.hosted_controller import router as hosted_controller_router
 from switch_core.gateway.hosted_launches import router as hosted_launches_router
@@ -101,6 +103,7 @@ def create_gateway_app(
     protocol: AgentCore,
     install_service: MessagingInstallService | None,
     invite_mailer: InviteMailer | None,
+    feature_flag_changes: FeatureFlagChanges,
     config: SwitchConfig,
 ) -> FastAPI:
     init_dependencies(
@@ -127,6 +130,7 @@ def create_gateway_app(
         protocol=protocol,
         install_service=install_service,
         invite_mailer=invite_mailer,
+        feature_flag_changes=feature_flag_changes,
         config=config,
     )
 
@@ -215,6 +219,9 @@ def create_gateway_app(
     app.include_router(templates_router, tags=["templates"])
     app.include_router(template_runs_router, tags=["templates"])
     app.include_router(ecosystem_router, prefix="/ecosystem", tags=["ecosystem"])
+    app.include_router(
+        feature_flags_router, prefix="/feature-flags", tags=["feature-flags"]
+    )
     app.include_router(
         messaging_installs_router,
         prefix="/messaging-apps",

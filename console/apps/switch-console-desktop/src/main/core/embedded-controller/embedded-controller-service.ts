@@ -7,6 +7,7 @@ import type {
   EmbeddedControllerStateEvent,
   MachineDetailsChange,
 } from '@shared/core/embedded-controller/embedded-controller';
+import { type ConsoleFeatureFlags, resolveFeatureFlags } from '@shared/core/feature-flags';
 import {
   credentialSecretKey,
   type EnrollmentRecord,
@@ -45,6 +46,8 @@ export interface SecretsPort {
 
 export interface ControllerFilesPort {
   dataDir(serverId: string): string;
+  /** The feature flags the server last sent the controller, or null if none yet. */
+  readFeatureFlags(dataDir: string): Promise<Record<string, boolean> | null>;
   turnOffWatchers(dataDir: string): Promise<number>;
   wipeIdentity(dataDir: string): Promise<void>;
 }
@@ -511,6 +514,16 @@ export class EmbeddedControllerService {
     const turnedOff = await this.deps.files.turnOffWatchers(this.deps.files.dataDir(serverId));
     if (turnedOff > 0)
       this.deps.log.info('Turned off the managed agents’ watchers', { serverId, turnedOff });
+  }
+
+  /**
+   * The workspace feature flags, as the server last sent this computer's
+   * controller for `serverId`. All off when it has not been sent any.
+   */
+  async featureFlags(serverId: string): Promise<ConsoleFeatureFlags> {
+    return resolveFeatureFlags(
+      await this.deps.files.readFeatureFlags(this.deps.files.dataDir(serverId))
+    );
   }
 
   private async forget(serverId: string): Promise<void> {

@@ -25,6 +25,8 @@ import {
   credentialRevokedSchema,
   type Evicted,
   evictedSchema,
+  type FeatureFlagsChanged,
+  featureFlagsChangedSchema,
   type OperationPending,
   operationPendingSchema,
 } from './schemas';
@@ -96,6 +98,7 @@ export const STREAM_FRAME_SCHEMAS = {
   'assignment.changed': assignmentChangedSchema,
   'operation.pending': operationPendingSchema,
   'credential.revoked': credentialRevokedSchema,
+  'feature_flags.changed': featureFlagsChangedSchema,
 } as const satisfies Record<string, z.ZodType>;
 
 export type ControllerFrame =
@@ -110,7 +113,8 @@ export type ControllerFrame =
   | { type: 'agent.rooms'; data: AgentRoomsFrame }
   | { type: 'assignment.changed'; data: { revision: number } }
   | { type: 'operation.pending'; data: OperationPending }
-  | { type: 'credential.revoked'; data: Record<string, never> };
+  | { type: 'credential.revoked'; data: Record<string, never> }
+  | { type: 'feature_flags.changed'; data: FeatureFlagsChanged };
 
 /** Why the stream stopped for good. */
 export type StreamEnding = 'stopped' | 'revoked' | 'taken_over';
