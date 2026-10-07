@@ -385,8 +385,12 @@ through `runAgentHost`.
   values as they are added. Each session host scrubs every event before it is
   recorded, so its journal, Console's view and the activity rows Switch shows
   on the bridges are scrubbed together. No token passes through the agent
-  host's own log lines. Not covered: a token split across two streamed text
-  deltas, and the provider CLI's own transcript files.
+  host's own log lines. An assistant message is published whole, revision by
+  revision, and split into 4096-character parts: its text is scrubbed before
+  the split, and while it streams, a trailing piece that could be the start
+  of a token is held back until the rest arrives or the message completes, so
+  no revision or part carries a token in pieces. Not covered: the provider
+  CLI's own transcript files.
 - **Tool status** (`agent-controller/src/status.ts`): the controller reports
   `git` and `gh` in §3's `tools`: `ok` when on `PATH`, `missing` when not, and
   `unsupported` on Windows.

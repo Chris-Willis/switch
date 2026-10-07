@@ -113,3 +113,14 @@ describe('values added as they are issued', () => {
     expect(redactions.text(`log ${raw}`)).toBe('log [REDACTED]');
   });
 });
+
+it('says how much of a text could still turn into a value', () => {
+  const redactions = new Redactions();
+  expect(redactions.unfinished('anything')).toBe(0);
+  redactions.add('synthetic-token');
+  expect(redactions.unfinished('see synth')).toBe(5);
+  expect(redactions.unfinished('see synthetic-token')).toBe(0);
+  expect(redactions.unfinished('nothing here.')).toBe(0);
+  // Every token's base64 form starts with that of `x-access-token:`.
+  expect(redactions.unfinished('nothing here')).toBe(1);
+});

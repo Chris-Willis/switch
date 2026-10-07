@@ -84,6 +84,22 @@ export class Redactions {
     return this.values.size ? redactText(input, this.list()) : input;
   }
 
+  /**
+   * How many characters at the end of `text` could be the start of a value
+   * held here: text still streaming in holds them back, so a token arriving
+   * over several chunks is never shown in part.
+   */
+  unfinished(text: string): number {
+    let longest = 0;
+    for (const value of this.values)
+      for (let length = Math.min(value.length - 1, text.length); length > longest; length--)
+        if (text.endsWith(value.slice(0, length))) {
+          longest = length;
+          break;
+        }
+    return longest;
+  }
+
   /** `input` with every string in it redacted: for JSON values, such as a tool call's arguments. */
   value<T>(input: T): T {
     if (!this.values.size) return input;
