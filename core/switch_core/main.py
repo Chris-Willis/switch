@@ -156,8 +156,8 @@ from switch_core.observability.query import instrument_queries
 from switch_core.observability.runtime import EventLoopLag
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
-from switch_core.retention.service import retention_loop
 from switch_core.retention.erasure import ErasureService, erasure_loop
+from switch_core.retention.service import retention_loop
 from switch_core.room_service import RoomService
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
