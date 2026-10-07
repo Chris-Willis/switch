@@ -47,6 +47,7 @@ from switch_core.connections.adapters import (
     ServiceUnavailableError,
 )
 from switch_core.connections.loader import AccessLevel, Connection
+from switch_core.connections.shielded import finish_shielded
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
@@ -64,7 +65,6 @@ from switch_core.db.stores.service_connection_store import (
 from switch_core.keys import Keyring
 from switch_core.observability.catalogue import SERVICE_TOKEN_REQUESTS
 from switch_core.observability.metrics import metrics
-from switch_core.providers.github_tasks import finish_shielded
 
 logger = logging.getLogger(__name__)
 
