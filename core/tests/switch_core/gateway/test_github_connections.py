@@ -20,7 +20,11 @@ from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_config, get_session
 from switch_core.gateway.github_connections import router
 from switch_core.keys import Keyring
-from switch_core.providers.github import GitHubConnections, GitHubError
+from switch_core.providers.github import (
+    GitHubAuthorizationError,
+    GitHubConnections,
+    GitHubError,
+)
 from switch_core.tenant_context import tenant_scope
 
 KEY = Keyring.parse("test:" + "synthetic-encryption-test-key" * 2, legacy_secret=None)
@@ -259,6 +263,39 @@ async def test_refresh_saved_before_repository_failure(github_app):
         )
         saved = json.loads(KEY.decrypt(row.encrypted_credential))
         assert saved["refresh_token"] == "NEW-SYNTHETIC-REFRESH"
+
+
+async def test_expired_refresh_reports_reconnect_required(github_app):
+    client, github, _, _ = github_app
+    flow_id = await authorize(client)
+    github.exchange.return_value["expires_at"] = 0
+    github.exchange.return_value["refresh_expires_at"] = 0
+    await relay(client, flow_id)
+    await complete(client, flow_id)
+    await confirm(client, flow_id)
+    response = await client.get(BASE)
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": "GitHub authorization expired. Reconnect GitHub.",
+        "code": "github_reconnect_required",
+    }
+
+
+async def test_revoked_access_reports_reconnect_required(github_app):
+    client, github, _, _ = github_app
+    flow_id = await authorize(client)
+    await relay(client, flow_id)
+    await complete(client, flow_id)
+    await confirm(client, flow_id)
+    github.repositories.side_effect = GitHubAuthorizationError(
+        "GitHub access expired or was revoked. Connect GitHub again."
+    )
+    response = await client.get(BASE)
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": "GitHub access expired or was revoked. Connect GitHub again.",
+        "code": "github_reconnect_required",
+    }
 
 
 async def test_failed_authorization_preserves_saved_connection(github_app):

@@ -40,6 +40,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/provider-connections/github")
 
 
+class GitHubReconnectRequired(HTTPException):
+    code = "github_reconnect_required"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(422, message)
+
+
 def service(request: Request) -> GitHubConnections:
     value = request.app.state.github_connections
     if value is None:
@@ -373,14 +380,19 @@ async def confirm(
     return JSONResponse({"warning": warning})
 
 
-@router.get("")
+@router.get("", response_model=None)
 async def connection(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     github: Annotated[GitHubConnections, Depends(service)],
-) -> dict:
-    return await connection_status(user.id, session, config, github)
+) -> dict | JSONResponse:
+    try:
+        return await connection_status(user.id, session, config, github)
+    except GitHubReconnectRequired as error:
+        return JSONResponse(
+            {"detail": error.detail, "code": error.code}, status_code=422
+        )
 
 
 async def _credentials(
@@ -451,7 +463,7 @@ async def github_credentials(
             _credentials(user_id, engine, config, github, require_tenant_id())
         )
     except GitHubAuthorizationError as error:
-        raise HTTPException(422, str(error)) from None
+        raise GitHubReconnectRequired(str(error)) from None
     except GitHubError as error:
         raise HTTPException(502, str(error)) from None
 
@@ -466,6 +478,8 @@ async def connection_status(
     credentials, revision = saved
     try:
         installations = await github.repositories(credentials["access_token"])
+    except GitHubAuthorizationError as error:
+        raise GitHubReconnectRequired(str(error)) from None
     except GitHubError as error:
         raise HTTPException(502, str(error)) from None
     row = await session.scalar(select(ProviderConnection).where(*conditions(user_id)))

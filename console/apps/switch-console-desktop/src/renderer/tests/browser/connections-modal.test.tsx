@@ -238,3 +238,84 @@ it('opens the GitHub step from the grid and returns to it', async () => {
   );
   expect(switchServers.getConnectionCatalog).toHaveBeenCalledTimes(2);
 });
+
+function gatewayError(status: number, detail: string, code?: string): RpcError {
+  return new RpcError(
+    serializeRpcError(
+      Object.assign(new Error(`Switch gateway returned ${status}`), {
+        name: 'GatewayError',
+        kind: 'http',
+        status,
+        detail,
+        ...(code ? { code } : {}),
+      })
+    )
+  );
+}
+
+const CONNECTED_CATALOG = [
+  entry('github', 'GitHub', true, 'connected'),
+  entry('linear', 'Linear', false, 'coming_soon'),
+];
+
+it('says GitHub needs reconnecting when its saved authorization expired', async () => {
+  sdkHost.cloudAgents.mockResolvedValue([]);
+  switchServers.getConnectionCatalog.mockResolvedValue(CONNECTED_CATALOG);
+  switchServers.getGitHubConnection.mockRejectedValue(
+    gatewayError(
+      422,
+      'GitHub authorization expired or was revoked. Reconnect GitHub.',
+      'github_reconnect_required'
+    )
+  );
+  await render();
+  const modal = await openConnections();
+
+  await vi.waitFor(() =>
+    expect(button(/GitHub/, modal)?.textContent).toMatch(/Reconnect required/)
+  );
+  const card = button(/GitHub/, modal)!;
+  expect(card.textContent).not.toMatch(/Connected/);
+  expect(card.querySelector('[role="alert"]')?.textContent).toBe(
+    'GitHub authorization expired or was revoked. Reconnect GitHub.'
+  );
+
+  await act(async () => card.click());
+  await vi.waitFor(() => expect(button(/^reconnect github\s*$/i, dialog()!)).toBeDefined());
+  expect(dialog()!.querySelector('[role="alert"]')?.textContent).toBe(
+    'GitHub authorization expired or was revoked. Reconnect GitHub.'
+  );
+});
+
+it('shows an error rather than Connected when GitHub cannot be checked', async () => {
+  sdkHost.cloudAgents.mockResolvedValue([]);
+  switchServers.getConnectionCatalog.mockResolvedValue(CONNECTED_CATALOG);
+  switchServers.getGitHubConnection.mockRejectedValue(
+    gatewayError(502, 'Could not reach GitHub or read its response. Please try again.')
+  );
+  await render();
+  const modal = await openConnections();
+
+  await vi.waitFor(() => expect(button(/GitHub/, modal)?.textContent).toMatch(/Error/));
+  const card = button(/GitHub/, modal)!;
+  expect(card.textContent).not.toMatch(/Connected/);
+  expect(card.querySelector('[role="alert"]')?.textContent).toBe(
+    'Could not reach GitHub or read its response. Please try again. (HTTP 502)'
+  );
+});
+
+it('shows Connected only once the live GitHub status confirms it', async () => {
+  sdkHost.cloudAgents.mockResolvedValue([]);
+  switchServers.getConnectionCatalog.mockResolvedValue(CONNECTED_CATALOG);
+  switchServers.getGitHubConnection.mockResolvedValue({
+    status: 'connected',
+    login: 'example-user',
+    install_url: 'https://github.com/apps/example/installations/new',
+    installations: [],
+  });
+  await render();
+  const modal = await openConnections();
+
+  await vi.waitFor(() => expect(button(/GitHub/, modal)?.textContent).toMatch(/Connected/));
+  expect(button(/GitHub/, modal)!.querySelector('[role="alert"]')).toBeNull();
+});
