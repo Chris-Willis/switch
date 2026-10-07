@@ -21,6 +21,9 @@ nothing to set up or renew.
   and your owner's own account are out of reach too.
 - That is the scope, not a fault. When something is refused, tell the user what
   you could not do rather than retrying or looking for other credentials.
+- If `git` or `gh` says GitHub refused its credentials, Switch replaces them:
+  run the command once more. If Switch then says the grant was removed or
+  changed, stop and tell the user; your owner has to grant it again.
 - Pushes, pull requests, comments and reviews appear as the Switch GitHub App's
   bot, not as your owner.
 - Never print, log or store a credential, and leave git's credential settings

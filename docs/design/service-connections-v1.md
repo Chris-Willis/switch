@@ -343,53 +343,91 @@ One change serves every runtime: Console with management off, a controller
 through `runAgentHost`.
 
 - **Grants at session start** (`host/service-access.ts`): when a session starts
-  or resumes, the agent host reads `service-grants` through the agent's Switch
-  endpoint: its own key, or the controller's relay. It fetches each token on
-  first use, refreshes it 5 minutes before expiry, stops serving a service on
-  `grant_missing`, `grant_account_changed`, `forbidden` or `connector_*` with
-  Core's message, and keeps every issued value for redaction.
+  or resumes, its session host reads `service-grants` through the agent's
+  Switch endpoint: its own key, or the controller's relay. A Switch without the
+  route answers 404, read as no grants. When the grants cannot be read the
+  session starts without them, the log says why, and the session is told in
+  its context that its granted services are not set up and are loaded again
+  when it next starts.
 - **Skills:** granted skills are added when a session is prepared
   (`prepareSharedConfig`), after the agent's template is applied, so resuming
   neither drops nor repeats them. They join `execution.context` for Claude
   Code, Codex, Cursor and Antigravity, and go to OpenCode as skill files.
-- **The token ask:** a new session ask, `service-token {service}`, answered in
-  `sessionToolAnswerer` beside the Switch tool asks. It is the only place
-  session asks are answered, in every runtime, so the token cache lives there.
-- **Loopback endpoint for helpers:** each session gets a `127.0.0.1` endpoint
-  with a per-session bearer token, named in its environment as
-  `SWITCH_SERVICE_ENDPOINT` and `SWITCH_SERVICE_TOKEN`. Helpers the CLI starts
-  (`git`'s credential helper, the `gh` wrapper) ask it; it asks the agent host.
+- **The token ask:** a session ask, `service-token {service, rejected}`,
+  answered in `sessionToolAnswerer` beside the Switch tool asks, which is the
+  only place session asks are answered, in every runtime. The answer is a token
+  or Core's refusal, marked final for `grant_missing`, `grant_account_changed`,
+  `forbidden` and `connector_*`.
+- **Token cache** (`host/service-tokens.ts`): one token per service, shared by
+  the agent's sessions on the machine, asked for on first use and again 5
+  minutes before it expires, one request at a time. While Switch cannot renew
+  it, the current token is handed out as long as it has more than a minute
+  left, with a warning. `rejected` is a token the service refused (Git erasing
+  it, `gh` told 401): the cache drops it so the next ask gets one under the
+  grant as it is now, or Core's refusal. Only one such report a minute per
+  service is acted on; another within the minute is refused with that reason,
+  so a token GitHub keeps refusing does not become a token per command. A
+  final refusal drops the token.
+- **Loopback endpoint for helpers** (`host/service-endpoint.ts`): a session
+  whose agent has a GitHub grant gets a `127.0.0.1` endpoint with a
+  per-session bearer, named in its environment as `SWITCH_SERVICE_ENDPOINT` and
+  `SWITCH_SERVICE_TOKEN`. `POST /services/{service}/token` with `{rejected}`
+  answers `{token, expires_at}`; 404 for a service not granted when the session
+  started; 403 with Core's message after a final refusal, which ends the
+  service for the rest of that session; 503 with the reason otherwise. An ask
+  the agent host does not answer within 90 s (one from before this build
+  ignores it) is a 503.
 - **Redaction** (`host/redaction.ts`, from `host/hosted-log.ts`): exact-value
   redaction of every issued token, raw, URL-encoded and as base64 of
-  `x-access-token:<token>`. The agent host applies it to its logs and to
-  outgoing room messages; it sends each session host the values, which apply
-  them to their journals and to the activity rows they report (which Switch
-  shows on Slack and the other bridges).
+  `x-access-token:<token>`. The agent host scrubs the arguments of every tool
+  call it makes for its sessions, room messages included, and its supervisor
+  scrubs what the session hosts it runs write to `worker.log`, reading the
+  values as they are added. Each session host scrubs every event before it is
+  recorded, so its journal, Console's view and the activity rows Switch shows
+  on the bridges are scrubbed together. No token passes through the agent
+  host's own log lines. Not covered: a token split across two streamed text
+  deltas, and the provider CLI's own transcript files.
 - **Tool status** (`agent-controller/src/status.ts`): the controller reports
-  `git` and `gh` in §3's `tools`, `unsupported` on Windows.
+  `git` and `gh` in §3's `tools`: `ok` when on `PATH`, `missing` when not, and
+  `unsupported` on Windows.
 
 ### GitHub helpers (`host/service-github.ts`, from `host/hosted-github.ts`)
 
-- The credential helper and the `gh` wrapper ask the agent host over the
+- The credential helper and the `gh` wrapper are modes of the session host's
+  own bundle (`--git-credential`, `--github-cli`). They ask the session's
   loopback endpoint; plain `http` is accepted only to `127.0.0.1`.
-- The helper accepts repeated `capability[]` lines, which newer Git sends, so
-  private clones work with Git 2.47 and later.
-- The wrapper finds the real `gh` on `PATH`, skipping its own folder.
+- The helper accepts repeated `capability[]` and `wwwauth[]` lines, which newer
+  Git sends, so private clones work with Git 2.47 and later. On `erase` it
+  reports the token as rejected; it stores nothing.
+- The wrapper finds the real `gh` on `PATH`, skipping its own folder, and runs
+  it with the token as `GH_TOKEN`. It watches `gh`'s stderr for GitHub
+  refusing the token (`HTTP 401`, `Bad credentials`) and reports it, so the
+  next command has another.
 - **Laptops and servers, agents with a GitHub grant:** the helper is set, for
   the session only, through `GIT_CONFIG_*` entries in its environment, for
-  `https://github.com` alone; the user's other credential helpers and Git
-  config are untouched. SSH remotes still use the user's keys. The grant screen
-  says a GitHub grant replaces the user's own login for that agent's HTTPS
-  access to github.com.
+  `https://github.com` alone: an empty helper entry first clears the helpers
+  met so far for that URL, then Switch's. The user's other credential helpers
+  and Git config are untouched, and SSH remotes still use the user's keys. The
+  grant screen says a GitHub grant replaces the user's own login for that
+  agent's HTTPS access to github.com.
 - **Agents without a GitHub grant:** nothing is installed, so the agent keeps
   the user's own Git and `gh` logins, as today.
-- **Cloud:** keeps today's full isolation (every other credential helper
-  cleared).
+- **Windows:** the helpers do not run there. Nothing is installed, the session
+  host logs a warning, and the agent uses the machine's own sign-in.
+- **Cloud:** keeps full isolation (every other credential helper cleared,
+  prompts off).
 - **Under Console:** the scripts set `ELECTRON_RUN_AS_NODE=1` themselves, since
   Console runs agent hosts on Electron's binary and strips `ELECTRON_*` from
-  the session's environment.
-- `host/hosted-bootstrap.ts` uses the same helper and drops its own credential
-  fetch.
+  the session's environment; the wrapper keeps it from what `gh` starts.
+- **The cloud bootstrap** (`host/hosted-bootstrap.ts`) no longer renews a token
+  itself through `/hosted/github-credential`. For its own clone of a granted
+  repository, before any session runs, it asks
+  `POST /agents/{id}/service-tokens/github` with the agent's key (on `https`
+  only, once more if Core says to retry), and sessions set GitHub up from the
+  grant. A deployment's saved plan from the earlier build, which differs only
+  by the old GitHub launch variables, is upgraded in place once, with a
+  warning; any other difference is still refused. A deployment given a mounted
+  personal token is unchanged.
 
 ## GitHub on the new model
 

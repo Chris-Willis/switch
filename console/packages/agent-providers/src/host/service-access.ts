@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { validServiceToken } from './service-github';
 
 /**
  * An agent's access to its owner's outside services (GitHub, later Jira and
@@ -6,9 +7,9 @@ import { z } from 'zod';
  *
  * A session reads the agent's grants when it starts or resumes, through the
  * agent's own Switch endpoint: its own key, or the agents controller's relay,
- * which forwards `/agents/{id}/...` as the controller. What a grant gives the
- * session here is its service's skill; a change of grants reaches a session
- * when it next starts.
+ * which forwards `/agents/{id}/...` as the controller. A grant gives the
+ * session its service's skill and, through the agent host, the service's
+ * tokens; a change of grants reaches a session when it next starts.
  */
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -73,4 +74,81 @@ export function grantedSkills(grants: ServiceGrant[]): ServiceSkill[] {
 /** A skill as system context: its body, without the frontmatter a skills folder needs. */
 export function skillContext(skill: ServiceSkill): string {
   return skill.content.replace(/^---\n[\s\S]*?\n---\n+/, '').trim();
+}
+
+/**
+ * Refusals that end a session's use of a service: the grant or the owner's
+ * connection is gone or changed, and asking again cannot help. Anything else
+ * (Switch or the service unreachable, say) is worth asking again later.
+ */
+export function endsServiceUse(code: string): boolean {
+  return (
+    code === 'grant_missing' ||
+    code === 'grant_account_changed' ||
+    code === 'forbidden' ||
+    code.startsWith('connector_')
+  );
+}
+
+/** What a session host is answered when it asks for a service token. */
+export const serviceTokenAnswerSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('token'), token: z.string().min(1), expiresAt: z.string() }),
+  z.object({
+    kind: z.literal('refused'),
+    code: z.string(),
+    message: z.string(),
+    /** The refusal ends this session's use of the service (`endsServiceUse`). */
+    final: z.boolean(),
+  }),
+]);
+export type ServiceTokenAnswer = z.infer<typeof serviceTokenAnswerSchema>;
+
+export type IssuedServiceToken = { token: string; expiresAt: number };
+export type ServiceRefusal = { code: string; message: string; retryable: boolean };
+
+const issuedSchema = z.object({ token: z.string(), expires_at: z.string() });
+const refusalSchema = z.object({
+  error: z.object({ code: z.string(), message: z.string(), retryable: z.boolean() }),
+});
+
+/**
+ * Ask Switch for a token for `service`, as the agent (contract §5). Each call
+ * issues one. Raises when Switch cannot be reached or answers nonsense; a
+ * refusal in the contract's envelope is returned, for the caller to act on.
+ */
+export async function issueServiceToken(
+  switchEndpoint: ServiceEndpoint,
+  service: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<IssuedServiceToken | ServiceRefusal> {
+  const url =
+    switchEndpoint.endpoint.replace(/\/$/, '') +
+    `/agents/${encodeURIComponent(switchEndpoint.agentId)}/service-tokens/${encodeURIComponent(service)}`;
+  let response: Response;
+  try {
+    response = await fetchImpl(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${switchEndpoint.token}` },
+      redirect: 'error',
+      signal: AbortSignal.timeout(60_000),
+    });
+  } catch (error) {
+    throw new Error(
+      `Switch could not be reached for a ${service} token: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  if (!response.ok) {
+    const refusal = refusalSchema.safeParse(await response.json().catch(() => null));
+    if (refusal.success) return refusal.data.error;
+    return {
+      code: `http_${response.status}`,
+      message: `Switch refused a ${service} token (HTTP ${response.status}).`,
+      retryable: response.status >= 500,
+    };
+  }
+  const issued = issuedSchema.safeParse(await response.json().catch(() => null));
+  const expiresAt = issued.success ? Date.parse(issued.data.expires_at) : Number.NaN;
+  if (!issued.success || !validServiceToken(issued.data.token) || !Number.isFinite(expiresAt))
+    throw new Error(`Switch answered a ${service} token request with something that is not one.`);
+  return { token: issued.data.token, expiresAt };
 }

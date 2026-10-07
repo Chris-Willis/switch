@@ -13,9 +13,11 @@ import { startSchema } from './server';
 import {
   grantedSkills,
   readServiceGrants,
-  type ServiceSkill,
+  type ServiceGrant,
   skillContext,
 } from './service-access';
+import type { ServiceEndpointServer } from './service-endpoint';
+import { githubSessionEnvironment, writeGitHubWrapper } from './service-github';
 
 export const sharedConfigSchema = z.strictObject({
   session: sessionSchema,
@@ -63,16 +65,46 @@ export const sharedConfigSchema = z.strictObject({
 });
 export type SharedHostConfig = z.infer<typeof sharedConfigSchema>;
 
+/** The agent's services as a session starts: its grants, or why Switch could not say. */
+export type SessionServices = {
+  /** Empty when the grants could not be read. */
+  grants: ServiceGrant[];
+  /** Why the grants could not be read, or null. */
+  unavailable: string | null;
+};
+
+/**
+ * Where a session's helpers get its service tokens (`service-endpoint.ts`),
+ * and the bundle they run from: this host's own, on this host's runtime.
+ */
+export type ServiceHelpers = {
+  endpoint: Pick<ServiceEndpointServer, 'url' | 'token'>;
+  execPath: string;
+  entrypoint: string;
+};
+
+/** What a session is told when its agent's grants could not be read as it started. */
+export function servicesUnavailableNotice(reason: string): string {
+  return (
+    `Switch could not load the services granted to this agent when this session started (${reason}). ` +
+    "Their skills and access (GitHub's, for one) are not set up in this session, so do not rely on " +
+    'them, and say so when a task needs one. They are loaded again when the session next starts.'
+  );
+}
+
 /**
  * What the provider is started with. Its Switch tools are `runtime`, the MCP
  * server this host serves on loopback: no Switch credential, connection or
- * session name reaches the CLI or its environment.
+ * session name reaches the CLI or its environment. With `helpers`, an agent
+ * granted GitHub gets Git's credential helper and the `gh` wrapper, which ask
+ * the session's service endpoint for the token.
  */
 export async function prepareSharedConfig(
   root: string,
   config: SharedHostConfig,
   runtime: HttpMcpServerSpec,
-  serviceSkills: ServiceSkill[]
+  services: SessionServices,
+  helpers: ServiceHelpers | null
 ) {
   if (config.session.provider !== config.start.provider)
     throw new Error('Shared SDK host provider mismatch.');
@@ -114,10 +146,34 @@ export async function prepareSharedConfig(
     // resume takes the grants as they are then.
     input.systemContext = [
       execution.context,
-      ...(config.start.provider === 'opencode' ? [] : serviceSkills.map(skillContext)),
+      ...(config.start.provider === 'opencode'
+        ? []
+        : grantedSkills(services.grants).map(skillContext)),
+      ...(services.unavailable ? [servicesUnavailableNotice(services.unavailable)] : []),
     ]
       .filter(Boolean)
       .join('\n\n');
+    if (helpers && services.grants.some((grant) => grant.service === 'github')) {
+      const wrapperDirectory = join(root, 'bin');
+      await writeGitHubWrapper({
+        directory: wrapperDirectory,
+        execPath: helpers.execPath,
+        entrypoint: helpers.entrypoint,
+      });
+      input.env = {
+        ...input.env,
+        ...githubSessionEnvironment({
+          env: input.env,
+          execPath: helpers.execPath,
+          entrypoint: helpers.entrypoint,
+          wrapperDirectory,
+          // A cloud deployment keeps every other credential helper out.
+          isolate: process.env.SWITCH_HOSTED_BOOTSTRAP === '1',
+        }),
+        SWITCH_SERVICE_ENDPOINT: helpers.endpoint.url,
+        SWITCH_SERVICE_TOKEN: helpers.endpoint.token,
+      };
+    }
   }
   input.mcpServers.switch = runtime;
   if (!agentApiUrl || !token)
@@ -126,27 +182,28 @@ export async function prepareSharedConfig(
 }
 
 /**
- * The skills of the agent's service grants, read as this session starts.
+ * The agent's service grants, read as this session starts.
  *
- * A session starts without them, saying so, when Switch cannot tell it what
- * they are: its Switch tools and the rest of its work do not depend on them.
+ * A session starts without them when Switch cannot tell it what they are: its
+ * Switch tools and the rest of its work do not depend on them. It is told so
+ * (`servicesUnavailableNotice`), and the log says why.
  */
-export async function sessionServiceSkills(config: SharedHostConfig): Promise<ServiceSkill[]> {
-  if (!config.execution) return [];
+export async function sessionServiceGrants(config: SharedHostConfig): Promise<SessionServices> {
+  if (!config.execution) return { grants: [], unavailable: null };
   try {
     const credentials = await readSharedCredentials(config);
-    return grantedSkills(
-      await readServiceGrants({
-        endpoint: credentials.SWITCH_API_ENDPOINT,
-        token: credentials.SWITCH_API_TOKEN,
-        agentId: credentials.SWITCH_AGENT_ID,
-      })
-    );
+    const grants = await readServiceGrants({
+      endpoint: credentials.SWITCH_API_ENDPOINT,
+      token: credentials.SWITCH_API_TOKEN,
+      agentId: credentials.SWITCH_AGENT_ID,
+    });
+    return { grants, unavailable: null };
   } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
     console.warn(
-      `Session ${config.session.sessionId} starts without the skills of its agent's service grants: ${error instanceof Error ? error.message : String(error)}`
+      `Session ${config.session.sessionId} starts without its agent's service grants: ${reason}`
     );
-    return [];
+    return { grants: [], unavailable: reason };
   }
 }
 
