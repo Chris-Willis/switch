@@ -11,13 +11,12 @@ the leg the outside world reaches. `/gateway` is not routed here from the
 public load balancer at all, and it would not help if it were — it is
 cookie-authenticated and this caller has no cookie of ours.
 
-**The reply is a page, not a redirect.** Sending the browser on to the gateway
-would work today, when the person installing is an operator who can reach it,
-and would break the moment the same flow is offered to a customer who cannot:
-the gateway is on a private hostname and the callback is not. So the outcome is
-rendered here, in one self-contained page, on the origin the browser already
-reached. It is deliberately plain; when there is a place to send people, this
-becomes a redirect and the page becomes its fallback.
+**A finished install goes back to the dashboard.** The install starts there,
+in the same tab, so a Connect sends the browser back to its Messaging Apps page
+(`FRONTEND_BASE_URL`), where the new workspace is already listed. Everything
+short of that — the confirmation itself, a cancel, a refusal — is rendered here
+as one self-contained page on the origin the browser already reached, and so
+is the success when the deployment names no dashboard to return to.
 
 The event routes answer nobody who reads English, so they answer in status
 codes and say the rest in the log.
@@ -28,9 +27,10 @@ from __future__ import annotations
 import html
 import logging
 from typing import Annotated, Literal
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, BackgroundTasks, Form, Query, Request, Response
-from starlette.responses import HTMLResponse, PlainTextResponse
+from starlette.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
 from switch_core.bridges.collaboration.install import (
     PUBLIC_PATH_PREFIX,
@@ -133,13 +133,20 @@ def _confirmation_page(pending: PendingInstall) -> HTMLResponse:
 
 def create_messaging_install_router(
     service: MessagingInstallService,
+    *,
+    dashboard_url: str | None,
 ) -> APIRouter:
     """Build the public install routes over one already-configured service.
 
     A factory closing over the service rather than a module-level router with
     dependencies, because this app has no dependency-injection module of its
     own and adding one for a single object would be the larger change.
+
+    `dashboard_url` is the operator UI's origin. With it, a finished install
+    redirects back to the Messaging Apps page; without it, the outcome is a
+    page here.
     """
+    dashboard = dashboard_url.rstrip("/") if dashboard_url else None
     router = APIRouter(prefix=PUBLIC_PATH_PREFIX)
 
     @router.get("/{platform}/oauth/callback")
@@ -206,7 +213,7 @@ def create_messaging_install_router(
         platform: str,
         ticket: Annotated[str, Form()],
         decision: Annotated[Literal["connect", "cancel"], Form()],
-    ) -> HTMLResponse:
+    ) -> Response:
         try:
             if decision == "cancel":
                 try:
@@ -266,6 +273,13 @@ def create_messaging_install_router(
                 status=400,
             )
 
+        if dashboard is not None:
+            query = urlencode({"installed": install.platform})
+            return RedirectResponse(
+                f"{dashboard}/collaborations?{query}",
+                status_code=303,
+                headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+            )
         return _page(
             title="Switch is connected",
             detail=(
