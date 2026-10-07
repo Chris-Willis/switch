@@ -48,7 +48,7 @@ async def get_ecosystem_graph(
     ]
     edges: list[EcosystemEdge] = []
 
-    # "Show owners" is gated by a server-global feature flag. When OFF the
+    # "Show owners" is gated by a workspace feature flag. When OFF the
     # graph withholds owner data entirely, so the frontend toggle is inert.
     show_owners = await FeatureFlagStore().get(session, ECOSYSTEM_SHOW_OWNERS)
 

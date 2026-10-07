@@ -1467,7 +1467,7 @@ export interface EcosystemNode {
   kind: EcosystemNodeKind;
   label: string;
   sublabel: string;
-  // Present on agent nodes only when the `ecosystem.show_owners` server flag
+  // Present on agent nodes only when the `ecosystem.show_owners` workspace flag
   // is ON; otherwise omitted so the "Show owners" toggle has nothing to show.
   owner_name?: string | null;
 }

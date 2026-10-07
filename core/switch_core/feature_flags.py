@@ -1,10 +1,15 @@
-"""Registry of server-global feature flags.
+"""Registry of per-workspace feature flags.
 
-A feature flag is a named on/off switch stored in the ``feature_flags`` table
-and flipped through the agent bridge (``PUT /agents/feature-flags/{key}``).
-Only keys listed here may be written or read — an unknown key is rejected so
-the endpoint cannot be used to write arbitrary rows. An absent row means the
-flag is OFF, so ``DEFAULTS`` is purely documentation of that baseline.
+A feature flag is a named on/off switch each workspace holds its own value
+for, stored in the ``feature_flags`` table. Workspace admins flip it through
+the gateway (``PUT /gateway/feature-flags/{key}``); agents and controllers may
+only read it. Only keys listed here may be written or read — an unknown key is
+rejected so the endpoint cannot be used to write arbitrary rows. An absent row
+means the flag takes its default below, which is OFF for every flag.
+
+Controller, Console and the gateway frontend keep their own copy of the keys
+they act on, and treat a key they do not know, or one the server did not send,
+as OFF.
 """
 
 from __future__ import annotations
