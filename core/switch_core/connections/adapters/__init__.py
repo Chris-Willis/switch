@@ -74,6 +74,11 @@ class IssuedToken:
 
 
 class ServiceAdapter(Protocol):
+    # False where this server can keep a connection's sign-in fresh but cannot
+    # issue for it (GitHub without its App's signing key): people can connect,
+    # nothing can be granted.
+    can_issue: bool
+
     async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:
         """The secret with a fresh access token, and a new refresh token where
         the vendor rotates them."""

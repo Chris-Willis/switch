@@ -231,6 +231,19 @@ class ServiceBroker:
         return entry
 
     def _adapter(self, service: str) -> ServiceAdapter:
+        """The adapter that issues for `service`, or the refusal saying why not."""
+        adapter = self._refresher(service)
+        if not adapter.can_issue:
+            raise ServiceError(
+                503,
+                INTERNAL,
+                self.availability(service) or "Not available on this server.",
+                retryable=False,
+            )
+        return adapter
+
+    def _refresher(self, service: str) -> ServiceAdapter:
+        """The adapter that keeps `service`'s connections signed in."""
         adapter = self._adapters.get(service)
         if adapter is None:
             raise ServiceError(
@@ -727,8 +740,14 @@ class ServiceBroker:
         entry = self._catalog.get(service)
         if entry is None or not entry.definition.enabled:
             return "Not available yet."
-        if service not in self._adapters:
+        adapter = self._adapters.get(service)
+        if adapter is None:
             return f"{entry.definition.name} is not set up on this server."
+        if not adapter.can_issue:
+            return (
+                f"{entry.definition.name} can be connected on this server but "
+                "not granted to agents: it is not fully set up."
+            )
         return None
 
     def summary(self, agent_name: str, grant: ServiceGrant) -> str:
@@ -897,6 +916,116 @@ class ServiceBroker:
             session, (ServiceTokenIssuance.grant_id == grant_id,)
         )
         return grant, ACCESS_WARNING if pending else None
+
+    async def connect(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: str,
+        service: str,
+        consent: AccessLevel,
+        granted_scopes: list[str],
+        account_id: str,
+        external_identity: str,
+        secret: ConnectionSecret,
+    ) -> str | None:
+        """Link the person's account, or re-link it in place.
+
+        Re-linking keeps the grants (a different account then fails them with
+        `grant_account_changed`) and revokes what was issued on the old
+        sign-in, and the old sign-in itself when it is not the new one.
+        Commits `session`; returns a warning naming what could not be revoked.
+        """
+        name = self._entry(service).definition.name
+        try:
+            await self._store.lock_connection(session, user_id, service)
+        except ServiceConnectionBusy as error:
+            raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
+        previous = await self._store.get_connection(session, user_id, service)
+        replaced = None if previous is None else self._secret(previous)
+        issued_on_it = (
+            ServiceTokenIssuance.owner_id == user_id,
+            ServiceTokenIssuance.service == service,
+        )
+        await self._store.queue_revocation(session, *issued_on_it)
+        await self._store.save_connection(
+            session,
+            user_id=user_id,
+            service=service,
+            consent=consent,
+            granted_scopes=granted_scopes,
+            account_id=account_id,
+            external_identity=external_identity,
+            encrypted_secret=self._keyring.encrypt(json.dumps(secret.values)),
+        )
+        await record_audit_event(
+            session,
+            tenant_id=require_tenant_id(),
+            actor_user_id=user_id,
+            action=AuditAction.SERVICE_CONNECTED,
+            target_type="user",
+            target_id=user_id,
+            details={"service": service, "relinked": previous is not None},
+        )
+        await session.commit()
+
+        warnings = []
+        if replaced is not None and replaced.access_token != secret.access_token:
+            adapter = self._adapters.get(service)
+            try:
+                if adapter is None:
+                    raise ServiceUnavailableError(
+                        f"{name} is not available on this server."
+                    )
+                async with asyncio.timeout(VENDOR_CALL_SECONDS):
+                    await adapter.revoke_connection(replaced)
+            except Exception as error:
+                logger.error(
+                    "%s old sign-in revocation failed: error_type=%s",
+                    service,
+                    type(error).__name__,
+                )
+                warnings.append(
+                    f"{name} could not revoke the old sign-in. Revoke it in your "
+                    f"{name} settings."
+                )
+        if await self.revoke_pending(session, issued_on_it):
+            warnings.append(ACCESS_WARNING)
+        return " ".join(warnings) or None
+
+    async def connection_access_token(
+        self, session: AsyncSession, user_id: str, service: str
+    ) -> str | None:
+        """The person's own access token for `service`, refreshed if due, or
+        None when they have not connected it. Ends `session`'s transaction.
+
+        For listing what the person can reach (GitHub's installations and
+        repositories) while choosing what to grant; never handed to an agent.
+        """
+        if await self._store.get_connection(session, user_id, service) is None:
+            return None
+        await session.commit()
+        return await self._access_token(user_id, service, self._refresher(service))
+
+    async def queue_agent_revocation(
+        self, session: AsyncSession, agent_id: str, service: str
+    ) -> tuple[Any, ...]:
+        """Queue every live `service` token issued to the agent, in the
+        caller's transaction. Returns the conditions to hand `revoke_pending`
+        once the caller has committed."""
+        conditions = (
+            ServiceTokenIssuance.agent_id == agent_id,
+            ServiceTokenIssuance.service == service,
+        )
+        await self.queue_revocation(session, *conditions)
+        return conditions
+
+    async def queue_revocation(self, session: AsyncSession, *conditions: Any) -> None:
+        """Queue the live tokens matching `conditions`, in the caller's
+        transaction, for an access change the broker does not make itself."""
+        await self._store.queue_revocation(
+            session, ServiceTokenIssuance.revoke_requested.is_(False), *conditions
+        )
 
     async def revoke_grant(
         self, session: AsyncSession, grant: ServiceGrant, actor_id: str
@@ -1068,7 +1197,9 @@ class ServiceBroker:
     ) -> bool:
         # Most workspaces hold no token at any moment: one read, and done.
         if not await self._store.holds_tokens(session):
-            await session.rollback()
+            # A commit, not a rollback: a rollback would expire every row the
+            # caller still holds in this session.
+            await session.commit()
             return False
         tenant_id = require_tenant_id()
         now = datetime.now(UTC)

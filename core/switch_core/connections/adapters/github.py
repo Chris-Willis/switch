@@ -48,7 +48,7 @@ class GitHubApp:
     """The App this deployment is set up with.
 
     `signer` is None only on the deprecated hosted settings without a hosted
-    controller file: GitHub can then be connected, but nothing can be issued.
+    controller file: GitHub can then be connected, but nothing can be granted.
     """
 
     connections: GitHubConnections
@@ -69,7 +69,6 @@ def load_github_app(config: SwitchConfig) -> GitHubApp | None:
         )
     if config.hosted_github_config_path is None:
         return None
-    connections = GitHubConnections(config.hosted_github_config_path)
     key_path: Path | None = None
     if config.hosted_controller_config_path is not None:
         key_path = HostedControllerSettings.model_validate_json(
@@ -81,6 +80,7 @@ def load_github_app(config: SwitchConfig) -> GitHubApp | None:
         "the next release. Set GITHUB_APP_CONFIG_PATH and "
         "GITHUB_APP_PRIVATE_KEY_PATH instead."
     )
+    connections = GitHubConnections(config.hosted_github_config_path)
     if key_path is None:
         logger.warning(
             "No GitHub App signing key is configured, so GitHub can be connected "
@@ -121,10 +121,13 @@ def _vendor_error(error: GitHubError) -> ServiceAdapterError:
 
 class GitHubAdapter:
     def __init__(
-        self, connections: GitHubConnections, signer: GitHubInstallationCredentials
+        self,
+        connections: GitHubConnections,
+        signer: GitHubInstallationCredentials | None,
     ) -> None:
         self._connections = connections
         self._signer = signer
+        self.can_issue = signer is not None
 
     async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:
         refresh_token = secret.values.get("refresh_token")
@@ -185,6 +188,10 @@ class GitHubAdapter:
         permissions = request.reach.get("permissions")
         if not isinstance(permissions, dict):
             raise ServiceAdapterError("GitHub grants name App permissions.")
+        if self._signer is None:
+            raise ServiceAdapterError(
+                "GitHub cannot be granted on this server: no signing key is configured."
+            )
         try:
             token = await self._signer.mint(
                 resources["installation_id"], resources["repository_ids"], permissions

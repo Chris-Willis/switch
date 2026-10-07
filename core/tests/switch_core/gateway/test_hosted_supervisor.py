@@ -17,6 +17,7 @@ from switch_core.db.models import (
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.hosted_machine_store import lock_machine
 from switch_core.keys import Keyring
+from tests.switch_core.connections.github_seed import github_vendor  # noqa: F401
 from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
     HEADERS,
     SPEC,

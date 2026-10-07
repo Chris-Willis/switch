@@ -25,6 +25,7 @@ class FakeVendor:
     """GitHub as the broker sees it: refresh, issue, revoke, counted."""
 
     def __init__(self) -> None:
+        self.can_issue = True
         self.refreshes = 0
         self.refresh_error: Exception | None = None
         self.issue_error: Exception | None = None

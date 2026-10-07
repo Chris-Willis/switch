@@ -639,3 +639,50 @@ class TestReauthorization:
             "needs_reauthorization",
             "sign_in_refused",
         )
+
+
+class TestConnectOnly:
+    async def test_a_service_that_cannot_issue_is_connectable_but_not_grantable(
+        self, session_factory
+    ) -> None:
+        vendor = FakeVendor()
+        vendor.can_issue = False
+        broker = ServiceBroker(
+            session_factory=session_factory,
+            keyring=TEST_KEYRING,
+            catalog=CATALOG,
+            adapters={"github": vendor},
+            store=STORE,
+            token_retention=timedelta(days=30),
+        )
+        world = await _world(session_factory, expires_in=60)
+
+        reason = broker.availability("github")
+        assert reason is not None and "not granted to agents" in reason
+        refused = await _refused(broker, session_factory, world.agent.id)
+        assert (refused.status_code, refused.code, refused.retryable) == (
+            503,
+            "internal",
+            False,
+        )
+        assert refused.message == reason
+        async with session_factory() as session:
+            agent = await session.get(Agent, world.agent.id)
+            assert agent is not None
+            with pytest.raises(ServiceError) as caught:
+                await broker.set_grant(
+                    session,
+                    agent=agent,
+                    actor_id=world.owner.id,
+                    service="github",
+                    access="read",
+                    tool_mode=None,
+                    tools=None,
+                    resources=RESOURCES,
+                )
+            assert (caught.value.status_code, caught.value.message) == (422, reason)
+            token = await broker.connection_access_token(
+                session, world.owner.id, "github"
+            )
+        assert token == "gho_access_1"
+        assert vendor.refreshes == 1 and vendor.issued == []

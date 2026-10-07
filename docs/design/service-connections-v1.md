@@ -80,7 +80,9 @@ Not in v1:
   the other is a startup error.
 - For one release, when both are unset, `HOSTED_GITHUB_CONFIG_PATH` and the
   `github_private_key_path` in the hosted controller file still work, and Core
-  logs a deprecation warning at startup naming the new settings.
+  logs a deprecation warning at startup naming the new settings. Without that
+  signing key GitHub can be connected but not granted: the catalog and the
+  grant API say so, and nothing is issued.
 - With no GitHub App configured, Core starts, the catalog shows GitHub as not
   configured on this server, and the grant API refuses GitHub grants saying so.
   It never skips silently.
@@ -407,19 +409,30 @@ through `runAgentHost`.
   repository, write) in their own transaction. The launch spec keeps the
   repository only for cloning. If a disconnect removes the grant, the agent's
   fetch fails naming the fix, and its page shows the missing grant.
+- **A launch change revokes the agent's GitHub tokens**, as it always has: the
+  lifecycle routes queue them with the change, and the hosted controller's
+  poll queues the tokens of every agent whose launch is no longer running.
 - **The machine agent list** stops sending skills (the cloud bootstrap treats
   the field as optional); sessions get skills from `service-grants`.
 - **`/hosted/github-credential`** calls the broker for one release, for cloud
-  workers not yet updated, then goes.
+  workers not yet updated, then goes. After the issue it checks the launch
+  under its lock and revokes the token if the launch changed meanwhile.
 - **Reads** of GitHub connections (`gateway/tenants.py`,
   `gateway/connection_catalog.py`) use only the new tables.
-- **Data migration** (`<rev>_github_to_service_connections.py`): copies GitHub
-  rows from `provider_connections` (the ciphertext as is: same keyring, same
-  JSON), adds a write grant for each live cloud launch with an agent, and
-  copies unexpired `github_issued_tokens` into issuances. It is reversible.
+- **Moving the data** (`connections/github_move.py`), at boot after key
+  rotation, because it needs the server's keys: copies each GitHub row from
+  `provider_connections` (the ciphertext as is: same keyring, same JSON), with
+  the account's stable id and login read from it; adds a write grant for each
+  live cloud launch with an agent; copies unexpired `github_issued_tokens` into
+  issuances with their hash, queued for revocation where today's rules no
+  longer accept them. It runs once per tenant, recorded in `tenant_data_moves`
+  in the same transaction, so a later boot never undoes a disconnect or a
+  removed grant. A row it cannot read is skipped, logged and counted; that
+  person connects GitHub again.
 - **Next release:** a migration drops `github` from the `provider_connections`
   checks and drops `github_issued_tokens`, and `/hosted/github-credential` is
-  removed. Until then the data migration can be rolled back.
+  removed. Until then the old tables are left as they were at the move, for a
+  rollback to the previous build.
 
 ## Who reaches Core how
 

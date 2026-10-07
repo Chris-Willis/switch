@@ -90,7 +90,10 @@ from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.config import SwitchConfig, deprecated_env_names
+from switch_core.connections.adapters import ServiceAdapter
+from switch_core.connections.adapters.github import GitHubAdapter, GitHubApp
 from switch_core.connections.broker import ServiceBroker
+from switch_core.connections.github_move import move_github_connections
 from switch_core.connections.loader import CATALOG
 from switch_core.connections.maintenance import (
     maintenance_loop as service_token_maintenance_loop,
@@ -522,6 +525,9 @@ async def run(config: SwitchConfig) -> None:
         async with tenant_session(session_factory, tenant_id) as session:
             await resource_service.log_builtin_shadowing(session)
     await reencrypt_stored_secrets(session_factory, config.keyring, tenant_ids)
+    # After rotation, which has opened every stored GitHub secret or stopped
+    # the boot: the move reads them, once per tenant.
+    await move_github_connections(session_factory, config.keyring, tenant_ids)
 
     # ── Provisioning ─────────────────────────────────────────────────────────
     provisioning: Provisioning = PostgresProvisioning(
@@ -831,13 +837,21 @@ async def run(config: SwitchConfig) -> None:
     # ── Lifespan: start server-side connectors once HTTP is serving ────────
     original_lifespan = agent_bridge_app.router.lifespan_context
 
-    # No service has an adapter yet, so nothing is issued; the broker's upkeep
-    # still revokes and prunes whatever records exist.
+    # A service is issued only where this server is set up for it: GitHub with
+    # a GitHub App and its signing key. With the App alone, GitHub can be
+    # connected but not granted. Without any, the broker's upkeep still revokes
+    # and prunes whatever records exist.
+    github_app: GitHubApp | None = gateway_app.state.github_app
+    adapters: dict[str, ServiceAdapter] = (
+        {"github": GitHubAdapter(github_app.connections, github_app.signer)}
+        if github_app is not None
+        else {}
+    )
     service_broker = ServiceBroker(
         session_factory=session_factory,
         keyring=config.keyring,
         catalog=CATALOG,
-        adapters={},
+        adapters=adapters,
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=config.service_token_retention_days),
     )

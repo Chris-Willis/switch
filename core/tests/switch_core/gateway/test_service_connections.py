@@ -283,6 +283,25 @@ class TestGrants:
         assert response.status_code == 200, response.text
         assert vendor.revoked == [issued]
 
+    async def test_narrowing_a_grant_that_gave_nothing_out(
+        self, harness: Harness, vendor: FakeVendor
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        agent_id, _ = await agent_with_key(harness.session_factory, owner, "builder")
+        await connect(harness.session_factory, owner.id)
+        await _put(
+            harness, owner, agent_id, {"access": "write", "resources": RESOURCES}
+        )
+
+        response = await _put(
+            harness, owner, agent_id, {"access": "read", "resources": RESOURCES}
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["grant"]["access"] == "read"
+        assert response.json()["warning"] is None
+        assert vendor.revoked == []
+
     async def test_removing_a_grant_revokes_its_tokens(
         self, harness: Harness, vendor: FakeVendor
     ) -> None:

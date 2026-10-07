@@ -291,7 +291,7 @@ class TestSettings:
         app = load_github_app(
             _config(github_app_config_path=settings, github_app_private_key_path=key)
         )
-        assert app is not None and app.signer is not None
+        assert app is not None
         assert app.connections.client_id == "example-client"
         assert "deprecated" not in caplog.text and "stop working" not in caplog.text
 
@@ -321,7 +321,7 @@ class TestSettings:
                 hosted_controller_config_path=str(controller),
             )
         )
-        assert app is not None and app.signer is not None
+        assert app is not None
         assert "GITHUB_APP_CONFIG_PATH" in caplog.text
 
     def test_the_hosted_settings_without_a_key_connect_but_cannot_grant(
@@ -332,3 +332,5 @@ class TestSettings:
         app = load_github_app(_config(hosted_github_config_path=settings))
         assert app is not None and app.signer is None
         assert "not granted to agents" in caplog.text
+        adapter = GitHubAdapter(app.connections, app.signer)
+        assert not adapter.can_issue

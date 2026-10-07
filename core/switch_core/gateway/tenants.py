@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import re
 import secrets
@@ -9,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -26,9 +25,7 @@ from switch_core.connections.broker import (
 )
 from switch_core.db.audit import AuditAction, list_audit_events, record_audit_event
 from switch_core.db.models import (
-    GitHubIssuedToken,
     Invitation,
-    ProviderConnection,
     Tenant,
     TenantJoinDomain,
     TenantMember,
@@ -90,7 +87,6 @@ from switch_core.gateway.dependencies import (
     get_user_store,
 )
 from switch_core.gateway.email_domains import email_domain, join_domain_refusal
-from switch_core.gateway.github_connections import lock as github_lock
 from switch_core.gateway.invite_mail import (
     InviteEmail,
     InviteEmailFailed,
@@ -119,12 +115,6 @@ from switch_core.gateway.schemas import (
     TenantCreateRequest,
     TenantMembershipResponse,
     UsageTotalResponse,
-)
-from switch_core.providers.github_revocations import (
-    ACCESS_WARNING,
-    queue_revocation,
-    revoke_oauth,
-    revoke_pending,
 )
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_hours
@@ -1446,30 +1436,6 @@ async def remove_member(
             ),
         )
 
-    await github_lock(session, user_id)
-    github_row = await session.scalar(
-        select(ProviderConnection).where(
-            ProviderConnection.tenant_id == tenant_id,
-            ProviderConnection.user_id == user_id,
-            ProviderConnection.provider == "github",
-        )
-    )
-    github_token = (
-        json.loads(config.keyring.decrypt(github_row.encrypted_credential))[
-            "access_token"
-        ]
-        if github_row
-        else None
-    )
-    await queue_revocation(session, (GitHubIssuedToken.owner_id == user_id,))
-    await session.execute(
-        delete(ProviderConnection).where(
-            ProviderConnection.tenant_id == tenant_id,
-            ProviderConnection.user_id == user_id,
-            ProviderConnection.provider == "github",
-        )
-    )
-
     try:
         removed_services = await broker.remove_connections(session, user_id)
     except ServiceError as error:
@@ -1501,29 +1467,10 @@ async def remove_member(
     for key_hash in revoked_key_hashes:
         protocol.api_key_cache.invalidate(key_hash)
 
-    warning = None
     github = getattr(request.app.state, "github_connections", None)
     if github is not None:
         for flow_id, flow in list(github.flows.items()):
             if (flow.tenant_id, flow.user_id) == (tenant_id, user_id):
                 del github.flows[flow_id]
-    if github_token:
-        if github is None:
-            logger.error(
-                "Member removed but GitHub token revocation is unavailable: tenant=%s user=%s",
-                tenant_id,
-                user_id,
-            )
-            warning = "GitHub could not revoke the old sign-in. Revoke it in your GitHub settings."
-        else:
-            warning = await revoke_oauth(github, github_token)
-    remaining = await revoke_pending(
-        session, config, (GitHubIssuedToken.owner_id == user_id,)
-    )
-    service_warning = await broker.finish_disconnect(session, user_id, removed_services)
-    messages = [
-        message
-        for message in (warning, ACCESS_WARNING if remaining else None, service_warning)
-        if message
-    ]
-    return {"ok": True, "warning": " ".join(messages) or None}
+    warning = await broker.finish_disconnect(session, user_id, removed_services)
+    return {"ok": True, "warning": warning}

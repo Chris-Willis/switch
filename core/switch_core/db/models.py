@@ -3434,6 +3434,25 @@ class ServiceTokenIssuance(TenantScoped, Base):
     )
 
 
+class TenantDataMove(TenantScoped, Base):
+    """A one-time data move that has been carried out in this tenant.
+
+    Written in the same transaction as the move itself, and read before it, so
+    a move runs once per tenant: never again on a later boot, where it would
+    undo what people changed since. `details` counts what was moved and what
+    was skipped.
+    """
+
+    __tablename__ = "tenant_data_moves"
+    __table_args__ = (PrimaryKeyConstraint("tenant_id", "name"),)
+
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    details: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # Same reasoning as the notify trigger above: `create_all` has to build the
 # row-level-security policies too, or the isolation test would pass against a
 # schema that has none. See `db/rls_ddl.py` for the DDL and why it takes this
