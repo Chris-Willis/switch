@@ -18,6 +18,7 @@ meets: the pool (`tests/switch_core/pool_checkouts.py`). Two contracts:
 
 from __future__ import annotations
 
+import secrets
 import threading
 from collections.abc import AsyncIterator, Callable
 from types import SimpleNamespace
@@ -61,9 +62,10 @@ from switch_core.keys import Keyring
 from switch_core.room_service import RoomService
 from tests.switch_core.pool_checkouts import PoolCheckouts
 
-_SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
+# Made for each run, so nothing secret-looking is committed.
+_SECRET = secrets.token_hex(32)
 _KEYRING = Keyring.parse("test:" + _SECRET, legacy_secret=None)
-_PASSWORD = "correct horse battery staple"
+_PASSWORD = secrets.token_urlsafe(16)
 
 
 class _Calls:
