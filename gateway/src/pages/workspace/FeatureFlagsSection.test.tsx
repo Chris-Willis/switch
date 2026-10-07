@@ -4,13 +4,21 @@ import FeatureFlagsSection from "./FeatureFlagsSection";
 
 const LABEL = "Show agent owners on the ecosystem graph";
 
-function serve(canEdit: boolean) {
-  let enabled = false;
+function serve(canEdit: boolean, serverDefault = false) {
+  let choice: boolean | null = null;
   const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-    if (init?.method === "PUT") enabled = JSON.parse(String(init.body)).enabled;
+    if (init?.method === "PUT") choice = JSON.parse(String(init.body)).enabled;
+    if (init?.method === "DELETE") choice = null;
     return new Response(
       JSON.stringify({
-        flags: [{ key: "ecosystem.show_owners", enabled }],
+        flags: [
+          {
+            key: "ecosystem.show_owners",
+            enabled: choice ?? serverDefault,
+            default: serverDefault,
+            overridden: choice !== null,
+          },
+        ],
         can_edit: canEdit,
       }),
       { status: 200 },
@@ -45,5 +53,21 @@ describe("FeatureFlagsSection", () => {
     const toggle = (await screen.findByRole("switch", { name: LABEL })) as HTMLInputElement;
     expect(toggle.disabled).toBe(true);
     expect(screen.getByText("Only workspace owners and admins can change these.")).toBeTruthy();
+  });
+
+  it("lets an admin go back to the server default", async () => {
+    serve(true, true);
+    render(<FeatureFlagsSection />);
+    const toggle = (await screen.findByRole("switch", { name: LABEL })) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    expect(screen.getByText("Following the server default.")).toBeTruthy();
+    fireEvent.click(toggle);
+    const reset = await screen.findByRole("button", { name: "Use server default" });
+    expect(screen.getByText("Set for this workspace. Server default: on.")).toBeTruthy();
+    fireEvent.click(reset);
+    await waitFor(() =>
+      expect((screen.getByRole("switch", { name: LABEL }) as HTMLInputElement).checked).toBe(true),
+    );
+    expect(screen.queryByRole("button", { name: "Use server default" })).toBeNull();
   });
 });

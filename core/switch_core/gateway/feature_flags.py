@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import User
-from switch_core.db.stores.feature_flag_store import FeatureFlagStore
 from switch_core.feature_flag_service import FeatureFlagService
 from switch_core.feature_flags import is_known_flag
 from switch_core.gateway.auth import (
@@ -24,11 +23,26 @@ from switch_core.gateway.schemas import (
 router = APIRouter()
 
 
-def _response(flags: dict[str, bool], can_edit: bool) -> FeatureFlagsResponse:
+async def _response(
+    flags: FeatureFlagService, session: AsyncSession, can_edit: bool
+) -> FeatureFlagsResponse:
     return FeatureFlagsResponse(
-        flags=[FeatureFlagState(key=k, enabled=v) for k, v in sorted(flags.items())],
+        flags=[
+            FeatureFlagState(
+                key=state.key,
+                enabled=state.enabled,
+                default=state.default,
+                overridden=state.overridden,
+            )
+            for state in await flags.states(session)
+        ],
         can_edit=can_edit,
     )
+
+
+def _require_known(key: str) -> None:
+    if not is_known_flag(key):
+        raise HTTPException(status_code=404, detail=f"Unknown feature flag: {key}")
 
 
 @router.get("")
@@ -36,9 +50,10 @@ async def list_feature_flags(
     session: Annotated[AsyncSession, Depends(get_session)],
     _user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    flags: Annotated[FeatureFlagService, Depends(get_feature_flag_service)],
 ) -> FeatureFlagsResponse:
     """Every known flag of the caller's workspace. Any member may read them."""
-    return _response(await FeatureFlagStore().get_all(session), is_admin)
+    return await _response(flags, session, is_admin)
 
 
 @router.put("/{key}")
@@ -50,6 +65,19 @@ async def set_feature_flag(
     flags: Annotated[FeatureFlagService, Depends(get_feature_flag_service)],
 ) -> FeatureFlagsResponse:
     """Turn one of the workspace's flags on or off. Workspace admins only."""
-    if not is_known_flag(key):
-        raise HTTPException(status_code=404, detail=f"Unknown feature flag: {key}")
-    return _response(await flags.set(session, key, req.enabled), True)
+    _require_known(key)
+    await flags.set(session, key, req.enabled)
+    return await _response(flags, session, True)
+
+
+@router.delete("/{key}")
+async def reset_feature_flag(
+    key: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
+    flags: Annotated[FeatureFlagService, Depends(get_feature_flag_service)],
+) -> FeatureFlagsResponse:
+    """Drop the workspace's choice for a flag, so it follows the server default."""
+    _require_known(key)
+    await flags.reset(session, key)
+    return await _response(flags, session, True)

@@ -56,6 +56,7 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.feature_flag_service import FeatureFlagService
+from switch_core.feature_flags import KNOWN_FEATURE_FLAGS
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
 from switch_core.gateway.feature_flags import router as feature_flags_router
@@ -180,6 +181,7 @@ def build_harness(
     *,
     controller_auth_ttl_seconds: float = 5,
     server_url: str | None = SERVER_URL,
+    feature_flag_defaults: dict[str, bool] = KNOWN_FEATURE_FLAGS,
 ) -> Harness:
     """The controller-token cache is on, as it is by default in production,
     so every management test runs through it."""
@@ -196,6 +198,7 @@ def build_harness(
         session_factory=session_factory,
         presence=protocol.connections.controllers,
         auth_cache=controller_auth_cache,
+        feature_flag_defaults=feature_flag_defaults,
         clock=clock,
     )
 
@@ -205,7 +208,7 @@ def build_harness(
 
     agent_app = FastAPI()
     gateway_app = FastAPI()
-    feature_flag_service = FeatureFlagService()
+    feature_flag_service = FeatureFlagService(feature_flag_defaults)
     management.install(
         agent_bridge_app=agent_app,
         gateway_app=gateway_app,

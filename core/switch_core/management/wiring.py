@@ -34,6 +34,7 @@ from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.feature_flag_store import FeatureFlagStore
 from switch_core.feature_flag_service import FeatureFlagService
 from switch_core.management.agent_operations import ManagementAgentOperations
 from switch_core.management.auth import ManagementAuthenticator
@@ -98,6 +99,7 @@ def build_management(
     session_factory: async_sessionmaker[AsyncSession],
     presence: ControllerPresence,
     auth_cache: ControllerAuthCache,
+    feature_flag_defaults: dict[str, bool],
     clock: Callable[[], datetime],
 ) -> Management:
     controllers = AgentControllerStore()
@@ -115,6 +117,7 @@ def build_management(
         api_keys=ApiKeyStore(),
         agents=AgentStore(),
         presence=presence,
+        feature_flags=FeatureFlagStore(feature_flag_defaults),
         clock=clock,
     )
     authenticator = ManagementAuthenticator(
@@ -159,5 +162,6 @@ def create_management(
             ttl_seconds=config.agent_auth_cache_ttl_seconds,
             max_entries=config.agent_auth_cache_max_entries,
         ),
+        feature_flag_defaults=config.feature_flag_defaults,
         clock=utc_now,
     )

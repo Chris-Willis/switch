@@ -719,6 +719,10 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: OUTBOUND_ALLOWED_PRIVATE_HOSTS
   value: {{ join "," $outboundHosts | quote }}
 {{- end }}
+{{- with .Values.switchCore.featureFlags.defaultOn }}
+- name: FEATURE_FLAGS_DEFAULT_ON
+  value: {{ join "," . | quote }}
+{{- end }}
 {{- with .Values.switchCore.smtp }}
 {{- if .enabled }}
 {{- if not $.Values.switchCore.frontendBaseUrl }}

@@ -8,13 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.db.models import User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
-from switch_core.db.stores.feature_flag_store import FeatureFlagStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.feature_flag_service import FeatureFlagService
 from switch_core.feature_flags import ECOSYSTEM_SHOW_OWNERS
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import (
     get_agent_store,
     get_bridge_store,
+    get_feature_flag_service,
     get_session,
     get_user_store,
 )
@@ -36,6 +37,7 @@ async def get_ecosystem_graph(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     _user: Annotated[User, Depends(get_current_user)],
+    flags: Annotated[FeatureFlagService, Depends(get_feature_flag_service)],
 ) -> EcosystemGraphResponse:
     """Switch-centric ecosystem graph: the Switch at the centre, with agent
     types branching out (and individual agents under each type) and one branch
@@ -50,7 +52,7 @@ async def get_ecosystem_graph(
 
     # "Show owners" is gated by a workspace feature flag. When OFF the
     # graph withholds owner data entirely, so the frontend toggle is inert.
-    show_owners = await FeatureFlagStore().get(session, ECOSYSTEM_SHOW_OWNERS)
+    show_owners = await flags.get(session, ECOSYSTEM_SHOW_OWNERS)
 
     # Agents grouped by connector_type -> one agent-type node per type, with
     # each agent hanging off its type.

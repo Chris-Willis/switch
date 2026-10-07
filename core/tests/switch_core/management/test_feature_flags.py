@@ -54,7 +54,14 @@ class TestReading:
             )
         assert listed.status_code == 200, listed.text
         assert listed.json() == {
-            "flags": [{"key": ECOSYSTEM_SHOW_OWNERS, "enabled": False}],
+            "flags": [
+                {
+                    "key": ECOSYSTEM_SHOW_OWNERS,
+                    "enabled": False,
+                    "default": False,
+                    "overridden": False,
+                }
+            ],
             "can_edit": False,
         }
 
@@ -88,7 +95,14 @@ class TestFlipping:
             )
         assert flipped.status_code == 200, flipped.text
         assert listed.json() == {
-            "flags": [{"key": ECOSYSTEM_SHOW_OWNERS, "enabled": True}],
+            "flags": [
+                {
+                    "key": ECOSYSTEM_SHOW_OWNERS,
+                    "enabled": True,
+                    "default": False,
+                    "overridden": True,
+                }
+            ],
             "can_edit": True,
         }
 
@@ -154,10 +168,16 @@ class TestControllers:
 
 class TestConcurrentChanges:
     async def test_two_admins_flipping_different_flags_announce_both(
-        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setitem(feature_flags.KNOWN_FEATURE_FLAGS, "test.one", False)
         monkeypatch.setitem(feature_flags.KNOWN_FEATURE_FLAGS, "test.two", False)
+        harness = build_harness(
+            session_factory,
+            feature_flag_defaults=dict(feature_flags.KNOWN_FEATURE_FLAGS),
+        )
         ada = await add_member(harness.session_factory, "ada")
         bob = await add_member(harness.session_factory, "bob")
         await _make_admin(harness.session_factory, ada.id)
@@ -216,3 +236,57 @@ class TestConcurrentChanges:
             )
         assert flipped.status_code == 200, flipped.text
         assert listed.json()["flags"][0]["enabled"] is True
+
+
+class TestServerDefaults:
+    async def test_a_workspace_follows_the_server_default_until_it_chooses(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        harness = build_harness(
+            session_factory, feature_flag_defaults={ECOSYSTEM_SHOW_OWNERS: True}
+        )
+        admin = await add_member(harness.session_factory, "ada")
+        await _make_admin(harness.session_factory, admin.id)
+        announced: list[dict[str, bool]] = []
+        harness.feature_flag_service.add_listener(
+            lambda _tenant, flags: announced.append(flags)
+        )
+        url = f"/gateway/feature-flags/{ECOSYSTEM_SHOW_OWNERS}"
+        async with harness.client() as client:
+            initial = await client.get(
+                "/gateway/feature-flags", cookies=cookies_for(admin)
+            )
+            turned_off = await client.put(
+                url, json={"enabled": False}, cookies=cookies_for(admin)
+            )
+            reset = await client.delete(url, cookies=cookies_for(admin))
+        assert initial.json()["flags"] == [
+            {
+                "key": ECOSYSTEM_SHOW_OWNERS,
+                "enabled": True,
+                "default": True,
+                "overridden": False,
+            }
+        ]
+        assert turned_off.json()["flags"][0] == {
+            "key": ECOSYSTEM_SHOW_OWNERS,
+            "enabled": False,
+            "default": True,
+            "overridden": True,
+        }
+        assert reset.status_code == 200, reset.text
+        assert reset.json()["flags"][0]["enabled"] is True
+        assert reset.json()["flags"][0]["overridden"] is False
+        assert announced == [
+            {ECOSYSTEM_SHOW_OWNERS: False},
+            {ECOSYSTEM_SHOW_OWNERS: True},
+        ]
+
+    async def test_a_member_may_not_reset_a_flag(self, harness: Harness) -> None:
+        member = await add_member(harness.session_factory, "bob")
+        async with harness.client() as client:
+            refused = await client.delete(
+                f"/gateway/feature-flags/{ECOSYSTEM_SHOW_OWNERS}",
+                cookies=cookies_for(member),
+            )
+        assert refused.status_code == 403

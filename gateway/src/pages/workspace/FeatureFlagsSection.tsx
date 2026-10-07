@@ -1,5 +1,6 @@
 import {
   Alert,
+  Button,
   CircularProgress,
   FormControlLabel,
   Stack,
@@ -7,7 +8,12 @@ import {
   Typography,
 } from "@mui/material";
 import { useCallback, useState } from "react";
-import { type FeatureFlagsResponse, fetchFeatureFlags, setFeatureFlag } from "../../data/api";
+import {
+  type FeatureFlagsResponse,
+  fetchFeatureFlags,
+  resetFeatureFlag,
+  setFeatureFlag,
+} from "../../data/api";
 import { useLoad } from "./useLoad";
 
 /** What each flag turns on, for the people deciding. A flag the server knows
@@ -29,11 +35,11 @@ export default function FeatureFlagsSection() {
   const [actionError, setActionError] = useState<string | null>(null);
   const shown = current ?? data;
 
-  const flip = async (key: string, enabled: boolean) => {
+  const change = async (key: string, request: () => Promise<FeatureFlagsResponse>) => {
     setBusy(key);
     setActionError(null);
     try {
-      setCurrent(await setFeatureFlag(key, enabled));
+      setCurrent(await request());
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "The change failed");
     } finally {
@@ -64,7 +70,10 @@ export default function FeatureFlagsSection() {
                       <Switch
                         checked={flag.enabled}
                         disabled={!shown.can_edit || busy !== null}
-                        onChange={(e) => void flip(flag.key, e.target.checked)}
+                        onChange={(e) => {
+                          const enabled = e.target.checked;
+                          void change(flag.key, () => setFeatureFlag(flag.key, enabled));
+                        }}
                       />
                     }
                     label={meta?.label ?? flag.key}
@@ -74,6 +83,22 @@ export default function FeatureFlagsSection() {
                       {meta.help}
                     </Typography>
                   )}
+                  <Stack direction="row" spacing={1} sx={{ ml: 6, alignItems: "center" }}>
+                    <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                      {flag.overridden
+                        ? `Set for this workspace. Server default: ${flag.default ? "on" : "off"}.`
+                        : "Following the server default."}
+                    </Typography>
+                    {flag.overridden && shown.can_edit && (
+                      <Button
+                        size="small"
+                        disabled={busy !== null}
+                        onClick={() => void change(flag.key, () => resetFeatureFlag(flag.key))}
+                      >
+                        Use server default
+                      </Button>
+                    )}
+                  </Stack>
                 </Stack>
               );
             })}

@@ -719,7 +719,7 @@ async def run(config: SwitchConfig) -> None:
         )
 
     # ── Gateway app ───────────────────────────────────────────────────────────
-    feature_flag_service = FeatureFlagService()
+    feature_flag_service = FeatureFlagService(config.feature_flag_defaults)
     gateway_app = create_gateway_app(
         agent_store=agent_store,
         room_store=room_store,

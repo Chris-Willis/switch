@@ -123,9 +123,11 @@ class ManagementService:
         api_keys: ApiKeyStore,
         agents: AgentStore,
         presence: ControllerPresence,
+        feature_flags: FeatureFlagStore,
         clock: Callable[[], datetime],
     ) -> None:
         self.settings = settings
+        self.feature_flags = feature_flags
         self.notifier = notifier
         self.presence = presence
         self.controllers = controllers
@@ -388,7 +390,7 @@ class ManagementService:
             "controller_id": principal.controller_id,
             "assignment_revision": await self.assignment_revision(session, principal),
             "report_within_s": self.settings.status_interval_seconds,
-            "feature_flags": await FeatureFlagStore().get_all(session),
+            "feature_flags": await self.feature_flags.get_all(session),
         }
 
     # ── Operations, controller side ───────────────────────────────────────────

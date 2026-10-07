@@ -1039,6 +1039,10 @@ export interface Member {
 export interface FeatureFlagState {
   key: string;
   enabled: boolean;
+  /** The server-wide default, which the flag follows unless overridden. */
+  default: boolean;
+  /** Whether this workspace made its own choice for the flag. */
+  overridden: boolean;
 }
 
 export interface FeatureFlagsResponse {
@@ -1061,6 +1065,11 @@ export async function setFeatureFlag(
     "PUT",
     { enabled },
   );
+}
+
+/** Drop the workspace's choice for a flag, so it follows the server default. */
+export async function resetFeatureFlag(key: string): Promise<FeatureFlagsResponse> {
+  return jsonRequest<FeatureFlagsResponse>(`/feature-flags/${encodeURIComponent(key)}`, "DELETE");
 }
 
 export async function fetchMembers(tenantId: string): Promise<Member[]> {

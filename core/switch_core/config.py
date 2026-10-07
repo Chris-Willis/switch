@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from switch_core.feature_flags import KNOWN_FEATURE_FLAGS
 from switch_core.keys import Keyring
 from switch_core.outbound import OutboundPolicy
 
@@ -108,6 +109,12 @@ class SwitchConfig(BaseSettings):
     # refused. Link-local and metadata addresses are refused even when listed.
     # See `outbound.py`.
     outbound_allowed_private_hosts: str = ""
+
+    # Feature flags that are on by default in every workspace: comma-separated
+    # keys from `feature_flags.KNOWN_FEATURE_FLAGS`. A workspace admin can still
+    # turn one off (or another on) for their workspace. An unknown key is a
+    # startup error rather than a silently ignored typo.
+    feature_flags_default_on: str = ""
 
     # Gateway admin seed
     gateway_admin_email: str
@@ -856,6 +863,35 @@ class SwitchConfig(BaseSettings):
                 "on a deployment that does not isolate them from each other."
             )
         return self
+
+    @model_validator(mode="after")
+    def _validate_feature_flags_default_on(self) -> "SwitchConfig":
+        unknown = sorted(
+            key
+            for key in self._feature_flags_default_on_keys()
+            if key not in KNOWN_FEATURE_FLAGS
+        )
+        if unknown:
+            raise ValueError(
+                f"FEATURE_FLAGS_DEFAULT_ON names unknown feature flag(s): {unknown}. "
+                f"Known flags: {sorted(KNOWN_FEATURE_FLAGS)}."
+            )
+        return self
+
+    def _feature_flags_default_on_keys(self) -> set[str]:
+        return {
+            key.strip()
+            for key in self.feature_flags_default_on.split(",")
+            if key.strip()
+        }
+
+    @property
+    def feature_flag_defaults(self) -> dict[str, bool]:
+        """Every known flag's server-wide default: the registry's, unless listed."""
+        on = self._feature_flags_default_on_keys()
+        return {
+            key: key in on or default for key, default in KNOWN_FEATURE_FLAGS.items()
+        }
 
     @model_validator(mode="after")
     def _validate_outbound_allowed_private_hosts(self) -> "SwitchConfig":

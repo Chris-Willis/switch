@@ -6,9 +6,9 @@ Create Date: 2026-10-07 00:00:00.000000
 
 Every existing flag row was server-global, so it is copied into every tenant:
 a flag that was on for the whole deployment stays on for each workspace in it.
-There is no deployment default after this: a workspace created later starts
-with every flag off. The flags that were on are logged, so an operator knows
-what to turn on again in a new workspace.
+A workspace created later takes the server-wide defaults instead, which come
+from `FEATURE_FLAGS_DEFAULT_ON` rather than from this table. The flags that
+were on are logged, so an operator knows what to put in that setting.
 Downgrade cannot reverse that copy faithfully once workspaces disagree; it
 keeps a flag on if any workspace had it on.
 """
@@ -63,8 +63,9 @@ def upgrade() -> None:
     if enabled:
         logger.warning(
             "Feature flags are now per workspace. These were on for the whole "
-            "deployment and are now on in every existing workspace; a workspace "
-            "created from now on starts with them off: %s",
+            "deployment and are now on in every existing workspace; add them to "
+            "FEATURE_FLAGS_DEFAULT_ON to keep them on in workspaces created from "
+            "now on: %s",
             ", ".join(enabled),
         )
     op.drop_table("feature_flags_global")

@@ -2121,13 +2121,14 @@ async def list_bridges(
 async def list_feature_flags(
     _agent: Annotated[Agent, Depends(get_agent_from_scope)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> FeatureFlagListResponse:
     """List every feature flag of the agent's workspace and its current state.
 
     Any authenticated agent may read its own workspace's flags. Only workspace
     admins may change them, through the gateway.
     """
-    flags = await FeatureFlagStore().get_all(session)
+    flags = await FeatureFlagStore(config.feature_flag_defaults).get_all(session)
     return FeatureFlagListResponse(
         flags=[FeatureFlagInfo(key=k, enabled=v) for k, v in sorted(flags.items())]
     )
