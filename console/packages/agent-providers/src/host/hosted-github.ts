@@ -124,6 +124,48 @@ export function hostedGitHubEnvironment(
   };
 }
 
+const HOSTED_GIT_HELPER = /hosted-bootstrap\.mjs'? --git-credential$/;
+const GITHUB_LAUNCH_KEY =
+  /^(GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)|GH_HOST|GH_PROMPT_DISABLED|GIT_TERMINAL_PROMPT)$/;
+
+async function isGitHubCliWrapper(directory: string): Promise<boolean> {
+  try {
+    const source = await readFile(join(directory, 'gh'), 'utf8');
+    return (
+      source.startsWith('#!/bin/sh\nexec ') && source.includes("hosted-bootstrap.mjs' --github-cli")
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `env` without the GitHub setup an earlier hosted host saved into it (its
+ * Git helper configuration, its Switch variables and its `gh` wrapper on
+ * PATH), so a session gets only what `hostedGitHubEnvironment` gives it now.
+ * An environment that carries none of it is returned as it is.
+ */
+export async function withoutHostedGitHubEnvironment(
+  env: Record<string, string>
+): Promise<Record<string, string>> {
+  const keys = Object.keys(env);
+  const hosted =
+    keys.some((key) => key.startsWith('SWITCH_HOSTED_GITHUB_')) ||
+    keys.some((key) => /^GIT_CONFIG_VALUE_\d+$/.test(key) && HOSTED_GIT_HELPER.test(env[key]!));
+  if (!hosted) return env;
+  const next = Object.fromEntries(
+    Object.entries(env).filter(
+      ([key]) => !key.startsWith('SWITCH_HOSTED_GITHUB_') && !GITHUB_LAUNCH_KEY.test(key)
+    )
+  );
+  if (next.PATH !== undefined) {
+    const entries = next.PATH.split(':');
+    const wrappers = await Promise.all(entries.map((entry) => isGitHubCliWrapper(entry)));
+    next.PATH = entries.filter((_entry, index) => !wrappers[index]).join(':');
+  }
+  return next;
+}
+
 export function githubRedactions(token: string): string[] {
   return [
     token,

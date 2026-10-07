@@ -203,6 +203,32 @@ describe('SystemdRuntime', () => {
     expect(systemctl.verbs()).toEqual([`start ${UNIT}`]);
   });
 
+  it('restarts a unit whose granted connections or skills changed, since it reads them as it starts', async () => {
+    const cwd = join(layout.worktreeRoot('agent-1'), 'workspace');
+    await runtime.launch('agent-1', template('agent-1', cwd), START);
+    await runtime.launch('agent-1', template('agent-1', cwd), START);
+    expect(systemctl.verbs()).toEqual([`start ${UNIT}`, `start ${UNIT}`]);
+
+    await runtime.launch('agent-1', template('agent-1', cwd), {
+      ...START,
+      connections: ['github'],
+    });
+    expect(systemctl.verbs().at(-1)).toBe(`restart ${UNIT}`);
+
+    const skills = [{ slug: 'github', files: { 'SKILL.md': '# GitHub' } }];
+    await runtime.launch('agent-1', template('agent-1', cwd), {
+      ...START,
+      connections: ['github'],
+      skills,
+    });
+    expect(systemctl.verbs().at(-1)).toBe(`restart ${UNIT}`);
+
+    await runtime.launch('agent-1', template('agent-1', cwd), START);
+    expect(systemctl.verbs().at(-1)).toBe(`restart ${UNIT}`);
+    await runtime.launch('agent-1', template('agent-1', cwd), START);
+    expect(systemctl.verbs().at(-1)).toBe(`start ${UNIT}`);
+  });
+
   it('refuses a working directory outside the agent’s own, and a linked agent root', async () => {
     await expect(
       runtime.launch(

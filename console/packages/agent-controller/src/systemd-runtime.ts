@@ -278,12 +278,19 @@ export class SystemdRuntime implements AgentRuntime {
       skills: options.skills,
       instructions: '',
     });
-    await this.writeShared(join(agentRoot, HOSTED_WORKSPACE_FILE), JSON.stringify(workspace));
+    const workspacePath = join(agentRoot, HOSTED_WORKSPACE_FILE);
+    const previousWorkspace = await readOptional(workspacePath);
+    await this.writeShared(workspacePath, JSON.stringify(workspace));
     await this.writeFlags(watcherRoot, { enabled: true, spawn: true });
     await this.writeShared(join(watcherRoot, 'template.json'), JSON.stringify(template));
     await this.writeShared(join(watcherRoot, 'config.json'), JSON.stringify(config));
     this.pending.delete(agentId);
-    await this.deps.systemctl(['start', unit]);
+    // A unit reads its workspace only as it starts: its preparation installs
+    // the skills and the `gh` wrapper, and its watcher hands its sessions the
+    // GitHub environment of the connections granted then.
+    const workspaceChanged =
+      previousWorkspace !== null && previousWorkspace !== JSON.stringify(workspace);
+    await this.deps.systemctl([workspaceChanged ? 'restart' : 'start', unit]);
   }
 
   async stop(agentId: string, options: { wait: boolean }): Promise<void> {
