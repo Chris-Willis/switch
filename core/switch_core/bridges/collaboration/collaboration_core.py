@@ -83,7 +83,12 @@ from switch_core.transport import (
     RoomRef,
     TransportError,
 )
-from switch_core.trust.client import NullTrustClient, TrustClient, check_message
+from switch_core.trust.client import (
+    NullTrustClient,
+    TrustClient,
+    check_message,
+    trust_annotation,
+)
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_connections import (
@@ -967,6 +972,11 @@ class CollaborationCore:
                     message_type=AdminMessageType.TRUST_BLOCKED.value,
                 )
                 return
+            if check.redacted_content is not None:
+                content = check.redacted_content
+            annotation = trust_annotation(check)
+            if annotation is not None:
+                content = f"{content}\n\n{annotation}"
             event_id = await human_actor.send_message(
                 transport_room_id,
                 content,

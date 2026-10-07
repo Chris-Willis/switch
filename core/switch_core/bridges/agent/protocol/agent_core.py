@@ -126,6 +126,7 @@ from switch_core.trust.client import (
     NullTrustClient,
     TrustClient,
     check_message,
+    trust_annotation,
 )
 
 if TYPE_CHECKING:
@@ -1227,16 +1228,24 @@ class AgentCore:
 
     async def _enforce_trust(
         self, room: RoomDescriptor, content: str, thread_root_id: str | None
-    ) -> None:
+    ) -> str:
         """Check agent-authored content against Switch Trust before it is
-        sent. Raises `GuardrailBlockedError` on a BLOCKED verdict, having
-        already posted a notice in the room in place of the real content."""
+        sent. Returns the content to actually send — unchanged, redacted, or
+        carrying a short non-blocking annotation. Raises
+        `GuardrailBlockedError` on a BLOCKED verdict, having already posted a
+        notice in the room in place of the real content."""
         check = await check_message(
             self.trust_client, role="assistant", content=content
         )
         if check.blocked:
             await self._post_trust_blocked_notice(room, thread_root_id)
             raise GuardrailBlockedError(check)
+        if check.redacted_content is not None:
+            content = check.redacted_content
+        annotation = trust_annotation(check)
+        if annotation is not None:
+            content = f"{content}\n\n{annotation}"
+        return content
 
     async def _post_trust_blocked_notice(
         self, room: RoomDescriptor, thread_root_id: str | None
@@ -1327,7 +1336,7 @@ class AgentCore:
             thread_root_id = await self._resolve_thread_root(
                 client, room.transport_room_id, thread_id
             )
-        await self._enforce_trust(room, content, thread_root_id)
+        content = await self._enforce_trust(room, content, thread_root_id)
         event_id = await client.send_message(
             room.transport_room_id,
             content,
@@ -1796,7 +1805,7 @@ class AgentCore:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
-        await self._enforce_trust(room, detail, None)
+        detail = await self._enforce_trust(room, detail, None)
         await client.send_message(
             room.transport_room_id, f"*{detail}*", format="markdown", metered=True
         )
@@ -2525,6 +2534,7 @@ class AgentCore:
 
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client and client.transport:
+            outcome = await self._enforce_trust(room, outcome, None)
             await client.send_event(
                 room.transport_room_id,
                 "com.switch.task.finalise",
@@ -2535,7 +2545,6 @@ class AgentCore:
                     "outcome": outcome,
                 },
             )
-            await self._enforce_trust(room, outcome, None)
             await client.send_message(
                 room.transport_room_id, outcome, format="markdown", metered=True
             )

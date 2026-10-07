@@ -6,7 +6,9 @@ from switch_core.trust.client import (
     TrustCheckResult,
     TrustClient,
     TrustFinding,
+    TrustOutcome,
     check_message,
+    trust_annotation,
 )
 
 __all__ = [
@@ -17,5 +19,7 @@ __all__ = [
     "TrustCheckResult",
     "TrustClient",
     "TrustFinding",
+    "TrustOutcome",
     "check_message",
+    "trust_annotation",
 ]

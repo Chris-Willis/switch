@@ -19,9 +19,30 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-_BLOCKED_OUTCOME = "GUARDRAIL_RESULT_OUTCOME_BLOCKED"
-
 Role = Literal["user", "assistant"]
+
+# The outcome a check settles on. "errored" covers both what the wire protocol
+# calls GUARDRAIL_RESULT_OUTCOME_ERRORED (a detector itself failed, but the
+# engine still answered) and what `check_message` reports when the HTTP call
+# never completed at all — from a caller's perspective both are "this message
+# was not cleanly checked," and both get the same non-blocking annotation.
+#
+# The wire values below follow the GUARDRAIL_RESULT_OUTCOME_<NAME> convention
+# confirmed for OK and BLOCKED in the endpoint's README; REDACTED/ALERTED/
+# ERRORED are inferred from the same naming and the documented severity order
+# (Blocked > Redacted > Alerted > Errored > OK) — worth confirming once
+# sandbox-quantum/hoot#2397 lands.
+TrustOutcome = Literal["ok", "blocked", "redacted", "alerted", "errored"]
+
+_OUTCOME_BY_WIRE_VALUE: dict[str, TrustOutcome] = {
+    "GUARDRAIL_RESULT_OUTCOME_OK": "ok",
+    "GUARDRAIL_RESULT_OUTCOME_BLOCKED": "blocked",
+    "GUARDRAIL_RESULT_OUTCOME_REDACTED": "redacted",
+    "GUARDRAIL_RESULT_OUTCOME_ALERTED": "alerted",
+    "GUARDRAIL_RESULT_OUTCOME_ERRORED": "errored",
+}
+
+_REDACTION_PLACEHOLDER = "[redacted]"
 
 
 class GuardrailsCheckError(RuntimeError):
@@ -47,7 +68,10 @@ class GuardrailBlockedError(Exception):
 class TrustFinding:
     """One detector hit. Deliberately narrower than the wire shape: no
     `detected_string` — that is often the sensitive text itself (an email, a
-    secret), and this travels into log lines and blocked-message notices."""
+    secret), and this travels into log lines and blocked-message notices.
+    (A REDACTED verdict's `detected_string`s are used once, inside
+    `HttpTrustClient.check`, to build `redacted_content`, and never stored
+    here.)"""
 
     category: str
     detector_name: str
@@ -56,10 +80,20 @@ class TrustFinding:
 
 @dataclass(frozen=True)
 class TrustCheckResult:
-    blocked: bool
+    outcome: TrustOutcome
     policy_id: str | None
     policy_name: str | None
     findings: tuple[TrustFinding, ...] = ()
+    # Set only when `outcome == "redacted"`: the checked content with each
+    # finding's detected text swapped for a placeholder. `None` otherwise,
+    # including when a REDACTED verdict carried no usable detected text to
+    # redact — callers must not send the original content in that case either,
+    # but that situation has not come up against the real endpoint yet.
+    redacted_content: str | None = None
+
+    @property
+    def blocked(self) -> bool:
+        return self.outcome == "blocked"
 
 
 class TrustClient(Protocol):
@@ -70,7 +104,7 @@ class NullTrustClient:
     """Off: every message is allowed, and no request is made."""
 
     async def check(self, *, role: Role, content: str) -> TrustCheckResult:
-        return TrustCheckResult(blocked=False, policy_id=None, policy_name=None)
+        return TrustCheckResult(outcome="ok", policy_id=None, policy_name=None)
 
 
 class HttpTrustClient:
@@ -122,20 +156,63 @@ class HttpTrustClient:
             raise GuardrailsCheckError(
                 f"POST {self._url} answered a non-JSON body"
             ) from error
+
+        wire_outcome = str(body.get("outcome"))
+        outcome = _OUTCOME_BY_WIRE_VALUE.get(wire_outcome)
+        if outcome is None:
+            logger.warning(
+                "Switch Trust returned an unrecognised outcome %r; treating as "
+                "'errored' rather than silently allowing it through",
+                wire_outcome,
+            )
+            outcome = "errored"
+
+        raw_findings = body.get("findings") or []
         findings = tuple(
             TrustFinding(
                 category=finding.get("category", ""),
                 detector_name=finding.get("detector_name", ""),
                 severity=finding.get("severity"),
             )
-            for finding in body.get("findings") or []
+            for finding in raw_findings
         )
+
+        redacted_content = None
+        if outcome == "redacted":
+            redacted_content = content
+            for finding in raw_findings:
+                detected = finding.get("detected_string")
+                if detected:
+                    redacted_content = redacted_content.replace(
+                        detected, _REDACTION_PLACEHOLDER
+                    )
+
         return TrustCheckResult(
-            blocked=body.get("outcome") == _BLOCKED_OUTCOME,
+            outcome=outcome,
             policy_id=body.get("policy_id"),
             policy_name=body.get("policy_name"),
             findings=findings,
+            redacted_content=redacted_content,
         )
+
+
+def trust_annotation(result: TrustCheckResult) -> str | None:
+    """A short, non-blocking note to append to a message's body — the
+    in-chat indicator for ALERTED and a degraded/errored check. Reuses the
+    message's own body rather than a separate notice or a platform reaction:
+    `mark_activity` (the existing "working"/"queued" badge) is scoped to a
+    specific agent's identity on platforms that track per-agent reactions, and
+    a Switch Trust verdict belongs to no agent — retrofitting it would mean a
+    new cross-adapter primitive, out of proportion to a quiet heads-up.
+    `None` for every other outcome, including BLOCKED (handled separately) and
+    REDACTED (the redaction itself is the signal)."""
+    if result.outcome == "alerted":
+        categories = ", ".join(sorted({f.category for f in result.findings}))
+        detail = categories or "policy alert"
+        return f"⚠️ _Switch Trust: {detail} (not blocked)_"
+    if result.outcome == "errored":
+        return "⚠️ _Switch Trust could not fully check this message_"
+    return None
 
 
 async def check_message(
@@ -143,7 +220,9 @@ async def check_message(
 ) -> TrustCheckResult:
     """`client.check`, failing open: a Switch Trust outage degrades to
     unchecked messages rather than to no messaging at all. Logged loudly
-    either way, since this is the one place that gap is visible."""
+    either way, since this is the one place that gap is visible. Reported as
+    `outcome="errored"` rather than `"ok"`, so callers give it the same
+    quiet in-chat annotation as an engine-side error."""
     try:
         return await client.check(role=role, content=content)
     except GuardrailsCheckError:
@@ -151,4 +230,4 @@ async def check_message(
             "Switch Trust check failed; message allowed through unchecked",
             exc_info=True,
         )
-        return TrustCheckResult(blocked=False, policy_id=None, policy_name=None)
+        return TrustCheckResult(outcome="errored", policy_id=None, policy_name=None)

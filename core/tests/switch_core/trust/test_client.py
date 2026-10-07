@@ -16,6 +16,7 @@ from switch_core.trust.client import (
     TrustCheckResult,
     TrustFinding,
     check_message,
+    trust_annotation,
 )
 
 
@@ -128,7 +129,9 @@ async def test_null_client_always_allows():
 async def test_check_message_fails_open_on_error():
     client = _client(lambda request: httpx.Response(500, text="boom"))
     result = await check_message(client, role="user", content="hi")
-    assert result == TrustCheckResult(blocked=False, policy_id=None, policy_name=None)
+    assert result == TrustCheckResult(
+        outcome="errored", policy_id=None, policy_name=None
+    )
 
 
 @pytest.mark.asyncio
@@ -144,7 +147,7 @@ async def test_check_message_passes_through_a_block():
 
 def test_guardrail_blocked_error_names_the_categories():
     result = TrustCheckResult(
-        blocked=True,
+        outcome="blocked",
         policy_id="pol_123",
         policy_name="Default",
         findings=(
@@ -154,3 +157,97 @@ def test_guardrail_blocked_error_names_the_categories():
         ),
     )
     assert "pii/email" in str(GuardrailBlockedError(result))
+
+
+@pytest.mark.asyncio
+async def test_a_redacted_outcome_swaps_the_detected_text():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "outcome": "GUARDRAIL_RESULT_OUTCOME_REDACTED",
+                "findings": [
+                    {
+                        "category": "pii/email",
+                        "detector_name": "PiiDetector",
+                        "detected_string": "user@example.com",
+                        "severity": "high",
+                    }
+                ],
+            },
+        )
+
+    client = _client(handler)
+    result = await client.check(
+        role="user", content="email me at user@example.com please"
+    )
+
+    assert result.outcome == "redacted"
+    assert result.redacted_content == "email me at [redacted] please"
+    # Same guarantee as the blocked path: the raw text isn't exposed on the finding.
+    assert not hasattr(result.findings[0], "detected_string")
+
+
+@pytest.mark.asyncio
+async def test_a_redacted_outcome_with_no_detected_text_redacts_nothing():
+    client = _client(
+        lambda request: httpx.Response(
+            200, json={"outcome": "GUARDRAIL_RESULT_OUTCOME_REDACTED", "findings": []}
+        )
+    )
+    result = await client.check(role="user", content="hello")
+    assert result.outcome == "redacted"
+    assert result.redacted_content == "hello"
+
+
+@pytest.mark.asyncio
+async def test_an_alerted_outcome_is_not_blocked():
+    client = _client(
+        lambda request: httpx.Response(
+            200,
+            json={
+                "outcome": "GUARDRAIL_RESULT_OUTCOME_ALERTED",
+                "findings": [{"category": "pii/email", "detector_name": "PiiDetector"}],
+            },
+        )
+    )
+    result = await client.check(role="user", content="hi")
+    assert result.outcome == "alerted"
+    assert result.blocked is False
+    assert result.redacted_content is None
+
+
+@pytest.mark.asyncio
+async def test_an_unrecognised_outcome_is_treated_as_errored_not_allowed_silently():
+    client = _client(
+        lambda request: httpx.Response(200, json={"outcome": "SOMETHING_NEW"})
+    )
+    result = await client.check(role="user", content="hi")
+    assert result.outcome == "errored"
+
+
+def test_trust_annotation_names_the_categories_for_an_alert():
+    result = TrustCheckResult(
+        outcome="alerted",
+        policy_id=None,
+        policy_name=None,
+        findings=(
+            TrustFinding(
+                category="pii/email", detector_name="PiiDetector", severity=None
+            ),
+        ),
+    )
+    annotation = trust_annotation(result)
+    assert annotation is not None
+    assert "pii/email" in annotation
+
+
+def test_trust_annotation_covers_errored_the_same_way_as_degraded():
+    errored = TrustCheckResult(outcome="errored", policy_id=None, policy_name=None)
+    assert trust_annotation(errored) is not None
+
+
+def test_trust_annotation_is_none_for_ok_blocked_and_redacted():
+    for outcome in ("ok", "blocked", "redacted"):
+        result = TrustCheckResult(outcome=outcome, policy_id=None, policy_name=None)
+        assert trust_annotation(result) is None

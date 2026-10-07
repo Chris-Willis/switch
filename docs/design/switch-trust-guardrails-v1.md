@@ -14,8 +14,9 @@ message Switch sends, blocking on a `BLOCKED` outcome.
 - One guardrails policy for the whole deployment (no per-tenant override).
 - Configured by environment variables only — no gateway or console UI.
 - Checks the single outgoing message only — no conversation history sent.
-- Only the `BLOCKED` outcome is acted on; `REDACTED`/`ALERTED`/`ERRORED` pass
-  through unchanged.
+- All five outcomes are acted on: `BLOCKED` stops the send, `REDACTED`
+  replaces the content, `ALERTED`/`ERRORED` (and a Switch Trust outage) send
+  with a short non-blocking annotation. See §Enforcement flow.
 - Text content only — no media/attachments, no tool call/tool result mapping.
 
 These are deliberate v1 cuts, not an assessment that they're unneeded — see
@@ -23,17 +24,30 @@ Follow-ups.
 
 ## Where it hooks in
 
-The single point every message passes through, regardless of origin, is
-`Actor.send_message` (`core/switch_core/clients/actor.py:206`).
-`HumanActor`, `AgentActor`, `SystemActor`, and bridge actors all call it before
-it reaches `PostgresTransport._send` (`core/switch_core/transport/postgres.py:659`),
-which is where the row is actually persisted. The guardrails check runs in
-`Actor.send_message`, before the call into the transport — a blocked message
-never becomes a row.
+Not the fully generic `Actor.send_message` (`core/switch_core/clients/actor.py:206`)
+that was the original candidate: that method is also how Switch posts its own
+canned, system-generated text under an agent's or a bridge's identity (a
+join greeting, a command result, an auto-reply) — content nobody authored
+freely and that gains nothing from a guardrails check. Hooking there would
+have checked those too.
 
-`SystemActor`'s own admin/notice sends are excluded from the check: they're
-Switch's own control-plane messages (including the blocked-notice this feature
-itself posts), not user or agent content.
+Instead, the check runs at the point each kind of *freely-authored* content is
+actually about to be sent:
+
+- **Agent-authored**, in `AgentCore` (`core/switch_core/bridges/agent/protocol/agent_core.py`):
+  `send_message`, `update_status`, and `finalise_task` — the three places an
+  agent's own text (a reply, a status line, a task outcome) reaches a room.
+  All three call a shared `_enforce_trust(room, content, thread_root_id)`
+  helper.
+- **Human-authored**, in `CollaborationCore._handle_inbound_message`
+  (`core/switch_core/bridges/collaboration/collaboration_core.py`): the point
+  where an inbound platform message is about to become a
+  `human_actor.send_message(...)` call.
+
+Both sit directly in front of the actual send, so a blocked message never
+becomes a row — but each as a deliberately-chosen call site with the right
+context (room, thread, originating channel) rather than one generic
+interception point further down the stack.
 
 ## Enforcement flow
 
@@ -46,51 +60,74 @@ itself posts), not user or agent content.
    added in [hoot#2397](https://github.com/sandbox-quantum/hoot/pull/2397) —
    with headers `x-guardrails-policy-id` and `x-flintai-api-key`, short
    timeout (2s default).
-3. `outcome == "GUARDRAIL_RESULT_OUTCOME_BLOCKED"` → block. Any other outcome
-   (`OK`, `REDACTED`, `ALERTED`, `ERRORED`) → allow through unchanged.
-4. On block: `Actor.send_message` raises `GuardrailBlockedError` (carrying
-   `outcome`, `findings`, `policy_id`) instead of calling the transport. No row
-   is created.
-5. On network error, timeout, or non-2xx from Switch Trust: **fail open** —
-   log a warning and let the message through unchecked. Blocking all of
-   Switch's messaging on a guardrails-service outage is a worse failure mode
-   than an unchecked message during an outage.
+3. The outcome (mapped from the wire's `GUARDRAIL_RESULT_OUTCOME_*` values —
+   `ok` / `blocked` / `redacted` / `alerted` / `errored`) decides what happens
+   next — see §Outcome handling.
+4. On block: the caller raises `GuardrailBlockedError` (carrying `outcome`,
+   `findings`, `policy_id`) instead of sending. No row is created.
+5. On network error, timeout, non-2xx, or a response `HttpTrustClient` doesn't
+   recognise: **fail open** — `check_message` catches it, logs a warning, and
+   reports it to the caller as `outcome="errored"` rather than `"ok"`, so it
+   still gets the same quiet annotation an engine-side error would (see
+   below). Blocking all of Switch's messaging on a guardrails-service outage
+   is a worse failure mode than an unchecked message during an outage.
 
-## Differentiated handling by origin
+## Outcome handling
 
-Both call sites catch `GuardrailBlockedError`; each already has the context to
-react appropriately for its direction.
+Each of the two call sites (§Where it hooks in) runs the check and then acts
+on `TrustCheckResult.outcome`:
 
-- **Agent-originated**, via `AgentProtocolCore.send_message`
-  (`core/switch_core/bridges/agent/protocol/agent_core.py:1244`): catch the
-  error, and instead of relaying the agent's real content, post a blocked
-  notice into the room via `SystemActor.send_admin` with a new
-  `AdminMessageType.TRUST_BLOCKED` (`core/switch_core/clients/admin_messages.py`).
-  Every collaboration adapter (Slack, Mattermost, Discord, Teams, Telegram)
-  already renders `admin_message()` as a platform-native system notice,
-  distinct from an ordinary chat bubble — this is "visually stands out" for
-  free. The agent's tool/API call gets back an error so it knows its response
-  was blocked.
-- **Human/bridge-originated**, at the inbound ingestion call site in
-  `core/switch_core/bridges/collaboration/collaboration_core.py` where a
-  platform event becomes a `human_actor.send_message(...)` call: catch the
-  error and call the adapter's `admin_message(...)` back to the **originating
-  platform channel** directly. The row is never created, so the message never
-  reaches the room or any agent — the notice goes straight back to the
-  sender's platform, not into Switch.
+- **`blocked`** — raise `GuardrailBlockedError` instead of sending.
+  - **Agent-authored**: catch it in the three `AgentCore` methods, and instead
+    of the real content, post a notice into the room via `SystemActor.send_admin`
+    with a new `AdminMessageType.TRUST_BLOCKED`
+    (`core/switch_core/clients/admin_messages.py`). Every collaboration adapter
+    (Slack, Mattermost, Discord, Teams, Telegram) already renders
+    `admin_message()` as a platform-native system notice, distinct from an
+    ordinary chat bubble — this is "visually stands out" for free. The
+    agent's tool/API call gets back an error (HTTP 422 / an MCP tool error) so
+    it knows its response was blocked.
+  - **Human-authored**: catch it in `CollaborationCore._handle_inbound_message`
+    and call the adapter's `admin_message(...)` back to the **originating
+    platform channel** directly (`msg.channel_id`, `msg.root_id or
+    msg.message_ref`). The row is never created, so the message never reaches
+    the room or any agent — the notice goes straight back to the sender's
+    platform, not into Switch.
+- **`redacted`** — `HttpTrustClient.check` builds `redacted_content` itself:
+  for each finding, it substring-replaces `detected_string` in the checked
+  content with `[redacted]`, immediately, inside the client. `detected_string`
+  is never stored on `TrustFinding` or exposed elsewhere — only the already-
+  redacted result travels further, so the sensitive text itself can't
+  accidentally end up in a log line or a notice the way it could if findings
+  carried it around. The caller swaps in `redacted_content` before sending if
+  it's set. (The endpoint's own response doesn't carry a pre-sanitized
+  message — hoot's "SanitizedMessages" is dashboard-ingestion-only state, not
+  part of the `/guardrails/check` JSON body — so this redaction is Switch's
+  own, built from the findings' detected text.)
+- **`alerted`** / **`errored`** (including a failed check, per above) — not
+  blocking. The caller appends a short line to the message body itself via
+  `trust_annotation()`, e.g. `⚠️ _Switch Trust: pii/email (not blocked)_` for
+  an alert, or `⚠️ _Switch Trust could not fully check this message_` for an
+  error — rather than a separate chat message or a platform reaction. See
+  below for why.
+- **`ok`** — unchanged.
 
-## Degraded-mode indicator (Switch Trust unreachable)
+### Why an inline annotation and not a reaction badge
 
-v1 ships with a warning log only on fail-open. A lighter-weight in-chat
-indicator is worth adding as a fast-follow, reusing the mechanism Switch
-already uses for "agent is working" status rather than inventing a new one:
-every adapter implements `mark_activity()` (a reaction-emoji badge — 👀
-working / ⏳ queued, defined per-adapter, e.g.
-`core/switch_core/bridges/collaboration/slack/adapter.py:2049`) and
-`post_rich`/`update_rich` (an edited-in-place turn-status card). Teams has no
-reaction primitive (`supports_activity_reactions = False`), so it would only
-get the card-edit treatment. Deferred out of v1 to avoid coupling the first PR
-to the session/turn-rendering system — see Follow-ups.
+The original sketch for a lightweight, non-disruptive indicator was to reuse
+`mark_activity()` — the reaction-emoji badge (👀 working / ⏳ queued) every
+adapter already implements for "agent is working" status. That turned out not
+to fit: `mark_activity`'s `agent_name` parameter is required because some
+platforms (Mattermost) give each agent's bot its own reaction, so the method
+has no way to add a reaction that belongs to no agent. A Switch Trust
+alert/error is a Switch-level concern, not any agent's — retrofitting it would
+mean a genuinely new cross-adapter primitive (touching every adapter), not a
+reuse of an existing one.
+
+Appending to the message body instead needs no adapter changes at all: it
+rides through the same `translate_outbound`/markdown pipeline every message
+already goes through, works identically on every platform, and stays attached
+to the message it's about, rather than becoming a second thing to read.
 
 ## Config
 
@@ -135,22 +172,24 @@ call site has to branch on whether the feature is on.
 3. **Exception + admin message type** — add `GuardrailBlockedError` (new
    module or alongside `transport` exceptions) and
    `AdminMessageType.TRUST_BLOCKED` in `admin_messages.py`.
-4. **Wire the client into `Actor`** — inject `TrustClient` into `Actor`
-   construction (exact DI point TBD when touching `ClientFactory`/`Actor.__init__`;
-   follows the existing store/service injection pattern). Add the check at the
-   top of `Actor.send_message`, skipped for `SystemActor`.
-5. **Agent-origin handling** — catch `GuardrailBlockedError` in
-   `AgentProtocolCore.send_message`, post the `TRUST_BLOCKED` admin message,
-   surface an error back to the caller.
-6. **Human/bridge-origin handling** — catch `GuardrailBlockedError` at the
-   inbound ingestion call site in `collaboration_core.py`, call
-   `adapter.admin_message(...)` back to the source channel instead of
-   relaying.
+4. **Wire the client in** — inject `TrustClient` into `AgentCore` (new
+   required constructor param) and `CollaborationCore` (defaulted to
+   `NullTrustClient()` for the many tests that assemble one directly), built
+   once in `main.py` (`trust/setup.py::build_trust_client`) and threaded
+   through the same layers `telemetry` already is.
+5. **Agent-origin handling** — a shared `AgentCore._enforce_trust` helper,
+   called from `send_message`, `update_status`, and `finalise_task`: raises
+   `GuardrailBlockedError` on a block (having posted the `TRUST_BLOCKED`
+   admin message first), otherwise returns the content to actually send
+   (redacted or annotated as needed).
+6. **Human-origin handling** — the same outcome handling inline in
+   `CollaborationCore._handle_inbound_message`, before the
+   `human_actor.send_message(...)` call.
 7. **Integration tests** (real Postgres, per repo convention) — a blocked
    human message never creates a `messages` row; a blocked agent message
    results in a `TRUST_BLOCKED` admin row instead of the real content; an
    allowed message is unaffected; a Switch Trust timeout/error still delivers
-   the message (fail-open).
+   the message (fail-open, annotated).
 8. **`docs/old/`**: note the new config block in whichever doc lists
    deployment env vars (none currently fully enumerates `SwitchConfig`, so
    likely just a short mention near the other optional-integration blocks, if
@@ -163,8 +202,14 @@ call site has to branch on whether the feature is on.
   Trust has its own deployment — tracked in Follow-ups.
 - 2s timeout default, and `x-guardrails-policy-id` / `x-flintai-api-key`
   headers, confirmed as-is.
-- Reaction-badge degraded-mode indicator deferred to a fast-follow rather than
-  bundled into this PR.
+- The hook point moved from the originally-sketched `Actor.send_message` to
+  three `AgentCore` methods plus `CollaborationCore`'s inbound handler, to
+  avoid checking Switch's own canned/system text — see §Where it hooks in.
+- `REDACTED` and `ALERTED`/`ERRORED` are handled (client-side redaction and an
+  inline annotation, respectively) rather than deferred — see §Outcome
+  handling. The originally-sketched reaction-badge indicator was dropped in
+  favor of an inline annotation once `mark_activity`'s agent-scoping turned
+  out not to fit a Switch-level concern.
 
 ## Follow-ups (explicitly out of v1 scope)
 
@@ -179,9 +224,11 @@ call site has to branch on whether the feature is on.
 - **Tool calls / tool results**: the hoot endpoint supports `tool_calls` and
   `tool_result` message fields; Switch doesn't yet have an obvious mapping
   from its agent-protocol tool use onto that shape.
-- **Redaction / alert handling**: act on `REDACTED` (replace content with the
-  engine's sanitized version) and `ALERTED` (log/flag without blocking)
-  outcomes instead of only hard-blocking.
+- **A real cross-platform status indicator**: the inline-annotation approach
+  for `ALERTED`/`ERRORED` (§Outcome handling) is a pragmatic v1 choice. A
+  dedicated, Switch-level (not per-agent) reaction or status primitive across
+  adapters would be a nicer fast-follow, if the inline text proves too noisy
+  in practice.
 - **Per-tenant / per-workspace policy**: today it's one global policy for the
   whole deployment. Multiple tenants wanting different policies needs a DB
   table, migration, and an admin API — a materially bigger lift than the env
@@ -190,7 +237,5 @@ call site has to branch on whether the feature is on.
   operator dashboard or in Console's "server properties" — neither surface has
   an existing settings page to extend today, so this is new UI work in either
   home.
-- **Degraded-mode in-chat indicator**: the reaction-badge/turn-status
-  treatment sketched above, once the core gate has shipped and proven out.
 - **Media/attachment checks**: images and files aren't sent to Switch Trust in
   v1.

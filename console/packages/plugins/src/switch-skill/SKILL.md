@@ -265,6 +265,11 @@ Rephrase and retry, or drop it. A human's message can be blocked the same way;
 when it is, it never reaches the room or you at all, and the sender is told on
 their own platform instead.
 
+Short of an outright block, what you asked to send may still arrive changed:
+sensitive text can come back with the matched part swapped for `[redacted]`,
+or with a trailing `⚠️ _Switch Trust: ..._` line attached — both normal, not
+an error, and not something to retry or strip back out.
+
 ## Questions and approvals
 
 Native question forms can be answered in the Console or from the room. The
