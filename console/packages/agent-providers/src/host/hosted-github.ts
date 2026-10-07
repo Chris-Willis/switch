@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
-import { copyFile, mkdir, open, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { mkdir, open, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -76,7 +76,7 @@ export function githubLaunchEnvironment(
     GH_HOST: 'github.com',
     GH_PROMPT_DISABLED: '1',
     GIT_TERMINAL_PROMPT: '0',
-    GIT_CONFIG_COUNT: '3',
+    GIT_CONFIG_COUNT: '4',
     // Clear inherited credential stores before selecting this non-persistent helper.
     GIT_CONFIG_KEY_0: 'credential.helper',
     GIT_CONFIG_VALUE_0: '',
@@ -84,42 +84,42 @@ export function githubLaunchEnvironment(
     GIT_CONFIG_VALUE_1: `!${shellQuote(process.execPath)} ${shellQuote(entrypoint)} --git-credential`,
     GIT_CONFIG_KEY_2: 'core.askPass',
     GIT_CONFIG_VALUE_2: '',
+    // The helper picks the installation by the repository owner, so git must send the path.
+    GIT_CONFIG_KEY_3: 'credential.https://github.com.useHttpPath',
+    GIT_CONFIG_VALUE_3: 'true',
   };
 }
 
 /**
- * Set on an agent unit's watcher whose workspace is a worktree of a
- * repository (`hostedUnitGitHubEnvironment`), and inherited by the session
- * hosts it starts: where the unit's Switch credentials are, which repository
- * they renew a token for, and the directory holding the `gh` wrapper.
+ * Set on an agent unit's watcher whose agent was granted GitHub
+ * (`hostedUnitGitHubEnvironment`), and inherited by the session hosts it
+ * starts: where the unit's Switch credentials are, and the directory holding
+ * the `gh` wrapper.
  */
 export const HOSTED_GITHUB_CREDENTIALS_ENV = 'SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS';
-export const HOSTED_GITHUB_REPOSITORY_ENV = 'SWITCH_HOSTED_GITHUB_REPOSITORY';
 export const HOSTED_GITHUB_CLI_ENV = 'SWITCH_HOSTED_GITHUB_CLI';
 
 /**
  * What a session's provider is given on top of its own environment so `git`
- * and `gh` renew the repository token through the unit's credentials: empty
- * on a host that sets none of the variables above. It replaces whatever a
- * session saved under an earlier host left in its environment.
+ * and `gh` get GitHub installation tokens through the unit's credentials:
+ * empty on a host that sets none of the variables above. It replaces
+ * whatever a session saved under an earlier host left in its environment.
  */
 export function hostedGitHubEnvironment(
   host: NodeJS.ProcessEnv,
   path: string | undefined
 ): Record<string, string> {
   const credentials = host[HOSTED_GITHUB_CREDENTIALS_ENV];
-  const repository = host[HOSTED_GITHUB_REPOSITORY_ENV];
   const cli = host[HOSTED_GITHUB_CLI_ENV];
-  if (!credentials && !repository && !cli) return {};
-  if (!credentials || !repository || !cli)
+  if (!credentials && !cli) return {};
+  if (!credentials || !cli)
     throw new Error(
-      `${HOSTED_GITHUB_CREDENTIALS_ENV}, ${HOSTED_GITHUB_REPOSITORY_ENV} and ${HOSTED_GITHUB_CLI_ENV} are set together.`
+      `${HOSTED_GITHUB_CREDENTIALS_ENV} and ${HOSTED_GITHUB_CLI_ENV} are set together.`
     );
   const rest = (path ?? '').split(':').filter((entry) => entry !== '' && entry !== cli);
   return {
     ...githubLaunchEnvironment(),
     [HOSTED_GITHUB_CREDENTIALS_ENV]: credentials,
-    [HOSTED_GITHUB_REPOSITORY_ENV]: repository,
     PATH: [cli, ...rest].join(':'),
   };
 }
@@ -132,21 +132,264 @@ export function githubRedactions(token: string): string[] {
   ];
 }
 
-/** Git credential protocol: no cache/store, no browser, only HTTPS github.com. */
-export function gitHubCredentialResponse(operation: string, input: string, token?: string): string {
-  if (operation !== 'get') return '';
-  if (!token || !validToken(token) || Buffer.byteLength(input) > 64 * 1024) return '';
+/**
+ * The fields of a Git credential request this helper answers: only `get`,
+ * only HTTPS github.com, well formed. Null for anything else.
+ */
+function credentialRequest(operation: string, input: string): Map<string, string> | null {
+  if (operation !== 'get' || Buffer.byteLength(input) > 64 * 1024) return null;
   const fields = new Map<string, string>();
   for (const line of input.split('\n')) {
     if (line === '') break;
     const at = line.indexOf('=');
-    if (at <= 0 || line.includes('\r') || line.includes('\0')) return '';
+    if (at <= 0 || line.includes('\r') || line.includes('\0')) return null;
     const key = line.slice(0, at);
-    if (fields.has(key)) return '';
+    if (fields.has(key)) return null;
     fields.set(key, line.slice(at + 1));
   }
-  if (fields.get('protocol') !== 'https' || fields.get('host') !== 'github.com') return '';
+  if (fields.get('protocol') !== 'https' || fields.get('host') !== 'github.com') return null;
+  return fields;
+}
+
+/** Git credential protocol: no cache/store, no browser, only HTTPS github.com. */
+export function gitHubCredentialResponse(operation: string, input: string, token?: string): string {
+  if (!token || !validToken(token) || credentialRequest(operation, input) === null) return '';
   return `username=x-access-token\npassword=${token}\n\n`;
+}
+
+/** One GitHub App installation granted to the agent, as `GET /hosted/connections` answers it. */
+export type GitHubInstallation = {
+  installation_id: number;
+  account: string;
+  repositories: 'all' | string[];
+};
+
+const githubInstallationSchema = z.object({
+  installation_id: z.number().int().positive(),
+  account: z.string().min(1),
+  repositories: z.union([z.literal('all'), z.array(z.string().min(1))]),
+});
+
+const hostedConnectionsSchema = z.object({
+  connections: z.array(z.object({ slug: z.string(), installations: z.unknown() })),
+});
+
+const ACCOUNT = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+
+function account(value: string | undefined): string | null {
+  return value !== undefined && ACCOUNT.test(value) ? value : null;
+}
+
+/** The owner in a credential request's `path` (`owner/repo` or `owner/repo.git`). */
+export function ownerFromCredentialPath(path: string | undefined): string | null {
+  if (path === undefined) return null;
+  return account(path.replace(/^\//, '').split('/')[0]);
+}
+
+/**
+ * The owner `gh` would act on for a `-R`/`GH_REPO` value: `OWNER/REPO`,
+ * `github.com/OWNER/REPO`, or a github.com URL. Null for another host or a
+ * value that is not one.
+ */
+export function ownerFromRepoArgument(value: string | undefined): string | null {
+  if (!value) return null;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return ownerFromRemoteUrl(value);
+  const parts = value.split('/');
+  if (parts.length === 2) return account(parts[0]);
+  if (parts.length === 3 && parts[0]!.toLowerCase() === 'github.com') return account(parts[1]);
+  return null;
+}
+
+/** The owner of a github.com remote URL (HTTPS, `ssh://` or scp-like `git@github.com:`). */
+export function ownerFromRemoteUrl(url: string | undefined): string | null {
+  if (!url) return null;
+  const scp = /^[^@/:]+@github\.com:\/?([^/]+)\/[^/]+$/i.exec(url);
+  if (scp) return account(scp[1]);
+  try {
+    const parsed = new URL(url);
+    if (!['https:', 'http:', 'ssh:', 'git:'].includes(parsed.protocol)) return null;
+    if (parsed.hostname.toLowerCase() !== 'github.com') return null;
+    const parts = parsed.pathname.split('/').filter((part) => part !== '');
+    return parts.length >= 2 ? account(parts[0]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The `-R`/`--repo` value in a `gh` command line, before any `--`. */
+export function repoArgument(args: string[]): string | undefined {
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!;
+    if (arg === '--') return undefined;
+    if (arg === '-R' || arg === '--repo') return args[index + 1];
+    if (arg.startsWith('--repo=')) return arg.slice('--repo='.length);
+    if (arg.startsWith('-R') && arg.length > 2) return arg.slice(2);
+  }
+  return undefined;
+}
+
+/**
+ * The `OWNER/REPO` a `gh repo <command>` names positionally (`gh repo clone
+ * OWNER/REPO`), which those commands take instead of `-R`.
+ */
+export function repoCommandArgument(args: string[]): string | undefined {
+  if (args[0] !== 'repo' || args[1] === undefined || args[1].startsWith('-')) return undefined;
+  for (const arg of args.slice(2)) {
+    if (arg === '--') return undefined;
+    if (!arg.startsWith('-') && ownerFromRepoArgument(arg) !== null) return arg;
+  }
+  return undefined;
+}
+
+function grantedAccounts(installations: GitHubInstallation[]): string {
+  return installations.length === 0
+    ? 'none'
+    : installations.map((installation) => installation.account).join(', ');
+}
+
+/** The granted installation for `owner`, matched as GitHub does, without regard to case. */
+export function installationForOwner(
+  installations: GitHubInstallation[],
+  owner: string
+): GitHubInstallation | null {
+  const wanted = owner.toLowerCase();
+  return (
+    installations.find((installation) => installation.account.toLowerCase() === wanted) ?? null
+  );
+}
+
+function notGranted(installations: GitHubInstallation[], owner: string): Error {
+  return new Error(
+    `GitHub account '${owner}' is not granted to this agent. Granted accounts: ${grantedAccounts(installations)}.`
+  );
+}
+
+/**
+ * The installation a `gh` command runs as: the owner of `-R/--repo` (or of
+ * the `OWNER/REPO` a `gh repo` command names), else of `GH_REPO`, else of the current directory's github.com `origin`; with none
+ * of those, the only granted installation. Anything else is an error that
+ * names the granted accounts.
+ */
+export async function selectCliInstallation(input: {
+  installations: GitHubInstallation[];
+  args: string[];
+  ghRepo: string | undefined;
+  originUrl: () => Promise<string | null>;
+}): Promise<GitHubInstallation> {
+  const { installations } = input;
+  if (installations.length === 0) throw new Error('No GitHub account is granted to this agent.');
+  const owner =
+    ownerFromRepoArgument(repoArgument(input.args)) ??
+    ownerFromRepoArgument(repoCommandArgument(input.args)) ??
+    ownerFromRepoArgument(input.ghRepo) ??
+    ownerFromRemoteUrl((await input.originUrl()) ?? undefined);
+  if (owner !== null) {
+    const installation = installationForOwner(installations, owner);
+    if (installation === null) throw notGranted(installations, owner);
+    return installation;
+  }
+  if (installations.length === 1) return installations[0]!;
+  throw new Error(
+    `Several GitHub accounts are granted to this agent (${grantedAccounts(installations)}); pass -R owner/repo to choose one (or set GH_REPO=owner/repo for a command without -R, such as gh api).`
+  );
+}
+
+type SwitchEndpoint = { base: string; token: string };
+
+async function switchEndpoint(credentialsPath: string): Promise<SwitchEndpoint> {
+  const { env } = JSON.parse(await readFile(credentialsPath, 'utf8'));
+  const endpoint = new URL(env.SWITCH_API_ENDPOINT);
+  // Plain HTTP only to an agents controller's relay on this machine.
+  const loopback = ['127.0.0.1', '[::1]', 'localhost'].includes(endpoint.hostname);
+  if (
+    (endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && loopback)) ||
+    endpoint.username ||
+    endpoint.password ||
+    endpoint.search ||
+    endpoint.hash ||
+    !validToken(env.SWITCH_API_TOKEN)
+  )
+    throw new Error();
+  return { base: endpoint.href.replace(/\/$/, ''), token: env.SWITCH_API_TOKEN };
+}
+
+/** Calls Switch once, and once more after a pause for a retryable 409 or 503. */
+async function callSwitch(
+  endpoint: SwitchEndpoint,
+  path: string,
+  init: { method: 'GET' } | { method: 'POST'; body: unknown }
+): Promise<unknown> {
+  const request = () =>
+    fetch(endpoint.base + path, {
+      method: init.method,
+      headers: {
+        Authorization: `Bearer ${endpoint.token}`,
+        ...(init.method === 'POST' ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(init.method === 'POST' ? { body: JSON.stringify(init.body) } : {}),
+      redirect: 'error',
+      signal: AbortSignal.timeout(180_000),
+    });
+  let response = await request();
+  if (response.status === 409 || response.status === 503) {
+    await response.body?.cancel();
+    await delay(1_000);
+    response = await request();
+  }
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error();
+  }
+  return response.json();
+}
+
+/** The GitHub installations granted to the agent whose Switch credentials are at `credentialsPath`. */
+export async function listGitHubInstallations(
+  credentialsPath: string
+): Promise<GitHubInstallation[]> {
+  try {
+    const listing = hostedConnectionsSchema.parse(
+      await callSwitch(await switchEndpoint(credentialsPath), '/hosted/connections', {
+        method: 'GET',
+      })
+    );
+    const github = listing.connections.find((connection) => connection.slug === 'github');
+    return github === undefined
+      ? []
+      : z.array(githubInstallationSchema).parse(github.installations);
+  } catch {
+    throw new Error(
+      'Could not read the GitHub access granted to this agent. Check the owner’s GitHub connection.'
+    );
+  }
+}
+
+/** A fresh installation token for one granted installation; never written anywhere. */
+export async function renewGitHubCredential(
+  credentialsPath: string,
+  installationId: number
+): Promise<string> {
+  try {
+    const credential = z
+      .object({ token: z.string(), installation_id: z.number(), expires_at: z.string() })
+      .parse(
+        await callSwitch(
+          await switchEndpoint(credentialsPath),
+          '/hosted/connections/github/credential',
+          { method: 'POST', body: { installation_id: installationId } }
+        )
+      );
+    if (
+      !validToken(credential.token) ||
+      credential.installation_id !== installationId ||
+      !Number.isFinite(Date.parse(credential.expires_at)) ||
+      Date.parse(credential.expires_at) < Date.now() + 60_000
+    )
+      throw new Error();
+    return credential.token;
+  } catch {
+    throw new Error('Could not renew GitHub access. Check the owner’s GitHub connection.');
+  }
 }
 
 export async function runGitHubCredentialHelper(operation: string | undefined): Promise<void> {
@@ -158,69 +401,47 @@ export async function runGitHubCredentialHelper(operation: string | undefined): 
     if (Buffer.byteLength(input) > 64 * 1024)
       throw new Error('Git credential request is too large.');
   }
-  const eligible = gitHubCredentialResponse(operation, input, 'validation-only');
-  if (!eligible) return;
-  process.stdout.write(gitHubCredentialResponse(operation, input, await currentGitHubToken()));
-}
-
-export async function currentGitHubToken(): Promise<string | undefined> {
+  const request = credentialRequest(operation, input);
+  if (request === null) return;
   const credentialsPath = process.env[HOSTED_GITHUB_CREDENTIALS_ENV];
-  if (!credentialsPath) return process.env.GH_TOKEN;
-  return renewGitHubCredential(credentialsPath, process.env[HOSTED_GITHUB_REPOSITORY_ENV]);
+  if (!credentialsPath) {
+    process.stdout.write(gitHubCredentialResponse(operation, input, process.env.GH_TOKEN));
+    return;
+  }
+  const owner = ownerFromCredentialPath(request.get('path'));
+  if (owner === null) {
+    console.error(
+      'Switch: git named no github.com repository path, so no GitHub account could be chosen (credential.useHttpPath must be true).'
+    );
+    return;
+  }
+  const installations = await listGitHubInstallations(credentialsPath);
+  const installation = installationForOwner(installations, owner);
+  if (installation === null) {
+    console.error(`Switch: ${notGranted(installations, owner).message}`);
+    return;
+  }
+  const token = await renewGitHubCredential(credentialsPath, installation.installation_id);
+  process.stdout.write(gitHubCredentialResponse(operation, input, token));
 }
 
-export async function renewGitHubCredential(
-  credentialsPath: string,
-  repository: string | undefined
-): Promise<string> {
-  try {
-    const { env } = JSON.parse(await readFile(credentialsPath, 'utf8'));
-    const endpoint = new URL(env.SWITCH_API_ENDPOINT);
-    // Plain HTTP only to an agents controller's relay on this machine.
-    const loopback = ['127.0.0.1', '[::1]', 'localhost'].includes(endpoint.hostname);
-    if (
-      (endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && loopback)) ||
-      endpoint.username ||
-      endpoint.password ||
-      endpoint.search ||
-      endpoint.hash ||
-      !validToken(env.SWITCH_API_TOKEN)
-    )
-      throw new Error();
-    const request = () =>
-      fetch(endpoint.href.replace(/\/$/, '') + '/hosted/github-credential', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${env.SWITCH_API_TOKEN}` },
-        redirect: 'error',
-        signal: AbortSignal.timeout(180_000),
-      });
-    let response = await request();
-    if (response.status === 409 || response.status === 503) {
-      await response.body?.cancel();
-      await delay(1_000);
-      response = await request();
-    }
-    if (!response.ok) {
-      await response.body?.cancel();
-      throw new Error();
-    }
-    const credential = z
-      .object({ token: z.string(), repository: z.string(), expires_at: z.string() })
-      .parse(await response.json());
-    if (
-      !repository ||
-      !validToken(credential.token) ||
-      credential.repository !== repository ||
-      Date.parse(credential.expires_at) < Date.now() + 60_000 ||
-      !Number.isFinite(Date.parse(credential.expires_at))
-    )
-      throw new Error();
-    return credential.token;
-  } catch {
-    throw new Error(
-      'Could not renew cloud repository access. Check the owner’s GitHub connection.'
-    );
+/** Prints the GitHub accounts and repositories granted to this agent, one account per line. */
+export async function runGitHubList(): Promise<void> {
+  const credentialsPath = process.env[HOSTED_GITHUB_CREDENTIALS_ENV];
+  if (!credentialsPath) throw new Error('This session has no Switch GitHub access.');
+  const installations = await listGitHubInstallations(credentialsPath);
+  if (installations.length === 0) {
+    console.log('No GitHub account is granted to this agent.');
+    return;
   }
+  for (const installation of installations)
+    console.log(
+      `${installation.account}: ${
+        installation.repositories === 'all'
+          ? 'all repositories'
+          : installation.repositories.join(', ')
+      }`
+    );
 }
 
 export async function prepareGitHubCli(root: string): Promise<string> {
@@ -245,9 +466,34 @@ export async function prepareGitHubCli(root: string): Promise<string> {
   return directory;
 }
 
+async function originUrl(): Promise<string | null> {
+  try {
+    const { stdout } = await promisify(execFile)('git', ['remote', 'get-url', 'origin'], {
+      timeout: 10_000,
+    });
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function cliToken(args: string[]): Promise<string> {
+  const credentialsPath = process.env[HOSTED_GITHUB_CREDENTIALS_ENV];
+  if (!credentialsPath) {
+    if (!process.env.GH_TOKEN) throw new Error('GitHub credential is missing.');
+    return process.env.GH_TOKEN;
+  }
+  const installation = await selectCliInstallation({
+    installations: await listGitHubInstallations(credentialsPath),
+    args,
+    ghRepo: process.env.GH_REPO,
+    originUrl,
+  });
+  return renewGitHubCredential(credentialsPath, installation.installation_id);
+}
+
 export async function runGitHubCli(args: string[]): Promise<void> {
-  const token = await currentGitHubToken();
-  if (!token) throw new Error('Cloud repository credential is missing.');
+  const token = await cliToken(args);
   const child = spawn('/usr/local/bin/gh', args, {
     stdio: 'inherit',
     env: { ...process.env, GH_TOKEN: token },
@@ -259,188 +505,4 @@ export async function runGitHubCli(args: string[]): Promise<void> {
       resolve();
     });
   });
-}
-
-class RepositoryStepError extends Error {}
-
-/**
- * Makes `workspace` a worktree on `switch/<agentId>` over the bare mirror of
- * `repository`. Every git command that changes the mirror holds
- * `<mirror>.lock`, so agents sharing one take turns. A workspace that is a
- * worktree of another mirror of the same repository is moved onto this one:
- * its branch is fetched across, its files and index are kept, and the other
- * mirror is only read.
- */
-export async function ensureHostedRepository(input: {
-  workspace: string;
-  mirror: string;
-  repository: string;
-  agentId: string;
-  env: NodeJS.ProcessEnv;
-}): Promise<void> {
-  const { workspace, mirror, env } = input;
-  const url = `https://github.com/${input.repository}.git`;
-  const lock = `${mirror}.lock`;
-  const exec = promisify(execFile);
-  const locked = async (step: string, args: string[]) => {
-    try {
-      await exec('flock', [lock, 'git', ...args], {
-        env,
-        timeout: 120_000,
-        maxBuffer: 1024 * 1024,
-      });
-    } catch {
-      throw new RepositoryStepError(step);
-    }
-  };
-  const probe = async (args: string[]) => {
-    try {
-      return (await exec('git', args, { env, timeout: 10_000 })).stdout.trim();
-    } catch {
-      return null;
-    }
-  };
-  const origin = () => probe(['--git-dir', mirror, 'config', '--get', 'remote.origin.url']);
-  try {
-    try {
-      await mkdir(dirname(mirror), { recursive: true, mode: 0o700 });
-    } catch {
-      throw new RepositoryStepError('create the mirror directory');
-    }
-    const bare = await probe(['--git-dir', mirror, 'rev-parse', '--is-bare-repository']);
-    if (bare === null) await locked('initialize the mirror', ['init', '--bare', '--', mirror]);
-    else if (bare !== 'true') throw new RepositoryStepError('the mirror is not a bare repository');
-    if ((await origin()) === null) {
-      try {
-        await locked('add the mirror origin', ['-C', mirror, 'remote', 'add', 'origin', url]);
-      } catch (error) {
-        if ((await origin()) === null) throw error;
-      }
-    }
-    if ((await origin())?.toLowerCase() !== url.toLowerCase())
-      throw new RepositoryStepError('the mirror belongs to a different repository');
-    await locked('fetch the repository', ['-C', mirror, 'fetch', '--prune', 'origin']);
-    await locked('resolve the default branch', [
-      '-C',
-      mirror,
-      'remote',
-      'set-head',
-      'origin',
-      '--auto',
-    ]);
-    const common = await probe(['-C', workspace, 'rev-parse', '--git-common-dir']);
-    const commonPath =
-      common === null ? null : await realpath(resolve(workspace, common)).catch(() => null);
-    if (commonPath !== null && commonPath === (await realpath(mirror))) return;
-    if (
-      commonPath !== null &&
-      (await probe(['-C', workspace, 'rev-parse', '--show-toplevel'])) ===
-        (await realpath(workspace)) &&
-      (
-        await probe(['--git-dir', commonPath, 'config', '--get', 'remote.origin.url'])
-      )?.toLowerCase() === url.toLowerCase()
-    ) {
-      const gitDir = await probe(['-C', workspace, 'rev-parse', '--absolute-git-dir']);
-      const admin = gitDir === null ? null : await realpath(gitDir).catch(() => null);
-      if (admin === null || dirname(admin) !== join(commonPath, 'worktrees'))
-        throw new RepositoryStepError('the workspace is not a linked worktree');
-      let head: string;
-      try {
-        head = (await readFile(join(admin, 'HEAD'), 'utf8')).trim();
-      } catch {
-        throw new RepositoryStepError('read the workspace branch');
-      }
-      const branch = /^ref: (refs\/heads\/\S+)$/.exec(head)?.[1];
-      if (branch === undefined && !/^[0-9a-f]{40,64}$/.test(head))
-        throw new RepositoryStepError('read the workspace branch');
-      await locked('move the workspace branch to the mirror', [
-        '-C',
-        mirror,
-        'fetch',
-        '--no-tags',
-        '--',
-        commonPath,
-        branch === undefined ? head : `+${branch}:${branch}`,
-      ]);
-      const moved = join(mirror, 'worktrees', basename(admin));
-      try {
-        await mkdir(moved, { recursive: true, mode: 0o700 });
-        await writeFile(join(moved, 'HEAD'), `${head}\n`);
-        await writeFile(join(moved, 'commondir'), '../..\n');
-        await writeFile(join(moved, 'gitdir'), `${join(workspace, '.git')}\n`);
-        await copyFile(join(admin, 'index'), join(moved, 'index')).catch((error) => {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-        });
-      } catch {
-        throw new RepositoryStepError('move the worktree to the mirror');
-      }
-      let missing: string[];
-      try {
-        const staged = (
-          await exec('git', ['--git-dir', moved, 'ls-files', '-s', '-z'], {
-            env,
-            timeout: 120_000,
-            maxBuffer: 256 * 1024 * 1024,
-          })
-        ).stdout
-          .split('\0')
-          .filter((entry) => entry !== '' && !entry.startsWith('160000 '))
-          .map((entry) => entry.split(' ')[1]!);
-        const check = exec('git', ['--git-dir', mirror, 'cat-file', '--batch-check'], {
-          env,
-          timeout: 120_000,
-          maxBuffer: 256 * 1024 * 1024,
-        });
-        check.child.stdin!.end([...new Set(staged)].map((sha) => `${sha}\n`).join(''));
-        missing = (await check).stdout
-          .split('\n')
-          .filter((line) => line.endsWith(' missing'))
-          .map((line) => line.split(' ')[0]!);
-      } catch {
-        throw new RepositoryStepError('read the workspace index');
-      }
-      if (missing.length > 0)
-        await locked('move the staged changes to the mirror', [
-          '-C',
-          mirror,
-          'fetch',
-          '--no-tags',
-          '--',
-          commonPath,
-          ...missing,
-        ]);
-      try {
-        await writeFile(join(workspace, '.git'), `gitdir: ${moved}\n`);
-      } catch {
-        throw new RepositoryStepError('move the worktree to the mirror');
-      }
-      return;
-    }
-    let entries: string[];
-    try {
-      entries = await readdir(workspace);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
-        throw new RepositoryStepError('read the workspace');
-      entries = [];
-    }
-    if (entries.length > 0)
-      throw new RepositoryStepError('the workspace holds files that are not its worktree');
-    await locked('add the worktree', [
-      '-C',
-      mirror,
-      'worktree',
-      'add',
-      '-B',
-      `switch/${input.agentId}`,
-      '--',
-      workspace,
-      'origin/HEAD',
-    ]);
-  } catch (error) {
-    const step = error instanceof RepositoryStepError ? error.message : 'inspect the repository';
-    throw new Error(
-      `Could not prepare the selected GitHub repository (${step}). Check repository access and the saved workspace.`
-    );
-  }
 }
