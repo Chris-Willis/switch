@@ -447,7 +447,12 @@ describe('runControllerStream against the controller stream routes', () => {
     });
     await waitFor(() => core.streamCount === 1, 'the stream');
     core.push('assignment.changed', { revision: 4 });
-    await waitFor(() => frames.length === 1, 'the frame');
+    // By type, not count: `connection_state` opens the stream and both can land in one poll.
+    await waitFor(() => frames.some((frame) => frame.type === 'assignment.changed'), 'the frame');
+    expect(frames).toEqual([
+      expect.objectContaining({ type: 'connection_state' }),
+      { type: 'assignment.changed', data: { revision: 4 } },
+    ]);
     await waitFor(() => core.beats.length > 0, 'a beat');
     expect(core.beats[0]).toEqual({ 'agent-1': 3 });
 
