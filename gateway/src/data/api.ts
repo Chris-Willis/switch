@@ -1034,6 +1034,35 @@ export interface Member {
   created_at: string;
 }
 
+// ── Feature flags (per workspace) ───────────────────────────────────────
+
+export interface FeatureFlagState {
+  key: string;
+  enabled: boolean;
+}
+
+export interface FeatureFlagsResponse {
+  flags: FeatureFlagState[];
+  /** Whether the caller may change them: a workspace owner or admin. */
+  can_edit: boolean;
+}
+
+/** The signed-in workspace's flags. */
+export async function fetchFeatureFlags(): Promise<FeatureFlagsResponse> {
+  return jsonRequest<FeatureFlagsResponse>("/feature-flags", "GET");
+}
+
+export async function setFeatureFlag(
+  key: string,
+  enabled: boolean,
+): Promise<FeatureFlagsResponse> {
+  return jsonRequest<FeatureFlagsResponse>(
+    `/feature-flags/${encodeURIComponent(key)}`,
+    "PUT",
+    { enabled },
+  );
+}
+
 export async function fetchMembers(tenantId: string): Promise<Member[]> {
   return jsonRequest<Member[]>(`/tenants/${encodeURIComponent(tenantId)}/members`, "GET");
 }
