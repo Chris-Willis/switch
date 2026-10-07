@@ -686,3 +686,25 @@ class TestConnectOnly:
             )
         assert token == "gho_access_1"
         assert vendor.refreshes == 1 and vendor.issued == []
+
+
+class TestLaunchChangesInFlight:
+    async def test_a_token_issued_as_the_agents_access_ends_is_taken_back(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory)
+
+        async def access_ends() -> None:
+            async with session_factory() as session:
+                await broker.queue_agent_revocation(session, world.agent.id, "github")
+                await session.commit()
+
+        vendor.during_issue = access_ends
+        refused = await _refused(broker, session_factory, world.agent.id)
+        assert (refused.status_code, refused.code, refused.retryable) == (
+            503,
+            "internal",
+            True,
+        )
+        assert vendor.revoked == [vendor.issued[0][1]]
+        assert await _issuances(session_factory) == []

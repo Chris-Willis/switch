@@ -209,6 +209,42 @@ class ServiceConnectionStore:
         )
         return result.scalar_one_or_none()
 
+    async def get_grant_to_record(
+        self, session: AsyncSession, agent_id: str, service: str
+    ) -> ServiceGrant | None:
+        """The grant, held against change until this transaction ends.
+
+        For recording a token issued under it: a change made meanwhile either
+        commits first, and is seen here, or waits until the record has
+        committed, and then covers it.
+        """
+        result = await session.execute(
+            select(ServiceGrant)
+            .where(
+                ServiceGrant.tenant_id == require_tenant_id(),
+                ServiceGrant.agent_id == agent_id,
+                ServiceGrant.service == service,
+            )
+            .with_for_update(read=True)
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
+    async def bump_grant(
+        self, session: AsyncSession, agent_id: str, service: str
+    ) -> None:
+        """Move the agent's grant on, so a token being issued under it is not
+        recorded."""
+        await session.execute(
+            update(ServiceGrant)
+            .where(
+                ServiceGrant.tenant_id == require_tenant_id(),
+                ServiceGrant.agent_id == agent_id,
+                ServiceGrant.service == service,
+            )
+            .values(revision=ServiceGrant.revision + 1, updated_at=func.now())
+        )
+
     async def list_grants(
         self, session: AsyncSession, agent_id: str
     ) -> list[ServiceGrant]:
@@ -257,7 +293,11 @@ class ServiceConnectionStore:
             )
             .on_conflict_do_update(
                 index_elements=["tenant_id", "agent_id", "service"],
-                set_={**values, "updated_at": func.now()},
+                set_={
+                    **values,
+                    "revision": ServiceGrant.revision + 1,
+                    "updated_at": func.now(),
+                },
             )
         )
         grant = await self.get_grant(session, agent_id, service)

@@ -412,6 +412,10 @@ through `runAgentHost`.
 - **A launch change revokes the agent's GitHub tokens**, as it always has: the
   lifecycle routes queue them with the change, and the hosted controller's
   poll queues the tokens of every agent whose launch is no longer running.
+  The change also moves the grant's `revision` on; the broker records a token
+  only against the revision it issued under, reading the grant `FOR SHARE`,
+  so a token being issued as the launch stops is taken back. The change takes
+  no connection lock, so a stop never waits on a refresh at the vendor.
 - **The machine agent list** stops sending skills (the cloud bootstrap treats
   the field as optional); sessions get skills from `service-grants`.
 - **`/hosted/github-credential`** calls the broker for one release, for cloud

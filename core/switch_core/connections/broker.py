@@ -145,6 +145,7 @@ class GrantDecision:
     """What one grant allows, as every check before an issue found it."""
 
     grant_id: str
+    grant_revision: int
     agent_id: str
     owner_id: str
     service: str
@@ -265,6 +266,19 @@ class ServiceBroker:
         service: str,
     ) -> GrantDecision:
         """Run every issuance check, in order, in `session`."""
+        return await self._decide(
+            session, agent_id, principal, service, to_record=False
+        )
+
+    async def _decide(
+        self,
+        session: AsyncSession,
+        agent_id: str,
+        principal: Principal,
+        service: str,
+        *,
+        to_record: bool,
+    ) -> GrantDecision:
         entry = self._entry(service)
         name = entry.definition.name
         tenant_id = require_tenant_id()
@@ -295,7 +309,9 @@ class ServiceBroker:
                 retryable=False,
             )
 
-        grant = await self._store.get_grant(session, agent_id, service)
+        grant = await (
+            self._store.get_grant_to_record if to_record else self._store.get_grant
+        )(session, agent_id, service)
         if grant is None:
             raise ServiceError(
                 403,
@@ -366,6 +382,7 @@ class ServiceBroker:
             )
         return GrantDecision(
             grant_id=grant.id,
+            grant_revision=grant.revision,
             agent_id=agent_id,
             owner_id=owner_id,
             service=service,
@@ -472,8 +489,8 @@ class ServiceBroker:
             )
         except ServiceConnectionBusy as error:
             raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
-        current = await self.decide(
-            session, decision.agent_id, principal, decision.service
+        current = await self._decide(
+            session, decision.agent_id, principal, decision.service, to_record=True
         )
         if current != decision:
             raise ServiceError(
@@ -1010,9 +1027,16 @@ class ServiceBroker:
     async def queue_agent_revocation(
         self, session: AsyncSession, agent_id: str, service: str
     ) -> tuple[Any, ...]:
-        """Queue every live `service` token issued to the agent, in the
-        caller's transaction. Returns the conditions to hand `revoke_pending`
-        once the caller has committed."""
+        """End what the agent was given for `service`, in the caller's
+        transaction: queue every live token issued to it, and move its grant on
+        so a token being issued right now is taken back rather than recorded.
+        Returns the conditions to hand `revoke_pending` once the caller has
+        committed.
+
+        Takes no connection lock, so it never waits on a refresh at the
+        vendor; at most on a token being recorded, which is quick.
+        """
+        await self._store.bump_grant(session, agent_id, service)
         conditions = (
             ServiceTokenIssuance.agent_id == agent_id,
             ServiceTokenIssuance.service == service,

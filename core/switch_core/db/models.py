@@ -3327,7 +3327,9 @@ class ServiceGrant(TenantScoped, Base):
     grants with it; re-linking updates the connection in place and keeps
     them. `account_id` is the connection's account when the grant was made.
     `tool_mode` `allow` means only `tools`; `deny` means every tool of the
-    access level except `tools`.
+    access level except `tools`. `revision` moves on every change to the grant
+    and whenever what it was issued for ends (a cloud launch stopping), so a
+    token being issued as it moves is taken back rather than recorded.
     """
 
     __tablename__ = "service_grants"
@@ -3367,6 +3369,9 @@ class ServiceGrant(TenantScoped, Base):
     tools: Mapped[list] = mapped_column(JSONB, nullable=False)
     resources: Mapped[dict] = mapped_column(JSONB, nullable=False)
     account_id: Mapped[str] = mapped_column(Text, nullable=False)
+    revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("1")
+    )
     created_by: Mapped[str] = mapped_column(
         Text, ForeignKey("users.id"), nullable=False
     )
